@@ -1,0 +1,22 @@
+name: pyocean
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - numpy
+  - scipy
+  - xarray
+  - netCDF4
+  - zarr
+  - matplotlib
+  - cartopy
+  - jupyter
+  - jupyterlab
+  - numba
+  - pytest
+  - black
+  - pip
+  - pip:
+      - pyvista
+      - gsw          # TEOS-10 equation of state
