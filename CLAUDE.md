@@ -125,6 +125,59 @@ When working on this project, follow the phase order strictly. Do not add Phase 
 
 ---
 
+## Build Status — Phase 1
+
+Last updated: 2026-03-24.  All tests run with `pytest tests/`.
+
+| Module | File | Tests | Status |
+|--------|------|-------|--------|
+| Horizontal grid (C-Arakawa) | `core/grid/horizontal.py` | `tests/test_grid_horizontal.py` | ✅ 28/28 |
+| Vertical grid (z-levels + hFac) | `core/grid/vertical.py` | `tests/test_grid_vertical.py` | ✅ 37/37 |
+| Model state container | `core/state.py` | `tests/test_state.py` | ✅ 52/52 |
+| Equation of state | `physics/eos/__init__.py` | `tests/test_eos.py` | ✅ 36/36 |
+| Hydrostatic pressure + PGF | `core/dynamics/pressure.py` | `tests/test_pressure.py` | ✅ 34/34 |
+| Momentum equations | `core/dynamics/momentum.py` | `tests/test_momentum.py` | ✅ 44/44 |
+| Adams–Bashforth 2 timestepper | `core/timestepping/ab2.py` | `tests/test_timestepping.py` | ✅ 19/19 |
+| Advection (upwind → PPM) | `numerics/advection/__init__.py` | `tests/test_advection.py` | ✅ 37/37 |
+| KPP mixing | `physics/mixing/kpp.py` | `tests/test_kpp.py` | ✅ 32/32 |
+| Open BCs + surface forcing | `boundaries/obcs/__init__.py` + `forcing/surface.py` | `tests/test_surface_forcing.py` | ✅ 39/39 |
+| NetCDF4 I/O | `diagnostics/io.py` | `tests/test_io.py` | ✅ 22/22 |
+
+**Phase 1 COMPLETE — all 380 tests passing.**
+
+---
+
+## Build Status — Phase 2
+
+Last updated: 2026-04-08.  All tests run with `pytest tests/`.
+
+| Module | File | Tests | Status |
+|--------|------|-------|--------|
+| Bathymetry load/regrid/smooth | `core/grid/bathymetry.py` | `tests/test_bathymetry.py` | ✅ 38/38 |
+
+**Phase 2 in progress — 418 total tests passing.**
+
+### Phase 2 build order
+
+1. ~~`core/grid/bathymetry.py`~~ ✅ — load_gebco, regrid_to_model, smooth_bathymetry (Hann 9-pt + Shapiro 5-pt, n_skip), fill_isolated_cells, apply_min_depth, build_bathymetry
+2. `forcing/era5.py` — ERA5 bulk formula surface forcing  ← **next**
+3. Implicit free surface — activate Helmholtz CG solver in `pressure.py`
+4. Validation notebook — Gulf of Mexico subdomain run
+
+### Key design decisions made
+
+- **EOS**: two options available — `eos="teos10"` (nonlinear, via `gsw`) and `eos="linear"` (Vallis 2006 eq. 1.156, configurable α/β/T₀/S₀). Linear EOS is default for Phase 1 idealised runs.
+- **Pressure**: barotropic term `ρ₀gη` + baroclinic cumulative integral from surface (Marshall et al. 1997, Appendix A). Explicit free surface for Phase 1; `surface_pressure_cg` (Helmholtz 2D CG solver) ready for Phase 2 implicit free surface.
+- **Grid spacing**: `dx_u(j_t, i_u)` and `dy_v(j_v, i_t)` from the horizontal grid are used for pressure gradient finite differences (not scalar `dx`/`dy`), so the code is already spherical-grid compatible.
+- **ModelState arithmetic**: `__add__`, `__mul__`, `__rmul__` implemented so timestepper writes `state_new = state_old + dt * tendency` directly.
+
+### Known issues / gotchas
+
+- `scipy.sparse.linalg.cg` ≥ 1.12 uses `rtol=` instead of `tol=` — already handled in `pressure.py`.
+- `physics/eos/` is a package directory (scaffold); EOS code lives in `physics/eos/__init__.py`, not a separate `physics/eos.py`.
+
+---
+
 ## Performance Targets
 
 - Phase 1-2 (pure NumPy): Runs on MacBook Pro, regional domain in minutes

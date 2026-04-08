@@ -85,11 +85,31 @@ pyOCEAN/
 
 ---
 
+## Current Status
+
+**Phase 1 in progress** — building the z-level Cartesian core from scratch.
+
+| Module | Description | Tests |
+|--------|-------------|-------|
+| `core/grid/horizontal.py` | Arakawa C-grid (Cartesian + spherical) | ✅ 28/28 |
+| `core/grid/vertical.py` | z-levels with partial cells (hFac) | ✅ 37/37 |
+| `core/state.py` | Prognostic variable container (u,v,w,T,S,η) | ✅ 52/52 |
+| `physics/eos/` | TEOS-10 (gsw) + linear EOS | ✅ 36/36 |
+| `core/dynamics/pressure.py` | Hydrostatic pressure + PGF + CG solver | ✅ 34/34 |
+| `core/dynamics/momentum.py` | Momentum equations + Coriolis | pending |
+| `core/timestepping/` | Adams–Bashforth 2 | pending |
+
+**Next:** momentum equations (Coriolis + PGF) and Adams–Bashforth 2 timestepper.
+
+Run the test suite: `pytest tests/`
+
+---
+
 ## Development Phases
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| 1 | Cartesian z-level idealized model (rectangular basin) | Planned |
+| 1 | Cartesian z-level idealized model (rectangular basin) | In progress |
 | 2 | Real topography + open boundary conditions | Planned |
 | 3 | Hybrid vertical coordinate (sigma + isopycnal + z) | Planned |
 | 4 | Internal wave parameterization | Planned |

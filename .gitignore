@@ -26,3 +26,7 @@ run/
 # IDEs
 .vscode/
 .idea/
+
+# HYCOM reference source (external, not project code)
+HYCOM-src/
+HYCOM-tools-master/
