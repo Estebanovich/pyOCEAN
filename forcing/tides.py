@@ -269,3 +269,124 @@ def boundary_tides(
         out[f"eta_{axis}"] = eta_f
         out["ubar_u" if axis == "u" else "vbar_v"] = vel_f
     return out
+
+
+# ---------------------------------------------------------------------------
+# Tidal potential (body tide) and self-attraction and loading (SAL)
+# ---------------------------------------------------------------------------
+
+#: Equilibrium-tide amplitudes A_c [m] (OTPS constit.h; Cartwright & Tayler 1971).
+EQ_AMPLITUDE: dict[str, float] = {
+    "m2": 0.2441, "s2": 0.112743, "k1": 0.141565, "o1": 0.100661,
+    "n2": 0.046397, "p1": 0.046848, "k2": 0.030684, "q1": 0.019273,
+}
+
+#: α_c = 1 + k_c − h_c, Love-number factor of the body tide (Foreman et al. 1993; HYCOM mod_tides.F90).
+LOVE_ALPHA: dict[str, float] = {
+    "m2": 1 + 0.302 - 0.609, "s2": 1 + 0.302 - 0.609, "n2": 1 + 0.302 - 0.609, "k2": 1 + 0.302 - 0.609,
+    "k1": 1 + 0.256 - 0.520, "o1": 1 + 0.298 - 0.603, "p1": 1 + 0.287 - 0.581, "q1": 1 + 0.298 - 0.603,
+}
+
+#: Tidal species m (2 = semidiurnal, 1 = diurnal).
+SPECIES: dict[str, int] = {"m2": 2, "s2": 2, "n2": 2, "k2": 2, "k1": 1, "o1": 1, "p1": 1, "q1": 1}
+
+_G_TIDE: float = 9.81
+
+
+def equilibrium_constants(lon: np.ndarray, lat: np.ndarray, constituents: list[str],
+                          love: bool = True) -> np.ndarray:
+    """
+    Complex constants of the equilibrium tide, usable with ``predict``.
+
+        semidiurnal:  h_c = α_c A_c cos²φ e^{2iλ}
+        diurnal:      h_c = α_c A_c sin 2φ e^{iλ}
+
+    so that predict gives η_eq = α A f G(φ) cos(θ_c + mλ), as in HYCOM
+    (mod_tides.F90: atide = A α cos²φ cos 2λ, btide = A α cos²φ sin 2λ).
+
+    Parameters
+    ----------
+    lon, lat : np.ndarray
+        Longitude [°E] and latitude [°N], same shape.
+    constituents : list of str
+    love : bool
+        Include α = 1 + k − h (default) — the forcing felt by the ocean on a
+        yielding Earth; False gives the astronomical equilibrium tide.
+
+    Returns
+    -------
+    np.ndarray, complex, shape lon.shape + (nc,)
+    """
+    lam = np.deg2rad(np.asarray(lon, dtype=float))[..., None]
+    phi = np.deg2rad(np.asarray(lat, dtype=float))[..., None]
+    out = []
+    for c in constituents:
+        if c not in SPECIES:
+            raise KeyError(f"no equilibrium tide for {c!r}; available: {CONSTITUENTS}")
+        m = SPECIES[c]
+        shape = np.cos(phi) ** 2 if m == 2 else np.sin(2.0 * phi)
+        alpha = LOVE_ALPHA[c] if love else 1.0
+        out.append(alpha * EQ_AMPLITUDE[c] * shape * np.exp(1j * m * lam))
+    return np.concatenate(out, axis=-1)
+
+
+def body_tide(lon: np.ndarray, lat: np.ndarray, t: np.ndarray, constituents: list[str],
+              sal: np.ndarray | None = None, ramp: float = 1.0) -> np.ndarray:
+    """
+    Effective tidal forcing height η_body = Σ_c [α_c η_eq,c − η_SAL,c]  [m].
+
+    The ocean is forced by −∇(−g η_body) (HYCOM ``etide``, tidflg ≥ 2).
+
+    Parameters
+    ----------
+    lon, lat : np.ndarray
+        Coordinates of the points (e.g. model T-points).
+    t : np.ndarray of datetime64
+    constituents : list of str
+    sal : np.ndarray, complex, shape lon.shape + (nc,), optional
+        Per-constituent SAL constants (``read_sal_hycom``), subtracted.
+    ramp : float
+        Spin-up factor (HYCOM ``tidrmp``: 1 − exp(−5 t/τ)).
+
+    Returns
+    -------
+    np.ndarray, shape (nt,) + lon.shape
+    """
+    hc = equilibrium_constants(lon, lat, constituents)
+    if sal is not None:
+        hc = hc - sal
+    return ramp * predict(t, hc, constituents)
+
+
+def body_force(h_grid: "xr.Dataset", eta_body: np.ndarray, g: float = _G_TIDE) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Tidal body-force acceleration g ∇η_body at U- and V-faces [m s⁻²].
+
+        F_x[j, i] = g (η_b[j, i] − η_b[j, i−1]) / Δx_u,   F_y likewise;  0 on the domain edges
+
+    Add it to the momentum tendency of ``ab2_step_implicit_fs``.
+    """
+    ny, nx = eta_body.shape
+    gx = np.zeros((ny, nx + 1))
+    gy = np.zeros((ny + 1, nx))
+    gx[:, 1:-1] = g * (eta_body[:, 1:] - eta_body[:, :-1]) / h_grid["dx_u"].values[:, 1:-1]
+    gy[1:-1, :] = g * (eta_body[1:, :] - eta_body[:-1, :]) / h_grid["dy_v"].values[1:-1, :]
+    return gx, gy
+
+
+def read_sal_hycom(path_b, idm: int | None = None, jdm: int | None = None,
+                   constituents: tuple[str, ...] = CONSTITUENTS) -> np.ndarray:
+    """
+    HYCOM ``tidal.salReIm.[ab]`` → complex SAL constants, shape (jdm, idm, nc) [m].
+
+    Records are Re, Im of each constituent in HYCOM order (mod_tides.F90,
+    tides_forfun_sal), as produced for HYCOM-IOA by calcSAL + sal2hycom.py.
+    """
+    from forcing.sources.hycom_ab import read_record
+
+    out = []
+    for k in range(len(constituents)):
+        re = read_record(path_b, 2 * k, idm, jdm)
+        im = read_record(path_b, 2 * k + 1, idm, jdm)
+        out.append(re + 1j * im)
+    return np.stack(out, axis=-1)

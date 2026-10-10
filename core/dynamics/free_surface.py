@@ -128,6 +128,9 @@ class ImplicitFreeSurface:
     open_u, open_v : np.ndarray of bool, optional
         Open faces, shapes (ny, nx+1) and (ny+1, nx), whose normal velocity is
         prescribed (taken from û unchanged).
+    sal_beta : float
+        Scalar self-attraction-and-loading factor β (HYCOM ``tidsal``): the
+        surface pressure gradient uses g(1 − β)∇η.  Default 0.
     flather_u, flather_v : np.ndarray of bool, optional
         Domain-edge faces with the Flather radiation condition (4); their
         hFac must be open (``open_boundary_hfac``).
@@ -149,6 +152,7 @@ class ImplicitFreeSurface:
         open_v: np.ndarray | None = None,
         flather_u: np.ndarray | None = None,
         flather_v: np.ndarray | None = None,
+        sal_beta: float = 0.0,
         solver: str = "direct",
         cg_rtol: float = 1e-12,
     ) -> None:
@@ -156,7 +160,10 @@ class ImplicitFreeSurface:
             raise ValueError(f"theta must be in [0.5, 1] for stability, got {theta}")
         if solver not in ("direct", "cg"):
             raise ValueError(f"solver must be 'direct' or 'cg', got {solver!r}")
+        if not 0.0 <= sal_beta < 1.0:
+            raise ValueError(f"sal_beta must be in [0, 1), got {sal_beta}")
         self.dt, self.theta, self.g = float(dt), float(theta), float(g)
+        self.g_pgf = self.g * (1.0 - sal_beta)       # gravity in the surface pressure gradient
         self.solver, self.cg_rtol = solver, cg_rtol
 
         dz = v_grid["dz"].values
@@ -226,7 +233,7 @@ class ImplicitFreeSurface:
         index = -np.ones((ny, nx), int)
         index[self.wet_t] = np.arange(self.wet_t.sum())
         self._index = index
-        a = self.g * self.theta ** 2 * self.dt ** 2
+        a = self.g_pgf * self.theta ** 2 * self.dt ** 2
         rows, cols, vals = [], [], []
 
         def couple(c: np.ndarray, p: np.ndarray, q: np.ndarray) -> None:
@@ -306,10 +313,10 @@ class ImplicitFreeSurface:
         eta_new, u_new, v_new
             η^{n+1} (0 on land) and u^{n+1}, v^{n+1} (0 on dry faces).
         """
-        th, dt, g = self.theta, self.dt, self.g
+        th, dt, g, gp = self.theta, self.dt, self.g, self.g_pgf
         gx, gy = self._grad(eta)
-        u_ss = u_hat - g * dt * (1.0 - th) * gx[None]
-        v_ss = v_hat - g * dt * (1.0 - th) * gy[None]
+        u_ss = u_hat - gp * dt * (1.0 - th) * gx[None]
+        v_ss = v_hat - gp * dt * (1.0 - th) * gy[None]
 
         # Flather faces carry their own transport: drop them from D(·)
         fu, fv = self._flather_u[None], self._flather_v[None]
@@ -334,8 +341,8 @@ class ImplicitFreeSurface:
         eta_new[self.wet_t] = x
 
         gx, gy = self._grad(eta_new)
-        u_new = (u_ss - g * dt * th * gx[None]) * (self.hfac_u > 0)
-        v_new = (v_ss - g * dt * th * gy[None]) * (self.hfac_v > 0)
+        u_new = (u_ss - gp * dt * th * gx[None]) * (self.hfac_u > 0)
+        v_new = (v_ss - gp * dt * th * gy[None]) * (self.hfac_v > 0)
 
         # Flather faces: depth mean from (4) at n+1, baroclinic part of û kept
         for fl, (e_ext, ubar_ext) in zip(self._flather, ext):

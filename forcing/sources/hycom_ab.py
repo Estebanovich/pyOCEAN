@@ -181,8 +181,37 @@ def read_field(
     if len(matches) <= index:
         available = sorted({(r.name, r.k) for r in b.records}, key=str)
         raise KeyError(f"{path_b.name}: no record {index} for field {name!r} k={k}; available: {available}")
-    irec = matches[index]
+    return _read_record(path_b, b, matches[index], idm, jdm, check)
+
+
+def read_record(
+    path_b: str | Path,
+    irec: int,
+    idm: int | None = None,
+    jdm: int | None = None,
+    check: bool = True,
+) -> np.ndarray:
+    """
+    Read the ``irec``-th record (0-based, in file order) of a ``.a/.b`` pair.
+
+    For files whose records are identified by position rather than name,
+    e.g. HYCOM ``tidal.salReIm`` (Re, Im of each constituent in turn).
+    Same checks and return value as ``read_field``.
+    """
+    path_b = Path(path_b)
+    b = read_b(path_b)
+    idm = idm if idm is not None else b.header.get("idm")
+    jdm = jdm if jdm is not None else b.header.get("jdm")
+    if idm is None or jdm is None:
+        raise ValueError(f"{path_b.name}: idm/jdm not in the .b header; pass idm= and jdm=")
+    if not 0 <= irec < len(b.records):
+        raise KeyError(f"{path_b.name}: record {irec} out of range (0–{len(b.records) - 1})")
+    return _read_record(path_b, b, irec, idm, jdm, check)
+
+
+def _read_record(path_b: Path, b: BFile, irec: int, idm: int, jdm: int, check: bool) -> np.ndarray:
     rec = b.records[irec]
+    name, k = rec.name, rec.k
 
     n = idm * jdm
     stride = n + hycom_npad(idm, jdm)
