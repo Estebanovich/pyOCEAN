@@ -253,7 +253,9 @@ class TestBulkNcarPhysics:
         assert f.q_sens != 0.0   # minimum wind speed keeps exchange alive
 
     def test_two_iterations_converged_within_two_percent(self):
-        # LY04 §2.1: two iterations are sufficient
+        # LY04 §2.1: two iterations are sufficient — true for moderate wind or
+        # weak stability, the cases below.  Not true for U ≲ 4 m/s with strongly
+        # stable air, nor near the ζ = 0 Stanton switch (see bulk_ncar docstring).
         for u, ta, sst in [(3.0, 22.0, 27.0), (8.0, 15.0, 26.0), (5.0, 29.0, 26.0)]:
             f2 = _case(u=u, t_air_c=ta, sst=sst, n_iter=2)
             f30 = _case(u=u, t_air_c=ta, sst=sst, n_iter=30)

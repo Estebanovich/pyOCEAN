@@ -280,8 +280,23 @@ def bulk_ncar(
       4. Fluxes with LY04 eq 4 (see module docstring).
 
     LY04 state that two iterations are sufficient; the default reproduces
-    MITgcm (``niter_bulk = 2``).  ζ is clipped to |ζ| ≤ 10 as in MITgcm and
-    HYCOM.
+    MITgcm (``niter_bulk = 2``) and CESM ``shr_flux_atmOcn``, i.e. the CORE /
+    OMIP protocol.  ζ is clipped to |ζ| ≤ 10 as in MITgcm, CESM and HYCOM.
+
+    Known limitations (docs/design/era5_bulk_comparison.md §7)
+    ----------------------------------------------------------
+    * Weak wind (U ≲ 4 m s⁻¹) with strongly stable air: 2 iterations are far
+      from the fixed point (latent flux off by up to ~47 W m⁻² in tests); the
+      fixed point itself sits on the |ζ| = 10 clip, because the linear stable
+      functions ψ = −5ζ shut turbulence down too fast (Cheng & Brutsaert 2005;
+      Yagüe et al. 2006).  More iterations do not make this regime more
+      realistic — use a scheme with levelling-off stable functions (COARE 3.0)
+      for it.
+    * Warm but dry air (Δθ > 0, Δθ_v ≈ 0): the Stanton number jumps between
+      18.0 and 32.7 ×10⁻³ √C_dN at ζ = 0 (eq 6c) and the iteration has no fixed
+      point; it alternates between the two branches at any wind speed, so the
+      sensible heat flux depends on the parity of ``n_iter`` (up to a factor
+      ≈ 1.8).  A convergence tolerance cannot fix this; keep ``n_iter`` fixed.
 
     Parameters
     ----------

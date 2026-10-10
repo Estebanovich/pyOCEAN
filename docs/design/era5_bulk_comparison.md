@@ -164,3 +164,35 @@ Encabezado: *"PAC_MEX corrida libre Abril 2015 - restart GOFS3.1 + forzamiento W
 | `mlflag` | 1 | KPP (Large et al. 1994), `difmiw` = 0.3e-4, `difsiw` = 0.1e-4 |
 
 **Conclusión:** para comparar pyOCEAN con HYCOM-IOA punto a punto hace falta `bulk_kara` (flxflg=6) con viento relativo. El orden propuesto sigue siendo NCAR primero (validación contra MITgcm, Fase 2), pero `bulk_kara` sube de prioridad: conviene implementarlo antes de la comparación con HYCOM y no dejarlo hasta la Fase 3.
+
+---
+
+## 7. Convergencia de la iteración de LY04 (`bulk_ncar`): ¿agregar una tolerancia?
+
+Fecha: 2026-10-10. La propuesta surgió de la comparación con MITgcm.
+
+### Experimento
+
+Barrido de 297 casos: U de 0.5 a 20 m/s, ΔT de −8 a +6 K, humedad relativa 0.6, 0.8 y 0.95, SST de 27 °C. Se compara n = 1…20 iteraciones contra 200.
+
+| n_iter | máx \|ΔQ_L\| (W/m²) | p95 \|ΔQ_S + ΔQ_L\| | casos con \|ΔQ\| > 1 W/m² |
+|---|---|---|---|
+| 1 | 65 | 20.8 | 218 |
+| **2** (LY04, MITgcm, CESM) | 47 | 4.4 | 74 |
+| 3 | 34 | 1.4 | 19 |
+| 5 | 19 | 0.6 | 11 |
+| 10 | 11 | 0.05 | 3 |
+| 20 | 0.9 | 0.0 | 1 |
+
+**18 de los 297 casos (6 %) no tienen punto fijo.** Son casos de aire más cálido que el mar pero seco (Δθ > 0, Δθ_v ≈ 0). La razón es que C_hN salta entre 18.0 y 32.7 ×10⁻³ √C_dN en ζ = 0 (LY04, ec. 6c), y la iteración alterna entre ambas ramas a **cualquier** velocidad del viento. Por ejemplo, con U = 20 m/s, ΔT = +1 K y HR = 0.8, Q_S vale 21 o 37 W/m² según la paridad de n_iter.
+
+### Conclusión: la tolerancia, tal como se propuso, no es válida
+
+1. **En el 6 % de casos sin punto fijo, una tolerancia nunca se cumple.** El resultado lo decide el número máximo de iteraciones (su paridad). Este defecto está en el propio esquema y también lo tienen CESM y MITgcm.
+2. **Con viento débil y estabilidad fuerte, el punto fijo cae en el recorte |ζ| = 10.** Converger no hace el flujo más realista. Las funciones lineales ψ = −5ζ sobreamortiguan la turbulencia, mientras que las observaciones muestran que φ_m y φ_h se nivelan para ζ ≳ 1 ([Cheng & Brutsaert 2005](https://consensus.app/papers/details/0a60909858e05356a253dd61da80e33a/?utm_source=claude_desktop); [Yagüe et al. 2006](https://consensus.app/papers/details/0f7651c4ddac552a8bacc8fde5ba25b9/?utm_source=claude_desktop)). Con viento débil los algoritmos difieren mucho entre sí y frente a las observaciones ([Zeng et al. 1998](https://consensus.app/papers/details/22ad666851c55d3782c585924e04cf5f/?utm_source=claude_desktop); [Biri et al. 2021, AirSeaFluxCode](https://consensus.app/papers/details/b74ade32aea454f9a4b83ee35aa94d0d/?utm_source=claude_desktop)), y el criterio de convergencia es una de las fuentes de esa dispersión.
+3. **Dos iteraciones fijas son parte de la definición operativa del esquema**, como se usa en CORE/OMIP, CESM `shr_flux_atmOcn` y MITgcm. Cambiarlas rompe la equivalencia que acabamos de validar. COARE también fija sus iteraciones: 3 desde la versión 3.0, frente a 20 antes ([Fairall et al. 2003](https://consensus.app/papers/details/12ac418014a954b08ef2d78ca2c6867f/?utm_source=claude_desktop)).
+
+### Decisión
+
+- `bulk_ncar` conserva `n_iter = 2`. Las limitaciones quedan documentadas en su docstring.
+- La mejora válida para la operación con viento débil o aire estable (por ejemplo aire cálido y húmedo sobre la plataforma fría en primavera, con niebla) es **`bulk_coare30`**: funciones estables de Beljaars & Holtslag que se nivelan, rachas, y sin salto en el número de Stanton. Queda como siguiente esquema bulk.

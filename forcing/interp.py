@@ -218,3 +218,57 @@ def interp_time(ds: xr.Dataset, t: np.datetime64) -> xr.Dataset:
     with xr.set_options(keep_attrs=True):
         out = (1.0 - w) * ds.isel(time=n, drop=True) + w * ds.isel(time=n + 1, drop=True)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Vertical interpolation
+# ---------------------------------------------------------------------------
+
+def to_model_levels(ds: xr.Dataset, v_grid: xr.Dataset) -> xr.Dataset:
+    """
+    Linearly interpolate z-level ocean data to the model layer centres.
+
+    For a model level at depth d = −z_t[k] between source depths
+    d_n ≤ d ≤ d_{n+1}:
+
+        ψ(d) = ψ_n + (ψ_{n+1} − ψ_n)(d − d_n)/(d_{n+1} − d_n)
+
+    Before interpolating, each column is filled downward with its deepest
+    valid value (vertical sea-over-land), so model levels below the source
+    bathymetry receive the bottom value instead of NaN; this is the usual
+    treatment of HYCOM ``z2h``/MITgcm initial-condition preprocessing.
+    Model levels shallower than the first source depth take the shallowest
+    value (constant extrapolation).  A column that is NaN at every depth
+    stays NaN.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Canonical ocean data with a ``depth`` coordinate [m, positive down],
+        already on the model horizontal grid or not.  Variables without a
+        ``depth`` dimension (e.g. ssh) are passed through.
+    v_grid : xr.Dataset
+        pyOCEAN vertical grid providing ``z_t`` [m, ≤ 0] on dimension ``k``.
+
+    Returns
+    -------
+    xr.Dataset
+        Same variables with ``depth`` replaced by ``k`` (placed first among
+        the non-time dimensions).
+    """
+    src_depth = ds["depth"].values
+    target = np.clip(-v_grid["z_t"].values, src_depth.min(), src_depth.max())
+    target_da = xr.DataArray(target, dims="k", coords={"k": v_grid["k"].values})
+
+    out = xr.Dataset(attrs=dict(ds.attrs))
+    for name, da in ds.data_vars.items():
+        if "depth" not in da.dims:
+            out[name] = da
+            continue
+        filled = da.sortby("depth").ffill("depth")
+        new = filled.interp(depth=target_da, method="linear").drop_vars("depth")
+        lead = [d for d in ("time",) if d in new.dims]
+        rest = [d for d in new.dims if d not in lead and d != "k"]
+        out[name] = new.transpose(*lead, "k", *rest)
+        out[name].attrs = dict(da.attrs)
+    return out
