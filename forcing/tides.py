@@ -381,6 +381,12 @@ def read_sal_hycom(path_b, idm: int | None = None, jdm: int | None = None,
 
     Records are Re, Im of each constituent in HYCOM order (mod_tides.F90,
     tides_forfun_sal), as produced for HYCOM-IOA by calcSAL + sal2hycom.py.
+
+    Sign: HYCOM subtracts the file, etide = α η_eq − F, so F must hold
+    −η_SAL.  The real PAC_MEX file does: F ≈ −0.10 η (M2, S2, N2, K2) and
+    ≈ −0.14 η (diurnals) against TPXO10 over deep water, correlation 0.95–0.99
+    (validation/tides/check_sal_real.py).  ``body_tide(sal=F)`` uses the same
+    convention.
     """
     from forcing.sources.hycom_ab import read_record
 

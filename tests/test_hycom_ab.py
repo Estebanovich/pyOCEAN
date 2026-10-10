@@ -190,6 +190,15 @@ class TestOtherDialects:
         assert [r.name for r in read_b(b).records] == ["chl"] * 3
         np.testing.assert_allclose(read_field(b, "chl", index=2), 0.15, rtol=1e-6)
 
+    def test_sal_dialect_without_header(self, tmp_path):
+        # tidal.salReIm_tpxo10.b (HYCOM-IOA, LUSTRE): no title, no i/jdm, "min, max" with a space
+        recs = [np.full((JDM, IDM), -6.4304397e-02), np.full((JDM, IDM), 5.7942215e-02)]
+        b = self._write(tmp_path, "tidal.salReIm", [
+            f"SAL-m2R : min, max =  {recs[0].min():15.7E}  {recs[0].max():15.7E}",
+            f"SAL-m2I : min, max =  {recs[1].min():15.7E}  {recs[1].max():15.7E}"], recs)
+        assert [r.name for r in read_b(b).records] == ["SAL-m2R", "SAL-m2I"]
+        np.testing.assert_allclose(read_field(b, "SAL-m2I", idm=IDM, jdm=JDM), 5.7942215e-02, rtol=1e-6)
+
     def test_name_with_space(self, tmp_path):
         recs = [np.full((JDM, IDM), 8e-6)]
         b = self._write(tmp_path, "rivers", ["Monthly river inflow", "", "", "",

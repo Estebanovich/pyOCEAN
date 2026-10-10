@@ -53,6 +53,84 @@ Para cada registro costero se comparan las 8 constantes de HYCOM contra TPXO10-a
 
 ## Advertencias
 
-- TICON-3 resume registros **históricos**. Una estación sin bandera aquí puede estar fallando hoy. Para el estado actual (sensores sin mantenimiento, picos, valores planos, saltos de datum) hay que aplicar control de calidad a los datos crudos recientes de IOC o del SMN.
+- TICON-3 resume registros **históricos**. Una estación sin bandera aquí puede estar fallando hoy. El estado actual se evalúa abajo, con los datos crudos recientes de IOC/SMN.
 - Un retraso de 1 h puede ser horario de verano o físico. Sin registros hermanos no se puede distinguir.
 - El RSS contra TPXO en sitios abrigados mide sobre todo la resolución del atlas, no el mareógrafo.
+
+---
+
+# Estado actual de la red: QC de datos crudos IOC / SMN-UNAM
+
+Fecha: 2026-10-10. Periodo: 2026-07-12 → 2026-10-10 (90 días).
+Scripts: `fetch_ioc.py` (descarga, en caché en `~/pyOCEAN_refs/sealevel/ioc/`) y `qc_ioc_mexico.py`.
+Módulo: `diagnostics/sealevel_qc.py` (37 tests). Salidas: `out/ioc_qc_series.csv`, `out/ioc_qc_twins.csv`, `out/ioc_qc_clock.csv` y figuras `out/ioc_qc_*.png`.
+
+La IOC SLSMF retransmite casi en tiempo real la red del SMN, **sin ningún control de calidad**. La API entrega como máximo ~31 días por petición. Casi todas las estaciones del SMN tienen dos sensores (radar `rad` y flotador `flt`; Manzanillo, además, burbujeador `bub`). Se excluye el canal `bat`, que es el voltaje de la batería.
+
+## Método
+
+| Revisión | Cómo | Qué no debe confundir |
+|---|---|---|
+| Reporte | Último dato, cobertura, duplicados, marcas de tiempo desordenadas o en conflicto, huecos | — |
+| Errores gruesos | \|h − marea TPXO − mediana\| > 2.5 m | Marejada de tormenta |
+| Picos | Desviación respecto a una mediana móvil de 15 muestras > max(6σ_local, 5 cm), en rachas de ≤ 3 muestras | Tsunami o seiche: son coherentes y elevan la σ local |
+| Sensor pegado | Valores idénticos mientras la marea esperada cambia > max(3 × resolución, 2 cm) | Estoa cuantizada a 1 cm |
+| Saltos de datum | En el residuo del análisis armónico propio: el mismo cambio a escala de 10 min, 1 h y un día de marea (24.84 h), > 5σ del ruido corto, y nivel estable a ambos lados (> 3σ_local) | Marejada (cambia en horas), seiches de plataforma con frentes abruptos (Progreso) |
+| Reloj dentro del periodo | τ y κ por ventanas de 3 días contra la predicción con las **constantes propias** del periodo (κ > 0, \|τ\| ≤ 7.5 h); el salto o la deriva se deciden con significancia (`clock_changes`, z > 5) | El ciclo vivas–muertas: contra una referencia de otra época, τ oscila ±45 min con el batimiento K1–O1 |
+| Contra su historia | Constantes de los 90 días (P1 y K2 inferidas de K1 y S2 con las razones de TPXO) contra el registro TICON-3 del mismo sitio, excluyendo los registros con defecto confirmado | Retraso físico de laguna (está en ambas épocas) |
+| Sensores gemelos | h₂ ≈ a + κ h₁(t − τ) con incrementos de 1 h de series suavizadas 1 h; diferencia alineada → escalones y deriva | La marea, la marejada y las seiches se cancelan |
+
+**Lecciones del primer pase (corregidas, cada una con un test):**
+- En macOS, BLAS usaba 9 hilos. Ahora el script fija 1 hilo.
+- La ventana larga de 6 h convertía la marea residual en "escalones". Ahora es un día de marea.
+- La referencia TICON de otra época generaba "saltos de reloj" falsos. Ahora la referencia es el análisis armónico propio.
+- En Zihuatanejo, κ = 0.73 entre gemelos era **dilución por regresión**: el radar ve seiches y el pozo del flotador no. Ahora se suaviza 1 h antes del ajuste.
+- La malla de tiempo no estaba anclada a múltiplos del paso, así que los gemelos que empezaban a otra hora no compartían instantes.
+
+**Fiabilidad de los saltos de datum con un solo sensor.** Las 8 candidatas que se pudieron contrastar con un gemelo independiente fueron **rechazadas** por él. En costas energéticas, un salto de 5–10 cm con un solo sensor es solo un candidato. La confirmación necesita un gemelo independiente o una nivelación.
+
+## Resultados
+
+**Red:** 58 códigos IOC en México.
+- **17 sin datos en el periodo:** Acapulco (`acap` 2017, `acap2` abril 2025), Cabo San Lucas 2017, Manzanillo_MX 2017, Mazatlán (ambos, agosto 2022), Ensenada, Isla Cedros, Loreto, La Paz (`lpaz`), Alvarado2 (julio 2025), Sánchez Magallanes2 (noviembre 2025), Huatulco (mayo 2026), Isla Mujeres (mayo 2026), Salina Cruz2 (abril 2026), Puerto Morelos2 (mayo 2024), Cd. del Carmen2.
+- **Intermitentes:** Acapulco Club de Yates, Lerma (Campeche), Sisal, Frontera y Telchac reportan solo el 2–10 % del tiempo, en ~50 ráfagas. Telchac está **mudo desde el 5 de octubre**, Isla Clarión **desde el 21 de septiembre** y Tuxpan2 solo desde el 24 de septiembre.
+- **34 series activas en 28 estaciones.** Contra su historia TICON, la mediana es RSS = 2.3 cm.
+
+**Fallas de sensor:**
+
+| Estación | Hallazgo | Evidencia |
+|---|---|---|
+| **Veracruz2 (`vera2`, flotador)** | **No sigue el mar**: plano en ~0.07 m durante los 90 días mientras la marea oscila ±0.4 m. Probablemente el flotador está atorado | M2 = 0.0 cm; κ = −0.01 contra TPXO y contra su gemelo `vera/rad` |
+| **Isla Clarión (`iclr`, radar)** | **Escala ×0.1 y signo invertido**: la marea registrada es exactamente −0.10 × TPXO (τ = −2 min, ajuste limpio). TPXO es coherente en ese punto: mar abierto, 3000 m, M2 ≈ 40 cm alrededor de la isla. Después se calló el 21 de septiembre | Error de configuración del sensor, no del océano |
+| **La Paz2 (flotador vs radar)** | **Deriva relativa** de ~9 cm desde el **9 de agosto**, en escalera (+3.7 cm/mes); antes estaban estables con −4.5 cm. Uno de los dos sensores deriva y hace falta nivelar en sitio | `out/ioc_qc_twin_lpaz2_flt_lpaz2_rad.png` |
+| **Celestún (`clst`, flotador)** | Caídas repetidas a −4 m (encoder/flotador); marea **amortiguada al 64 %** y 15 min de retraso respecto a su registro de 2010–11; ganancia por ventana inestable (0.4–1.6) | Sospecha de pozo tapado o falla mecánica |
+| **Sánchez Magallanes (`smag`, flotador)** | Marea **amortiguada al 74 %** respecto a 2016–18 (rango ~25 cm frente a ~60 cm de TPXO). Puede ser azolve de la boca o pozo tapado | Verificar en sitio |
+| **Puerto Chiapas (`chia/flt`)** | Solo 10 % de cobertura, datum 7.6 m distinto, 20 cm rms contra el radar: sensor fuera de servicio. El radar `chia/rad` y `made/flt` están bien (2 cm rms) | — |
+| **Lázaro Cárdenas2 radar** | 13.7 picos/día y 10 errores gruesos; los flotadores no tienen ese problema | Radar ruidoso (oleaje, aves o montaje) |
+| **Puerto Morelos (`pumo`)** | 30 errores gruesos, 51 % de cobertura | — |
+
+**Metadatos y retransmisión:**
+- **El mismo sensor aparece con dos códigos:**
+
+  | Par | Desfase |
+  |---|---|
+  | `laza/flt` ≡ `laza2/flt` | −1 min |
+  | `zihu/rad` ≡ `zihu2/flt` | −1 min |
+  | `ptan` ≡ `ptan2` | +1 min |
+  | `puert/rad` ≡ `puer2/rad` | +1 min |
+  | `prog` ≡ `prog2` | 0 |
+  | `sian` ≡ `sian2` | 0 |
+  | `tuxp/flt` ≡ `tuxp2/rad` | 0 |
+
+  En dos pares, además, **la etiqueta del tipo de sensor está mal**: `zihu/rad` es en realidad el flotador de `zihu2`, y `tuxp2/rad` es el flotador de `tuxp`. El desfase de 1 min entre retransmisiones del mismo sensor sugiere convenciones distintas de marca de tiempo (inicio o fin del promedio). No afecta a la marea, pero sí a la llegada de un tsunami.
+- **Marcas de tiempo duplicadas en conflicto:** Lázaro Cárdenas (865), Puerto Vallarta (692), Puerto Madero (188) y Cd. del Carmen (106).
+
+**Sin anomalías relevantes:** Salina Cruz, Puerto Ángel, Puerto Vallarta2 (flotador vs radar: κ = 1.00, 1.5 cm rms), Zihuatanejo2 (flotador vs radar: κ = 0.99), Isla Mujeres2 (flotador vs radar: 0.4 cm rms), Veracruz (radar), Sian Ka'an2 y Manzanillo (burbujeador vs radar: κ = 0.95 con 3 min de retraso del burbujeador, solo 15 días de traslape). Huatulco2 tiene 6.8 h con el sensor pegado y el radar de Manzanillo 4.6 picos/día: son menores.
+
+**Reloj:** ninguna estación activa muestra un cambio de huso horario, un salto de reloj ni una deriva significativos en el periodo. El defecto de huso horario de Progreso (1980–84) es solo histórico.
+
+## Limitaciones
+
+- 90 días no separan K1 de P1 ni S2 de K2: se infieren con las razones de TPXO. En marea diurna de baja amplitud (Golfo), la ganancia contra la historia tiene una incertidumbre de ~±15 %. Progreso y Progreso2, que son el mismo sensor, dan κ = 0.85 y 0.97 según su cobertura. Por eso solo se reporta κ < 0.8 o κ > 1.25.
+- Los registros TICON de referencia son de otra época y a veces de otro punto del puerto (hasta 5 km).
+- Los datos del SMN por solicitud (procesados) permitirían confirmar las fallas; aquí solo se usa la retransmisión cruda de IOC.

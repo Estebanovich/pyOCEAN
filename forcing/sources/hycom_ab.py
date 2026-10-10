@@ -51,7 +51,7 @@ _HEADER = re.compile(r"^\s*([-+0-9.eE]+)\s+'(\w+)\s*'\s*=")
 _ARCHIVE = re.compile(
     r"^\s*(\S+?)\s*=\s*(\d+)\s+([-+0-9.eE]+)\s+(\d+)\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)\s+([-+0-9.eE]+)\s*$")
 # "name: labels = v1 … min max"  (labels e.g. "min,max", "range", "day,span,range", "month,range")
-_LABELLED = re.compile(r"^\s*([A-Za-z][\w.\- ]*?):\s*([a-z,]+)\s*=\s*((?:[-+0-9.eE]+\s*)+)$")
+_LABELLED = re.compile(r"^\s*([A-Za-z][\w.\- ]*?)\s*:\s*([a-z, ]+?)\s*=\s*((?:[-+0-9.eE]+\s*)+)$")
 # "min,max name = min max"  (regional.depth)
 _MINMAX_NAMED = re.compile(r"^\s*min,max\s+(\w+)\s*=\s*([-+0-9.eE]+)\s+([-+0-9.eE]+)")
 _IJDM = re.compile(r"i/jdm\s*=\s*(\d+)\s+(\d+)")
@@ -115,7 +115,7 @@ def _parse_b_line(line: str, out: BFile) -> None:
                                    density=float(m[5]), min=float(m[6]), max=float(m[7])))
     elif m := _LABELLED.match(line):
         values = [float(v) for v in m[3].split()]
-        labels = m[2].split(",")
+        labels = [x.strip() for x in m[2].split(",")]
         day = values[labels.index("day")] if "day" in labels else None
         k = int(values[labels.index("layer")]) if "layer" in labels else None
         dens = values[labels.index("dens")] if "dens" in labels else None

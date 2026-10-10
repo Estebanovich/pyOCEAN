@@ -1,0 +1,21 @@
+site,a,b,overlap_days,lag_min,gain,offset_cm,rms_diff_cm,drift_cm_per_month,steps,relation
+Puerto Chiapas/Madero,chia/flt,chia/rad,8.342,-1.137,1.001,-757.4,20.93,-3.169,,independent
+Puerto Chiapas/Madero,chia/flt,made/flt,7.999,-0.7855,1.003,-757.5,13.7,-3.121,,independent
+Puerto Chiapas/Madero,chia/rad,made/flt,66.1,0.5737,0.9989,0,2.06,0.001319,,independent
+Isla Mujeres2,imuj2/flt,imuj2/rad,80.24,0.1726,0.9822,0.1,0.3689,-0.05179,,independent
+Lázaro Cárdenas,laza/flt,laza2/flt,63.98,-1.001,0.9999,0,0.1325,-0.0002802,,same sensor relayed twice
+Lázaro Cárdenas,laza/flt,laza2/rad,63.43,-0.2842,0.9769,-1.4,1.619,-0.331,,independent
+Lázaro Cárdenas2,laza2/flt,laza2/rad,81.46,0.8613,0.9748,-1.4,1.635,-0.3436,,independent
+La Paz2,lpaz2/flt,lpaz2/rad,81.44,0.1789,0.9872,-13,3.366,3.65,,independent
+Manzanillo,mnza/bub,mnza/rad,15.23,2.956,0.9454,-497.9,1.965,-0.32,,independent
+"Progreso, Yuc",prog/rad,prog2/rad,65.35,0.0003135,1,0,0.01304,-5.109e-05,,same sensor relayed twice
+Puerto Angel,ptan/rad,ptan2/rad,64.77,0.9686,0.9982,0,0.8618,-0.0104,,same sensor relayed twice
+Puerto Vallarta2,puer2/flt,puer2/rad,86.12,-0.187,1.004,-0.3,1.52,0.0522,,independent
+Puerto Vallarta2,puer2/flt,puert/rad,66.81,0.6806,1.001,-0.2,1.499,0.0261,,independent
+Puerto Vallarta2,puer2/rad,puert/rad,66.81,0.9459,0.9986,0,0.3923,-0.01061,,same sensor relayed twice
+Sian Ka'an,sian/rad,sian2/rad,50.13,0.0008703,0.9945,0,0.04718,-0.03049,,same sensor relayed twice
+Tuxpan,tuxp/flt,tuxp2/rad,10.47,0.002875,0.9961,0,0.1164,-0.2053,,same sensor relayed twice
+"Veracruz, Ver.",vera/rad,vera2/flt,6.347,-30,0.02211,158.9,0.7438,0.6005,,independent
+"Zihuatanejo, Gro",zihu/rad,zihu2/flt,68.58,-0.9987,0.9999,0,0.6208,-0.0006204,,same sensor relayed twice
+"Zihuatanejo, Gro",zihu/rad,zihu2/rad,68.59,-0.9158,0.9848,2.1,3.689,0.1627,,independent
+Zihuatanejo2,zihu2/flt,zihu2/rad,85.86,0.1003,0.9855,2.1,3.666,0.1721,,independent
