@@ -157,8 +157,10 @@ Last updated: 2026-10-10.  All tests run with `pytest tests/`.
 | Canonical forcing contract | `forcing/canonical.py` | `tests/test_forcing_canonical.py` | ✅ 18/18 |
 | Forcing interpolation (grid/time/land-fill) | `forcing/interp.py` | `tests/test_forcing_interp.py` | ✅ 24/24 |
 | Forcing adapter base + registry | `forcing/sources/base.py` | `tests/test_forcing_sources_base.py` | ✅ 13/13 |
+| Bulk fluxes NCAR/CORE (LY04/LY09) + radiation | `forcing/bulk.py` | `tests/test_bulk.py` | ✅ 48/48 |
+| ERA5 adapter (CDS new + legacy layouts) | `forcing/sources/era5.py` | `tests/test_era5.py` | ✅ 17/17 |
 
-**Phase 2 in progress — 473 total tests passing.**
+**Phase 2 in progress — 538 total tests passing.**
 
 ### Phase 2 build order
 
@@ -166,8 +168,8 @@ Design docs: `docs/design/forcing_architecture.md` (multi-source forcing) and `d
 
 1. ~~`core/grid/bathymetry.py`~~ ✅ — load_gebco, regrid_to_model, smooth_bathymetry (Hann 9-pt + Shapiro 5-pt, n_skip), fill_isolated_cells, apply_min_depth, build_bathymetry
 2. ~~Forcing infrastructure~~ ✅ — `forcing/canonical.py`, `forcing/interp.py`, `forcing/sources/base.py`
-3. `forcing/bulk.py` (`bulk_ncar`, MITgcm-equivalent) + `forcing/sources/era5.py`  ← **next**
-4. `bulk_kara` (HYCOM flxflg=6, relative wind) + WRF adapter (curvilinear regrid)
+3. ~~`forcing/bulk.py` (`bulk_ncar`) + `forcing/sources/era5.py`~~ ✅ — pending: point comparison against MITgcm `exf` output
+4. `bulk_kara` (HYCOM flxflg=6, relative wind) + WRF adapter (curvilinear regrid)  ← **next**
 5. ESPC/GOFS adapter (incl. native HYCOM `.a/.b` reader) for IC + OBCs
 6. Implicit free surface — activate Helmholtz CG solver in `pressure.py`
 7. Tides: `forcing/tides.py` + TPXO/FES adapters + Flather OBC
@@ -183,6 +185,7 @@ Design docs: `docs/design/forcing_architecture.md` (multi-source forcing) and `d
 ### Known issues / gotchas
 
 - `scipy.sparse.linalg.cg` ≥ 1.12 uses `rtol=` instead of `tol=` — already handled in `pressure.py`.
+- netCDF4 in the base conda env emits "numpy.ndarray size changed" RuntimeWarning (binary mismatch); harmless, filter it when running with `-W error`.
 - `physics/eos/` is a package directory (scaffold); EOS code lives in `physics/eos/__init__.py`, not a separate `physics/eos.py`.
 
 ---
