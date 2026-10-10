@@ -6,14 +6,19 @@ the TPXO atlas files (Egbert & Erofeeva 2002), e.g. TPXO10-atlas-v2 at 1/30°
 as used for the HYCOM-IOA tidal ports (~/HYCOM/GUIA_mareas_PAC_MEX.md):
 
     h_<c>_tpxo10_atlas_30_v2.nc   hRe, hIm         elevation          (usually mm)
-    u_<c>_tpxo10_atlas_30_v2.nc   URe, UIm, VRe, VIm   transport       (usually cm² s⁻¹)
+    u_<c>_tpxo10_atlas_30_v2.nc   uRe, uIm, vRe, vIm   transport       (usually cm² s⁻¹)
     grid_tpxo10atlas_v2.nc        lon_z, lat_z, lon_u, lat_u, lon_v, lat_v, hz
 
 Arrays are stored (nx, ny) = (lon, lat), longitudes 0–360 °E, on an Arakawa C
-grid: U at (lon_u, lat_z), V at (lon_z, lat_v).  Units are read from each
-variable's ``units`` attribute and converted to SI.  The complex constant is
+grid: U at (lon_u, lat_z), V at (lon_z, lat_v).  Variable names are matched
+case-insensitively (TPXO10-atlas-v2 uses uRe…vIm, older atlases URe…VIm).
+Units are read from each variable's ``units`` attribute and converted to SI.
+Only the requested region is read from disk (the global 1/30° arrays are
+10800 × 5401).  The complex constant is
 h = Re + i·Im, the convention of OTPS and of ``forcing.tides.predict``
-(phase G = atan2(−Im, Re)).
+(phase G = atan2(−Im, Re)).  Land nodes, stored as exactly 0 in TPXO
+(``option_0 = "land"``), are returned as NaN so that interpolation does not
+dilute coastal amplitudes.
 
 The TPXO licence is academic: the files are read in place and never copied.
 
@@ -56,20 +61,19 @@ def _constituent(path: Path) -> str:
     return m.group(1)
 
 
-def _axis(ds: xr.Dataset, grid: xr.Dataset | None, name: str) -> np.ndarray:
-    src = ds if name in ds else grid
-    if src is None or name not in src:
-        raise ValueError(f"coordinate {name} not found (pass the TPXO grid file)")
-    return np.asarray(src[name].values, dtype=float)
+def _var(ds: xr.Dataset, name: str) -> xr.DataArray:
+    """Variable by case-insensitive name."""
+    for v in ds.variables:
+        if v.lower() == name.lower():
+            return ds[v]
+    raise KeyError(f"variable {name!r} not found; have {list(ds.variables)}")
 
 
-def _to_lat_lon(x: np.ndarray, nlon: int, nlat: int) -> np.ndarray:
-    """TPXO stores (nx, ny); return (ny, nx)."""
-    if x.shape == (nlon, nlat):
-        return x.T
-    if x.shape == (nlat, nlon):
-        return x
-    raise ValueError(f"array shape {x.shape} does not match (lon, lat) = ({nlon}, {nlat})")
+def _read_region(da: xr.DataArray, lon_dim: str, lat_dim: str,
+                 ii: np.ndarray, jj: np.ndarray) -> np.ndarray:
+    """Read only the (lat, lon) block ``jj × ii`` of a TPXO array, as float (lat, lon)."""
+    block = da.isel({lon_dim: ii, lat_dim: jj}).transpose(lat_dim, lon_dim)
+    return np.nan_to_num(block.values.astype(float))
 
 
 def _subset(lon: np.ndarray, lat: np.ndarray, lon_range, lat_range) -> tuple[np.ndarray, np.ndarray]:
@@ -110,7 +114,7 @@ def read_tpxo(
     Returns
     -------
     xr.Dataset
-        ``h`` (constituent, lat, lon) complex [m]; with ``u_files`` also
+        ``h`` (constituent, lat, lon) complex [m], NaN on land; with ``u_files`` also
         ``U`` (constituent, lat, lon_u) and ``V`` (constituent, lat_v, lon)
         complex transports [m² s⁻¹].  Longitudes in −180–180 °E.
     """
@@ -119,25 +123,35 @@ def read_tpxo(
         h_list, U_list, V_list, names = [], [], [], []
         for k, hp in enumerate(map(Path, h_files)):
             with xr.open_dataset(hp, mask_and_scale=True) as ds:
-                lon, lat = _axis(ds, grid, "lon_z"), _axis(ds, grid, "lat_z")
+                src = ds if "lon_z" in {v.lower() for v in ds.variables} else grid
+                if src is None:
+                    raise ValueError(f"{hp.name} has no lon_z/lat_z: pass the TPXO grid file")
+                lon_v, lat_v_ = _var(src, "lon_z"), _var(src, "lat_z")
+                lon, lat = lon_v.values.astype(float), lat_v_.values.astype(float)
                 ii, jj = _subset(lon, lat, lon_range, lat_range)
-                f_re = _si_factor(ds["hRe"].attrs.get("units", ""), "length")
-                f_im = _si_factor(ds["hIm"].attrs.get("units", ""), "length")
-                h = (_to_lat_lon(np.nan_to_num(ds["hRe"].values.astype(float)), lon.size, lat.size) * f_re
-                     + 1j * _to_lat_lon(np.nan_to_num(ds["hIm"].values.astype(float)), lon.size, lat.size) * f_im)
-                h_list.append(h[np.ix_(jj, ii)])
+                re_, im_ = _var(ds, "hRe"), _var(ds, "hIm")
+                dims = (lon_v.dims[0], lat_v_.dims[0])
+                h = (_read_region(re_, *dims, ii, jj) * _si_factor(re_.attrs.get("units", ""), "length")
+                     + 1j * _read_region(im_, *dims, ii, jj) * _si_factor(im_.attrs.get("units", ""), "length"))
+                h_list.append(np.where(h == 0, np.nan + 0j, h))     # TPXO land: exactly 0
                 lon_z, lat_z = lon[ii], lat[jj]
             names.append(_constituent(hp))
             if u_files is not None:
                 with xr.open_dataset(Path(u_files[k])) as du:
-                    lu, lv = _axis(du, grid, "lon_u"), _axis(du, grid, "lat_v")
-                    fu = _si_factor(du["URe"].attrs.get("units", ""), "transport")
-                    fv = _si_factor(du["VRe"].attrs.get("units", ""), "transport")
-                    U = _to_lat_lon(du["URe"].values + 1j * du["UIm"].values, lu.size, lat.size) * fu
-                    V = _to_lat_lon(du["VRe"].values + 1j * du["VIm"].values, lon.size, lv.size) * fv
-                    U_list.append(np.nan_to_num(U)[np.ix_(jj, ii)])
-                    V_list.append(np.nan_to_num(V)[np.ix_(jj, ii)])
-                    lon_u, lat_v = lu[ii], lv[jj]
+                    srcu = du if "lon_u" in {v.lower() for v in du.variables} else grid
+                    lu, lvat = _var(srcu, "lon_u"), _var(srcu, "lat_v")
+                    dims = (lu.dims[0], lvat.dims[0])
+                    parts = {}
+                    for name in ("uRe", "uIm", "vRe", "vIm"):
+                        var = _var(du, name)
+                        parts[name] = (_read_region(var, *dims, ii, jj)
+                                       * _si_factor(var.attrs.get("units", ""), "transport"))
+                    U = parts["uRe"] + 1j * parts["uIm"]
+                    V = parts["vRe"] + 1j * parts["vIm"]
+                    U_list.append(np.where(U == 0, np.nan + 0j, U))
+                    V_list.append(np.where(V == 0, np.nan + 0j, V))
+                    lon_u = lu.values.astype(float)[ii]
+                    lat_v = lvat.values.astype(float)[jj]
     finally:
         if grid is not None:
             grid.close()

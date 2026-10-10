@@ -4,7 +4,8 @@ Tests for forcing.sources.tpxo (TPXO atlas reader) and forcing.tides.boundary_ti
 Synthetic files follow the TPXO10-atlas-v2 NetCDF layout as read by the
 HYCOM-IOA tooling (~/HYCOM/sal_tpxo10/tpxo2amph.py):
   h_<c>_tpxo10_atlas_30_v2.nc : hRe, hIm [mm], dims (nx, ny) = (lon, lat)
-  u_<c>_tpxo10_atlas_30_v2.nc : URe, UIm, VRe, VIm transports [cm² s⁻¹]
+  u_<c>_tpxo10_atlas_30_v2.nc : uRe, uIm, vRe, vIm transports [cm² s⁻¹]
+                                (names checked on the real TPXO10-atlas-v2 files)
   grid_tpxo10atlas_v2.nc      : lon_z, lat_z, lon_u, lat_u, lon_v, lat_v, hz
 with longitudes 0–360 °E on an Arakawa C grid (u half a cell west, v half a
 cell south of the z nodes).
@@ -57,10 +58,10 @@ def _write_tpxo(tmp: Path, constituents=("m2", "k1")) -> tuple[list[Path], list[
         hp.append(tmp / f"h_{c}_tpxo10_atlas_30_v2.nc")
         h.to_netcdf(hp[-1])
         u = xr.Dataset({
-            "URe": (("nx", "ny"), 1e4 * _lin(LU, TU, 1.0, 0.5, 30.0 * s), {"units": "centimeter^2/sec"}),
-            "UIm": (("nx", "ny"), 1e4 * _lin(LU, TU, 0.2, -0.3, 5.0), {"units": "centimeter^2/sec"}),
-            "VRe": (("nx", "ny"), 1e4 * _lin(LV, TV, -0.4, 0.1, 10.0), {"units": "centimeter^2/sec"}),
-            "VIm": (("nx", "ny"), 1e4 * _lin(LV, TV, 0.3, 0.2, -8.0 * s), {"units": "centimeter^2/sec"}),
+            "uRe": (("nx", "ny"), 1e4 * _lin(LU, TU, 1.0, 0.5, 30.0 * s), {"units": "centimeter^2/sec"}),
+            "uIm": (("nx", "ny"), 1e4 * _lin(LU, TU, 0.2, -0.3, 5.0), {"units": "centimeter^2/sec"}),
+            "vRe": (("nx", "ny"), 1e4 * _lin(LV, TV, -0.4, 0.1, 10.0), {"units": "centimeter^2/sec"}),
+            "vIm": (("nx", "ny"), 1e4 * _lin(LV, TV, 0.3, 0.2, -8.0 * s), {"units": "centimeter^2/sec"}),
         })
         up.append(tmp / f"u_{c}_tpxo10_atlas_30_v2.nc")
         u.to_netcdf(up[-1])
@@ -157,3 +158,43 @@ class TestBoundaryTides:
         np.testing.assert_allclose(half["eta_u"], 0.5 * full["eta_u"])
         only_m2 = boundary_tides(tc, hg, vg, hf, fu, fv, t, constituents=["m2"])
         assert not np.allclose(only_m2["eta_u"], full["eta_u"])
+
+    def test_legacy_uppercase_transport_names(self, tmp_path):
+        # Older OTIS atlases use URe/UIm/VRe/VIm
+        hp, up, g = _write_tpxo(tmp_path, constituents=("m2",))
+        ds = xr.load_dataset(up[0]).rename({"uRe": "URe", "uIm": "UIm", "vRe": "VRe", "vIm": "VIm"})
+        ds.to_netcdf(tmp_path / "u_m2_legacy.nc")
+        a = read_tpxo(hp, up, g, lon_range=(-105, -95), lat_range=(14, 20))
+        b = read_tpxo(hp, [tmp_path / "u_m2_legacy.nc"], g, lon_range=(-105, -95), lat_range=(14, 20))
+        np.testing.assert_array_equal(a.U.values, b.U.values)
+
+
+class TestCoastalInterpolation:
+    """TPXO marks land with exactly 0 (``option_0 = "land"``): it must not dilute coastal values."""
+
+    def test_land_nodes_excluded_from_bilinear_weights(self, tmp_path):
+        from forcing.tides import _interp_complex
+        hp, up, g = _write_tpxo(tmp_path, constituents=("m2",))
+        ds = xr.load_dataset(hp[0])
+        i_land = int(np.argmin(np.abs(LON_Z - 259.0)))           # land column at 259 °E
+        ds["hRe"][i_land, :] = 0
+        ds["hIm"][i_land, :] = 0
+        ds.to_netcdf(tmp_path / "h_m2_coast.nc")
+        tc = read_tpxo([tmp_path / "h_m2_coast.nc"], None, g, lon_range=(-105, -95), lat_range=(14, 20))
+        assert np.isnan(tc.h.sel(lon=-101.0, lat=17.0, method="nearest").item())
+        # midway between the land node (259 °E) and the ocean node east of it, on a node row:
+        lon_mid = LON_Z[i_land] + D / 2 - 360.0
+        lat_row = 17.0
+        got = _interp_complex(tc.h, "lat", "lon", np.array([lat_row]), np.array([lon_mid]))[0, 0]
+        ocean = tc.h.sel(lon=LON_Z[i_land + 1] - 360.0, lat=lat_row, method="nearest").item()
+        assert got == pytest.approx(ocean, rel=1e-12)
+
+    def test_point_surrounded_by_land_is_nan(self, tmp_path):
+        from forcing.tides import _interp_complex
+        hp, up, g = _write_tpxo(tmp_path, constituents=("m2",))
+        ds = xr.load_dataset(hp[0])
+        ds["hRe"][:] = 0
+        ds["hIm"][:] = 0
+        ds.to_netcdf(tmp_path / "h_m2_land.nc")
+        tc = read_tpxo([tmp_path / "h_m2_land.nc"], None, g, lon_range=(-105, -95), lat_range=(14, 20))
+        assert np.isnan(_interp_complex(tc.h, "lat", "lon", np.array([17.1]), np.array([-100.1]))[0, 0])

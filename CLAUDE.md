@@ -171,7 +171,7 @@ Last updated: 2026-10-10.  All tests run with `pytest tests/`.
 | Flather radiation OBC (implicit, SPD) + `open_boundary_hfac` | `core/dynamics/free_surface.py` | `tests/test_free_surface.py` | ✅ +8 |
 | TPXO atlas reader + `boundary_tides` (transport / model depth) | `forcing/sources/tpxo.py`, `forcing/tides.py` | `tests/test_tpxo.py` | ✅ 8/8 |
 
-**Phase 2 in progress — 687 total tests passing.**
+**Phase 2 in progress — 690 total tests passing.**
 
 ### Phase 2 build order
 
@@ -184,7 +184,7 @@ Design docs: `docs/design/forcing_architecture.md` (multi-source forcing), `docs
 5. ~~ESPC/GOFS z-level adapter + `.a/.b` reader~~ ✅ — ESPC `water_temp` is in-situ (CF metadata) → converted to θ with TEOS-10 by default. 5b ✅ native archive → z (piecewise-constant layer sampling, archv baroclinic + u_btrop) and `initial_state`/`boundary_data`. Archive reader validated only on synthetic files (no archv on disk locally).
 6. ~~Implicit free surface~~ ✅ — new `ImplicitFreeSurface` (MITgcm θ-method; θ=1 default, θ=½ neutral); matches the exact discrete seiche mode to 1e-9 and Merian's period; 0.14 s/step on 560×352. The old `surface_pressure_cg` (Dirichlet η=0 on walls) is deprecated.
 6b. ~~Barotropic BayIW seiche vs MITgcm~~ ✅ — `validation/bayiw_seiche/` (`run_pyocean.py bay|nobay`, `compare.py`). Δη at station Seiche, 0–27 h: period 3.83 h (MITgcm 3.81–3.83), range 16.0 mm (15.7–16.2), corr 0.990–0.998, RMSE 0.18–0.48 mm. pyOCEAN decays slower (e-fold 17.5 h vs 11.4–14.5 h): expected, no baroclinic conversion / viscosity / Orlanski. Uses MITgcm's effective 599.9 m ocean (Σ delR, intentional).
-7. ~~Tides + Flather OBC~~ ✅ — `forcing/tides.py` (8 HYCOM constituents, OTPS f/u/phase; reference `tests/data/tide_otps_reference.npz` from `validation/tides/make_reference.py`), Flather in `ImplicitFreeSurface` (outgoing wave < 0.1 % energy left; tidal bay = analytic standing wave within 2 %), TPXO10-atlas reader (synthetic files only — real atlas is on LUSTRE). Pending 7b: tidal potential + SAL (HYCOM tidflg=3/tidein=2), tide-gauge comparison with real TPXO.
+7. ~~Tides + Flather OBC~~ ✅ — `forcing/tides.py` (8 HYCOM constituents, OTPS f/u/phase; reference `tests/data/tide_otps_reference.npz` from `validation/tides/make_reference.py`), Flather in `ImplicitFreeSurface` (outgoing wave < 0.1 % energy left; tidal bay = analytic standing wave within 2 %), TPXO10-atlas reader validated on the REAL atlas (`~/pyOCEAN_refs/TPXO10_atlas_v2_nc`): matches pyTMD to 9e-8 m / 7e-5° incl. coastal points (`validation/tides/check_tpxo_real.py`); real files use lowercase uRe…vIm and land = 0 (masked, land-aware bilinear). Pending 7b: tidal potential + SAL (HYCOM tidflg=3/tidein=2), tide-gauge comparison with real TPXO.
 8. Validation notebook — Gulf of Mexico / PAC_MEX subdomain run  ← **next**
 
 ### Key design decisions made

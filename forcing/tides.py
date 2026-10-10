@@ -178,7 +178,14 @@ def predict(t: np.ndarray, hc: np.ndarray, constituents: list[str]) -> np.ndarra
 
 def _interp_complex(field: "xr.DataArray", lat_name: str, lon_name: str,
                     lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
-    """Bilinear interpolation of a complex (constituent, lat, lon) field to points → (npts, nc)."""
+    """
+    Land-aware bilinear interpolation of a complex (constituent, lat, lon) field.
+
+    NaN (land) nodes are excluded and the weights of the remaining ocean
+    nodes renormalised, ψ = Σ w_k ψ_k / Σ w_k over ocean nodes, so coastal
+    values are not pulled towards zero (as in OTPS/pyTMD).  Points with no
+    ocean node in their cell are NaN.  Returns (npts, nc).
+    """
     from scipy.interpolate import RegularGridInterpolator
 
     la = field[lat_name].values
@@ -186,11 +193,16 @@ def _interp_complex(field: "xr.DataArray", lat_name: str, lon_name: str,
     order_lo, order_la = np.argsort(lo), np.argsort(la)
     data = field.values[:, order_la][:, :, order_lo]
     pts = np.column_stack([lat, lon])
+    axes = (la[order_la], lo[order_lo])
     out = []
     for k in range(data.shape[0]):
-        re = RegularGridInterpolator((la[order_la], lo[order_lo]), data[k].real, bounds_error=True)(pts)
-        im = RegularGridInterpolator((la[order_la], lo[order_lo]), data[k].imag, bounds_error=True)(pts)
-        out.append(re + 1j * im)
+        ocean = np.isfinite(data[k])
+        filled = np.where(ocean, data[k], 0.0)
+        weight = RegularGridInterpolator(axes, ocean.astype(float), bounds_error=True)(pts)
+        re = RegularGridInterpolator(axes, filled.real, bounds_error=True)(pts)
+        im = RegularGridInterpolator(axes, filled.imag, bounds_error=True)(pts)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            out.append(np.where(weight > 1e-12, (re + 1j * im) / weight, np.nan))
     return np.array(out).T
 
 
