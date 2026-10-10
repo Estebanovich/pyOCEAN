@@ -33,6 +33,16 @@ Boundaries
   given in û; their flux enters the right-hand side and they receive no
   pressure correction.
 
+* Flather faces (``flather_u``/``flather_v``, domain edges only) radiate
+  the barotropic mode with the Flather (1976) condition
+
+      ū_out = ū_ext,out + √(g/H) (η_c − η_ext)                          (4)
+
+  (ū_out positive outward, η_c the adjacent interior cell).  Applied
+  θ-implicitly, its transport Δy H ū_out adds Δt θ Δy √(gH) to the
+  diagonal of (3), so the matrix stays SPD.  External η, ū (e.g. tides +
+  parent model) are given at each step; the baroclinic part of û is kept.
+
 θ = 1 (backward Euler, MITgcm default) damps gravity waves; θ = ½
 (Crank–Nicolson) is neutral.  The free surface is linear (H at rest).
 
@@ -45,6 +55,10 @@ Marshall, J., Adcroft, A., Hill, C., Perelman, L. & Heisey, C. (1997).
     ocean on parallel computers. J. Geophys. Res. 102(C3), 5753–5766.
 Campin, J.-M., Adcroft, A., Hill, C. & Marshall, J. (2004). Conservation of
     properties in a free-surface model. Ocean Modelling 6, 221–244.
+Flather, R.A. (1976). A tidal model of the north-west European continental
+    shelf. Mém. Soc. R. Sci. Liège 6(10), 141–164.
+Carter, G.S. & Merrifield, M.A. (2007). Open boundary conditions for
+    regional tidal simulations. Ocean Modelling 18, 194–209.
 """
 
 from __future__ import annotations
@@ -55,6 +69,41 @@ import xarray as xr
 from scipy.sparse.linalg import LinearOperator, cg, factorized
 
 G: float = 9.81   # m s⁻²
+
+
+def open_boundary_hfac(hfac: xr.Dataset, sides: list[str]) -> xr.Dataset:
+    """
+    Open the domain-edge faces of the given sides.
+
+    ``core.grid.vertical.compute_hfac`` closes every domain edge (hFac = 0).
+    For an open boundary the edge face takes the wet fraction of its
+    adjacent T-cell, so that transport can cross it.
+
+    Parameters
+    ----------
+    hfac : xr.Dataset
+        Output of ``compute_hfac``.
+    sides : list of {'west', 'east', 'south', 'north'}
+
+    Returns
+    -------
+    xr.Dataset
+        Copy with the edge ``hfac_u``/``hfac_v`` of the open sides filled.
+    """
+    out = hfac.copy(deep=True)
+    hu, hv, ht = out["hfac_u"].values, out["hfac_v"].values, out["hfac_t"].values
+    for side in sides:
+        if side == "west":
+            hu[:, :, 0] = ht[:, :, 0]
+        elif side == "east":
+            hu[:, :, -1] = ht[:, :, -1]
+        elif side == "south":
+            hv[:, 0, :] = ht[:, 0, :]
+        elif side == "north":
+            hv[:, -1, :] = ht[:, -1, :]
+        else:
+            raise ValueError(f"unknown side {side!r}")
+    return out
 
 
 class ImplicitFreeSurface:
@@ -79,6 +128,9 @@ class ImplicitFreeSurface:
     open_u, open_v : np.ndarray of bool, optional
         Open faces, shapes (ny, nx+1) and (ny+1, nx), whose normal velocity is
         prescribed (taken from û unchanged).
+    flather_u, flather_v : np.ndarray of bool, optional
+        Domain-edge faces with the Flather radiation condition (4); their
+        hFac must be open (``open_boundary_hfac``).
     solver : {'direct', 'cg'}
         Sparse LU factorisation once, or Jacobi-preconditioned CG each step.
     cg_rtol : float
@@ -95,6 +147,8 @@ class ImplicitFreeSurface:
         g: float = G,
         open_u: np.ndarray | None = None,
         open_v: np.ndarray | None = None,
+        flather_u: np.ndarray | None = None,
+        flather_v: np.ndarray | None = None,
         solver: str = "direct",
         cg_rtol: float = 1e-12,
     ) -> None:
@@ -130,6 +184,41 @@ class ImplicitFreeSurface:
         self.coupled_u = cu & ~self.open_u
         self.coupled_v = cv & ~self.open_v
 
+        # Flather faces: (face mask, adjacent-cell index arrays, outward sign, Δy, H)
+        self._flather = []
+        for mask, axis in ((flather_u, "u"), (flather_v, "v")):
+            if mask is None:
+                continue
+            mask = np.asarray(mask, bool)
+            interior = mask.copy()
+            if axis == "u":
+                interior[:, [0, -1]] = False
+            else:
+                interior[[0, -1], :] = False
+            if interior.any():
+                raise ValueError("Flather faces must lie on the domain edge")
+            h_f = h_u if axis == "u" else h_v
+            if np.any(mask & (h_f <= 0)):
+                raise ValueError("Flather faces must be wet: open them with open_boundary_hfac")
+            for edge in (0, -1):
+                sel = np.zeros_like(mask)
+                if axis == "u":
+                    sel[:, edge] = mask[:, edge]
+                    jj, ii = np.nonzero(sel)
+                    cj, ci = jj, (ii if edge == 0 else ii - 1)
+                    length = self.dy_u[jj, ii]
+                else:
+                    sel[edge, :] = mask[edge, :]
+                    jj, ii = np.nonzero(sel)
+                    cj, ci = (jj if edge == 0 else jj - 1), ii
+                    length = self.dx_v[jj, ii]
+                if jj.size:
+                    self._flather.append(dict(axis=axis, face=(jj, ii), cell=(cj, ci),
+                                              sign=-1.0 if edge == 0 else 1.0,
+                                              length=length, H=h_f[jj, ii]))
+        self._flather_u = np.zeros((ny, nx + 1), bool) if flather_u is None else np.asarray(flather_u, bool)
+        self._flather_v = np.zeros((ny + 1, nx), bool) if flather_v is None else np.asarray(flather_v, bool)
+
         cond_u = np.where(self.coupled_u, h_u * self.dy_u / self.dx_u, 0.0)
         cond_v = np.where(self.coupled_v, h_v * self.dx_v / self.dy_v, 0.0)
 
@@ -153,6 +242,10 @@ class ImplicitFreeSurface:
         rows.append(diag)
         cols.append(diag)
         vals.append(self.area[self.wet_t])
+        for fl in self._flather:                     # implicit Flather: Δt θ Δy √(gH) on the diagonal
+            rows.append(index[fl["cell"]])
+            cols.append(index[fl["cell"]])
+            vals.append(self.dt * self.theta * fl["length"] * np.sqrt(self.g * fl["H"]))
         n = diag.size
         self.matrix = sp.csr_matrix(
             (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(n, n))
@@ -188,15 +281,25 @@ class ImplicitFreeSurface:
         v_n: np.ndarray,
         u_hat: np.ndarray,
         v_hat: np.ndarray,
+        flather_eta: np.ndarray | None = None,
+        flather_ubar: np.ndarray | None = None,
+        flather_vbar: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Advance η and correct the velocities with eqs. (1)–(3).
+        Advance η and correct the velocities with eqs. (1)–(4).
 
         Parameters
         ----------
         eta : (ny, nx)               η^n [m]
         u_n, v_n : 3-D               velocities at time n [m s⁻¹]
         u_hat, v_hat : 3-D           velocities after the other tendencies (û)
+        flather_eta : (ny, nx+1) or (ny+1, nx) arrays, optional
+            External η at the Flather faces [m] (one array per face type is
+            accepted: pass a tuple (eta_u, eta_v) when both u- and v-faces
+            are Flather).  Valid at mid-step for θ = ½.
+        flather_ubar, flather_vbar : optional
+            External depth-mean velocity at the Flather u-/v-faces [m s⁻¹],
+            in model sign convention (positive east / north).
 
         Returns
         -------
@@ -208,9 +311,18 @@ class ImplicitFreeSurface:
         u_ss = u_hat - g * dt * (1.0 - th) * gx[None]
         v_ss = v_hat - g * dt * (1.0 - th) * gy[None]
 
-        rhs = (self.area * eta
-               - dt * (1.0 - th) * self.volume_divergence(u_n, v_n)
-               - dt * th * self.volume_divergence(u_ss, v_ss))[self.wet_t]
+        # Flather faces carry their own transport: drop them from D(·)
+        fu, fv = self._flather_u[None], self._flather_v[None]
+        rhs_full = (self.area * eta
+                    - dt * (1.0 - th) * self.volume_divergence(np.where(fu, 0.0, u_n), np.where(fv, 0.0, v_n))
+                    - dt * th * self.volume_divergence(np.where(fu, 0.0, u_ss), np.where(fv, 0.0, v_ss)))
+        ext = self._flather_external(flather_eta, flather_ubar, flather_vbar)
+        for fl, (e_ext, ubar_ext) in zip(self._flather, ext):
+            # Q = Δy H ū_ext,out + Δy √(gH) (η_c^θ − η_ext); the θ η^{n+1} part is in the matrix
+            c = fl["length"] * np.sqrt(g * fl["H"])
+            q_known = fl["length"] * fl["H"] * fl["sign"] * ubar_ext + c * ((1.0 - th) * eta[fl["cell"]] - e_ext)
+            np.add.at(rhs_full, fl["cell"], -dt * q_known)
+        rhs = rhs_full[self.wet_t]
         if self.solver == "direct":
             x = self._solve(rhs)
         else:
@@ -224,4 +336,30 @@ class ImplicitFreeSurface:
         gx, gy = self._grad(eta_new)
         u_new = (u_ss - g * dt * th * gx[None]) * (self.hfac_u > 0)
         v_new = (v_ss - g * dt * th * gy[None]) * (self.hfac_v > 0)
+
+        # Flather faces: depth mean from (4) at n+1, baroclinic part of û kept
+        for fl, (e_ext, ubar_ext) in zip(self._flather, ext):
+            ubar = ubar_ext + fl["sign"] * np.sqrt(g / fl["H"]) * (eta_new[fl["cell"]] - e_ext)
+            target, dzf, src = (u_new, self.dzf_u, u_ss) if fl["axis"] == "u" else (v_new, self.dzf_v, v_ss)
+            j, i = fl["face"]
+            col = src[:, j, i]
+            mean = np.sum(dzf[:, j, i] * col, axis=0) / fl["H"]
+            target[:, j, i] = (col - mean + ubar) * (dzf[:, j, i] > 0)
         return eta_new, u_new, v_new
+
+    def _flather_external(self, eta_ext, ubar_ext, vbar_ext) -> list[tuple[np.ndarray, np.ndarray]]:
+        """External (η, ū_normal) at each Flather face group."""
+        if not self._flather:
+            return []
+        if eta_ext is None:
+            raise ValueError("Flather faces need flather_eta (and the external depth-mean velocity)")
+        out = []
+        for fl in self._flather:
+            if isinstance(eta_ext, tuple):
+                e = eta_ext[0] if fl["axis"] == "u" else eta_ext[1]
+            else:
+                e = eta_ext
+            vel = ubar_ext if fl["axis"] == "u" else vbar_ext
+            vel = np.zeros_like(e) if vel is None else vel
+            out.append((e[fl["face"]], vel[fl["face"]]))
+        return out

@@ -246,3 +246,161 @@ class TestAB2ImplicitStep:
         for _ in range(20):
             eta, u, v = fs.step(eta, u, v, u.copy(), v.copy())
         assert np.sum((area * eta)[:, :5]) == pytest.approx(west0, rel=1e-12)
+
+
+# ===========================================================================
+# Flather (1976) radiation condition
+# ===========================================================================
+
+from core.dynamics.free_surface import open_boundary_hfac  # noqa: E402
+
+
+def _channel(nx=200, dx=500.0, depth=10.0, east_open=True, west_open=False):
+    hg, vg, hf = _basin(nx=nx, ny=1, dx=dx, depth=depth)
+    sides = [s for s, o in (("east", east_open), ("west", west_open)) if o]
+    hf = open_boundary_hfac(hf, sides)
+    flather_u = np.zeros(hf.hfac_u.shape[1:], bool)
+    if east_open:
+        flather_u[:, -1] = True
+    if west_open:
+        flather_u[:, 0] = True
+    return hg, vg, hf, flather_u
+
+
+class TestOpenBoundaryHfac:
+
+    def test_boundary_faces_take_adjacent_cell_fraction(self):
+        bathy = np.full((3, 4), 20.0)
+        bathy[:, 0] = 8.0
+        hg, vg, hf = _basin(nx=4, ny=3, depth=20.0, nz=2, bathy=bathy)
+        out = open_boundary_hfac(hf, ["west", "north"])
+        np.testing.assert_allclose(out.hfac_u.values[:, :, 0], hf.hfac_t.values[:, :, 0])
+        np.testing.assert_allclose(out.hfac_v.values[:, -1, :], hf.hfac_t.values[:, -1, :])
+        assert np.all(out.hfac_u.values[:, :, -1] == 0.0)      # east still closed
+
+
+class TestFlather:
+
+    def test_matrix_stays_spd(self):
+        hg, vg, hf, fu = _channel(nx=12)
+        fs = ImplicitFreeSurface(hg, vg, hf, dt=50.0, flather_u=fu)
+        A = fs.matrix.toarray()
+        np.testing.assert_allclose(A, A.T, atol=0)
+        assert np.linalg.eigvalsh(A).min() > 0
+
+    def test_outgoing_wave_leaves_the_domain(self):
+        # Gaussian hump splits into two waves; the east one exits through Flather,
+        # the west one reflects at the wall and then exits too.
+        hg, vg, hf, fu = _channel()
+        c = np.sqrt(G * 10.0)
+        dt = 0.5 * 500.0 / c
+        fs = ImplicitFreeSurface(hg, vg, hf, dt=dt, theta=0.5, flather_u=fu)
+        x = (np.arange(200) + 0.5) * 500.0
+        eta = 0.1 * np.exp(-((x - 70e3) / 4e3) ** 2)[None, :]
+        u = np.zeros(hf.hfac_u.shape)
+        v = np.zeros(hf.hfac_v.shape)
+        area = hg.area_t.values
+        e0 = np.sum(area * eta ** 2)
+        nsteps = int(2.5 * 100e3 / c / dt)                       # > time for both pulses to exit
+        for _ in range(nsteps):
+            eta, u, v = fs.step(eta, u, v, u.copy(), v.copy(),
+                                flather_eta=np.zeros(hf.hfac_u.shape[1:]),
+                                flather_ubar=np.zeros(hf.hfac_u.shape[1:]))
+        assert np.sum(area * eta ** 2) < 1e-3 * e0               # < 0.1 % of the energy left
+
+    def test_volume_budget_through_flather_face(self):
+        hg, vg, hf, fu = _channel(nx=20)
+        fs = ImplicitFreeSurface(hg, vg, hf, dt=30.0, theta=0.7, flather_u=fu)
+        rng = np.random.default_rng(1)
+        eta = rng.normal(0, 0.05, (1, 20))
+        u = rng.normal(0, 0.1, hf.hfac_u.shape) * (hf.hfac_u.values > 0)
+        v = np.zeros(hf.hfac_v.shape)
+        ext_eta = np.full(hf.hfac_u.shape[1:], 0.03)
+        ext_u = np.full(hf.hfac_u.shape[1:], -0.02)
+        area = hg.area_t.values
+        vol0 = np.sum(area * eta)
+        eta1, u1, _ = fs.step(eta, u, v, u.copy(), v.copy(), flather_eta=ext_eta, flather_ubar=ext_u)
+        # Flather transport at the east face, θ-weighted between n and n+1:
+        # Q(η) = dy·H·[ū_ext + √(g/H)(η_c − η_ext)]  (outward = +x on the east side)
+        H = 10.0
+        dy = hg.dy_u.values[0, -1]
+        q = lambda e: dy * H * (-0.02 + np.sqrt(G / H) * (e[0, -1] - 0.03))   # noqa: E731
+        expected = vol0 - 30.0 * (0.3 * q(eta) + 0.7 * q(eta1))
+        # Flather fixes the depth mean; the baroclinic part of û is kept (2 equal layers here)
+        assert u1[:, 0, -1].mean() == pytest.approx(q(eta1) / (dy * H), rel=1e-12)
+        assert np.sum(area * eta1) == pytest.approx(expected, rel=1e-12)
+
+    def test_flather_velocity_relation_holds(self):
+        # After the step, ū_face = ū_ext + √(g/H)(η_c^θ − η_ext) at the east face
+        hg, vg, hf, fu = _channel(nx=10)
+        fs = ImplicitFreeSurface(hg, vg, hf, dt=20.0, theta=1.0, flather_u=fu)
+        eta = np.full((1, 10), 0.2)
+        u = np.zeros(hf.hfac_u.shape)
+        v = np.zeros(hf.hfac_v.shape)
+        eta1, u1, _ = fs.step(eta, u, v, u.copy(), v.copy(),
+                              flather_eta=np.zeros(hf.hfac_u.shape[1:]),
+                              flather_ubar=np.full(hf.hfac_u.shape[1:], 0.01))
+        assert u1[0, 0, -1] == pytest.approx(0.01 + np.sqrt(G / 10.0) * eta1[0, -1], rel=1e-12)
+
+    def test_tidal_bay_reproduces_standing_wave(self):
+        # Channel closed at x=0, open at x=L, forced at the mouth with the exact
+        # co-oscillating solution η = B cos(kx) cos(ωt), u = (cB/H) sin(kx) sin(ωt).
+        # Transients radiate out; the interior must converge to B cos(kx).
+        nx, dx, H = 100, 1000.0, 20.0
+        hg, vg, hf, fu = _channel(nx=nx, dx=dx, depth=H)
+        c = np.sqrt(G * H)
+        L = nx * dx
+        omega = 2 * np.pi / (12.42 * 3600)
+        k = omega / c
+        B = 0.5
+        dt = 60.0
+        fs = ImplicitFreeSurface(hg, vg, hf, dt=dt, theta=0.5, flather_u=fu)
+        eta = np.zeros((1, nx))
+        u = np.zeros(hf.hfac_u.shape)
+        v = np.zeros(hf.hfac_v.shape)
+        x_t = (np.arange(nx) + 0.5) * dx
+        ext_eta = np.zeros(hf.hfac_u.shape[1:])
+        ext_u = np.zeros(hf.hfac_u.shape[1:])
+        record = []
+        period = 2 * np.pi / omega
+        nsteps = int(6 * period / dt)
+        for n in range(nsteps):
+            t_mid = (n + 0.5) * dt                       # θ = ½: boundary data at n + ½
+            ext_eta[0, -1] = B * np.cos(k * L) * np.cos(omega * t_mid)
+            ext_u[0, -1] = (c * B / H) * np.sin(k * L) * np.sin(omega * t_mid)
+            eta, u, v = fs.step(eta, u, v, u.copy(), v.copy(), flather_eta=ext_eta, flather_ubar=ext_u)
+            if n * dt > 4 * period:
+                record.append(eta[0].copy())
+        amp = 0.5 * np.ptp(np.array(record), axis=0)
+        np.testing.assert_allclose(amp, B * np.abs(np.cos(k * x_t)), atol=0.02 * B)
+
+    def test_outgoing_wave_leaves_through_west_boundary(self):
+        # Mirror case: outward normal is −x on the west side
+        hg, vg, hf, fu = _channel(east_open=False, west_open=True)
+        c = np.sqrt(G * 10.0)
+        dt = 0.5 * 500.0 / c
+        fs = ImplicitFreeSurface(hg, vg, hf, dt=dt, theta=0.5, flather_u=fu)
+        x = (np.arange(200) + 0.5) * 500.0
+        eta = 0.1 * np.exp(-((x - 30e3) / 4e3) ** 2)[None, :]
+        u = np.zeros(hf.hfac_u.shape)
+        v = np.zeros(hf.hfac_v.shape)
+        area = hg.area_t.values
+        e0 = np.sum(area * eta ** 2)
+        zeros = np.zeros(hf.hfac_u.shape[1:])
+        for _ in range(int(2.5 * 100e3 / c / dt)):
+            eta, u, v = fs.step(eta, u, v, u.copy(), v.copy(), flather_eta=zeros, flather_ubar=zeros)
+        assert np.sum(area * eta ** 2) < 1e-3 * e0
+
+    def test_west_face_velocity_and_inflow_sign(self):
+        # West side: outward is −x, so ū_model = ū_ext − √(g/H)(η_c − η_ext),
+        # and a positive (eastward) ū_ext is an inflow that raises the volume.
+        hg, vg, hf, fu = _channel(nx=10, east_open=False, west_open=True)
+        fs = ImplicitFreeSurface(hg, vg, hf, dt=20.0, theta=1.0, flather_u=fu)
+        eta = np.full((1, 10), 0.2)
+        u = np.zeros(hf.hfac_u.shape)
+        v = np.zeros(hf.hfac_v.shape)
+        ext_u = np.full(hf.hfac_u.shape[1:], 0.05)
+        eta1, u1, _ = fs.step(eta, u, v, u.copy(), v.copy(),
+                              flather_eta=np.full(hf.hfac_u.shape[1:], 0.2), flather_ubar=ext_u)
+        assert u1[0, 0, 0] == pytest.approx(0.05 - np.sqrt(G / 10.0) * (eta1[0, 0] - 0.2), rel=1e-12)
+        assert np.sum(hg.area_t.values * eta1) > np.sum(hg.area_t.values * eta)
