@@ -6,8 +6,11 @@ plus model SST and surface current into the fluxes consumed by
 ``forcing.surface.surface_tendency``: wind stress, net and shortwave heat
 flux, and evaporation minus precipitation.
 
-Implemented scheme
-------------------
+Implemented schemes
+-------------------
+``bulk_kara`` — polynomial fits to COARE 3.0 (Kara et al. 2005), identical
+to HYCOM flxflg=6 / wndflg=4, the setting of HYCOM-IOA.
+
 ``bulk_ncar`` — NCAR/CORE bulk formulae (Large & Yeager 2004, §2.1; with
 the optional high-wind drag cap of Large & Yeager 2009).  This is the
 algorithm of MITgcm ``pkg/exf/exf_bulkformulae.F`` (``ALLOW_BULK_LARGEYEAGER04``)
@@ -208,10 +211,12 @@ class TurbulentFluxes:
     q_sens : sensible heat flux [W m⁻²]
     q_lat : latent heat flux [W m⁻²]
     evap : evaporation [m s⁻¹], positive when water leaves the ocean
-    cd, ch, ce : transfer coefficients at the wind height [–]
-    u10n : neutral 10 m wind speed [m s⁻¹]
-    ustar : friction velocity [m s⁻¹]
+    cd, ch, ce : transfer coefficients for momentum, sensible and latent heat [–]
+    rho_air : air density used [kg m⁻³]
+    ustar : friction velocity √C_d |ΔU| [m s⁻¹]
+    u10n : neutral 10 m wind speed [m s⁻¹] (None for non-iterative schemes)
     zeta : Monin–Obukhov stability parameter z_u/L at the wind height [–]
+        (None for non-iterative schemes)
     """
 
     tau_x: np.ndarray
@@ -222,9 +227,10 @@ class TurbulentFluxes:
     cd: np.ndarray
     ch: np.ndarray
     ce: np.ndarray
-    u10n: np.ndarray
+    rho_air: np.ndarray
     ustar: np.ndarray
-    zeta: np.ndarray
+    u10n: np.ndarray | None = None
+    zeta: np.ndarray | None = None
 
 
 def bulk_ncar(
@@ -395,13 +401,274 @@ def bulk_ncar(
 
     return TurbulentFluxes(
         tau_x=tau_x, tau_y=tau_y, q_sens=q_sens, q_lat=q_lat, evap=evap,
-        cd=cd, ch=ch, ce=ce, u10n=u10n, ustar=ustar, zeta=zeta_u,
+        cd=cd, ch=ch, ce=ce, rho_air=np.broadcast_to(rho_air, speed.shape).copy(),
+        ustar=ustar, u10n=u10n, zeta=zeta_u,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Kara et al. (2005) polynomial fits to COARE 3.0 — HYCOM flxflg=6
+# ---------------------------------------------------------------------------
+#
+# Coefficient tables of Kara, Hurlburt & Wallcraft (2005), as used in HYCOM
+# (thermf.F90, flxflg=4/6 parameter block; mod_momtum.F90, cd_coarep).
+# Key "s"/"u"/"n" = stable / unstable / neutral, "0"/"5" = low (Va ≤ 5 m/s) /
+# high wind.  Entry [i][j] multiplies τⁱ·xʲ, with τ = virtual Ta − Ts and
+# x = Va or 1/Va as described in _kara_poly.
+
+#: Latent-heat exchange coefficient C_l (dimensionless), 3 × 3 per regime.
+_CL = {
+    "s0": [[-2.925e-4, 5.498e-4, -5.544e-5],
+           [7.272e-5, -1.740e-4, 2.489e-5],
+           [-6.948e-6, 1.637e-5, -2.618e-6]],
+    "s5": [[1.023e-3, 9.657e-6, -2.281e-8],
+           [-2.672e-6, 2.103e-4, -5.329e-3],
+           [1.546e-6, -6.228e-5, 5.094e-4]],
+    "u0": [[2.077e-3, -3.933e-4, 3.971e-5],
+           [-2.899e-4, 7.350e-5, -6.267e-6],
+           [-1.954e-5, 5.483e-6, -4.867e-7]],
+    "u5": [[1.074e-3, 5.579e-6, 5.263e-8],
+           [6.912e-6, -2.244e-4, -1.027e-3],
+           [1.849e-7, -2.167e-6, -1.010e-4]],
+    "n0": [1.14086e-3, -3.120e-6, -9.300e-7],
+    "n5": [1.073e-3, 5.531e-6, 5.433e-8],
+}
+
+#: Drag coefficient 10³·C_d, 3 × 4 per regime (cubic in Va or 1/Va).
+_CD = {
+    "s0": [[-0.06695, 0.3133, -0.001473, -0.004056],
+           [0.09966, -2.116, 4.626, -2.680],
+           [-0.02477, 0.2726, -0.5558, 0.3139]],
+    "s5": [[0.55815, 0.08174, -0.0004472, 2.666e-6],
+           [-0.005593, 0.2096, -8.634, 18.63],
+           [0.0006024, -0.02629, 0.2121, 0.7755]],
+    "u0": [[1.891, -0.7182, 0.1975, -0.01790],
+           [-0.006304, -0.3028, 0.3120, -0.1210],
+           [0.0004406, -0.01769, 0.01303, -0.003394]],
+    "u5": [[0.6497, 0.06993, 3.541e-5, -3.428e-6],
+           [0.003827, -0.2756, -1.091, 4.946],
+           [-4.83e-5, 0.007710, -0.2555, 0.7654]],
+    "n0": [1.057, -0.06949, 0.01271],
+    "n5": [0.6825, 0.06945, -0.0001029],
+}
+
+# HYCOM constants (thermf.F90; mod_momtum.F90)
+_HY_TZERO: float = 273.16    # K        Celsius → Kelvin offset used inside HYCOM
+_HY_RGAS: float = 287.1      # J kg⁻¹ K⁻¹
+_HY_CSUBP: float = 1005.7    # J kg⁻¹ K⁻¹ specific heat of air
+_HY_EVAPLH: float = 2.47e6   # J kg⁻¹   latent heat of evaporation
+_HY_RHOREF: float = 1000.0   # kg m⁻³   reference density (svref = 1/rhoref)
+
+
+def _kara_poly(c: list[list[float]], tau: np.ndarray, va: np.ndarray,
+               tau_groups_in_inverse_va: bool) -> np.ndarray:
+    """
+    Evaluate Σᵢ (Σⱼ c[i][j] xᵢʲ) τⁱ, i = 0, 1, 2.
+
+    The τ⁰ group always uses x₀ = Va.  The τ¹ and τ² groups use x = 1/Va
+    when ``tau_groups_in_inverse_va`` (high-wind C_l and all C_d fits),
+    otherwise x = Va (low-wind C_l fit)            (Kara et al. 2005, eqs 9–12).
+    """
+    x = 1.0 / va if tau_groups_in_inverse_va else va
+    out = np.polynomial.polynomial.polyval(va, c[0])
+    out = out + np.polynomial.polynomial.polyval(x, c[1]) * tau
+    out = out + np.polynomial.polynomial.polyval(x, c[2]) * tau ** 2
+    return out
+
+
+def _kara_blend(tau: np.ndarray, stable: np.ndarray, unstable: np.ndarray,
+                p_stable_075: np.ndarray, p_unstable_075: np.ndarray,
+                neutral: np.ndarray, squared: bool) -> np.ndarray:
+    """
+    Combine regime fits across Ta−Ts (Kara et al. 2005; HYCOM thermf/momtum).
+
+        τ ≥ 0.75            : stable fit
+        τ ≤ −0.75           : unstable fit
+        −0.098 ≤ τ < 0.75   : blend of stable fit at τ = 0.75 and neutral fit
+        −0.75 < τ < −0.098  : blend of unstable fit at τ = −0.75 and neutral fit
+
+    For C_l (``squared=True``) the blend weight of the neutral fit is
+    q = ((τ − 0.75)/0.848)² or ((τ + 0.75)/0.652)²; for C_d it is linear,
+    1 − q with q = (τ + 0.098)/0.848 or (−τ − 0.098)/0.652.  Both versions
+    are continuous at τ = ±0.75.
+    """
+    if squared:
+        w_pos = ((tau - 0.75) / 0.848) ** 2          # weight of neutral fit
+        w_neg = ((tau + 0.75) / 0.652) ** 2
+    else:
+        w_pos = 1.0 - (tau + 0.098) / 0.848
+        w_neg = 1.0 - (-tau - 0.098) / 0.652
+    blend_pos = (1.0 - w_pos) * p_stable_075 + w_pos * neutral
+    blend_neg = (1.0 - w_neg) * p_unstable_075 + w_neg * neutral
+    return np.select(
+        [tau >= 0.75, tau <= -0.75, tau >= -0.098],
+        [stable, unstable, blend_pos],
+        default=blend_neg,
+    )
+
+
+def _kara_coefficient(table: dict, tau: np.ndarray, va: np.ndarray,
+                      low_wind_inverse: bool, squared: bool) -> np.ndarray:
+    """Exchange coefficient from a Kara et al. (2005) table, both wind ranges."""
+    out = {}
+    for band, inverse in (("0", low_wind_inverse), ("5", True)):
+        s, u = table["s" + band], table["u" + band]
+        out[band] = _kara_blend(
+            tau,
+            stable=_kara_poly(s, tau, va, inverse),
+            unstable=_kara_poly(u, tau, va, inverse),
+            p_stable_075=_kara_poly(s, np.full_like(tau, 0.75), va, inverse),
+            p_unstable_075=_kara_poly(u, np.full_like(tau, -0.75), va, inverse),
+            neutral=np.polynomial.polynomial.polyval(va, table["n" + band]),
+            squared=squared,
+        )
+    return np.where(va <= 5.0, out["0"], out["5"])
+
+
+def _hycom_satvpr(t_c: np.ndarray) -> np.ndarray:
+    """
+    Saturation vapour pressure over water [Pa], t in °C.
+
+        e_s = 100 Σₖ aₖ tᵏ,  k = 0…6                 (Lowe 1977, Table 1)
+    """
+    a = [6.107799961, 4.436518521e-1, 1.428945805e-2, 2.650648471e-4,
+         3.031240396e-6, 2.034080948e-8, 6.136820929e-11]
+    return 100.0 * np.polynomial.polynomial.polyval(t_c, a)
+
+
+def _hycom_qsat_mixing(t_c: np.ndarray, p: np.ndarray, f: np.ndarray | float = 1.0) -> np.ndarray:
+    """Saturation mixing ratio 0.622 f e_s / (p − f e_s) [kg kg⁻¹] (HYCOM qsatur6)."""
+    es = f * _hycom_satvpr(t_c)
+    return 0.622 * es / (p - es)
+
+
+def bulk_kara(
+    u10: np.ndarray,
+    v10: np.ndarray,
+    t_air: np.ndarray,
+    q_air: np.ndarray,
+    sst: np.ndarray,
+    p: np.ndarray | None = None,
+    *,
+    sss: np.ndarray | float | None = None,
+    u_ocean: np.ndarray | float = 0.0,
+    v_ocean: np.ndarray | float = 0.0,
+) -> TurbulentFluxes:
+    """
+    HYCOM flxflg=6 / wndflg=4 bulk fluxes (Kara, Hurlburt & Wallcraft 2005).
+
+    Exchange coefficients are closed-form polynomial fits to COARE 3.0
+    (Fairall et al. 2003), quadratic in a virtual air–sea temperature
+    difference and in Va or 1/Va; there is no stability iteration.  This
+    reproduces HYCOM thermf.F90 (flxflg=6) and mod_momtum.F90 (cd_coarep)
+    to round-off — see ``tests/test_bulk_kara.py``, which compares against
+    the compiled HYCOM routines.
+
+        r    = q / (1 − q)                     mixing ratio (HYCOM ``vapmix``)
+        ρ_a  = p / [R (T_a + 273.16)(1 + 0.608 r)]
+        τ_v  = (T_a − T_s) − 0.608 (T_a + 273.16)(r_sat(T_a, p) − r),  τ_v ∈ [−8, 7] °C
+        C_l  = fit(τ_v, Va∈[1.2, 34]),  C_s = 0.9554 C_l,  C_d = fit(τ_v, Va∈[1, 34])
+        f_S  = 1 − (0.001/1.805) max(S − 0.03, 0)      (Sud & Walker 1997)
+        Q_L  = −L_v ρ_a C_l |ΔU| (r_sat(T_s, p, f_S) − r)
+        Q_S  = −c_pa ρ_a C_s |ΔU| (T_s − T_a)
+        τ    = ρ_a C_d |ΔU| ΔU
+        E    = −Q_L / (L_v ρ_ref)
+
+    with ΔU = U₁₀ − u_ocean (HYCOM amoflg with ocnscl=1), T in °C.  The
+    temperature and humidity are used at their measurement height (2 m)
+    without adjustment, as in HYCOM.  There is no minimum wind speed in the
+    fluxes: calm air gives zero turbulent fluxes.
+
+    Parameters
+    ----------
+    u10, v10 : np.ndarray
+        10 m wind [m s⁻¹].
+    t_air : np.ndarray
+        Air temperature [K]; converted to °C with 273.15, as in the HYCOM-IOA
+        forcing preprocessing (HYCOM then uses 273.16 internally).
+    q_air : np.ndarray
+        Specific humidity [kg kg⁻¹].
+    sst : np.ndarray
+        Model surface temperature [°C].
+    p : np.ndarray
+        Sea-level pressure [Pa] (required, HYCOM mslprf=1).
+    sss : np.ndarray or float
+        Model surface salinity [psu] (required).
+    u_ocean, v_ocean : np.ndarray or float
+        Surface current at T-points [m s⁻¹]; HYCOM averages the top
+        ``thkcdw`` = 3 m plus the barotropic velocity.
+
+    Returns
+    -------
+    TurbulentFluxes
+        ``ce`` holds C_l and ``ch`` holds C_s; ``u10n`` and ``zeta`` are None.
+
+    References
+    ----------
+    Kara, A.B., Hurlburt, H.E. & Wallcraft, A.J. (2005). Stability-dependent
+        exchange coefficients for air–sea fluxes. J. Atmos. Oceanic Technol.
+        22, 1080–1094.
+    Lowe, P.R. (1977). An approximating polynomial for the computation of
+        saturation vapor pressure. J. Appl. Meteor. 16, 100–103.
+    Sud, Y.C. & Walker, G.K. (1997). Influence of ocean salinity on the
+        saturation vapour pressure (via Witting 1908); as cited in HYCOM thermf.F90.
+    """
+    if p is None:
+        raise ValueError("bulk_kara needs p (sea-level pressure) — HYCOM flxflg=6 uses mslprs")
+    if sss is None:
+        raise ValueError("bulk_kara needs sss (surface salinity) for the vapour-pressure depression")
+
+    airt = np.asarray(t_air, dtype=float) - T0_K
+    q_air = np.asarray(q_air, dtype=float)
+    vpmx = q_air / (1.0 - q_air)
+    sst = np.asarray(sst, dtype=float)
+    p = np.asarray(p, dtype=float)
+
+    du = np.asarray(u10, dtype=float) - u_ocean
+    dv = np.asarray(v10, dtype=float) - v_ocean
+    speed = np.hypot(du, dv)
+
+    rho_air = p / (_HY_RGAS * (_HY_TZERO + airt) * (1.0 + 0.608 * vpmx))
+    tau_v = (airt - sst) - 0.608 * (airt + _HY_TZERO) * (_hycom_qsat_mixing(airt, p) - vpmx)
+    tau_v = np.clip(tau_v, -8.0, 7.0)
+
+    cl = _kara_coefficient(_CL, tau_v, np.clip(speed, 1.2, 34.0),
+                           low_wind_inverse=False, squared=True)
+    cs = 0.9554 * cl
+    cd = 1e-3 * _kara_coefficient(_CD, tau_v, np.clip(speed, 1.0, 34.0),
+                                  low_wind_inverse=True, squared=False)
+
+    f_sss = 1.0 - (0.001 / 1.805) * np.maximum(np.asarray(sss, dtype=float) - 0.03, 0.0)
+    q_lat = -_HY_EVAPLH * rho_air * cl * speed * (_hycom_qsat_mixing(sst, p, f_sss) - vpmx)
+    q_sens = -_HY_CSUBP * rho_air * cs * speed * (sst - airt)
+
+    return TurbulentFluxes(
+        tau_x=rho_air * cd * speed * du,
+        tau_y=rho_air * cd * speed * dv,
+        q_sens=q_sens,
+        q_lat=q_lat,
+        evap=-q_lat / (_HY_EVAPLH * _HY_RHOREF),
+        cd=cd, ch=cs, ce=cl, rho_air=rho_air,
+        ustar=np.sqrt(cd) * speed,
     )
 
 
 # ---------------------------------------------------------------------------
 # Radiation
 # ---------------------------------------------------------------------------
+
+def albedo_large_yeager(lat: np.ndarray) -> np.ndarray:
+    """
+    Latitude-dependent ocean albedo, 5.8 % at the equator and 8 % at the poles.
+
+        α = 0.069 − 0.011 cos(2φ)            (Large & Yeager 2009; HYCOM albflg=2)
+
+    Parameters
+    ----------
+    lat : np.ndarray
+        Latitude [°N].
+    """
+    return 0.069 - 0.011 * np.cos(2.0 * np.deg2rad(lat))
 
 def radiative_fluxes(
     sw_down: np.ndarray,
@@ -446,7 +713,7 @@ def radiative_fluxes(
 # Canonical atmosphere → surface_tendency arguments
 # ---------------------------------------------------------------------------
 
-_SCHEMES = {"ncar": bulk_ncar}
+_SCHEMES = {"ncar": bulk_ncar, "kara": bulk_kara}
 
 
 def compute_surface_fluxes(
@@ -475,8 +742,9 @@ def compute_surface_fluxes(
         Model surface temperature θ[k=0] [°C].
     u_sfc, v_sfc : np.ndarray or float
         Surface current at T-points [m s⁻¹] (0 for absolute wind).
-    scheme : {'ncar'}
-        Bulk algorithm.
+    scheme : {'ncar', 'kara'}
+        Bulk algorithm: 'ncar' (Large & Yeager 2004, MITgcm) or 'kara'
+        (Kara et al. 2005, HYCOM flxflg=6; needs ``sss=`` in scheme_kwargs).
     albedo, emissivity : see ``radiative_fluxes``.
     **scheme_kwargs
         Passed to the bulk algorithm (e.g. ``n_iter``, ``high_wind``).

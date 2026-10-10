@@ -1,0 +1,57 @@
+# pyOCEAN exf bulk-formula validation: 40x25 independent air-sea cases,
+# 2 levels, flat bottom, doubly periodic Cartesian grid, f=0.
+# One time step: diagnostics averaged over step 1 contain the exf fields
+# computed at myIter=0 from the initial theta (gcmSST = theta(k=1) = SST).
+ &PARM01
+ tRef = 2*20.,
+ sRef = 2*35.,
+ viscAh = 0.,
+ viscAz = 1.E-4,
+ diffKhT = 0.,
+ diffKzT = 1.E-5,
+ diffKhS = 0.,
+ diffKzS = 1.E-5,
+ f0 = 0.,
+ beta = 0.,
+ eosType = 'LINEAR',
+ tAlpha = 2.E-4,
+ sBeta = 0.,
+ rhoConst = 1025.,
+ rhoConstFresh = 1000.,
+ HeatCapacity_Cp = 3994.,
+ gravity = 9.81,
+ implicitFreeSurface = .TRUE.,
+ exactConserv = .TRUE.,
+ readBinaryPrec = 64,
+ writeBinaryPrec = 64,
+ momAdvection = .FALSE.,
+ tempAdvection = .FALSE.,
+ saltAdvection = .FALSE.,
+ &
+
+ &PARM02
+ cg2dMaxIters = 200,
+ cg2dTargetResidual = 1.E-12,
+ &
+
+ &PARM03
+ nIter0 = 0,
+ nTimeSteps = 1,
+ deltaT = 60.,
+ pChkptFreq = 0.,
+ chkptFreq = 0.,
+ dumpFreq = 0.,
+ monitorFreq = 60.,
+ dumpInitAndLast = .FALSE.,
+ &
+
+ &PARM04
+ usingCartesianGrid = .TRUE.,
+ delX = 40*1000.,
+ delY = 25*1000.,
+ delZ = 2*10.,
+ &
+
+ &PARM05
+ hydrogThetaFile = 'theta_init.bin',
+ &

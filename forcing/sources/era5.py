@@ -59,7 +59,7 @@ import numpy as np
 import xarray as xr
 
 from forcing.canonical import CANONICAL_VARS
-from forcing.sources.base import BBox, ForcingSource, register_source
+from forcing.sources.base import BBox, ForcingSource, register_source, subset_bbox
 
 # Thermodynamic constants of the IFS (Cy41r2, Part IV, §7.2.1)
 _ES_A1: float = 611.21      # Pa
@@ -142,7 +142,7 @@ class ERA5Source(ForcingSource):
             pad = np.timedelta64(int(self.accumulation_seconds), "s")
             ds = ds.sel(time=slice(np.datetime64(t0, "ns") - pad, np.datetime64(t1, "ns") + pad))
             # Subset lazily, then read only the needed block into memory
-            return self._subset_bbox(ds, bbox).load()
+            return subset_bbox(ds, bbox).load()
         finally:
             for f in files:
                 f.close()
@@ -171,25 +171,6 @@ class ERA5Source(ForcingSource):
         ds = ds.rename({k: v for k, v in {"valid_time": "time", "latitude": "lat",
                                            "longitude": "lon"}.items() if k in ds.dims or k in ds.coords})
         return ds.drop_vars([c for c in ("number", "expver") if c in ds.coords])
-
-    @staticmethod
-    def _subset_bbox(ds: xr.Dataset, bbox: BBox) -> xr.Dataset:
-        """Select the cells covering ``bbox`` plus one cell margin, in the file's lon convention."""
-        lon = ds["lon"].values
-        lon_min, lon_max = bbox.lon_min, bbox.lon_max
-        if lon.max() > 180.0:
-            lon_min, lon_max = lon_min % 360.0, lon_max % 360.0
-
-        def index_range(values: np.ndarray, lo: float, hi: float) -> slice:
-            inside = np.nonzero((values >= lo) & (values <= hi))[0]
-            if inside.size == 0:
-                raise ValueError(f"ERA5 files do not cover [{lo}, {hi}]")
-            return slice(max(inside[0] - 1, 0), min(inside[-1] + 2, values.size))
-
-        return ds.isel(
-            lon=index_range(lon, lon_min, lon_max),
-            lat=index_range(ds["lat"].values, bbox.lat_min, bbox.lat_max),
-        )
 
     def _centred_rate(self, acc: xr.DataArray) -> xr.DataArray:
         """

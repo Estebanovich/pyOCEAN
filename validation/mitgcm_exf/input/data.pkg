@@ -1,0 +1,5 @@
+ &PACKAGES
+ useEXF = .TRUE.,
+ useCAL = .TRUE.,
+ useDiagnostics = .TRUE.,
+ &

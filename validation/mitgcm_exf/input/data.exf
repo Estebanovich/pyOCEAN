@@ -1,0 +1,36 @@
+# Large & Yeager (2004) bulk formulae, absolute wind, time-constant inputs.
+# Heights and constants left at pkg/exf defaults except where noted:
+#   hu = 10 m, ht = 2 m (= hq), atmrho = 1.2, atmcp = 1005, gamma_blk = 0.01,
+#   umin = 0.5, exf_albedo = 0.1, ocean_emissivity = 5.5/5.67.
+ &EXF_NML_01
+ useAtmWind = .TRUE.,
+ useRelativeWind = .FALSE.,
+ useExfCheckRange = .FALSE.,
+ windstressmax = 100.,
+ exf_iprec = 64,
+ hu = 10.,
+ ht = 2.,
+ &
+
+ &EXF_NML_02
+ uwindfile  = 'uwind.bin',
+ vwindfile  = 'vwind.bin',
+ atempfile  = 'atemp.bin',
+ aqhfile    = 'aqh.bin',
+ swdownfile = 'swdown.bin',
+ lwdownfile = 'lwdown.bin',
+ precipfile = 'precip.bin',
+ uwindperiod  = 0.,
+ vwindperiod  = 0.,
+ atempperiod  = 0.,
+ aqhperiod    = 0.,
+ swdownperiod = 0.,
+ lwdownperiod = 0.,
+ precipperiod = 0.,
+ &
+
+ &EXF_NML_03
+ &
+
+ &EXF_NML_04
+ &

@@ -1,0 +1,9 @@
+#!/bin/bash
+# genmake2 optfile: MITgcm's darwin_arm64_gfortran without NetCDF.
+# The stock file picks up Homebrew netcdf-fortran through nf-config but not the
+# path of the C library (-lnetcdf), so linking fails; NetCDF (pkg/mnc) is not
+# needed here because all output is MDS binary.
+. "${MITGCM_ROOT:?set MITGCM_ROOT}/tools/build_options/darwin_arm64_gfortran"
+INCLUDEDIRS=''
+INCLUDES=''
+LIBS=''

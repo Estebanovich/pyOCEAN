@@ -1,0 +1,17 @@
+# Time average over the single model step = exf fields computed at myIter=0.
+ &DIAGNOSTICS_LIST
+ dumpAtLast = .TRUE.,
+ fields(1:16,1) = 'EXFhs   ','EXFhl   ','EXFtaux ','EXFtauy ',
+                  'EXFevap ','EXFqnet ','EXFlwnet','EXFswnet',
+                  'EXFempmr','EXFwspee','EXFatemp','EXFaqh  ',
+                  'EXFuwind','EXFvwind','EXFlwdn ','EXFswdn ',
+ fileName(1) = 'exfDiag',
+ frequency(1) = 60.,
+ fields(1:1,2) = 'THETA   ',
+ levels(1,2) = 1.,
+ fileName(2) = 'sstDiag',
+ frequency(2) = 60.,
+ &
+
+ &DIAG_STATIS_PARMS
+ &

@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, ClassVar
 
+import numpy as np
 import xarray as xr
 
 from forcing.canonical import validate_canonical
@@ -80,6 +81,41 @@ class BBox:
             lat_min=min(float(y.min()) for y in lats) - pad,
             lat_max=max(float(y.max()) for y in lats) + pad,
         )
+
+
+def subset_bbox(ds: xr.Dataset, bbox: BBox) -> xr.Dataset:
+    """
+    Select the cells of a rectilinear dataset covering ``bbox``, plus one cell
+    margin on every side, in the dataset's own longitude convention.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Dataset with 1-D coordinates ``lat`` and ``lon`` (either ordering,
+        0–360 or ±180 °E).
+    bbox : BBox
+        Region to keep (±180 °E convention).
+
+    Raises
+    ------
+    ValueError
+        If the dataset does not overlap the box.
+    """
+    lon = ds["lon"].values
+    lon_min, lon_max = bbox.lon_min, bbox.lon_max
+    if lon.max() > 180.0:
+        lon_min, lon_max = lon_min % 360.0, lon_max % 360.0
+
+    def index_range(values: np.ndarray, lo: float, hi: float, name: str) -> slice:
+        inside = np.nonzero((values >= lo) & (values <= hi))[0]
+        if inside.size == 0:
+            raise ValueError(f"forcing data do not cover {name} [{lo}, {hi}]")
+        return slice(max(inside[0] - 1, 0), min(inside[-1] + 2, values.size))
+
+    return ds.isel(
+        lon=index_range(lon, lon_min, lon_max, "lon"),
+        lat=index_range(ds["lat"].values, bbox.lat_min, bbox.lat_max, "lat"),
+    )
 
 
 # ---------------------------------------------------------------------------
