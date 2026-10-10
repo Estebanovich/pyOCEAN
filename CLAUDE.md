@@ -149,20 +149,29 @@ Last updated: 2026-03-24.  All tests run with `pytest tests/`.
 
 ## Build Status — Phase 2
 
-Last updated: 2026-04-08.  All tests run with `pytest tests/`.
+Last updated: 2026-10-10.  All tests run with `pytest tests/`.
 
 | Module | File | Tests | Status |
 |--------|------|-------|--------|
 | Bathymetry load/regrid/smooth | `core/grid/bathymetry.py` | `tests/test_bathymetry.py` | ✅ 38/38 |
+| Canonical forcing contract | `forcing/canonical.py` | `tests/test_forcing_canonical.py` | ✅ 18/18 |
+| Forcing interpolation (grid/time/land-fill) | `forcing/interp.py` | `tests/test_forcing_interp.py` | ✅ 24/24 |
+| Forcing adapter base + registry | `forcing/sources/base.py` | `tests/test_forcing_sources_base.py` | ✅ 13/13 |
 
-**Phase 2 in progress — 418 total tests passing.**
+**Phase 2 in progress — 473 total tests passing.**
 
 ### Phase 2 build order
 
+Design docs: `docs/design/forcing_architecture.md` (multi-source forcing) and `docs/design/era5_bulk_comparison.md` (MITgcm/CROCO/HYCOM/MOM6 bulk formulae + HYCOM-IOA flags).
+
 1. ~~`core/grid/bathymetry.py`~~ ✅ — load_gebco, regrid_to_model, smooth_bathymetry (Hann 9-pt + Shapiro 5-pt, n_skip), fill_isolated_cells, apply_min_depth, build_bathymetry
-2. `forcing/era5.py` — ERA5 bulk formula surface forcing  ← **next**
-3. Implicit free surface — activate Helmholtz CG solver in `pressure.py`
-4. Validation notebook — Gulf of Mexico subdomain run
+2. ~~Forcing infrastructure~~ ✅ — `forcing/canonical.py`, `forcing/interp.py`, `forcing/sources/base.py`
+3. `forcing/bulk.py` (`bulk_ncar`, MITgcm-equivalent) + `forcing/sources/era5.py`  ← **next**
+4. `bulk_kara` (HYCOM flxflg=6, relative wind) + WRF adapter (curvilinear regrid)
+5. ESPC/GOFS adapter (incl. native HYCOM `.a/.b` reader) for IC + OBCs
+6. Implicit free surface — activate Helmholtz CG solver in `pressure.py`
+7. Tides: `forcing/tides.py` + TPXO/FES adapters + Flather OBC
+8. Validation notebook — Gulf of Mexico subdomain run
 
 ### Key design decisions made
 
