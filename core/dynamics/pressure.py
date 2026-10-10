@@ -319,6 +319,13 @@ def surface_pressure_cg(
     """
     Solve the implicit free-surface Helmholtz equation for η^{n+1}.
 
+    .. deprecated:: Phase 2
+        Use ``core.dynamics.free_surface.ImplicitFreeSurface``.  This
+        prototype imposes η = 0 on every domain edge (Dirichlet), which is
+        wrong for closed basins — walls need a no-flux (Neumann) condition so
+        that seiche antinodes can sit on them — and it ignores grid metrics,
+        land masks and partial cells.  Kept only for its existing tests.
+
     In the implicit (or semi-implicit) free-surface scheme, advancing η by
     one time step Δt requires solving (Dukowicz & Smith 1994, eq. 21):
 
