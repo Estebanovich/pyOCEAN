@@ -104,4 +104,5 @@ Ya instalado en Homebrew: gfortran, mpich, netcdf, netcdf-fortran (`nf-config`) 
 |---|---|
 | `validation/hycom_kara`: `bulk_kara` contra el código compilado de HYCOM | ✅ Coincide a 1e-10 (616 casos) |
 | `validation/mitgcm_exf`: `bulk_ncar` contra MITgcm `exf` (LY04 y LY09, 1000 casos) | ✅ Mediana 0.2–0.3 % para U ≥ 0.5 m/s. Todas las diferencias mayores tienen causa documentada: c_pa 1005 vs 1000.5; MITgcm usa la velocidad sin recortar con U < 0.5; 2 iteraciones no convergen con viento débil y estable. Para reproducir: `./build_and_run.sh all && python compare.py all` |
+| `validation/bayiw_seiche`: seiche barotrópico de la bahía BayIW contra las corridas de MITgcm de la tesis | ✅ Periodo 3.83 h contra 3.81–3.83 h; correlación 0.990–0.998 y RMSE ≤ 0.5 mm en 0–27 h |
 | Casos 1–9 | Pendientes |

@@ -253,3 +253,63 @@ class TestLandMask:
         np.testing.assert_array_equal(
             cart_fplane["mask_t"].values, np.ones((NY, NX), dtype=np.int8)
         )
+
+
+# ===========================================================================
+# Stretched Cartesian grid (MITgcm delXFile / delYFile)
+# ===========================================================================
+
+from core.grid.horizontal import create_cartesian_grid_stretched  # noqa: E402
+
+
+class TestStretchedCartesianGrid:
+
+    DX = np.array([10.0, 10.0, 12.0, 15.0, 20.0])
+    DY = np.array([8.0, 9.0, 10.0])
+
+    def _grid(self):
+        return create_cartesian_grid_stretched(self.DX, self.DY, x0=-5.0, y0=100.0, f0=1e-4)
+
+    def test_uniform_spacing_reproduces_uniform_grid(self):
+        g1 = create_cartesian_grid_stretched(np.full(6, 500.0), np.full(4, 500.0), f0=1e-4)
+        g2 = create_cartesian_grid(nx=6, ny=4, dx=500.0, dy=500.0, f0=1e-4)
+        for name in ("x_t", "y_t", "x_u", "y_v", "dx_t", "dy_t", "dx_u", "dy_u", "dx_v", "dy_v",
+                     "area_t", "area_u", "area_v", "f_q"):
+            np.testing.assert_allclose(g1[name].values, g2[name].values, err_msg=name)
+
+    def test_face_positions_are_cumulative_widths(self):
+        g = self._grid()
+        np.testing.assert_allclose(g.x_u.values[0], -5.0 + np.concatenate([[0], np.cumsum(self.DX)]))
+        np.testing.assert_allclose(g.y_v.values[:, 0], 100.0 + np.concatenate([[0], np.cumsum(self.DY)]))
+
+    def test_centres_mid_cell(self):
+        g = self._grid()
+        np.testing.assert_allclose(g.x_t.values[0], -5.0 + np.cumsum(self.DX) - self.DX / 2)
+
+    def test_cell_widths_and_areas(self):
+        g = self._grid()
+        np.testing.assert_allclose(g.dx_t.values[1], self.DX)
+        np.testing.assert_allclose(g.dy_t.values[:, 2], self.DY)
+        assert g.area_t.values.sum() == pytest.approx(self.DX.sum() * self.DY.sum())
+
+    def test_u_face_spacing_is_distance_between_centres(self):
+        # dxC (MITgcm): distance between neighbouring T-points; one-sided at the walls
+        g = self._grid()
+        np.testing.assert_allclose(g.dx_u.values[0, 1:-1], np.diff(g.x_t.values[0]))
+        assert g.dx_u.values[0, 0] == pytest.approx(self.DX[0])
+        assert g.dx_u.values[0, -1] == pytest.approx(self.DX[-1])
+        np.testing.assert_allclose(g.dy_u.values[:, 3], self.DY)
+
+    def test_v_face_spacing_is_distance_between_centres(self):
+        g = self._grid()
+        np.testing.assert_allclose(g.dy_v.values[1:-1, 0], np.diff(g.y_t.values[:, 0]))
+        np.testing.assert_allclose(g.dx_v.values[2], self.DX)
+
+    def test_no_scalar_spacing_attribute(self):
+        # Code that assumes a uniform dx must fail loudly on a stretched grid
+        g = self._grid()
+        assert "dx" not in g.attrs and g.attrs["grid_type"] == "cartesian_stretched"
+
+    def test_rejects_non_positive_spacing(self):
+        with pytest.raises(ValueError, match="positive"):
+            create_cartesian_grid_stretched(np.array([1.0, 0.0]), np.array([1.0]))

@@ -160,6 +160,89 @@ def create_cartesian_grid(
     )
 
 
+def create_cartesian_grid_stretched(
+    dx: np.ndarray,
+    dy: np.ndarray,
+    x0: float = 0.0,
+    y0: float = 0.0,
+    f0: float = 1e-4,
+    beta: float = 0.0,
+) -> xr.Dataset:
+    """
+    Create a Cartesian Arakawa C grid with variable (telescopic) spacing.
+
+    Equivalent to MITgcm ``delXFile``/``delYFile``: ``dx[i]`` and ``dy[j]`` are
+    the T-cell widths (MITgcm dxF, dyF).  Faces and centres are
+
+        x_u[i] = x0 + Σ_{m<i} dx[m],        x_t[i] = x_u[i] + dx[i]/2
+
+    and the spacing used for gradients at U-faces is the distance between the
+    neighbouring T-points (MITgcm dxC, Marshall et al. 1997):
+
+        dx_u[i] = x_t[i] − x_t[i−1] = (dx[i−1] + dx[i]) / 2,   1 ≤ i ≤ nx−1
+
+    with dx_u[0] = dx[0] and dx_u[nx] = dx[nx−1] at the walls (no flow there).
+    Likewise dy_v at V-faces.  Face lengths are dy_u[j] = dy[j], dx_v[i] = dx[i].
+
+    The returned grid has no scalar ``dx``/``dy`` attribute, so code that
+    assumes uniform spacing fails explicitly instead of silently.
+
+    Parameters
+    ----------
+    dx : np.ndarray, shape (nx,)
+        Zonal cell widths [m], > 0.
+    dy : np.ndarray, shape (ny,)
+        Meridional cell heights [m], > 0.
+    x0, y0 : float
+        Position of the south-west corner [m].
+    f0, beta : float
+        Coriolis parameter f = f0 + β y [s⁻¹, m⁻¹ s⁻¹].
+
+    Returns
+    -------
+    xr.Dataset
+        Same variables and dimensions as ``create_cartesian_grid``.
+    """
+    dx = np.asarray(dx, dtype=float)
+    dy = np.asarray(dy, dtype=float)
+    if np.any(dx <= 0) or np.any(dy <= 0):
+        raise ValueError("grid spacings dx and dy must be positive")
+    nx, ny = dx.size, dy.size
+
+    x_u_1d = x0 + np.concatenate([[0.0], np.cumsum(dx)])
+    y_v_1d = y0 + np.concatenate([[0.0], np.cumsum(dy)])
+    x_t_1d = x_u_1d[:-1] + 0.5 * dx
+    y_t_1d = y_v_1d[:-1] + 0.5 * dy
+
+    X_t, Y_t = np.meshgrid(x_t_1d, y_t_1d)
+    X_u, Y_u = np.meshgrid(x_u_1d, y_t_1d)
+    X_v, Y_v = np.meshgrid(x_t_1d, y_v_1d)
+    X_q, Y_q = np.meshgrid(x_u_1d, y_v_1d)
+
+    # Distance between T-points across each face (dxC, dyC); one-sided at walls
+    dxc = np.concatenate([[dx[0]], 0.5 * (dx[:-1] + dx[1:]), [dx[-1]]])
+    dyc = np.concatenate([[dy[0]], 0.5 * (dy[:-1] + dy[1:]), [dy[-1]]])
+
+    dx_t, dy_t = np.meshgrid(dx, dy)
+    dx_u, dy_u = np.meshgrid(dxc, dy)
+    dx_v, dy_v = np.meshgrid(dx, dyc)
+
+    return _assemble_dataset(
+        X_t=X_t, Y_t=Y_t, X_u=X_u, Y_u=Y_u, X_v=X_v, Y_v=Y_v, X_q=X_q, Y_q=Y_q,
+        dx_t=dx_t, dy_t=dy_t, area_t=dx_t * dy_t,
+        dx_u=dx_u, dy_u=dy_u, area_u=dx_u * dy_u,
+        dx_v=dx_v, dy_v=dy_v, area_v=dx_v * dy_v,
+        f_t=f0 + beta * Y_t, f_q=f0 + beta * Y_q,
+        mask_t=np.ones((ny, nx), dtype=np.int8),
+        attrs={
+            "grid_type": "cartesian_stretched",
+            "nx": nx, "ny": ny, "x0": x0, "y0": y0,
+            "Lx": float(dx.sum()), "Ly": float(dy.sum()),
+            "f0": f0, "beta": beta,
+        },
+    )
+
+
 def create_spherical_grid(
     nx: int,
     ny: int,
