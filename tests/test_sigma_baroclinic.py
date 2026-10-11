@@ -125,3 +125,35 @@ def test_lock_exchange_with_weno5_stays_within_the_initial_range():
     for _ in range(int(3 * 3600 / 20.0)):
         st = m.step(st)
     assert st.T.min() > 5.0 - 0.05 and st.T.max() < 10.0 + 0.05           # UP3 overshoots by ~50 %
+
+
+# ---------------------------------------------------------------- predictor–corrector tracer stepping
+def test_centred6_faces_are_sixth_order():
+    from core.dynamics.sigma_baroclinic import _centred_faces
+    errs = []
+    for n in (40, 80):
+        x = (np.arange(n) + 0.5) / n
+        h = 1.0 / n
+        c = (np.cos(2 * np.pi * (x - h / 2)) - np.cos(2 * np.pi * (x + h / 2))) / (2 * np.pi * h)
+        faces = _centred_faces(c, np.ones(n, bool), axis=0)
+        exact = np.sin(2 * np.pi * np.arange(n + 1) / n)
+        errs.append(np.abs(faces[4:-3] - exact[4:-3]).max())
+    assert np.log2(errs[0] / errs[1]) > 5.0
+
+
+def test_predictor_corrector_tracers_keep_constancy_conservation_and_the_mixing_identity():
+    m = _box(nx=40, nz=10, dx=1000.0, dt=20.0, tracer_time="pc")
+    x = (np.arange(40) + 0.5) * 1000.0
+    st = m.initial_state(0.4 * np.cos(np.pi * x / 40e3)[None, :], np.full((10, 1, 40), 3.0))
+    for _ in range(100):
+        st = m.step(st)
+    np.testing.assert_allclose(st.T, 3.0, atol=1e-11)
+    T = np.where(np.arange(40) < 20, 10.0, 0.0)[None, None, :].repeat(10, 0)
+    st = m.initial_state(np.zeros((1, 40)), T)
+    c0 = m.tracer_content(st)
+    for _ in range(50):
+        var0 = m.tracer_content(st, power=2)
+        st = m.step(st)
+        lost = (var0 - m.tracer_content(st, power=2)) / m.dt
+        assert np.isclose(st.mix_num.sum(), lost, rtol=1e-9, atol=1e-12 * abs(var0))
+    assert abs(m.tracer_content(st) / c0 - 1) < 1e-12

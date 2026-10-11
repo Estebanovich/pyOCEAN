@@ -17,7 +17,9 @@ pressure gradient and momentum advection on σ-surfaces.  Each step:
 4. Tracers in flux form with WENO5 face values (Jiang & Shu 1996; the CROCO
    GRAV_ADJ choice) — or UP3 (Leonard 1979), which overshoots by ~50 % at a
    lock-exchange nose, or first-order upwind — lower order next to walls, advanced
-   with SSP-RK3 (Shu & Osher 1988) on frozen transports, layer volumes linear in
+   with SSP-RK3 (Shu & Osher 1988) — or a predictor (centred 6th order, half step)
+   / corrector (WENO at mid-step, full step), ``tracer_time="pc"`` — on frozen
+   transports, layer volumes linear in
    time.  T and T² are advected together, giving the online numerical mixing of
    Burchard & Rennau (2008): M_num = V (A(T²) − (A T)²)/Δt.
 
@@ -167,6 +169,29 @@ def _weno5_faces(c: np.ndarray, flux: np.ndarray, ok: np.ndarray, axis: int, var
     return np.moveaxis(face, -1, axis)
 
 
+def _centred_faces(c: np.ndarray, ok: np.ndarray, axis: int, n_out: int | None = None) -> np.ndarray:
+    """
+    Centred (non-dissipative) face values on interior faces along ``axis``:
+    6th order (37(c₋₁+c₀) − 8(c₋₂+c₁) + (c₋₃+c₂))/60 where the stencil is valid,
+    4th order (7(c₋₁+c₀) − (c₋₂+c₁))/12 next to it, 2nd order at walls
+    (CROCO flux6/flux4/flux2, used in the predictor stage).  ``n_out``: length of the
+    returned face axis (default n+1; the vertical uses N, faces 0…N−1).
+    """
+    c = np.moveaxis(c, axis, -1)
+    ok = np.moveaxis(ok, axis, -1)
+    n = c.shape[-1]
+    sh = {s: _shift(c, ok, s) for s in (-3, -2, -1, 0, 1, 2)}
+    v, k = {s: sh[s][0] for s in sh}, {s: sh[s][1] for s in sh}
+    f6 = (37 * (v[-1] + v[0]) - 8 * (v[-2] + v[1]) + (v[-3] + v[2])) / 60
+    f4 = (7 * (v[-1] + v[0]) - (v[-2] + v[1])) / 12
+    f2 = 0.5 * (v[-1] + v[0])
+    m6 = k[-3] & k[-2] & k[-1] & k[0] & k[1] & k[2]
+    m4 = k[-2] & k[-1] & k[0] & k[1]
+    face = np.zeros(c.shape[:-1] + (n + 1 if n_out is None else n_out,))
+    face[..., 1:n] = np.where(m6, f6, np.where(m4, f4, f2))[..., 1:n]
+    return np.moveaxis(face, -1, axis)
+
+
 def _flux_form_u(u: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, Fz: np.ndarray, V: np.ndarray,
                  ok_u: np.ndarray) -> np.ndarray:
     """
@@ -233,7 +258,11 @@ class SigmaBaroclinic:
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, n_layers: int = 10,
                  rho0: float = 1000.0, t_coef: float = 0.2, t_ref: float = 0.0, z0: float | None = None,
                  closure: str = "constant", nu_const: float = 1e-4, ah: float = 0.0, adv: str = "flux",
-                 theta: float = 0.6, d_min: float = 0.05, g: float = G, tracer_scheme: str = "weno5") -> None:
+                 theta: float = 0.6, d_min: float = 0.05, g: float = G, tracer_scheme: str = "weno5",
+                 tracer_time: str = "ssprk3") -> None:
+        if tracer_time not in ("ssprk3", "pc"):
+            raise ValueError(f"unknown tracer time stepping {tracer_time!r}")
+        self.tracer_time = tracer_time
         if tracer_scheme not in ("weno5", "weno5js", "upwind3", "upwind1"):
             raise ValueError(f"unknown tracer scheme {tracer_scheme!r}")
         self.tracer_scheme = tracer_scheme
@@ -332,7 +361,9 @@ class SigmaBaroclinic:
         return np.where(wet_u[None], gu, 0.0), np.where(wet_v[None], gv, 0.0)
 
     # ------------------------------------------------------------------ tracers
-    def _faces(self, c: np.ndarray, flux: np.ndarray, ok: np.ndarray, axis: int) -> np.ndarray:
+    def _faces(self, c: np.ndarray, flux: np.ndarray, ok: np.ndarray, axis: int, centred: bool = False) -> np.ndarray:
+        if centred:
+            return _centred_faces(c, ok, axis, n_out=flux.shape[axis])
         if self.tracer_scheme.startswith("weno5"):
             return _weno5_faces(c, flux, ok, axis, variant="js" if self.tracer_scheme == "weno5js" else "z")
         return _up3_faces(c, flux, ok, axis, order=1 if self.tracer_scheme == "upwind1" else 3)
@@ -346,19 +377,25 @@ class SigmaBaroclinic:
         """
         dt = self.dt
 
-        def rhs(c):
+        def rhs(c, centred=False):
             okb = np.broadcast_to(ok, c.shape)
-            fx = Qx * self._faces(c, np.broadcast_to(Qx, c.shape[:1] + Qx.shape), okb, 3)
-            fy = Qy * self._faces(c, np.broadcast_to(Qy, c.shape[:1] + Qy.shape), okb, 2)
+            fx = Qx * self._faces(c, np.broadcast_to(Qx, c.shape[:1] + Qx.shape), okb, 3, centred)
+            fy = Qy * self._faces(c, np.broadcast_to(Qy, c.shape[:1] + Qy.shape), okb, 2, centred)
             # vertical: Fz[j] is the volume flux through interface j (bottom of layer j; 0 = bed, N = surface)
             fzc = np.broadcast_to(Fz[:-1], c.shape)
             fz = np.zeros(c.shape[:1] + Fz.shape)
-            fz[:, :-1] = Fz[:-1] * self._faces(c, fzc, okb, 1)
+            fz[:, :-1] = Fz[:-1] * self._faces(c, fzc, okb, 1, centred)
             return -(fx[..., 1:] - fx[..., :-1] + fy[:, :, 1:, :] - fy[:, :, :-1, :] + fz[:, 1:] - fz[:, :-1])
 
         dV = V1 - V0
         safe = lambda q, v: np.where(v > 0, q / np.where(v > 0, v, 1.0), C)     # noqa: E731
         q0 = V0 * C
+        if self.tracer_time == "pc":
+            # predictor: half step with centred 6th-order faces; corrector: full step from n with the
+            # upwind (WENO) faces of the mid-step tracer — upwinding applied once (CROCO step3d_t.F)
+            Vh = V0 + 0.5 * dV
+            ch = safe(q0 + 0.5 * dt * rhs(C, centred=True), Vh)
+            return safe(q0 + dt * rhs(ch), V1)
         q1 = q0 + dt * rhs(C)
         Va = V0 + dV
         c1 = safe(q1, Va)

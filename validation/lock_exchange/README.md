@@ -47,11 +47,27 @@ python validation/lock_exchange/run_lock_exchange.py --croco ~/pyOCEAN_refs/croc
 3. **WENO5 (Z y JS) en los trazadores.** UP3 se pasaba ~50 % del rango en la nariz del frente, lo que creaba agua más densa y más ligera que cualquiera inicial y hacía bajar la RPE.
 4. **Advección de momento en forma de flujo** (como ROMS/CROCO). La forma advectiva daba el frente 16 % lento. La velocidad del frente sale del balance de flujo de momento (Borden & Meiburg 2013; Ungarish et al. 2018).
 
-## Pendiente
+## Pendiente: pyOCEAN mezcla 1.3–1.5 veces más que CROCO
 
-- **pyOCEAN mezcla 1.3–1.5 veces más que CROCO**, con la misma malla, el mismo WENO y el mismo tratamiento de bordes. Lo que queda distinto es el avance en el tiempo de los trazadores:
-  - CROCO usa LF-AM3 con un predictor centrado de 6º orden (no disipativo) y WENO solo en el corrector;
-  - pyOCEAN usa SSP-RK3, con WENO en las tres etapas.
+**Descartado,** con la misma malla y casi el mismo resultado de RPE en cada caso:
+- el estiramiento vertical de CROCO: θ_s = 0 da la misma RPE, 2.19e-5;
+- θ (0.5 / 0.6 / 1) y Δt (5 / 10 s);
+- la variante de WENO: Z da 3.22e-5 y JS 2.92e-5;
+- el tratamiento de bordes, idéntico al de CROCO (primer orden, WENO3, WENO5);
+- el avance en el tiempo de los trazadores: el predictor-corrector al estilo CROCO (`tracer_time="pc"`, predictor centrado de 6º orden y corrector WENO) da 3.21e-5, igual que SSP-RK3.
 
-  Candidatos: un predictor-corrector al estilo de Shchepetkin & McWilliams (2005), o RK3 con WENO solo en la última etapa. Hay que medir el efecto contra la RPE.
-- **Barrido de A_h en CROCO** (UV_VIS2 con distintas viscosidades) para comparar la curva RPE contra Re_Δ entre modelos, y el barrido completo de Ilicak (A_h = 0.01–200).
+**Lo que sí difiere:**
+
+| A 6 h / 17 h | CROCO | pyOCEAN |
+|---|---|---|
+| w rms | 4.1e-4 m/s | 4.6e-4 m/s (+12 %) |
+| Rugosidad de w en x (2ª diferencia / rms) | 1.32 | 1.42 |
+| Grosor de la interfaz (10–90 %) a 17 h, lejos del centro | 3.5–4 m | 4.5–5 m |
+| Fracción de agua mezclada a 17 h | 23 % | 27 % |
+
+La mezcla de más es vertical a lo largo de la interfaz, y la acompaña una velocidad vertical algo más ruidosa a escala de malla. Los candidatos están en el lado del momento:
+1. AB3 en lugar del LF-AM3 de CROCO, que amortigua distinto las altas frecuencias;
+2. el acoplamiento barotrópico/baroclínico: superficie libre θ-implícita con corrección uniforme, contra el split-explicit filtrado de Shchepetkin & McWilliams (2005);
+3. la vertical de la advección de momento: ω en las caras u como promedio de las celdas.
+
+**Siguiente prueba:** medir la RPE con un filtro de momento o LF-AM3. Falta también el barrido de A_h en CROCO para la curva RPE contra Re_Δ.
