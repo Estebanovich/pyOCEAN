@@ -151,7 +151,7 @@ No conviene asumir temprano: el port a GPU masivo, el anidamiento de dos vías y
 | Lock exchange: frente | Benjamin ½√(g′H) = 0.495 | 0.463 / 0.486 m/s | CROCO 0.463 / 0.486 | ✅ igual a CROCO |
 | Lock exchange: mezcla espuria (ΔRPE/RPE₀, 17 h) | Ilicak 2012 | 3.2e-5 (WENO-Z), 2.9e-5 (JS) | CROCO 2.2e-5 | 🔶 1.3–1.5× CROCO (paso de tiempo de los trazadores) |
 | Seiche interno lineal (periodo) | 2L/√(g′h₁h₂/H) | +5 a +7 % (converge) | — | 🔶 |
-| Monte submarino (gradiente de presión, rx1 = 10.7) | Reposo exacto | max\|u\| 0.14–0.44 cm/s en 10 d (jacobiano + ρ_ref; sin ρ_ref 45 cm/s) | Beckmann & Haidvogel 1993: ~1 cm/s | ✅ (pendiente: jacobiano de alto orden / volumen finito) |
+| Monte submarino (gradiente de presión, rx1 = 10.7) | Reposo exacto | max\|u\| 0.17–0.41 cm/s en 10 d, con Coriolis (jacobiano + ρ_ref; sin ρ_ref 42–60 cm/s) | Beckmann & Haidvogel 1993: ~1 cm/s | ✅ (pendiente: jacobiano de alto orden / volumen finito) |
 | Restart bit a bit (σ estratificado + GLS, incl. arranque AB3) | Corrida continua | idéntico (`np.array_equal`), en CI | MOM6 y SCHISM fallan | ✅ (pendiente: corridas 2DH de marea) |
 | Verificador de dominio (Alto Golfo GEBCO crudo) | Fosa de Guaymas encontrada a mano | la detecta solo (cuerpo aislado de 6 celdas, 189 m) + 1 cuerpo y 9 fosas más candidatos a artefacto | — | ✅ |
 | Solver de superficie libre con mojado-secado (Alto Golfo, 96 273 celdas) | — | CG + LU desfasado: 1–3 iteraciones, 0.053 s/paso (antes Jacobi ~110 it, 0.079 s/paso) | — | ✅ 1.5× |

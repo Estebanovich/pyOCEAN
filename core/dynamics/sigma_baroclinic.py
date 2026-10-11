@@ -7,7 +7,7 @@ pressure gradient and momentum advection on σ-surfaces.  Each step:
 
 1. Explicit momentum tendencies G_k, combined with AB3 (Durran 2010, §2.4;
    MITgcm's AB3, Adcroft et al. 2004 [verificar]):
-       G = −(u·∇_σ)u − (ω/h) ∂u/∂k + A_h ∇²u + PGF_bc
+       G = −(u·∇_σ)u − (ω/h) ∂u/∂k + f k×u (energy conserving) + A_h ∇²u + PGF_bc
 2. ``SigmaWetDry.step``: implicit vertical viscosity + bed stress, θ-implicit
    free surface on the depth-mean, uniform barotropic correction.
 3. Layer volume transports Q_k = L D_f Δσ_k (θ u_k^{n+1} + (1−θ) u_k^n), whose
@@ -296,6 +296,7 @@ class SigmaBaroclinic:
         self.hg, self.dt, self.n, self.g = h_grid, dt, n_layers, g
         self.rho0, self.t_coef, self.t_ref, self.ah, self.adv = rho0, t_coef, t_ref, ah, adv
         self.fs = self.core.fs
+        self._fq = np.asarray(h_grid["f_q"].values, float)           # Coriolis at cell corners [s⁻¹]
         self.H = self.fs.H
         self.ds = self.core.dsigma
         self.area = self.fs.area
@@ -401,6 +402,22 @@ class SigmaBaroclinic:
         gy[:, 1:-1, :] = np.where(oky, -ay / self.fs.dv[1:-1, :] / self.rho0, 0.0)
         return gx, gy
 
+    def _coriolis(self, u: np.ndarray, v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Energy-conserving C-grid Coriolis terms (+f v̄ at u-faces, −f ū at v-faces):
+        every adjacent (u, v) pair shares one cell corner q and is weighted by ¼ f_q,
+        so the operator is antisymmetric and does no work (Sadourny 1975; Arakawa &
+        Lamb 1977).  u (N, ny, nx+1), v (N, ny+1, nx).
+        """
+        fq = self._fq
+        cu = np.zeros_like(u)
+        cv = np.zeros_like(v)
+        cu[..., 1:-1] = 0.25 * (fq[:-1, 1:-1] * (v[:, :-1, :-1] + v[:, :-1, 1:])
+                                + fq[1:, 1:-1] * (v[:, 1:, :-1] + v[:, 1:, 1:]))
+        cv[:, 1:-1, :] = -0.25 * (fq[1:-1, :-1] * (u[:, :-1, :-1] + u[:, 1:, :-1])
+                                  + fq[1:-1, 1:] * (u[:, :-1, 1:] + u[:, 1:, 1:]))
+        return cu, cv
+
     def _vertical_advection(self, vel: np.ndarray, omega_f: np.ndarray, h_f: np.ndarray) -> np.ndarray:
         """(ω/h) ∂u/∂k, centred: [ω_{k+½}(u_{k+1}−u_k) + ω_{k−½}(u_k−u_{k−1})] / (2h)."""
         out = np.zeros_like(vel)
@@ -415,6 +432,9 @@ class SigmaBaroclinic:
         wet_u = np.isfinite(self.fs.H_u) & np.isfinite(Du) & (Du > self.fs.d_min)
         wet_v = np.isfinite(self.fs.H_v) & np.isfinite(Dv) & (Dv > self.fs.d_min)
         gu, gv = self._baroclinic_pgf(st.eta, st.T)
+        cu, cv = self._coriolis(st.u, st.v)
+        gu += cu
+        gv += cv
         if self.adv == "flux":
             if st.Qx is not None:
                 V = self.layer_volumes(st.eta)

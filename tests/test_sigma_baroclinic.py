@@ -243,3 +243,37 @@ def test_auto_reference_profile_is_built_from_the_initial_state():
     m2, _ = _seamount_model("jacobian")
     gx2, _ = m2._baroclinic_pgf(st.eta, st.T)
     assert np.abs(gx).max() < 0.01 * np.abs(gx2).max()
+
+
+# ---------------------------------------------------------------- Coriolis
+def test_inertial_oscillation_has_period_two_pi_over_f():
+    # uniform current in a large closed f-plane box, no stratification: far from the walls the
+    # current turns at the inertial frequency, u = U cos(ft), v = −U sin(ft)
+    # (2000 km box, 10 m deep: wall-generated gravity waves need ~28 h to reach the centre)
+    f0, nx, dx, dt = 1e-4, 80, 25000.0, 300.0
+    hg = create_cartesian_grid(nx=nx, ny=nx, dx=dx, dy=dx, f0=f0)
+    m = SigmaBaroclinic(hg, np.full((nx, nx), 10.0), dt=dt, n_layers=2, z0=None, closure="none")
+    st = m.initial_state(np.zeros((nx, nx)), np.full((2, nx, nx), 10.0))
+    st.u[:, :, 1:-1] = 0.1
+    T = 2 * np.pi / f0
+    n_quarter = int(round(0.25 * T / dt))
+    for _ in range(n_quarter):
+        st = m.step(st)
+    c = nx // 2
+    assert abs(st.u[0, c, c]) < 0.01 and abs(st.v[0, c, c] + 0.1) < 0.01     # quarter period: u → −v
+    for _ in range(n_quarter):
+        st = m.step(st)
+    assert abs(st.u[0, c, c] + 0.1) < 0.01                                     # half period: reversed
+
+
+def test_coriolis_conserves_kinetic_energy_of_the_term():
+    # the discrete Coriolis term does no work: Σ u·(f v̄) + Σ v·(−f ū) = 0 on a uniform grid
+    rng = np.random.default_rng(5)
+    hg = create_cartesian_grid(nx=12, ny=10, dx=1000.0, dy=1000.0, f0=1e-4)
+    m = SigmaBaroclinic(hg, np.full((10, 12), 50.0), dt=60.0, n_layers=3)
+    u = rng.normal(size=(3, 10, 13))
+    v = rng.normal(size=(3, 11, 12))
+    u[..., [0, -1]] = 0.0
+    v[:, [0, -1], :] = 0.0
+    cu, cv = m._coriolis(u, v)
+    assert abs(np.sum(u * cu) + np.sum(v * cv)) < 1e-12 * np.sum(u**2)
