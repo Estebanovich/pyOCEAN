@@ -154,13 +154,14 @@ No conviene asumir temprano: el port a GPU masivo, el anidamiento de dos vías y
 | Monte submarino (gradiente de presión) | Reposo exacto | — | ROMS, CROCO | ⬜ pendiente |
 | Restart bit a bit (σ estratificado + GLS, incl. arranque AB3) | Corrida continua | idéntico (`np.array_equal`), en CI | MOM6 y SCHISM fallan | ✅ (pendiente: corridas 2DH de marea) |
 | Verificador de dominio (Alto Golfo GEBCO crudo) | Fosa de Guaymas encontrada a mano | la detecta solo (cuerpo aislado de 6 celdas, 189 m) + 1 cuerpo y 9 fosas más candidatos a artefacto | — | ✅ |
+| Solver de superficie libre con mojado-secado (Alto Golfo, 96 273 celdas) | — | CG + LU desfasado: 1–3 iteraciones, 0.053 s/paso (antes Jacobi ~110 it, 0.079 s/paso) | — | ✅ 1.5× |
 | Rendimiento | — | 33 días PAC_MEX 650×500 en 11 min, 1 núcleo | — | ⬜ falta medir HYCOM con la misma configuración |
 
 ## 8. Hoja de ruta propuesta
 
 Reorganiza las fases del `CLAUDE.md`. Cambiar el plan del `CLAUDE.md` requiere la aprobación de Esteban.
 
-**Etapa A, cimientos de calidad (corto plazo):**
+**Etapa A, cimientos de calidad (corto plazo): ✅ cerrada el 2026-10-11.** Quedan abiertos el restart y la salida CF en las corridas 2DH de marea, y la RPE del lock exchange a 1.3–1.5× de CROCO (lado del momento; ver `validation/lock_exchange/README.md`).
 - Diagnósticos de mezcla espuria (RPE, decaimiento de varianza) y casos *lock exchange* y seiche interno.
 - Restart bit a bit con test de CI.
 - AB3 o LF-AM3.

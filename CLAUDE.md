@@ -135,7 +135,7 @@ Follow the stage order of `docs/design/vision_roadmap.md` §8; a stage closes wh
 
 | Stage | Content | Validation target |
 |-------|---------|-------------------|
-| A — Quality foundations | spurious-mixing diagnostics (RPE, variance decay), bit-for-bit restarts, AB3/LF-AM3, LU reuse / PyAMG, CF/Zarr output, domain checker + blow-up post-mortem, log-law drag in regional runs | lock exchange, internal seiche (Ilicak 2012); restart CI |
+| A — Quality foundations ✅ (2026-10-11; open: tide runners restart/output wiring, lock-exchange RPE 1.3–1.5× CROCO) | spurious-mixing diagnostics (RPE, variance decay), bit-for-bit restarts, AB3/LF-AM3, LU reuse / PyAMG, CF/Zarr output, domain checker + blow-up post-mortem, log-law drag in regional runs | lock exchange, internal seiche (Ilicak 2012); restart CI |
 | B — 3-D physics | vertical advection + stratification in σ-3D, finite-volume PGF, vector-invariant momentum, Casulli subgrid W/D + Stelling–Duinmeijer fronts, low-frequency-only sponge | seamount, Thacker (xfail → pass), BayIW baroclinic seiche vs MITgcm |
 | C — ALE hybrid (old Phase 3) | general ALE regrid–remap (PPM/PQM) with z*, σ, z̃, HYCOM-hybrid and adaptive targets; split-explicit barotropic mode | DOME overflow, seamount, HYCOM comparison |
 | D — Differentiable | JAX backend (functional kernels), custom VJPs for the free-surface solve and Thomas, smoothed W/D gradients, checkpointing | gradients vs finite differences; inversion vs TICON gauges |
@@ -194,7 +194,7 @@ Last updated: 2026-10-10.  All tests run with `pytest tests/`.
 | JSL internal-tide drag (tidal.rh generation + HYCOM tiddrg=1 drag) | `physics/tides/drag.py` | `tests/test_tidal_drag.py` | ✅ 8/8 |
 | Raw sea-level QC + harmonic analysis (spikes, stuck, datum steps, clock, twin sensors) | `diagnostics/sealevel_qc.py` | `tests/test_sealevel_qc.py` | ✅ 37/37 |
 | Nonlinear shallow-water terms (−∇·(ηu), advection centred/upwind3, Laplacian viscosity) | `core/dynamics/nonlinear.py` | `tests/test_nonlinear.py` | ✅ 18/18 |
-| Wetting and drying (Casulli semi-implicit, total depth, Flather) — Thacker exact + CROCO THACKER/TIDAL_FLAT | `core/dynamics/wetting_drying.py` | `tests/test_wetting_drying.py` | ✅ 22/22 (+1 strict xfail) |
+| Wetting and drying (Casulli semi-implicit, total depth, Flather; CG with lagged-LU preconditioner) — Thacker exact + CROCO THACKER/TIDAL_FLAT | `core/dynamics/wetting_drying.py` | `tests/test_wetting_drying.py` | ✅ 24/24 (+1 strict xfail) |
 | Log-law depth-dependent bottom drag C_d(D, z₀) + first-layer law of the wall (Soulsby 1997; CROCO) | `physics/bottom_friction.py` | `tests/test_bottom_friction.py` | ✅ 4/4 |
 | GLS k-ε turbulence closure, Canuto A (column port of CROCO gls_mixing.F) + parabolic ν | `physics/mixing/gls.py`, `physics/mixing/parabolic.py` | `tests/test_gls.py` | ✅ 3/3 |
 | Homogeneous 3-D σ-layer wetting–drying model (Casulli & Cheng 1992) — CROCO 3D TIDAL_FLAT to 1.2 cm | `core/dynamics/sigma_wd.py` | `tests/test_sigma_wd.py` | ✅ 8/8 |
@@ -203,9 +203,10 @@ Last updated: 2026-10-10.  All tests run with `pytest tests/`.
 | Bit-for-bit restart (float64 CF NetCDF; AB history, transports, GLS state; config check) | `core/restart.py` | `tests/test_restart.py` | ✅ 5/5 |
 | Domain checker (rx0/rx1, isolated water bodies, pits, isolated cells, CFL advice) | `diagnostics/domain_check.py` | `tests/test_domain_check.py` | ✅ 7/7 |
 | Blow-up post-mortem guard (NaN/limit location, lat/lon, depth, CFL, history, state dump) | `diagnostics/postmortem.py` | `tests/test_postmortem.py` | ✅ 4/4 |
+| CF-1.8/SGRID output, Zarr (appendable) or NetCDF4, σ formula_terms | `diagnostics/output.py` | `tests/test_output.py` | ✅ 4/4 |
 | Local literature search (first step before Consensus) | `scripts/litsearch.py` | `tests/test_litsearch.py` | ✅ 3/3 |
 
-**Phase 2 in progress — 868 total tests passing (+1 strict xfail).**
+**Phase 2 in progress — 874 total tests passing (+1 strict xfail).**
 
 ### Phase 2 build order
 

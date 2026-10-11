@@ -258,6 +258,32 @@ def test_cg_solver_matches_direct():
     np.testing.assert_allclose(eta[0], e_direct, atol=1e-8)
 
 
+
+def test_lagged_lu_preconditioner_matches_direct_with_few_iterations():
+    # CG preconditioned with the exact LU of an earlier (lagged) matrix: same answer as the direct
+    # solve, 1–3 iterations instead of ~100, refactorised only when the iterations grow
+    x, e_direct, *_ = thacker_run(2000.0, 0.5 * PERIOD)
+    nx = x.size
+    hg = create_cartesian_grid(nx=nx, ny=1, dx=2000.0, dy=2000.0, f0=0.0)
+    H = D0 * (1 - (x / L) ** 2)[None, :]
+    fs = WetDryFreeSurface(hg, H, dt=60.0, theta=0.55, g=G, solver="cg", cg_rtol=1e-12, precond="lu",
+                           refactor_iterations=4)
+    eta = thacker_exact(x, 0.0)[0][None, :]
+    u, v = np.zeros((1, nx + 1)), np.zeros((2, nx))
+    its = []
+    nsteps = int(round(0.5 * PERIOD / 60.0))
+    for _ in range(nsteps):
+        eta, u, v = fs.step(eta, u, v, u.copy(), v.copy())
+        its.append(fs.cg_iterations)
+    np.testing.assert_allclose(eta[0], e_direct, atol=1e-8)
+    assert max(its) <= 6 and fs.lu_factorizations < nsteps / 5
+
+
+def test_unknown_preconditioner_is_rejected():
+    hg = create_cartesian_grid(nx=4, ny=1, dx=1000.0, dy=1000.0, f0=0.0)
+    with pytest.raises(ValueError):
+        WetDryFreeSurface(hg, np.full((1, 4), 5.0), dt=60.0, solver="cg", precond="amg")
+
 # ---------------------------------------------------------------------------
 # Cross-model: CROCO TIDAL_FLAT (2DH) — moving shoreline under a 4 m tide with
 # advection and quadratic drag.  Reference written by

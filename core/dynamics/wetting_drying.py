@@ -43,7 +43,7 @@ from __future__ import annotations
 import numpy as np
 import scipy.sparse as sp
 import xarray as xr
-from scipy.sparse.linalg import LinearOperator, cg, spsolve
+from scipy.sparse.linalg import LinearOperator, cg, splu, spsolve
 
 G = 9.81
 
@@ -71,21 +71,37 @@ class WetDryFreeSurface:
         outward transport Q = L D [ū_ext,out + √(g/D)(η_c − η_ext)], θ-weighted
         between n and n+1 as in ``ImplicitFreeSurface``.
     solver : {'direct', 'cg'}
-        Sparse direct solve each step, or Jacobi-preconditioned conjugate
-        gradients warm-started from η^n (the matrix changes every step, so a
-        factorisation cannot be reused; CG is much cheaper on large grids).
+        Sparse direct solve each step, or preconditioned conjugate gradients
+        warm-started from η^n (the matrix changes every step with the total depth).
     cg_rtol : float
         Relative residual tolerance of CG.
+    precond : {'lu', 'jacobi'}
+        CG preconditioner: 'lu' (default) uses the exact LU factorisation of a
+        lagged matrix — still the inverse of an SPD matrix close to the current
+        one — refactorised when CG needs more than ``refactor_iterations``;
+        'jacobi' is the diagonal.  On the 96 273-cell northern Gulf of
+        California nest: 1–3 iterations and 7–19 ms per solve vs 97–117
+        iterations and ~50 ms with Jacobi (factorisation 0.19 s).
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, theta: float = 0.6,
                  g: float = G, d_min: float = 0.05, flather_u: np.ndarray | None = None,
-                 flather_v: np.ndarray | None = None, solver: str = "direct", cg_rtol: float = 1e-10) -> None:
+                 flather_v: np.ndarray | None = None, solver: str = "direct", cg_rtol: float = 1e-10,
+                 precond: str = "lu", refactor_iterations: int = 5) -> None:
         if not 0.5 <= theta <= 1.0:
             raise ValueError(f"theta must be in [0.5, 1], got {theta}")
         if solver not in ("direct", "cg"):
             raise ValueError(f"solver must be 'direct' or 'cg', got {solver!r}")
+        if precond not in ("lu", "jacobi"):
+            raise ValueError(f"precond must be 'lu' or 'jacobi', got {precond!r}")
         self.solver, self.cg_rtol = solver, cg_rtol
+        # CG preconditioner: 'lu' = exact LU of a lagged matrix (refactorised when CG needs more than
+        # ``refactor_iterations``); the matrix changes slowly with the total depth, so the lagged inverse
+        # stays an excellent SPD preconditioner (1–3 iterations vs ~100 with Jacobi on the northern Gulf nest)
+        self.precond, self.refactor_iterations = precond, refactor_iterations
+        self._lu = None
+        self._refactor = True
+        self.lu_factorizations = 0
         self.cg_iterations = 0
         self.dt, self.theta, self.g, self.d_min = float(dt), float(theta), float(g), float(d_min)
         H = np.asarray(bathy, float)
@@ -228,8 +244,15 @@ class WetDryFreeSurface:
         if self.solver == "direct":
             x = spsolve(A.tocsc(), rhs)
         else:
-            dinv = 1.0 / A.diagonal()
-            M = LinearOperator(A.shape, matvec=lambda r: dinv * r)
+            if self.precond == "lu":
+                if self._lu is None or self._refactor:
+                    self._lu = splu(A.tocsc())
+                    self.lu_factorizations += 1
+                    self._refactor = False
+                M = LinearOperator(A.shape, matvec=self._lu.solve)
+            else:
+                dinv = 1.0 / A.diagonal()
+                M = LinearOperator(A.shape, matvec=lambda r: dinv * r)
             count = [0]
 
             def _cb(_):
@@ -239,6 +262,8 @@ class WetDryFreeSurface:
             if info != 0:
                 raise RuntimeError(f"wet-dry free-surface CG did not converge (info={info})")
             self.cg_iterations = count[0]
+            if self.precond == "lu" and count[0] > self.refactor_iterations:
+                self._refactor = True                       # refresh the lagged LU for the next step
         eta_new = np.array(eta, float, copy=True)
         eta_new[self.active] = x
 
