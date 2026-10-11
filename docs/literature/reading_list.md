@@ -72,42 +72,43 @@
 
 | | Referencia | DOI | Archivo sugerido | Estado |
 |---|---|---|---|---|
-| ★ | Casulli & Cheng 1992, Semi-implicit 3-D shallow water flow, IJNMF | [10.1002/fld.1650150602](https://doi.org/10.1002/fld.1650150602) [verificar] | `Casulli_Cheng_1992 - Semi-Implicit Finite Difference Methods for 3D Shallow Water Flow.pdf` | ⬜ |
-| ★ | Casulli 2009, High-resolution wetting and drying (subgrid), IJNMF | [10.1002/fld.1896](https://doi.org/10.1002/fld.1896) [verificar] | `Casulli_2009 - A High-Resolution Wetting and Drying Algorithm for Free-Surface Hydrodynamics.pdf` | ⬜ |
-| ★ | Stelling & Duinmeijer 2003, Momentum-conserving fronts, IJNMF | [10.1002/fld.595](https://doi.org/10.1002/fld.595) [verificar] | `Stelling_Duinmeijer_2003 - A Staggered Conservative Scheme for Every Froude Number.pdf` | ⬜ |
-| ★ | Thacker 1981, Some exact solutions to the nonlinear shallow-water wave equations, JFM | [10.1017/S0022112081001882](https://doi.org/10.1017/S0022112081001882) [verificar] | `Thacker_1981 - Some Exact Solutions to the Nonlinear Shallow-Water Wave Equations.pdf` | ⬜ |
-| ★ | Umlauf & Burchard 2003, A generic length-scale equation, J. Mar. Res. | [10.1357/002224003322005087](https://doi.org/10.1357/002224003322005087) [verificar] | `Umlauf_Burchard_2003 - A Generic Length-Scale Equation for Geophysical Turbulence Models.pdf` | ⬜ |
-| ★ | Warner et al. 2005, Four turbulence closures via GLS, Ocean Modell. | [10.1016/j.ocemod.2003.12.003](https://doi.org/10.1016/j.ocemod.2003.12.003) [verificar] | `Warner_2005 - Performance of Four Turbulence Closure Models Implemented Using GLS.pdf` | ⬜ |
-| ★ | Canuto et al. 2001, Ocean turbulence Part I, JPO | [10.1175/1520-0485(2001)031<1413:OTPIOP>2.0.CO;2](https://doi.org/10.1175/1520-0485(2001)031%3C1413:OTPIOP%3E2.0.CO;2) [verificar] | `Canuto_2001 - Ocean Turbulence Part I.pdf` | ⬜ |
+| ★ | Casulli & Cheng 1992, Semi-implicit 3-D shallow water flow, IJNMF | [10.1002/fld.1650150602](https://doi.org/10.1002/fld.1650150602) [verificar] | `Casulli_Cheng_1992 - Semi-Implicit Finite Difference Methods for 3D Shallow Water Flow.pdf` | ✅ |
+| ★ | Casulli 2009, High-resolution wetting and drying (subgrid), IJNMF | [10.1002/fld.1896](https://doi.org/10.1002/fld.1896) | `Casulli_2009 - A High-Resolution Wetting and Drying Algorithm for Free-Surface Hydrodynamics.pdf` | ✅ |
+| ★ | Stelling & Duinmeijer 2003, A staggered conservative scheme for every Froude number in rapidly varied shallow water flows, IJNMF 43:1329–1354 | [10.1002/fld.537](https://doi.org/10.1002/fld.537) [verificar] (el DOI fld.595 de antes era otro artículo) | `Stelling_Duinmeijer_2003 - A Staggered Conservative Scheme for Every Froude Number.pdf` | ⬜ |
+| | Stelling & Zijlema 2003, Non-hydrostatic free-surface flow (SWASH-type), IJNMF 43:1–23 — etapa E | [10.1002/fld.595](https://doi.org/10.1002/fld.595) | `Stelling_Zijlema_2003 - An Accurate and Efficient Finite-Difference Algorithm for Non-Hydrostatic Free-Surface Flow.pdf` | ✅ |
+| ★ | Thacker 1981, Some exact solutions to the nonlinear shallow-water wave equations, JFM | [10.1017/S0022112081001882](https://doi.org/10.1017/S0022112081001882) [verificar] | `Thacker_1981 - Some Exact Solutions to the Nonlinear Shallow-Water Wave Equations.pdf` | ✅ |
+| ★ | Umlauf & Burchard 2003, A generic length-scale equation, J. Mar. Res. | [10.1357/002224003322005087](https://doi.org/10.1357/002224003322005087) [verificar] | `Umlauf_Burchard_2003 - A Generic Length-Scale Equation for Geophysical Turbulence Models.pdf` | ✅ |
+| ★ | Warner et al. 2005, Four turbulence closures via GLS, Ocean Modell. | [10.1016/j.ocemod.2003.12.003](https://doi.org/10.1016/j.ocemod.2003.12.003) [verificar] | `Warner_2005 - Performance of Four Turbulence Closure Models Implemented Using GLS.pdf` | ✅ |
+| ★ | Canuto et al. 2001, Ocean turbulence Part I, JPO | [10.1175/1520-0485(2001)031<1413:OTPIOP>2.0.CO;2](https://doi.org/10.1175/1520-0485(2001)031%3C1413:OTPIOP%3E2.0.CO;2) [verificar] | `Canuto_2001 - Ocean Turbulence Part I.pdf` | ✅ |
 | ★ | Soulsby 1997, Dynamics of Marine Sands (libro, §3: C_d log-law) | ISBN 0-7277-2584-X [verificar] | `Soulsby_1997 - Dynamics of Marine Sands.pdf` | ⬜ |
 
 ## 5. Diferenciabilidad y adjuntos (etapa D)
 
 | | Referencia | DOI | Archivo sugerido | Estado |
 |---|---|---|---|---|
-| | Koldunov et al. 2026, FESOM2-JAX: a differentiable shadow of FESOM2 | [10.48550/arXiv.2608.01546](https://doi.org/10.48550/arXiv.2608.01546) | `Koldunov_2026 - FESOM2-JAX.pdf` | ⬜ |
-| | Meunier et al. 2025, Towards fully differentiable neural ocean model with Veros | [10.48550/arXiv.2511.17427](https://doi.org/10.48550/arXiv.2511.17427) | `Meunier_2025 - Towards Fully Differentiable Neural Ocean Model with Veros.pdf` | ⬜ |
-| | Cardoso-Bihlo et al. 2026, AegirJAX: end-to-end differentiable coastal hydrodynamics | [10.48550/arXiv.2604.07129](https://doi.org/10.48550/arXiv.2604.07129) | `CardosoBihlo_2026 - A Solver-in-the-Loop Framework for Differentiable Coastal Hydrodynamics.pdf` | ⬜ |
-| | Moses et al. 2026, DJ4Earth: differentiable Earth system modeling (Enzyme/Reactant), JAMES | [10.1029/2025MS005615](https://doi.org/10.1029/2025MS005615) | `Moses_2026 - DJ4Earth Differentiable and Performance-Portable Earth System Modeling.pdf` | ⬜ |
-| | Gaikwad et al. 2024, MITgcm-AD v2 (Tapenade), FGCS | [10.1016/j.future.2024.107512](https://doi.org/10.1016/j.future.2024.107512) | `Gaikwad_2024 - MITgcm-AD v2.pdf` | ⬜ |
-| | Heimbach et al. 2005, Exact adjoint of the parallel MITgcm, FGCS | [10.1016/j.future.2004.11.010](https://doi.org/10.1016/j.future.2004.11.010) | `Heimbach_2005 - An Efficient Exact Adjoint of the Parallel MIT General Circulation Model.pdf` | ⬜ |
-| | Song et al. 2024, Adjoint-based gradients for implicit differentiable modeling, HESS | [10.5194/hess-28-3051-2024](https://doi.org/10.5194/hess-28-3051-2024) | `Song_2024 - Adjoint-Based Gradients for Implicit Differentiable Modeling.pdf` | ⬜ |
-| | Liu et al. 2026, JAX-AMG: differentiable sparse linear solver, SoftwareX | [10.1016/j.softx.2026.102966](https://doi.org/10.1016/j.softx.2026.102966) | `Liu_2026 - JAX-AMG.pdf` | ⬜ |
-| | Bezgin et al. 2023, JAX-Fluids, Comput. Phys. Commun. | [10.1016/j.cpc.2022.108527](https://doi.org/10.1016/j.cpc.2022.108527) | `Bezgin_2023 - JAX-FLUIDS.pdf` | ⬜ |
-| | Tber et al. 2007, Tangent and adjoint of OPA with Tapenade | [10.48550/arXiv.0711.4444](https://doi.org/10.48550/arXiv.0711.4444) | `Tber_2007 - Building the Tangent and Adjoint Codes of OPA with TAPENADE.pdf` | ⬜ |
+| | Koldunov et al. 2026, FESOM2-JAX: a differentiable shadow of FESOM2 | [10.48550/arXiv.2608.01546](https://doi.org/10.48550/arXiv.2608.01546) | `Koldunov_2026 - FESOM2-JAX.pdf` | ✅ |
+| | Meunier et al. 2025, Towards fully differentiable neural ocean model with Veros | [10.48550/arXiv.2511.17427](https://doi.org/10.48550/arXiv.2511.17427) | `Meunier_2025 - Towards Fully Differentiable Neural Ocean Model with Veros.pdf` | ✅ |
+| | Cardoso-Bihlo et al. 2026, AegirJAX: end-to-end differentiable coastal hydrodynamics | [10.48550/arXiv.2604.07129](https://doi.org/10.48550/arXiv.2604.07129) | `CardosoBihlo_2026 - A Solver-in-the-Loop Framework for Differentiable Coastal Hydrodynamics.pdf` | ✅ |
+| | Moses et al. 2026, DJ4Earth: differentiable Earth system modeling (Enzyme/Reactant), JAMES | [10.1029/2025MS005615](https://doi.org/10.1029/2025MS005615) | `Moses_2026 - DJ4Earth Differentiable and Performance-Portable Earth System Modeling.pdf` | ✅ |
+| | Gaikwad et al. 2025, MITgcm-AD v2 (Tapenade), FGCS | [10.1016/j.future.2024.107512](https://doi.org/10.1016/j.future.2024.107512) | `Gaikwad_2025 - MITgcm-AD v2.pdf` | ✅ |
+| | Heimbach et al. 2005, Exact adjoint of the parallel MITgcm, FGCS | [10.1016/j.future.2004.11.010](https://doi.org/10.1016/j.future.2004.11.010) | `Heimbach_2005 - An Efficient Exact Adjoint of the Parallel MIT General Circulation Model.pdf` | ✅ |
+| | Song et al. 2024, Adjoint-based gradients for implicit differentiable modeling, HESS | [10.5194/hess-28-3051-2024](https://doi.org/10.5194/hess-28-3051-2024) | `Song_2024 - Adjoint-Based Gradients for Implicit Differentiable Modeling.pdf` | ✅ |
+| | Liu et al. 2026, JAX-AMG: differentiable sparse linear solver, SoftwareX | [10.1016/j.softx.2026.102966](https://doi.org/10.1016/j.softx.2026.102966) | `Liu_2026 - JAX-AMG.pdf` | ✅ |
+| | Bezgin et al. 2023, JAX-Fluids, Comput. Phys. Commun. | [10.1016/j.cpc.2022.108527](https://doi.org/10.1016/j.cpc.2022.108527) | `Bezgin_2023 - JAX-FLUIDS.pdf` | ✅ |
+| | Tber et al. 2007, Tangent and adjoint of OPA with Tapenade | [10.48550/arXiv.0711.4444](https://doi.org/10.48550/arXiv.0711.4444) | `Tber_2007 - Building the Tangent and Adjoint Codes of OPA with TAPENADE.pdf` | ✅ |
 
 ## 6. ML y emuladores (etapa F)
 
 | | Referencia | DOI | Archivo sugerido | Estado |
 |---|---|---|---|---|
-| | Lupin-Jimenez et al. 2025, Regional ocean emulators, Gulf of Mexico | [10.48550/arXiv.2501.05058](https://doi.org/10.48550/arXiv.2501.05058) | `LupinJimenez_2025 - Simultaneous Emulation and Downscaling with Regional Ocean Emulators.pdf` | ⬜ |
-| | Zavala-Romero et al. 2025, CNNs for sea-surface DA in HYCOM, Gulf of Mexico, Ocean Sci. | [10.5194/os-21-113-2025](https://doi.org/10.5194/os-21-113-2025) | `ZavalaRomero_2025 - CNNs for Sea Surface Data Assimilation in Operational Ocean Models.pdf` | ⬜ |
-| | Chattopadhyay et al. 2024, OceanNet: neural-operator digital twin for regional oceans, Sci. Rep. | [10.1038/s41598-024-72145-0](https://doi.org/10.1038/s41598-024-72145-0) | `Chattopadhyay_2024 - OceanNet.pdf` | ⬜ |
-| | Dheeshjith et al. 2025, Samudra: AI global ocean emulator, GRL | [10.1029/2024GL114318](https://doi.org/10.1029/2024GL114318) | `Dheeshjith_2025 - Samudra.pdf` | ⬜ |
-| | Yuan et al. 2026, Samudra 2 | [10.48550/arXiv.2606.02610](https://doi.org/10.48550/arXiv.2606.02610) | `Yuan_2026 - Samudra 2.pdf` | ⬜ |
-| | Cui et al. 2025, WenHai: forecasting the eddying ocean, Nat. Commun. | [10.1038/s41467-025-57389-2](https://doi.org/10.1038/s41467-025-57389-2) | `Cui_2025 - Forecasting the Eddying Ocean with a Deep Neural Network.pdf` | ⬜ |
-| | Niu et al. 2026, FuXi-Ocean, npj Clim. Atmos. Sci. | [10.1038/s41612-026-01444-2](https://doi.org/10.1038/s41612-026-01444-2) | `Niu_2026 - FuXi-Ocean.pdf` | ⬜ |
-| | Holmberg et al. 2025, SeaCast: Mediterranean forecasting with graph DL, Sci. Rep. | [10.1038/s41598-025-31177-w](https://doi.org/10.1038/s41598-025-31177-w) | `Holmberg_2025 - Accurate Mediterranean Sea Forecasting via Graph-Based Deep Learning.pdf` | ⬜ |
-| | Espinosa et al. 2026, DLESyM-Ocean | [10.48550/arXiv.2608.11545](https://doi.org/10.48550/arXiv.2608.11545) | `Espinosa_2026 - DLESyM-Ocean.pdf` | ⬜ |
-| | Bolton & Zanna 2019, Deep learning for ocean data inference and subgrid parameterization, JAMES | [10.1029/2018MS001472](https://doi.org/10.1029/2018MS001472) | `Bolton_Zanna_2019 - Applications of Deep Learning to Ocean Data Inference and Subgrid Parameterization.pdf` | ⬜ |
-| | Sonnewald et al. 2021, Bridging observations, theory and simulation with ML, ERL | [10.1088/1748-9326/ac0eb0](https://doi.org/10.1088/1748-9326/ac0eb0) | `Sonnewald_2021 - Bridging Observations Theory and Numerical Simulation of the Ocean Using ML.pdf` | ⬜ |
+| | Lupin-Jimenez et al. 2025, Regional ocean emulators, Gulf of Mexico | [10.48550/arXiv.2501.05058](https://doi.org/10.48550/arXiv.2501.05058) | `LupinJimenez_2025 - Simultaneous Emulation and Downscaling with Regional Ocean Emulators.pdf` | ✅ |
+| | Zavala-Romero et al. 2025, CNNs for sea-surface DA in HYCOM, Gulf of Mexico, Ocean Sci. | [10.5194/os-21-113-2025](https://doi.org/10.5194/os-21-113-2025) | `ZavalaRomero_2025 - CNNs for Sea Surface Data Assimilation in Operational Ocean Models.pdf` | ✅ |
+| | Chattopadhyay et al. 2024, OceanNet: neural-operator digital twin for regional oceans, Sci. Rep. | [10.1038/s41598-024-72145-0](https://doi.org/10.1038/s41598-024-72145-0) | `Chattopadhyay_2024 - OceanNet.pdf` | ✅ |
+| | Dheeshjith et al. 2025, Samudra: AI global ocean emulator, GRL | [10.1029/2024GL114318](https://doi.org/10.1029/2024GL114318) | `Dheeshjith_2025 - Samudra.pdf` | ✅ |
+| | Yuan et al. 2026, Samudra 2 | [10.48550/arXiv.2606.02610](https://doi.org/10.48550/arXiv.2606.02610) | `Yuan_2026 - Samudra 2.pdf` | ✅ |
+| | Cui et al. 2025, WenHai: forecasting the eddying ocean, Nat. Commun. | [10.1038/s41467-025-57389-2](https://doi.org/10.1038/s41467-025-57389-2) | `Cui_2025 - Forecasting the Eddying Ocean with a Deep Neural Network.pdf` | ✅ |
+| | Niu et al. 2026, FuXi-Ocean, npj Clim. Atmos. Sci. | [10.1038/s41612-026-01444-2](https://doi.org/10.1038/s41612-026-01444-2) | `Niu_2026 - FuXi-Ocean.pdf` | ⬜ (la descarga del 11-oct falló: token expirado) |
+| | Holmberg et al. 2025, SeaCast: Mediterranean forecasting with graph DL, Sci. Rep. | [10.1038/s41598-025-31177-w](https://doi.org/10.1038/s41598-025-31177-w) | `Holmberg_2025 - Accurate Mediterranean Sea Forecasting via Graph-Based Deep Learning.pdf` | ✅ |
+| | Espinosa et al. 2026, DLESyM-Ocean | [10.48550/arXiv.2608.11545](https://doi.org/10.48550/arXiv.2608.11545) | `Espinosa_2026 - DLESyM-Ocean.pdf` | ✅ |
+| | Bolton & Zanna 2019, Deep learning for ocean data inference and subgrid parameterization, JAMES | [10.1029/2018MS001472](https://doi.org/10.1029/2018MS001472) | `Bolton_Zanna_2019 - Applications of Deep Learning to Ocean Data Inference and Subgrid Parameterization.pdf` | ✅ |
+| | Sonnewald et al. 2021, Bridging observations, theory and simulation with ML, ERL | [10.1088/1748-9326/ac0eb0](https://doi.org/10.1088/1748-9326/ac0eb0) | `Sonnewald_2021 - Bridging Observations Theory and Numerical Simulation of the Ocean Using ML.pdf` | ✅ |
