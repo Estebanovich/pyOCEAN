@@ -196,6 +196,8 @@ def main() -> None:
         d = np.hypot((lon_t - s.lon) * np.cos(np.deg2rad(s.lat)), lat_t - s.lat)
         d = np.where(wet_t, d, np.inf)
         j, i = np.unravel_index(np.argmin(d), d.shape)
+        if d[j, i] > 3 * 0.04 * 1.01:                    # > 3 cells: not in this ocean (e.g. Gulf of Mexico)
+            continue
         # the observation (with gaps) is the fitted series and the gap-free model the reference:
         # obs ≈ κ' model(t − τ'), reported as the model's gain 1/κ' and lag −τ'
         x = (t - t[0]) / HOUR
@@ -212,7 +214,7 @@ def main() -> None:
     o = pd.DataFrame(rows).sort_values("lat")
     o.to_csv(OUT / "ioc_obs.csv", index=False, float_format="%.3f")
     gom = (o.lon > -97.5) & (o.lat > 17.5) if len(o) else []          # Bay of Campeche piece of the subdomain
-    for label, d in (("Pacific + Gulf of California", o[~gom]), ("Gulf of Mexico (near the E Flather edge)", o[gom])):
+    for label, d in (("Pacific + Gulf of California", o[~gom]), ("Gulf of Mexico", o[gom])):
         if len(d):
             parts = [f"{n}: rms {d[f'{n}_rms_cm'].median():.1f} cm, κ {d[f'{n}_gain'].median():.2f}"
                      for n in ["hycom", *tags]]

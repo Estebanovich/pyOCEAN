@@ -2,4 +2,3 @@ cycle 271 − cycle 269 (overlap 60 h): rms diff first hour 10.4 cm, hours 1–6
 TICON gauges, Gulf of California (7): hycom: rms 6.3 cm, κ 1.03 | sep_jsl0.5_cb: rms 7.0 cm, κ 1.05 | sep_cd0.0025: rms 7.6 cm, κ 1.07 | tpxo: rms 2.8 cm, κ 0.98
 TICON gauges, Pacific (21): hycom: rms 3.5 cm, κ 1.00 | sep_jsl0.5_cb: rms 2.6 cm, κ 1.01 | sep_cd0.0025: rms 2.7 cm, κ 1.02 | tpxo: rms 2.6 cm, κ 0.99
 IOC observations, Pacific + Gulf of California (5: ptan2, sali, zihu, puer2, lpaz2): hycom: rms 4.9 cm, κ 1.03 | sep_jsl0.5_cb: rms 5.1 cm, κ 1.03 | sep_cd0.0025: rms 5.1 cm, κ 1.04
-IOC observations, Gulf of Mexico (near the E Flather edge) (1: vera): hycom: rms 15.7 cm, κ 3.15 | sep_jsl0.5_cb: rms 15.6 cm, κ 3.14 | sep_cd0.0025: rms 15.5 cm, κ 3.16
