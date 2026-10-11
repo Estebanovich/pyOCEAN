@@ -31,3 +31,10 @@ def test_search_is_recursive_and_case_insensitive(tmp_path):
 
 def test_no_match_returns_empty(tmp_path):
     assert search(["wetting and drying"], _lib(tmp_path)) == []
+
+
+def test_scanned_pdfs_without_text_are_reported(tmp_path):
+    from litsearch import scanned
+    (tmp_path / "Old_1991 - Scanned.md").write_text("Downloaded from somewhere\n")
+    (tmp_path / "New_2020 - Text.md").write_text("word " * 1000)
+    assert [p.name for p in scanned(tmp_path)] == ["Old_1991 - Scanned.md"]

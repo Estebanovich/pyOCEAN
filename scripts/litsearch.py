@@ -47,6 +47,11 @@ def convert_missing(lib: Path) -> list[Path]:
     return made
 
 
+def scanned(lib: Path = DEFAULT_LIB, min_chars: int = 2000) -> list[Path]:
+    """Text copies too short to hold the paper: scanned PDFs (images) that full-text search cannot see."""
+    return sorted(md for md in lib.rglob("*.md") if md.stat().st_size < min_chars)
+
+
 def search(terms: list[str], lib: Path = DEFAULT_LIB, max_lines: int = 4) -> list[Hit]:
     """Files containing any of ``terms`` (case-insensitive), most terms first."""
     pats = [re.compile(re.escape(t), re.IGNORECASE) for t in terms]
@@ -72,8 +77,13 @@ def main() -> None:
     if args.convert:
         for md in convert_missing(args.lib):
             print("converted", md.name)
+        for md in scanned(args.lib):
+            print("scanned (no text layer; read the PDF pages as images):", md.with_suffix(".pdf").name)
     if args.terms:
         hits = search(args.terms, args.lib)
+        sc = scanned(args.lib)
+        if sc:
+            print(f"note: {len(sc)} scanned PDF(s) cannot be searched: " + "; ".join(m.stem for m in sc))
         if not hits:
             print("no matches in the local library → search Consensus and add the papers to "
                   "docs/literature/reading_list.md")
