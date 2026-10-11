@@ -134,6 +134,8 @@ def main() -> None:
                     help="JSL internal-tide drag scale (HYCOM tiddrg=1; 0 = off)")
     ap.add_argument("--benchmark", type=int, default=0, help="run N steps and report timing")
     ap.add_argument("--tag", default="ref")
+    ap.add_argument("--snapshots", nargs=2, metavar=("START", "END"),
+                    help="also save hourly η fields between these times (e.g. to compare with HYCOM archives)")
     args = ap.parse_args()
 
     t_setup = time.time()
@@ -203,6 +205,8 @@ def main() -> None:
     ata = np.zeros((nb, nb))
     atb = np.zeros((nb, ny * nx))
     g_t, g_eta = [], []
+    snap_t, snap = [], []
+    snap_win = (np.datetime64(args.snapshots[0], "s"), np.datetime64(args.snapshots[1], "s")) if args.snapshots else None
     tic = time.time()
     for n in range(nsteps):
         t_mid = t0 + np.timedelta64(int((n + 0.5) * dt), "s")
@@ -243,6 +247,9 @@ def main() -> None:
         if (n + 1) % every_g == 0:
             g_t.append(t_new)
             g_eta.append([eta[j, i] for j, i in gauges.values()])
+        if snap_win and (n + 1) % every_ha == 0 and snap_win[0] <= t_new <= snap_win[1]:
+            snap_t.append(t_new)
+            snap.append(np.where(wet_t, eta, np.nan).astype(np.float32))
         if n + 1 > n_spin and (n + 1) % every_ha == 0:
             a = ha_basis(t_new)
             ata += np.outer(a, a)
@@ -270,6 +277,7 @@ def main() -> None:
         gauge_t=np.array(g_t, "datetime64[s]"), gauge_eta=np.array(g_eta, np.float32),
         hc_map=hc_map.astype(np.complex64), ha_cons=np.array(HA_CONS),
         lon_t=lon_t, lat_t=lat_t, depth=sd["depth"],
+        snap_t=np.array(snap_t, "datetime64[s]"), snap_eta=np.array(snap, np.float32),
         meta=json.dumps(vars(args) | dict(box=BOX, min_depth=MIN_DEPTH, i0=int(sd["i0"]), j0=int(sd["j0"]))))
     print("saved", OUT / f"run_{args.tag}.npz", f"total {(time.time() - t_setup) / 60:.1f} min")
 
