@@ -157,3 +157,89 @@ def test_predictor_corrector_tracers_keep_constancy_conservation_and_the_mixing_
         lost = (var0 - m.tracer_content(st, power=2)) / m.dt
         assert np.isclose(st.mix_num.sum(), lost, rtol=1e-9, atol=1e-12 * abs(var0))
     assert abs(m.tracer_content(st) / c0 - 1) < 1e-12
+
+
+# ---------------------------------------------------------------- pressure-gradient schemes
+def _seamount_model(pgf, rho_ref=None, nx=24, ny=20, nz=12):
+    dx = 8000.0
+    hg = create_cartesian_grid(nx=nx, ny=ny, dx=dx, dy=dx, f0=1e-4)
+    x = (np.arange(nx) + 0.5) * dx - nx * dx / 2
+    y = (np.arange(ny) + 0.5) * dx - ny * dx / 2
+    h = 4500.0 - 4050.0 * np.exp(-(x[None, :] ** 2 + y[:, None] ** 2) / 25e3**2)
+    m = SigmaBaroclinic(hg, h, dt=600.0, n_layers=nz, rho0=RHO0, t_coef=0.2, z0=None, closure="constant",
+                        nu_const=1e-4, pgf=pgf, rho_ref=rho_ref)
+    z = -h[None] + h[None] * ((np.arange(nz) + 0.5) / nz)[:, None, None]
+    return m, z
+
+
+def test_jacobian_pgf_is_exact_for_a_linear_density_over_a_flat_bed():
+    # ρ′ = a x + b z: exact PGF_x = −(g/ρ₀) a (η − z) = (g a/ρ₀) z at η = 0; the two-term form with a
+    # constant top half-layer agrees to second order
+    hg = create_cartesian_grid(nx=10, ny=6, dx=1000.0, dy=1000.0, f0=0.0)
+    H = np.full((6, 10), 30.0)
+    nz = 8
+    zc = -30.0 + 30.0 * (np.arange(nz) + 0.5) / nz
+    xc = (np.arange(10) + 0.5) * 1000.0
+    a, b = 1e-4, -0.02
+    rho = RHO0 + a * xc[None, None, :] + b * zc[:, None, None] + 0 * np.ones((nz, 6, 10))
+    T = (RHO0 - rho) / 0.2
+    eta = np.zeros((6, 10))
+    gx, _ = SigmaBaroclinic(hg, H, dt=10.0, n_layers=nz, t_coef=0.2, pgf="jacobian")._baroclinic_pgf(eta, T)
+    exact = 9.81 * a / RHO0 * zc[:, None, None]
+    np.testing.assert_allclose(gx[:, :, 1:-1], np.broadcast_to(exact, gx[:, :, 1:-1].shape), rtol=1e-10, atol=1e-16)
+    g2, _ = SigmaBaroclinic(hg, H, dt=10.0, n_layers=nz, t_coef=0.2, pgf="twoterm")._baroclinic_pgf(eta, T)
+    np.testing.assert_allclose(g2[:, :, 1:-1], gx[:, :, 1:-1], atol=1e-9)
+
+
+def test_jacobian_pgf_is_exact_for_linear_stratification_over_a_seamount():
+    m, z = _seamount_model("jacobian")
+    T = 20.0 + 0.005 * z                                                  # ρ linear in z
+    gx, gy = m._baroclinic_pgf(np.zeros(z.shape[1:]), T)
+    assert max(np.abs(gx).max(), np.abs(gy).max()) < 1e-13
+    m2, _ = _seamount_model("twoterm")
+    gx2, _ = m2._baroclinic_pgf(np.zeros(z.shape[1:]), T)
+    assert np.abs(gx2).max() > 1e-6                                       # the two-term form is not
+
+
+def test_jacobian_pgf_reduces_the_seamount_error_somewhat_for_exponential_stratification():
+    errs = {}
+    for pgf in ("twoterm", "jacobian"):
+        m, z = _seamount_model(pgf)
+        T = -15.0 * (1 - np.exp(z / 1000.0))                             # ρ = ρ₀ + 3 (1 − e^{z/1000})
+        gx, gy = m._baroclinic_pgf(np.zeros(z.shape[1:]), T)
+        errs[pgf] = max(np.abs(gx).max(), np.abs(gy).max())
+    # measured: the 2nd-order Jacobian (Song 1998) removes only ~18 % of the error for exponential
+    # stratification over this steep seamount (rx1 ≈ 10) — Marsaleix et al. 2009 warn that low-order
+    # Jacobians are not automatically better; the reference profile does the heavy lifting
+    assert errs["jacobian"] < 0.9 * errs["twoterm"]
+
+
+def test_reference_profile_removes_the_error_of_a_resting_stratification():
+    prof = lambda zz: RHO0 + 3.0 * (1 - np.exp(zz / 1000.0))             # noqa: E731
+    m, z = _seamount_model("jacobian", rho_ref=prof)
+    T = (RHO0 - prof(z)) / 0.2
+    gx, gy = m._baroclinic_pgf(np.zeros(z.shape[1:]), T)
+    assert max(np.abs(gx).max(), np.abs(gy).max()) < 1e-13
+
+
+def test_reference_profile_from_the_model_state_cuts_the_seamount_error():
+    # ρ_ref(z) estimated from the horizontally averaged model density (no analytic profile)
+    from core.dynamics.sigma_baroclinic import reference_profile
+    m, z = _seamount_model("jacobian")
+    T = -15.0 * (1 - np.exp(z / 1000.0))
+    rho = m.density(T)
+    gx0, _ = m._baroclinic_pgf(np.zeros(z.shape[1:]), T)
+    m.rho_ref = reference_profile(z, rho)
+    gx1, _ = m._baroclinic_pgf(np.zeros(z.shape[1:]), T)
+    assert np.abs(gx1).max() < 0.01 * np.abs(gx0).max()
+
+
+def test_auto_reference_profile_is_built_from_the_initial_state():
+    m, z = _seamount_model("jacobian", rho_ref="auto")
+    T = -15.0 * (1 - np.exp(z / 1000.0))
+    st = m.initial_state(np.zeros(z.shape[1:]), T)
+    assert callable(m.rho_ref)
+    gx, gy = m._baroclinic_pgf(st.eta, st.T)
+    m2, _ = _seamount_model("jacobian")
+    gx2, _ = m2._baroclinic_pgf(st.eta, st.T)
+    assert np.abs(gx).max() < 0.01 * np.abs(gx2).max()

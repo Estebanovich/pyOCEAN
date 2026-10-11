@@ -23,7 +23,8 @@ pressure gradient and momentum advection on σ-surfaces.  Each step:
    time.  T and T² are advected together, giving the online numerical mixing of
    Burchard & Rennau (2008): M_num = V (A(T²) − (A T)²)/Δt.
 
-Baroclinic pressure gradient on σ-surfaces (hydrostatic, Boussinesq):
+Baroclinic pressure gradient on σ-surfaces (hydrostatic, Boussinesq; default
+density-Jacobian form of Song 1998, see ``_baroclinic_pgf``):
 
     PGF_x = −(1/ρ₀) [ ∂P′/∂x|_σ + g ρ′ ∂z/∂x|_σ ],   P′(z) = g ∫_z^η ρ′ dz′,   ρ′ = ρ − ρ₀
 
@@ -242,6 +243,27 @@ def _flux_form_u(u: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, Fz: np.ndarray, 
     return np.where(okx, out, 0.0)
 
 
+def reference_profile(z: np.ndarray, rho: np.ndarray, n_bins: int = 400):
+    """
+    Horizontally averaged density as a function of depth, ρ_ref(z), from cell
+    values (z, ρ): ρ is averaged in ``n_bins`` depth bins and interpolated
+    linearly (constant beyond the data).  Used as ``rho_ref`` to remove the
+    resting stratification from the pressure-gradient computation (Haney 1991;
+    Berntsen et al. 2015).  Returns a callable z → ρ_ref.
+    """
+    zf, rf = np.asarray(z, float).ravel(), np.asarray(rho, float).ravel()
+    ok = np.isfinite(zf) & np.isfinite(rf)
+    zf, rf = zf[ok], rf[ok]
+    edges = np.linspace(zf.min(), zf.max(), n_bins + 1)
+    idx = np.clip(np.digitize(zf, edges) - 1, 0, n_bins - 1)
+    cnt = np.bincount(idx, minlength=n_bins)
+    mean = np.bincount(idx, weights=rf, minlength=n_bins) / np.maximum(cnt, 1)
+    zc = np.bincount(idx, weights=zf, minlength=n_bins) / np.maximum(cnt, 1)
+    keep = cnt > 0
+    zc, mean = zc[keep], mean[keep]
+    return lambda zz: np.interp(zz, zc, mean)
+
+
 class SigmaBaroclinic:
     """
     Stratified σ-layer model (see module docstring).
@@ -259,7 +281,10 @@ class SigmaBaroclinic:
                  rho0: float = 1000.0, t_coef: float = 0.2, t_ref: float = 0.0, z0: float | None = None,
                  closure: str = "constant", nu_const: float = 1e-4, ah: float = 0.0, adv: str = "flux",
                  theta: float = 0.6, d_min: float = 0.05, g: float = G, tracer_scheme: str = "weno5",
-                 tracer_time: str = "ssprk3") -> None:
+                 tracer_time: str = "ssprk3", pgf: str = "jacobian", rho_ref=None) -> None:
+        if pgf not in ("twoterm", "jacobian"):
+            raise ValueError(f"unknown pressure-gradient scheme {pgf!r}")
+        self.pgf, self.rho_ref = pgf, rho_ref
         if tracer_time not in ("ssprk3", "pc"):
             raise ValueError(f"unknown tracer time stepping {tracer_time!r}")
         self.tracer_time = tracer_time
@@ -277,7 +302,13 @@ class SigmaBaroclinic:
 
     # ------------------------------------------------------------------ helpers
     def initial_state(self, eta: np.ndarray, T: np.ndarray) -> SigmaState:
+        """Resting state; with ``rho_ref="auto"`` the reference profile is taken from this T."""
         ny, nx = self.H.shape
+        if isinstance(self.rho_ref, str) and self.rho_ref == "auto":
+            D = np.maximum(np.nan_to_num(self.H + eta, nan=self.fs.d_min), self.fs.d_min)
+            z = -np.nan_to_num(self.H)[None] + D[None] * ((np.arange(self.n) + 0.5) / self.n)[:, None, None]
+            act = np.broadcast_to(self.fs.active[None], z.shape)
+            self.rho_ref = reference_profile(z[act], self.density(np.asarray(T, float))[act])
         return SigmaState(eta=np.array(eta, float), u=np.zeros((self.n, ny, nx + 1)),
                           v=np.zeros((self.n, ny + 1, nx)), T=np.array(T, float))
 
@@ -301,26 +332,73 @@ class SigmaBaroclinic:
 
     # ------------------------------------------------------------------ explicit tendencies
     def _baroclinic_pgf(self, eta: np.ndarray, T: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Baroclinic pressure-gradient force at u- and v-faces [m s⁻²].
+
+        ρ′ = ρ − ρ_ref(z) with ρ_ref = ρ₀, or a reference profile ``rho_ref(z)``
+        (Haney 1991; the "balanced" method of Berntsen et al. 2015): the pressure of
+        a horizontally uniform ρ_ref(z) has no gradient at fixed z, so subtracting it
+        removes the large cancelling terms of a resting stratification.
+
+        'twoterm':  PGF = −(1/ρ₀)[∂P′/∂x|_σ + g ρ′ ∂z/∂x|_σ]   (second order; large errors
+                     over steep slopes — Haney 1991, seamount max|u| ~50 cm/s)
+        'jacobian': density-Jacobian form (Song 1998), integrated down from the surface
+                     between layer centres k and k+1:
+            ∂P′/∂x|_z(z_k) = ∂P′/∂x|_z(z_{k+1}) + (g/Δx)[δ_x ρ̄ · (δ_k z)‾ − δ_x z̄ · (δ_k ρ)‾]
+                     starting at the surface z = η with ρ′ extrapolated linearly from the two
+                     top layers.  Exact for ρ linear in z over any topography.
+        """
         n = self.n
         D = np.maximum(np.nan_to_num(self.H + eta, nan=self.fs.d_min), self.fs.d_min)
         h = D[None] * self.ds[:, None, None]
-        rp = self.density(T) - self.rho0
         sig_c = (np.arange(n) + 0.5)[:, None, None] / n
         z = -np.nan_to_num(self.H)[None] + D[None] * sig_c                # cell-centre height (z = 0 at rest surface)
-        above = np.cumsum((rp * h)[::-1], axis=0)[::-1] - rp * h          # ∫ over the layers above
-        P = self.g * (above + 0.5 * rp * h)                                # P′ at cell centres
+        rho = self.density(T)
+        rp = rho - (self.rho_ref(z) if self.rho_ref is not None else self.rho0)
+        g = self.g
+        # surface values for the Jacobian: z_s = η, ρ′ linearly extrapolated from the two top layers
+        z_s = np.nan_to_num(eta)[None]
+        if n > 1:
+            r_s = (rp[-1] + (rp[-1] - rp[-2]) * (z_s[0] - z[-1]) / np.where(z[-1] - z[-2] != 0, z[-1] - z[-2], 1.0))[None]
+        else:
+            r_s = rp[-1:]
+        if self.pgf == "twoterm":
+            above = np.cumsum((rp * h)[::-1], axis=0)[::-1] - rp * h       # ∫ over the layers above
+            P = g * (above + 0.5 * rp * h)
+
+        def along(a_lo, a_hi, z_lo, z_hi, P_lo=None, P_hi=None, s_lo=None, s_hi=None):
+            """∂P′/∂x|_z × Δx at faces between the 'lo' and 'hi' columns, all layers."""
+            if self.pgf == "twoterm":
+                return (P_hi - P_lo) + g * 0.5 * (a_hi + a_lo) * (z_hi - z_lo)
+            # Jacobian from the surface (z = η, P′ = 0 there; surface term g ρ̄′_s δ_x η) down to the
+            # top layer centre, then between consecutive layer centres
+            (rs_lo, zs_lo), (rs_hi, zs_hi) = s_lo, s_hi
+            a_lo, a_hi = np.concatenate([a_lo, rs_lo]), np.concatenate([a_hi, rs_hi])
+            z_lo, z_hi = np.concatenate([z_lo, zs_lo]), np.concatenate([z_hi, zs_hi])
+            out = np.empty(a_lo.shape)
+            out[-1] = g * 0.5 * (rs_hi[0] + rs_lo[0]) * (zs_hi[0] - zs_lo[0])
+            rbar_lo, rbar_hi = 0.5 * (a_lo[1:] + a_lo[:-1]), 0.5 * (a_hi[1:] + a_hi[:-1])
+            zbar_lo, zbar_hi = 0.5 * (z_lo[1:] + z_lo[:-1]), 0.5 * (z_hi[1:] + z_hi[:-1])
+            dz = 0.5 * ((z_lo[1:] - z_lo[:-1]) + (z_hi[1:] - z_hi[:-1]))
+            dr = 0.5 * ((a_lo[1:] - a_lo[:-1]) + (a_hi[1:] - a_hi[:-1]))
+            inc = g * ((rbar_hi - rbar_lo) * dz - (zbar_hi - zbar_lo) * dr)   # pair (k, k+1), k = 0 … N−1 (N = surface)
+            out[:-1] = out[-1] + np.cumsum(inc[::-1], axis=0)[::-1]
+            return out[:-1]
+
         gx = np.zeros((n,) + self.fs.H_u.shape)
         gy = np.zeros((n,) + self.fs.H_v.shape)
         okx = np.isfinite(self.fs.H_u[:, 1:-1])
-        dxu = self.fs.du[:, 1:-1]
-        gx[:, :, 1:-1] = np.where(okx, -((P[:, :, 1:] - P[:, :, :-1])
-                                         + self.g * 0.5 * (rp[:, :, 1:] + rp[:, :, :-1]) * (z[:, :, 1:] - z[:, :, :-1]))
-                                  / dxu / self.rho0, 0.0)
         oky = np.isfinite(self.fs.H_v[1:-1, :])
-        dyv = self.fs.dv[1:-1, :]
-        gy[:, 1:-1, :] = np.where(oky, -((P[:, 1:, :] - P[:, :-1, :])
-                                         + self.g * 0.5 * (rp[:, 1:, :] + rp[:, :-1, :]) * (z[:, 1:, :] - z[:, :-1, :]))
-                                  / dyv / self.rho0, 0.0)
+        if self.pgf == "twoterm":
+            ax = along(rp[..., :-1], rp[..., 1:], z[..., :-1], z[..., 1:], P[..., :-1], P[..., 1:])
+            ay = along(rp[:, :-1], rp[:, 1:], z[:, :-1], z[:, 1:], P[:, :-1], P[:, 1:])
+        else:
+            ax = along(rp[..., :-1], rp[..., 1:], z[..., :-1], z[..., 1:],
+                       s_lo=(r_s[..., :-1], z_s[..., :-1]), s_hi=(r_s[..., 1:], z_s[..., 1:]))
+            ay = along(rp[:, :-1], rp[:, 1:], z[:, :-1], z[:, 1:],
+                       s_lo=(r_s[:, :-1], z_s[:, :-1]), s_hi=(r_s[:, 1:], z_s[:, 1:]))
+        gx[:, :, 1:-1] = np.where(okx, -ax / self.fs.du[:, 1:-1] / self.rho0, 0.0)
+        gy[:, 1:-1, :] = np.where(oky, -ay / self.fs.dv[1:-1, :] / self.rho0, 0.0)
         return gx, gy
 
     def _vertical_advection(self, vel: np.ndarray, omega_f: np.ndarray, h_f: np.ndarray) -> np.ndarray:

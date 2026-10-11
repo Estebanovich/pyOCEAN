@@ -1,0 +1,3 @@
+seamount 64×48×20, dx 6 km, pgf jacobian_ref: rx0 0.27, rx1 10.7
+  t=0 max|PGF| 1.11e-06 m s⁻² (≈ 1.1 cm/s geostrophic)
+  max|u| per day [cm/s]: 0.44 0.37 0.36 0.23 0.25 0.22 0.22 0.21 0.19 0.14   (3.3 min)
