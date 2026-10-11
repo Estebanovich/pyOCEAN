@@ -291,6 +291,7 @@ class ImplicitFreeSurface:
         flather_eta: np.ndarray | None = None,
         flather_ubar: np.ndarray | None = None,
         flather_vbar: np.ndarray | None = None,
+        eta_tendency: np.ndarray | None = None,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Advance η and correct the velocities with eqs. (1)–(4).
@@ -307,6 +308,9 @@ class ImplicitFreeSurface:
         flather_ubar, flather_vbar : optional
             External depth-mean velocity at the Flather u-/v-faces [m s⁻¹],
             in model sign convention (positive east / north).
+        eta_tendency : (ny, nx), optional
+            Explicit source of η [m s⁻¹] added to the continuity equation, e.g.
+            the nonlinear flux divergence −∇·(η u) (``core.dynamics.nonlinear``).
 
         Returns
         -------
@@ -323,6 +327,8 @@ class ImplicitFreeSurface:
         rhs_full = (self.area * eta
                     - dt * (1.0 - th) * self.volume_divergence(np.where(fu, 0.0, u_n), np.where(fv, 0.0, v_n))
                     - dt * th * self.volume_divergence(np.where(fu, 0.0, u_ss), np.where(fv, 0.0, v_ss)))
+        if eta_tendency is not None:
+            rhs_full = rhs_full + dt * self.area * np.where(self.wet_t, eta_tendency, 0.0)
         ext = self._flather_external(flather_eta, flather_ubar, flather_vbar)
         for fl, (e_ext, ubar_ext) in zip(self._flather, ext):
             # Q = Δy H ū_ext,out + Δy √(gH) (η_c^θ − η_ext); the θ η^{n+1} part is in the matrix

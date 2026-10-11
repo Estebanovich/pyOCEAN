@@ -171,6 +171,21 @@ class TestBoundaryTides:
             for k in ref:
                 np.testing.assert_array_equal(new[k], ref[k])
 
+    def test_face_over_atlas_land_takes_nearest_valid_face(self, tmp_path):
+        # A fine model coast can put an open face where the atlas has only land nodes
+        hp, up, g = _write_tpxo(tmp_path)
+        tc = read_tpxo(hp, up, g, lon_range=(-104.0, -96.0), lat_range=(13.0, 20.0))
+        land = tc.lat >= 17.5                                          # covers face j = 5 (17.75°N)
+        tc["h"] = tc.h.where(~land)
+        tc["U"] = tc.U.where(~land)
+        tc["V"] = tc.V.where(~(tc.lat_v >= 17.5))
+        hg, vg, hf, fu, fv = self._model()
+        bc = boundary_tide_constants(tc, hg, vg, hf, fu, fv)
+        mask, hc_eta, (q, depth) = bc["u"]
+        assert np.all(np.isfinite(hc_eta)) and np.all(np.isfinite(q))
+        np.testing.assert_array_equal(hc_eta[5], hc_eta[4])            # west faces j = 0…5 in order
+        np.testing.assert_array_equal(q[5], q[4])
+
     def test_legacy_uppercase_transport_names(self, tmp_path):
         # Older OTIS atlases use URe/UIm/VRe/VIm
         hp, up, g = _write_tpxo(tmp_path, constituents=("m2",))

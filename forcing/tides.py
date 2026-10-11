@@ -267,6 +267,9 @@ def boundary_tide_constants(
     Flather faces, interpolated once (``boundary_tides`` does this every
     call).  Pass the result to ``boundary_tides_at`` each time step.
 
+    Faces where the atlas has no ocean node take the nearest valid face's
+    constants (``_fill_from_nearest``).
+
     Returns
     -------
     dict with ``names`` and, per face type (u, v): the mask, complex η
@@ -285,12 +288,27 @@ def boundary_tide_constants(
         if mask.any():
             lat = h_grid[f"lat_{axis}"].values[mask]
             lon = h_grid[f"lon_{axis}"].values[mask]
-            hc_eta = _interp_complex(c["h"], "lat", "lon", lat, lon)
+            hc_eta = _fill_from_nearest(_interp_complex(c["h"], "lat", "lon", lat, lon), lat, lon)
             if trans in c:
                 depth = np.sum(dz * hfac[f"hfac_{axis}"].values, axis=0)[mask]
-                hc_vel = (_interp_complex(c[trans], lat_n, lon_n, lat, lon), depth)
+                hc_vel = (_fill_from_nearest(_interp_complex(c[trans], lat_n, lon_n, lat, lon), lat, lon), depth)
         out[axis] = (mask, hc_eta, hc_vel)
     return out
+
+
+def _fill_from_nearest(hc: np.ndarray, lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
+    """
+    Faces whose atlas cell holds only land (a model coastline finer than the
+    atlas) take the constants of the nearest face with valid constants.
+    """
+    bad = ~np.all(np.isfinite(hc), axis=1)
+    if bad.any() and (~bad).any():
+        good = np.flatnonzero(~bad)
+        coslat = np.cos(np.deg2rad(lat))
+        for k in np.flatnonzero(bad):
+            d = np.hypot((lon[good] - lon[k]) * coslat[k], lat[good] - lat[k])
+            hc[k] = hc[good[np.argmin(d)]]
+    return hc
 
 
 def boundary_tides_at(bc: dict, t: np.datetime64, ramp: float = 1.0) -> dict[str, np.ndarray]:
