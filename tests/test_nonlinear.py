@@ -181,3 +181,42 @@ def test_advection_exact_for_linear_field_on_stretched_grid():
     a = 1e-4
     adv = advection_u(a * x_u, np.zeros((6, 7)), hg, wet_u)
     np.testing.assert_allclose(adv[:, 1:-1], (a * x_u * a)[:, 1:-1], rtol=1e-10)
+
+
+class TestUpwind3:
+    """Third-order upwind-biased advection (Leonard 1979; ROMS/MITgcm 'third-order upwind')."""
+
+    def test_exact_for_quadratic_field(self):
+        hg, x_u, *_ = _grid()
+        _, wet_u, wet_v = _wet()
+        a, b, c = 0.3, 1e-4, 2e-9
+        u = np.where(wet_u, a + b * x_u + c * x_u**2, 0.0)
+        adv = advection_u(u, np.zeros(wet_v.shape), hg, wet_u, scheme="upwind3")
+        np.testing.assert_allclose(adv[1:-1, 3:-3], (u * (b + 2 * c * x_u))[1:-1, 3:-3], rtol=1e-9)
+
+    def test_checkerboard_is_damped_not_ignored(self):
+        # u = U0 + ε(−1)^i: centred advection is blind to the 2Δx mode, upwind3 damps it
+        hg, x_u, *_ = _grid()
+        _, wet_u, wet_v = _wet()
+        pert = 0.05 * (-1.0) ** np.arange(NX + 1)[None, :] * np.ones((NY, 1))
+        u = np.where(wet_u, 0.5 + pert, 0.0)
+        cen = advection_u(u, np.zeros(wet_v.shape), hg, wet_u)[2:-2, 3:-3]
+        up3 = advection_u(u, np.zeros(wet_v.shape), hg, wet_u, scheme="upwind3")[2:-2, 3:-3]
+        assert np.allclose(cen, 0.0)
+        assert np.all(np.sign(-up3) == -np.sign(pert[2:-2, 3:-3]))         # tendency −adv opposes ε
+
+    def test_v_component_and_uniform_flow(self):
+        hg, _, _, x_v, y_v = _grid()
+        _, wet_u, wet_v = _wet()
+        a = 3e-5
+        v = np.where(wet_v, a * y_v, 0.0)
+        adv = advection_v(np.zeros(wet_u.shape), v, hg, wet_v, scheme="upwind3")
+        np.testing.assert_allclose(adv[3:-3, 1:-1], (a * y_v * a)[3:-3, 1:-1], rtol=1e-10)
+        u0 = np.where(wet_u, 0.7, 0.0)
+        assert np.allclose(advection_u(u0, np.where(wet_v, -0.3, 0.0), hg, wet_u, scheme="upwind3")[2:-2, 3:-3], 0.0)
+
+    def test_unknown_scheme(self):
+        hg, *_ = _grid()
+        _, wet_u, wet_v = _wet()
+        with pytest.raises(ValueError, match="scheme"):
+            advection_u(np.zeros(wet_u.shape), np.zeros(wet_v.shape), hg, wet_u, scheme="quick")

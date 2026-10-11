@@ -12,7 +12,8 @@ advection in advective form with centred differences,
 
     (u·∇)u = u ∂u/∂x + v ∂u/∂y ,   (u·∇)v = u ∂v/∂x + v ∂v/∂y,
 
-second order, metric (curvature) terms u v tanφ / R neglected (|u|/R ≪ f at
+second order (or third-order upwind-biased, ``scheme="upwind3"``), metric
+(curvature) terms u v tanφ / R neglected (|u|/R ≪ f at
 regional scales), and a Laplacian viscosity A_h ∇²u with free-slip walls to
 control the grid-scale noise that centred advection with Adams–Bashforth 2
 lets grow (Durran 2010, §3.3).  A term whose stencil reaches a dry face is set
@@ -22,6 +23,9 @@ References
 ----------
 Vallis, G.K. (2006). Atmospheric and Oceanic Fluid Dynamics, ch. 3.
 Durran, D.R. (2010). Numerical Methods for Fluid Dynamics, 2nd ed.
+Leonard, B.P. (1979). A stable and accurate convective modelling procedure
+    based on quadratic upstream interpolation. Comput. Methods Appl. Mech.
+    Eng. 19, 59–98.
 """
 
 from __future__ import annotations
@@ -67,13 +71,13 @@ def nonlinear_continuity(eta: np.ndarray, u: np.ndarray, v: np.ndarray, h_grid: 
     return np.where(wet_t, -div, 0.0)
 
 
-def _pair(f: np.ndarray, wet: np.ndarray, axis: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Neighbours f[−1], f[+1] along ``axis`` and their wet masks (False beyond the edges)."""
+def _pair(f: np.ndarray, wet: np.ndarray, axis: int, k: int = 1) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Neighbours f[−k], f[+k] along ``axis`` and their wet masks (False beyond the edges)."""
     lo, hi = np.zeros_like(f), np.zeros_like(f)
     wlo, whi = np.zeros(f.shape, bool), np.zeros(f.shape, bool)
     sl = [slice(None)] * 2
     a, b = list(sl), list(sl)
-    a[axis], b[axis] = slice(1, None), slice(None, -1)
+    a[axis], b[axis] = slice(k, None), slice(None, -k)
     lo[tuple(a)], wlo[tuple(a)] = f[tuple(b)], wet[tuple(b)]
     hi[tuple(b)], whi[tuple(b)] = f[tuple(a)], wet[tuple(a)]
     return lo, hi, wlo, whi
@@ -124,17 +128,55 @@ def _centred(f, wet, axis, h_lo, h_hi):
         return np.where(ok, (hi - lo) / (h_lo + h_hi), 0.0)
 
 
-def advection_u(u: np.ndarray, v: np.ndarray, h_grid: xr.Dataset, wet_u: np.ndarray) -> np.ndarray:
-    """(u·∇)u at u-faces [m s⁻²]: u ∂u/∂x + v̄ ∂u/∂y, centred (second order)."""
+def _upwind3(f, wet, axis, c, h_lo, h_hi):
+    """
+    Third-order upwind-biased derivative of f along ``axis`` for advecting
+    velocity c (Leonard 1979):
+        c > 0:  (2 f₊₁ + 3 f₀ − 6 f₋₁ + f₋₂) / (6 h)
+        c < 0:  (−f₊₂ + 6 f₊₁ − 3 f₀ − 2 f₋₁) / (6 h)
+    = centred derivative + a hyperdiffusion |c| h³/12 ∂⁴f that damps the 2Δx
+    mode.  Falls back to the centred difference where the 4-point stencil
+    reaches land or the edge.
+    """
+    m1, p1, wm1, wp1 = _pair(f, wet, axis, 1)
+    m2, p2, wm2, wp2 = _pair(f, wet, axis, 2)
+    with np.errstate(invalid="ignore"):
+        h = 0.5 * (h_lo + h_hi)
+        pos = (2 * p1 + 3 * f - 6 * m1 + m2) / (6 * h)
+        neg = (-p2 + 6 * p1 - 3 * f - 2 * m1) / (6 * h)
+    cen = _centred(f, wet, axis, h_lo, h_hi)
+    ok = wet & wm1 & wp1
+    up = np.where(c >= 0, np.where(ok & wm2, pos, cen), np.where(ok & wp2, neg, cen))
+    return np.where(ok, up, 0.0)
+
+
+def _derivative(f, wet, axis, c, h_lo, h_hi, scheme):
+    if scheme == "centred":
+        return _centred(f, wet, axis, h_lo, h_hi)
+    if scheme == "upwind3":
+        return _upwind3(f, wet, axis, c, h_lo, h_hi)
+    raise ValueError(f"unknown advection scheme {scheme!r} (use 'centred' or 'upwind3')")
+
+
+def advection_u(u: np.ndarray, v: np.ndarray, h_grid: xr.Dataset, wet_u: np.ndarray,
+                scheme: str = "centred") -> np.ndarray:
+    """
+    (u·∇)u at u-faces [m s⁻²]: u ∂u/∂x + v̄ ∂u/∂y, ``scheme`` 'centred'
+    (second order, no damping of the 2Δx mode) or 'upwind3' (third-order
+    upwind-biased, for strong flows through narrow passages).
+    """
     hw, he, hs, hn = _spacings_u(h_grid)
-    adv = u * _centred(u, wet_u, 1, hw, he) + _v_at_u(v) * _centred(u, wet_u, 0, hs, hn)
+    vu = _v_at_u(v)
+    adv = u * _derivative(u, wet_u, 1, u, hw, he, scheme) + vu * _derivative(u, wet_u, 0, vu, hs, hn, scheme)
     return np.where(wet_u, adv, 0.0)
 
 
-def advection_v(u: np.ndarray, v: np.ndarray, h_grid: xr.Dataset, wet_v: np.ndarray) -> np.ndarray:
-    """(u·∇)v at v-faces [m s⁻²]: ū ∂v/∂x + v ∂v/∂y, centred (second order)."""
+def advection_v(u: np.ndarray, v: np.ndarray, h_grid: xr.Dataset, wet_v: np.ndarray,
+                scheme: str = "centred") -> np.ndarray:
+    """(u·∇)v at v-faces [m s⁻²]: ū ∂v/∂x + v ∂v/∂y; ``scheme`` as in ``advection_u``."""
     hw, he, hs, hn = _spacings_v(h_grid)
-    adv = _u_at_v(u) * _centred(v, wet_v, 1, hw, he) + v * _centred(v, wet_v, 0, hs, hn)
+    uv = _u_at_v(u)
+    adv = uv * _derivative(v, wet_v, 1, uv, hw, he, scheme) + v * _derivative(v, wet_v, 0, v, hs, hn, scheme)
     return np.where(wet_v, adv, 0.0)
 
 

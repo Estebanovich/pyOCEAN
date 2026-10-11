@@ -207,6 +207,8 @@ def main() -> None:
     ap.add_argument("--tag", default="ref")
     ap.add_argument("--nonlinear", action="store_true",
                     help="total depth H+η in continuity and drag, momentum advection (core.dynamics.nonlinear)")
+    ap.add_argument("--adv", default="upwind3", choices=["upwind3", "centred"],
+                    help="momentum advection scheme with --nonlinear (centred is unstable in 1-cell channels)")
     ap.add_argument("--ah", type=float, default=0.0, help="Laplacian viscosity A_h [m²/s] (free slip)")
     ap.add_argument("--domain", default="pacmex", choices=["pacmex", "gebco100"])
     ap.add_argument("--box", nargs=4, type=float, metavar=("LON0", "LON1", "LAT0", "LAT1"))
@@ -282,6 +284,7 @@ def main() -> None:
     v = np.zeros((1, ny + 1, nx))
     g_prev = None
     s_prev = None
+    prev_state = None
     nb = 1 + 2 * len(HA_CONS)
     ata = np.zeros((nb, nb))
     atb = np.zeros((nb, ny * nx))
@@ -308,8 +311,8 @@ def main() -> None:
         gu = np.where(wet_u, f_u * v_at_u + gx, 0.0)
         gv = np.where(wet_v, -f_v * u_at_v + gy, 0.0)
         if args.nonlinear:
-            gu -= advection_u(u[0], v[0], hg, wet_u)
-            gv -= advection_v(u[0], v[0], hg, wet_v)
+            gu -= advection_u(u[0], v[0], hg, wet_u, scheme=args.adv)
+            gv -= advection_v(u[0], v[0], hg, wet_v, scheme=args.adv)
         if args.ah > 0:
             gu += args.ah * laplacian_u(u[0], hg, wet_u)
             gv += args.ah * laplacian_v(v[0], hg, wet_v)
@@ -340,7 +343,16 @@ def main() -> None:
                             flather_ubar=bt["ubar_u"], flather_vbar=bt["vbar_v"], eta_tendency=s_ab)
 
         if not np.isfinite(eta).all() or np.abs(eta).max() > 20:
-            raise RuntimeError(f"blow-up at step {n}: max|η| = {np.nanmax(np.abs(eta)):.2f} m")
+            bad = np.where(np.isfinite(eta), np.abs(eta), np.inf)
+            j, i = np.unravel_index(np.argmax(bad), bad.shape)
+            np.savez_compressed(OUT / f"blowup_{args.tag}.npz", eta=eta, u=u[0], v=v[0], step=n,
+                                **({} if prev_state is None else dict(eta_prev=prev_state[0], u_prev=prev_state[1],
+                                                                       v_prev=prev_state[2])))
+            raise RuntimeError(f"blow-up at step {n} (day {(n + 1) * dt / 86400:.2f}): max|η| = "
+                               f"{np.nanmax(np.abs(eta)):.2f} m at lon {lon_t[j, i]:.2f} lat {lat_t[j, i]:.2f} "
+                               f"depth {sd['depth'][j, i]:.0f} m; max|u| {np.nanmax(np.abs(u)):.2f} m/s")
+        if (n + 1) % every_ha == 0:
+            prev_state = (eta.copy(), u[0].copy(), v[0].copy())
 
         t_new = t0 + np.timedelta64(int((n + 1) * dt), "s")
         if (n + 1) % every_g == 0:
