@@ -417,3 +417,144 @@ def test_mode_one_wave_on_stretched_layers_matches_uniform_layers():
         Ti = np.array([np.interp(z[:, i], zr[:, i], ref.T[:, 0, i]) for i in range(80)]).T
         errs[name] = np.sqrt(np.mean((st.T[:, 0, :] - Ti) ** 2))
     assert errs["stretched"] < 1.3 * errs["uniform"]                    # measured 1.00×; θ_s = 5 surface-only: 4×
+
+
+# ---------------------------------------------------------------- explicit tracer diffusion
+def _passive_box(nx=60, nz=10, depth=50.0, dx=500.0, dt=60.0, **kw):
+    # t_coef = 0: density independent of T, so the tracer is passive and the fluid stays at rest
+    hg = create_cartesian_grid(nx=nx, ny=1, dx=dx, dy=dx, f0=0.0)
+    return SigmaBaroclinic(hg, np.full((1, nx), depth), dt=dt, n_layers=nz, rho0=RHO0, t_coef=0.0, z0=None,
+                           closure="constant", nu_const=1e-5, **kw)
+
+
+def test_horizontal_diffusion_spreads_a_gaussian_at_two_k():
+    # Laplacian diffusion along σ-surfaces (MITgcm diffKhT): σ_x²(t) = σ₀² + 2 K_h t
+    kh, dx = 50.0, 500.0
+    m = _passive_box(kh=kh)
+    x = (np.arange(60) + 0.5) * dx
+    T = np.broadcast_to(np.exp(-((x - 15e3) / 2e3) ** 2 / 2)[None, None, :], (10, 1, 60)).copy()
+    st = m.initial_state(np.zeros((1, 60)), T)
+    c0 = m.tracer_content(st)
+
+    def var(T):
+        w = T[0, 0]
+        mu = np.sum(w * x) / w.sum()
+        return np.sum(w * (x - mu) ** 2) / w.sum()
+    v0 = var(st.T)
+    st = _run(m, st, 6.0)
+    assert var(st.T) - v0 == pytest.approx(2 * kh * 6 * 3600, rel=0.01)
+    assert abs(m.tracer_content(st) / c0 - 1) < 1e-13
+    assert np.abs(st.u).max() < 1e-12                                    # passive: no flow
+
+
+def test_vertical_diffusion_is_implicit_conservative_and_spreads_at_two_k():
+    kv = 1e-3
+    m = _passive_box(nx=4, nz=50, kv=kv, dt=600.0)                     # K Δt/Δz² = 0.6: needs implicit
+    z = m.layer_heights(np.zeros((1, 4)))
+    T = np.exp(-((z + 25.0) / 3.0) ** 2 / 2)
+    st = m.initial_state(np.zeros((1, 4)), T)
+    c0 = m.tracer_content(st)
+
+    def var(T):
+        w, zz = T[:, 0, 0], z[:, 0, 0]
+        mu = np.sum(w * zz) / w.sum()
+        return np.sum(w * (zz - mu) ** 2) / w.sum()
+    v0 = var(st.T)
+    st = _run(m, st, 2.0)
+    assert var(st.T) - v0 == pytest.approx(2 * kv * 2 * 3600, rel=0.02)
+    assert abs(m.tracer_content(st) / c0 - 1) < 1e-13
+
+
+def test_diffusion_keeps_a_uniform_tracer_uniform_while_the_surface_sloshes():
+    m = _box(kh=100.0, kv=1e-3)
+    x = (np.arange(32) + 0.5) * 2000.0
+    st = m.initial_state(0.5 * np.cos(np.pi * x / 64e3)[None, :], np.full((10, 1, 32), 7.0))
+    st = _run(m, st, 1.0)
+    np.testing.assert_allclose(st.T, 7.0, atol=1e-11)
+
+
+def test_horizontal_diffusion_of_the_anomaly_does_not_mix_a_resting_stratification_over_a_seamount():
+    prof = lambda zz: RHO0 + 3.0 * (1 - np.exp(zz / 1000.0))             # noqa: E731
+    changes = {}
+    for ref in (None, prof):
+        m, z = _seamount_model("jacobian", rho_ref=ref)
+        m.kh = 100.0
+        T = (RHO0 - prof(z)) / 0.2
+        st = m.initial_state(np.zeros(z.shape[1:]), T)
+        T_new = m._diffuse_h(st.T, m.layer_volumes(st.eta), st.eta)
+        changes[ref is None] = np.abs(T_new - T).max()
+    assert changes[False] < 1e-12                                        # anomaly w.r.t. ρ_ref is zero
+    assert changes[True] > 1e-4                                          # along-σ diffusion of T itself mixes
+
+
+# ---------------------------------------------------------------- compiled kernels
+@pytest.mark.parametrize("variant", ["z", "js"])
+@pytest.mark.parametrize("axis,flux_extra", [(3, 1), (2, 1), (1, 0)])
+def test_compiled_weno5_matches_the_numpy_reference(variant, axis, flux_extra):
+    # the Numba kernel must reproduce the vectorised reference (incl. WENO3 / upwind fallbacks)
+    from core.dynamics.sigma_baroclinic import _weno5_faces, _weno5_faces_numpy
+    rng = np.random.default_rng(3)
+    c = rng.normal(size=(2, 7, 9, 11))
+    ok = rng.random(c.shape) > 0.15
+    fshape = list(c.shape)
+    fshape[axis] += flux_extra
+    flux = rng.normal(size=fshape)
+    ref = _weno5_faces_numpy(c, flux, ok, axis, variant)
+    got = _weno5_faces(c, flux, ok, axis, variant)
+    assert got.shape == ref.shape
+    np.testing.assert_allclose(got, ref, rtol=1e-13, atol=1e-13)
+
+
+def test_threaded_weno5_is_bit_identical_to_one_thread():
+    # rows are independent, so the parallel kernel must give exactly the same numbers
+    from core.dynamics import sigma_baroclinic as sb
+    rng = np.random.default_rng(4)
+    c = rng.normal(size=(3, 20, 30, 40))
+    ok = rng.random(c.shape) > 0.1
+    flux = rng.normal(size=(3, 20, 30, 41))
+    sb.set_threads(1)
+    one = sb._weno5_faces(c, flux, ok, 3)
+    sb.set_threads(2)
+    try:
+        two = sb._weno5_faces(c, flux, ok, 3)
+    finally:
+        sb.set_threads(1)
+    assert np.array_equal(one, two)
+
+
+@pytest.mark.parametrize("scheme", ["weno5", "weno5js"])
+def test_fused_tracer_advection_matches_the_numpy_reference(scheme):
+    # one compiled kernel (x, y, z WENO fluxes + open-boundary upstream values + divergence) must give
+    # the flux divergence of the vectorised path, with open W/E/S edges, a closed N wall and dry cells
+    nx, ny, nz = 13, 9, 6
+    hg = create_cartesian_grid(nx=nx, ny=ny, dx=1000.0, dy=1000.0, f0=0.0)
+    m = SigmaBaroclinic(hg, np.full((ny, nx), 30.0), dt=10.0, n_layers=nz, tracer_scheme=scheme,
+                        open_boundaries=("west", "east", "south"))
+    rng = np.random.default_rng(7)
+    m.initial_state(np.zeros((ny, nx)), rng.normal(10.0, 1.0, (nz, ny, nx)))
+    c = np.stack([rng.normal(10.0, 1.0, (nz, ny, nx)), rng.normal(100.0, 5.0, (nz, ny, nx))])
+    ok = rng.random((nz, ny, nx)) > 0.1
+    Qx = rng.normal(size=(nz, ny, nx + 1))
+    Qy = rng.normal(size=(nz, ny + 1, nx))
+    Qy[:, -1, :] = 0.0                                                   # closed north wall
+    Fz = rng.normal(size=(nz + 1, ny, nx))
+    Fz[0] = Fz[-1] = 0.0
+    ref = m._rhs_numpy(c, Qx, Qy, Fz, ok)
+    got = m._rhs(c, Qx, Qy, Fz, ok)
+    np.testing.assert_allclose(got, ref, rtol=1e-12, atol=1e-12)
+
+
+def test_compiled_flux_form_momentum_matches_the_numpy_reference():
+    from core.dynamics.sigma_baroclinic import _flux_form_u, _flux_form_u_numpy
+    rng = np.random.default_rng(9)
+    n, ny, nx = 6, 9, 12
+    u = rng.normal(size=(n, ny, nx + 1))
+    Qx = rng.normal(size=(n, ny, nx + 1))
+    Qy = rng.normal(size=(n, ny + 1, nx))
+    Fz = rng.normal(size=(n + 1, ny, nx))
+    Fz[0] = Fz[-1] = 0.0
+    V = rng.uniform(0.5, 2.0, size=(n, ny, nx))
+    V[:, 2, 3] = 0.0                                                     # an empty cell
+    ok = rng.random((1, ny, nx + 1)) > 0.15
+    np.testing.assert_allclose(_flux_form_u(u, Qx, Qy, Fz, V, ok), _flux_form_u_numpy(u, Qx, Qy, Fz, V, ok),
+                               rtol=1e-12, atol=1e-12)

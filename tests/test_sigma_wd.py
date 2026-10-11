@@ -153,3 +153,16 @@ def test_gls_closure_runs_through_the_full_step_and_stays_positive():
     assert np.isfinite(eta).all() and np.isfinite(u).all()
     assert abs(eta.sum() - vol0) < 1e-10
     assert np.all(m.gls.tke > 0) and m.gls.akv.max() > 10 * m.gls.nu_min     # turbulence was generated
+
+
+def test_compiled_vertical_solver_matches_the_numpy_reference():
+    from core.dynamics.sigma_wd import _vertical_implicit_numpy
+    rng = np.random.default_rng(11)
+    n, m = 12, 57
+    u = rng.normal(size=(n, m))
+    dz = rng.uniform(0.2, 3.0, size=(n, m))
+    nu = rng.uniform(1e-5, 1e-1, size=(n + 1, m))
+    r = rng.uniform(0, 1e-2, size=m)
+    tau = rng.normal(0, 1e-4, size=m)
+    np.testing.assert_allclose(vertical_implicit(u, dz, nu, r, 60.0, tau_top=tau),
+                               _vertical_implicit_numpy(u, dz, nu, r, 60.0, tau_top=tau), rtol=1e-13, atol=1e-15)

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import numpy as np
 import xarray as xr
+from numba import njit, prange
 
 from core.dynamics.wetting_drying import WetDryFreeSurface
 from physics.bottom_friction import first_layer_cd
@@ -48,8 +49,55 @@ G = 9.81
 CLOSURES = ("gls", "parabolic", "constant", "none")
 
 
+@njit(cache=True, parallel=True)
+def _thomas_columns(u, dz, nu, r_bed, tau_top, dt):  # pragma: no cover
+    """Compiled column solver of ``vertical_implicit`` (same algebra), parallel over columns."""
+    n, m = u.shape
+    out = np.empty_like(u)
+    for col in prange(m):
+        cp = np.empty(n)
+        dp = np.empty(n)
+        for k in range(n):
+            lower = 0.0
+            upper = 0.0
+            diag = dz[k, col]
+            if k > 0:
+                lower = -dt * nu[k, col] / (0.5 * (dz[k, col] + dz[k - 1, col]))
+                diag -= lower
+            if k < n - 1:
+                upper = -dt * nu[k + 1, col] / (0.5 * (dz[k, col] + dz[k + 1, col]))
+                diag -= upper
+            if k == 0:
+                diag += dt * r_bed[col]
+            rhs = dz[k, col] * u[k, col]
+            if k == n - 1:
+                rhs += dt * tau_top[col]
+            if k == 0:
+                cp[0] = upper / diag
+                dp[0] = rhs / diag
+            else:
+                mm = diag - lower * cp[k - 1]
+                cp[k] = upper / mm
+                dp[k] = (rhs - lower * dp[k - 1]) / mm
+        out[n - 1, col] = dp[n - 1]
+        for k in range(n - 2, -1, -1):
+            out[k, col] = dp[k] - cp[k] * out[k + 1, col]
+    return out
+
+
 def vertical_implicit(u: np.ndarray, dz: np.ndarray, nu: np.ndarray, r_bed: np.ndarray, dt: float,
                       tau_top: np.ndarray | None = None) -> np.ndarray:
+    """Backward-Euler vertical diffusion with bed stress (see ``_vertical_implicit_numpy``), compiled."""
+    u = np.ascontiguousarray(u, dtype=float)
+    m = u.shape[1]
+    tau = np.zeros(m) if tau_top is None else np.ascontiguousarray(np.broadcast_to(tau_top, (m,)), dtype=float)
+    return _thomas_columns(u, np.ascontiguousarray(np.broadcast_to(dz, u.shape), dtype=float),
+                           np.ascontiguousarray(nu, dtype=float),
+                           np.ascontiguousarray(np.broadcast_to(r_bed, (m,)), dtype=float), tau, float(dt))
+
+
+def _vertical_implicit_numpy(u: np.ndarray, dz: np.ndarray, nu: np.ndarray, r_bed: np.ndarray, dt: float,
+                             tau_top: np.ndarray | None = None) -> np.ndarray:
     """
     Backward-Euler vertical diffusion of momentum with a linearised bed stress
     (tridiagonal, Thomas algorithm; columns are independent).

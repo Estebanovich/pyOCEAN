@@ -52,7 +52,7 @@ def _config(model: SigmaBaroclinic) -> dict:
                 rho_ref="none" if rr is None else ("auto" if isinstance(rr, (str, ReferenceProfile)) else "callable"),
                 open_boundaries=",".join(model.open) or "none",
                 sponge_cells=model.sponge_cells, sponge_tau=" ".join(f"{t:.17g}" for t in model.sponge_tau),
-                orlanski_cmax=model.orlanski_cmax, sponge_tracer=int(model.sponge_tracer),
+                orlanski_cmax=model.orlanski_cmax, sponge_tracer=int(model.sponge_tracer), kh=model.kh, kv=model.kv,
                 closure=core.closure, z0=-1.0 if core.z0 is None else core.z0, nu_const=core.nu_const,
                 adv=model.adv, tracer_scheme=model.tracer_scheme, tracer_time=model.tracer_time,
                 rho0=model.rho0, t_coef=model.t_coef, t_ref=model.t_ref, ah=model.ah,

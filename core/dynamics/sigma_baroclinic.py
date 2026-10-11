@@ -79,11 +79,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import numba
 import numpy as np
 import xarray as xr
+from numba import njit, prange
 
 from core.dynamics.nonlinear import advection_u, advection_v, laplacian_u, laplacian_v
-from core.dynamics.sigma_wd import SigmaWetDry
+from core.dynamics.sigma_wd import SigmaWetDry, vertical_implicit
 from diagnostics.mixing import reference_potential_energy
 
 G = 9.81
@@ -144,7 +146,178 @@ def _shift(c: np.ndarray, ok: np.ndarray, s: int) -> tuple[np.ndarray, np.ndarra
     return out, val
 
 
+_THREADS = [1]
+
+
+def set_threads(n: int) -> None:
+    """
+    Threads for the compiled kernels (default 1).  Rows are independent, so results are
+    bit-identical for any thread count.  On a laptop keep the total over concurrent runs at
+    or below the number of performance cores.
+    """
+    _THREADS[0] = max(1, min(int(n), numba.config.NUMBA_NUM_THREADS))
+
+
+@njit(inline="always")
+def _wval(v1, v2, v3, v4, v5, k1, k2, k3, k4, k5, z_variant):  # pragma: no cover
+    """
+    WENO5 value at a face from the upwind-ordered stencil v1 … v5 (v3 = upwind cell) and the
+    validity of each cell: WENO5-Z or -JS when all five are valid, WENO3 when v2 … v4 are,
+    else first-order upwind (see ``_weno5_faces_numpy`` for the formulas).
+    """
+    if k1 and k2 and k3 and k4 and k5:
+        q0 = (2 * v1 - 7 * v2 + 11 * v3) / 6
+        q1 = (-v2 + 5 * v3 + 2 * v4) / 6
+        q2 = (2 * v3 + 5 * v4 - v5) / 6
+        b0 = 13 / 12 * (v1 - 2 * v2 + v3) ** 2 + 0.25 * (v1 - 4 * v2 + 3 * v3) ** 2
+        b1 = 13 / 12 * (v2 - 2 * v3 + v4) ** 2 + 0.25 * (v2 - v4) ** 2
+        b2 = 13 / 12 * (v3 - 2 * v4 + v5) ** 2 + 0.25 * (3 * v3 - 4 * v4 + v5) ** 2
+        if z_variant:
+            tau, ez = abs(b2 - b0), 1e-40
+            a0 = 0.1 * (1 + tau / (ez + b0))
+            a1 = 0.6 * (1 + tau / (ez + b1))
+            a2 = 0.3 * (1 + tau / (ez + b2))
+        else:
+            a0 = 0.1 / (1e-6 + b0) ** 2
+            a1 = 0.6 / (1e-6 + b1) ** 2
+            a2 = 0.3 / (1e-6 + b2) ** 2
+        return (a0 * q0 + a1 * q1 + a2 * q2) / (a0 + a1 + a2)
+    if k2 and k3 and k4:
+        c0, c1 = (-v2 + 3 * v3) / 2, (v3 + v4) / 2
+        e0 = (1 / 3) / (1e-6 + (v3 - v2) ** 2) ** 2
+        e1 = (2 / 3) / (1e-6 + (v4 - v3) ** 2) ** 2
+        return (e0 * c0 + e1 * c1) / (e0 + e1)
+    return v3
+
+
+@njit(cache=True, parallel=True)
+def _weno5_rows(c: np.ndarray, flux: np.ndarray, ok: np.ndarray, z_variant: bool) -> np.ndarray:  # pragma: no cover
+    """
+    Compiled WENO5 kernel on rows (M, n) of cells and (M, n_f) of face fluxes: the same
+    reconstruction as ``_weno5_faces_numpy`` but only on the upwind side of each face
+    (half the work) and without temporaries.  Faces 1 … n−1; the others stay 0.
+    """
+    M, n = c.shape
+    out = np.zeros(flux.shape)
+    for m in prange(M):
+        for j in range(1, n):
+            if flux[m, j] >= 0.0:
+                i1, i2, i3, i4, i5 = j - 3, j - 2, j - 1, j, j + 1
+            else:
+                i1, i2, i3, i4, i5 = j + 2, j + 1, j, j - 1, j - 2
+            k1 = 0 <= i1 < n and ok[m, i1]
+            k2 = 0 <= i2 < n and ok[m, i2]
+            k3 = 0 <= i3 < n and ok[m, i3]
+            k4 = 0 <= i4 < n and ok[m, i4]
+            k5 = 0 <= i5 < n and ok[m, i5]
+            v1 = c[m, i1] if 0 <= i1 < n else 0.0
+            v2 = c[m, i2] if 0 <= i2 < n else 0.0
+            v3 = c[m, i3] if 0 <= i3 < n else 0.0
+            v4 = c[m, i4] if 0 <= i4 < n else 0.0
+            v5 = c[m, i5] if 0 <= i5 < n else 0.0
+            out[m, j] = _wval(v1, v2, v3, v4, v5, k1, k2, k3, k4, k5, z_variant)
+    return out
+
+
+@njit(cache=True, parallel=True)
+def _advect_div(c, Qx, Qy, Fz, ok, ext, open_w, open_e, open_s, open_n, z_variant):  # pragma: no cover
+    """
+    Fused flux-form advection RHS −∇·(Q c) of the tracer stack c (ntr, N, ny, nx) with WENO5 face
+    values in x, y and z (same rules as ``_weno5_rows``) and upstream values on the open edges
+    (``ext`` on inflow, the boundary cell on outflow; ``SigmaBaroclinic._open_faces``).  Face
+    fluxes are computed once, in parallel over (tracer, layer) or (tracer, row), then differenced.
+    """
+    nt, n, ny, nx = c.shape
+    fx = np.zeros((nt, n, ny, nx + 1))
+    fy = np.zeros((nt, n, ny + 1, nx))
+    fz = np.zeros((nt, n + 1, ny, nx))
+    for p in prange(nt * n):
+        t, k = p // n, p % n
+        for j in range(ny):
+            for i in range(1, nx):
+                q = Qx[k, j, i]
+                if q >= 0.0:
+                    i1, i2, i3, i4, i5 = i - 3, i - 2, i - 1, i, i + 1
+                else:
+                    i1, i2, i3, i4, i5 = i + 2, i + 1, i, i - 1, i - 2
+                b1, b2, b3, b4, b5 = 0 <= i1 < nx, 0 <= i2 < nx, 0 <= i3 < nx, 0 <= i4 < nx, 0 <= i5 < nx
+                v = _wval(c[t, k, j, i1] if b1 else 0.0, c[t, k, j, i2] if b2 else 0.0,
+                          c[t, k, j, i3] if b3 else 0.0, c[t, k, j, i4] if b4 else 0.0,
+                          c[t, k, j, i5] if b5 else 0.0,
+                          b1 and ok[k, j, i1], b2 and ok[k, j, i2], b3 and ok[k, j, i3],
+                          b4 and ok[k, j, i4], b5 and ok[k, j, i5], z_variant)
+                fx[t, k, j, i] = q * v
+            q = Qx[k, j, 0]
+            if open_w:
+                fx[t, k, j, 0] = q * (ext[t, k, j, 0] if q > 0.0 else c[t, k, j, 0])
+            q = Qx[k, j, nx]
+            if open_e:
+                fx[t, k, j, nx] = q * (ext[t, k, j, nx - 1] if q < 0.0 else c[t, k, j, nx - 1])
+        for j in range(1, ny):
+            for i in range(nx):
+                q = Qy[k, j, i]
+                if q >= 0.0:
+                    j1, j2, j3, j4, j5 = j - 3, j - 2, j - 1, j, j + 1
+                else:
+                    j1, j2, j3, j4, j5 = j + 2, j + 1, j, j - 1, j - 2
+                b1, b2, b3, b4, b5 = 0 <= j1 < ny, 0 <= j2 < ny, 0 <= j3 < ny, 0 <= j4 < ny, 0 <= j5 < ny
+                v = _wval(c[t, k, j1, i] if b1 else 0.0, c[t, k, j2, i] if b2 else 0.0,
+                          c[t, k, j3, i] if b3 else 0.0, c[t, k, j4, i] if b4 else 0.0,
+                          c[t, k, j5, i] if b5 else 0.0,
+                          b1 and ok[k, j1, i], b2 and ok[k, j2, i], b3 and ok[k, j3, i],
+                          b4 and ok[k, j4, i], b5 and ok[k, j5, i], z_variant)
+                fy[t, k, j, i] = q * v
+        for i in range(nx):
+            q = Qy[k, 0, i]
+            if open_s:
+                fy[t, k, 0, i] = q * (ext[t, k, 0, i] if q > 0.0 else c[t, k, 0, i])
+            q = Qy[k, ny, i]
+            if open_n:
+                fy[t, k, ny, i] = q * (ext[t, k, ny - 1, i] if q < 0.0 else c[t, k, ny - 1, i])
+    for p in prange(nt * ny):
+        t, j = p // ny, p % ny
+        for k in range(1, n):
+            for i in range(nx):
+                q = Fz[k, j, i]
+                if q >= 0.0:
+                    k1, k2, k3, k4, k5 = k - 3, k - 2, k - 1, k, k + 1
+                else:
+                    k1, k2, k3, k4, k5 = k + 2, k + 1, k, k - 1, k - 2
+                b1, b2, b3, b4, b5 = 0 <= k1 < n, 0 <= k2 < n, 0 <= k3 < n, 0 <= k4 < n, 0 <= k5 < n
+                v = _wval(c[t, k1, j, i] if b1 else 0.0, c[t, k2, j, i] if b2 else 0.0,
+                          c[t, k3, j, i] if b3 else 0.0, c[t, k4, j, i] if b4 else 0.0,
+                          c[t, k5, j, i] if b5 else 0.0,
+                          b1 and ok[k1, j, i], b2 and ok[k2, j, i], b3 and ok[k3, j, i],
+                          b4 and ok[k4, j, i], b5 and ok[k5, j, i], z_variant)
+                fz[t, k, j, i] = q * v
+    out = np.empty_like(c)
+    for p in prange(nt * n):
+        t, k = p // n, p % n
+        for j in range(ny):
+            for i in range(nx):
+                out[t, k, j, i] = -(fx[t, k, j, i + 1] - fx[t, k, j, i] + fy[t, k, j + 1, i] - fy[t, k, j, i]
+                                    + fz[t, k + 1, j, i] - fz[t, k, j, i])
+    return out
+
+
 def _weno5_faces(c: np.ndarray, flux: np.ndarray, ok: np.ndarray, axis: int, variant: str = "z") -> np.ndarray:
+    """WENO5 face values (see ``_weno5_faces_numpy`` for the scheme), compiled with Numba."""
+    if variant not in ("z", "js"):
+        raise ValueError(f"unknown WENO variant {variant!r}")
+    cm = np.moveaxis(np.asarray(c, float), axis, -1)
+    fm = np.moveaxis(np.asarray(flux, float), axis, -1)
+    om = np.moveaxis(np.asarray(ok, bool), axis, -1)
+    lead = np.broadcast_shapes(cm.shape[:-1], fm.shape[:-1], om.shape[:-1])
+    n, nf = cm.shape[-1], fm.shape[-1]
+    c2 = np.ascontiguousarray(np.broadcast_to(cm, lead + (n,))).reshape(-1, n)
+    f2 = np.ascontiguousarray(np.broadcast_to(fm, lead + (nf,))).reshape(-1, nf)
+    o2 = np.ascontiguousarray(np.broadcast_to(om, lead + (n,))).reshape(-1, n)
+    numba.set_num_threads(_THREADS[0])
+    out = _weno5_rows(c2, f2, o2, variant == "z").reshape(lead + (nf,))
+    return np.moveaxis(out, -1, axis)
+
+
+def _weno5_faces_numpy(c: np.ndarray, flux: np.ndarray, ok: np.ndarray, axis: int, variant: str = "z") -> np.ndarray:
     """
     WENO5 face values (Jiang & Shu 1996) on interior faces along ``axis``, upwind
     with respect to ``flux``; WENO3 where only 3 upwind cells are valid, first-order
@@ -218,8 +391,90 @@ def _centred_faces(c: np.ndarray, ok: np.ndarray, axis: int, n_out: int | None =
     return np.moveaxis(face, -1, axis)
 
 
+@njit(cache=True, parallel=True)
+def _flux_form_u_kernel(u, Qx, Qy, Fz, V, ok):  # pragma: no cover
+    """Compiled ``_flux_form_u_numpy`` (same transports, WENO5-Z values and face rules)."""
+    n, ny, nx1 = u.shape
+    nx = nx1 - 1
+    Fx = np.zeros((n, ny, nx))
+    Fy = np.zeros((n, ny + 1, nx1))
+    Fzz = np.zeros((n + 1, ny, nx1))
+    out = np.zeros_like(u)
+    for k in prange(n):
+        for j in range(ny):
+            # x: through cell centres c (between u-faces c and c+1), transport Uc = mean of the face transports
+            for c in range(nx):
+                q = 0.5 * (Qx[k, j, c] + Qx[k, j, c + 1])
+                f = c + 1
+                if q >= 0.0:
+                    i1, i2, i3, i4, i5 = f - 3, f - 2, f - 1, f, f + 1
+                else:
+                    i1, i2, i3, i4, i5 = f + 2, f + 1, f, f - 1, f - 2
+                b1, b2, b3, b4, b5 = 0 <= i1 < nx1, 0 <= i2 < nx1, 0 <= i3 < nx1, 0 <= i4 < nx1, 0 <= i5 < nx1
+                v = _wval(u[k, j, i1] if b1 else 0.0, u[k, j, i2] if b2 else 0.0, u[k, j, i3] if b3 else 0.0,
+                          u[k, j, i4] if b4 else 0.0, u[k, j, i5] if b5 else 0.0,
+                          b1 and ok[k, j, i1], b2 and ok[k, j, i2], b3 and ok[k, j, i3],
+                          b4 and ok[k, j, i4], b5 and ok[k, j, i5], True)
+                Fx[k, j, c] = q * v
+        # y: through the corners q = 0 … ny at u-face i (rows outside the domain: 0 and invalid)
+        for qq in range(ny + 1):
+            for i in range(1, nx):
+                q = 0.5 * (Qy[k, qq, i - 1] + Qy[k, qq, i])
+                if q >= 0.0:
+                    r1, r2, r3, r4, r5 = qq - 3, qq - 2, qq - 1, qq, qq + 1
+                else:
+                    r1, r2, r3, r4, r5 = qq + 2, qq + 1, qq, qq - 1, qq - 2
+                b1, b2, b3, b4, b5 = 0 <= r1 < ny, 0 <= r2 < ny, 0 <= r3 < ny, 0 <= r4 < ny, 0 <= r5 < ny
+                v = _wval(u[k, r1, i] if b1 else 0.0, u[k, r2, i] if b2 else 0.0, u[k, r3, i] if b3 else 0.0,
+                          u[k, r4, i] if b4 else 0.0, u[k, r5, i] if b5 else 0.0,
+                          b1 and ok[k, r1, i], b2 and ok[k, r2, i], b3 and ok[k, r3, i],
+                          b4 and ok[k, r4, i], b5 and ok[k, r5, i], True)
+                Fy[k, qq, i] = q * v
+    for j in prange(ny):
+        # z: through the interfaces kk = 1 … N−1 at the u-face, transport = mean of the two cells' Fz
+        for kk in range(1, n):
+            for i in range(1, nx):
+                q = 0.5 * (Fz[kk, j, i - 1] + Fz[kk, j, i])
+                if q >= 0.0:
+                    k1, k2, k3, k4, k5 = kk - 3, kk - 2, kk - 1, kk, kk + 1
+                else:
+                    k1, k2, k3, k4, k5 = kk + 2, kk + 1, kk, kk - 1, kk - 2
+                b1, b2, b3, b4, b5 = 0 <= k1 < n, 0 <= k2 < n, 0 <= k3 < n, 0 <= k4 < n, 0 <= k5 < n
+                v = _wval(u[k1, j, i] if b1 else 0.0, u[k2, j, i] if b2 else 0.0, u[k3, j, i] if b3 else 0.0,
+                          u[k4, j, i] if b4 else 0.0, u[k5, j, i] if b5 else 0.0,
+                          b1 and ok[k1, j, i], b2 and ok[k2, j, i], b3 and ok[k3, j, i],
+                          b4 and ok[k4, j, i], b5 and ok[k5, j, i], True)
+                Fzz[kk, j, i] = q * v
+    for k in prange(n):
+        for j in range(ny):
+            for i in range(1, nx):
+                if not ok[k, j, i]:
+                    continue
+                vu = 0.5 * (V[k, j, i - 1] + V[k, j, i])
+                if vu <= 0.0:
+                    continue
+                div = Fx[k, j, i] - Fx[k, j, i - 1] + Fy[k, j + 1, i] - Fy[k, j, i] + Fzz[k + 1, j, i] - Fzz[k, j, i]
+                uc_hi = 0.5 * (Qx[k, j, i] + Qx[k, j, i + 1])
+                uc_lo = 0.5 * (Qx[k, j, i - 1] + Qx[k, j, i])
+                vq_hi = 0.5 * (Qy[k, j + 1, i - 1] + Qy[k, j + 1, i])
+                vq_lo = 0.5 * (Qy[k, j, i - 1] + Qy[k, j, i])
+                w_hi = 0.5 * (Fz[k + 1, j, i - 1] + Fz[k + 1, j, i])
+                w_lo = 0.5 * (Fz[k, j, i - 1] + Fz[k, j, i])
+                mass = uc_hi - uc_lo + vq_hi - vq_lo + w_hi - w_lo
+                out[k, j, i] = -(div - u[k, j, i] * mass) / vu
+    return out
+
+
 def _flux_form_u(u: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, Fz: np.ndarray, V: np.ndarray,
                  ok_u: np.ndarray) -> np.ndarray:
+    """Flux-form momentum advection (see ``_flux_form_u_numpy``), compiled."""
+    c = lambda a, dt=float: np.ascontiguousarray(a, dtype=dt)                     # noqa: E731
+    numba.set_num_threads(_THREADS[0])
+    return _flux_form_u_kernel(c(u), c(Qx), c(Qy), c(Fz), c(V), c(np.broadcast_to(ok_u, u.shape), bool))
+
+
+def _flux_form_u_numpy(u: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, Fz: np.ndarray, V: np.ndarray,
+                       ok_u: np.ndarray) -> np.ndarray:
     """
     Momentum-conserving advection of u (N,ny,nx+1) by the layer transports
     (flux form, as ROMS/CROCO; Shchepetkin & McWilliams 2005):
@@ -348,7 +603,8 @@ class SigmaBaroclinic:
                  tracer_time: str = "ssprk3", pgf: str = "jacobian", rho_ref=None,
                  open_boundaries: tuple[str, ...] = (), sponge_cells: int = 0,
                  sponge_tau: tuple[float, float] = (1200.0, 60.0), orlanski_cmax: float = 1.0,
-                 sponge_tracer: bool = True, dsigma: np.ndarray | None = None) -> None:
+                 sponge_tracer: bool = True, dsigma: np.ndarray | None = None, kh: float = 0.0,
+                 kv: float = 0.0, solver: str = "direct") -> None:
         if pgf not in ("twoterm", "jacobian"):
             raise ValueError(f"unknown pressure-gradient scheme {pgf!r}")
         self.pgf, self.rho_ref = pgf, rho_ref
@@ -366,6 +622,7 @@ class SigmaBaroclinic:
         self.open = tuple(open_boundaries)
         self.orlanski_cmax, self.sponge_tracer = orlanski_cmax, sponge_tracer
         self.sponge_cells, self.sponge_tau = int(sponge_cells), tuple(float(t) for t in sponge_tau)
+        self.kh, self.kv = float(kh), float(kv)
         act = np.isfinite(np.asarray(bathy, float))
         fl_u = np.zeros((act.shape[0], act.shape[1] + 1), bool)
         fl_v = np.zeros((act.shape[0] + 1, act.shape[1]), bool)
@@ -378,7 +635,7 @@ class SigmaBaroclinic:
         if "north" in self.open:
             fl_v[-1, :] = act[-1, :]
         self.core = SigmaWetDry(h_grid, bathy, dt=dt, n_layers=n_layers, z0=z0, closure=closure,
-                                nu_const=nu_const, theta=theta, g=g, d_min=d_min, dsigma=dsigma,
+                                nu_const=nu_const, theta=theta, g=g, d_min=d_min, dsigma=dsigma, solver=solver,
                                 flather_u=fl_u if self.open else None, flather_v=fl_v if self.open else None)
         self._sp_c, self._sp_u, self._sp_v = _sponge_rates(act.shape, self.open, sponge_cells, *sponge_tau)
         self.T_ext = None
@@ -581,6 +838,33 @@ class SigmaBaroclinic:
             face[tuple(sl_f)] = np.where(inflow_sign * q > 0, ext[tuple(sl_c)], c[tuple(sl_c)])
         return face
 
+    def _diffuse_h(self, T: np.ndarray, V: np.ndarray, eta: np.ndarray) -> np.ndarray:
+        """
+        Explicit Laplacian diffusion along σ-surfaces in flux form (MITgcm diffKhT):
+            V_k ∂T/∂t = −Σ_faces F,   F_x = −K_h L_u h_{u,k} (T_i − T_{i−1}) / Δx_u
+        with h_{u,k} = D_u Δσ_k (mean total depth of the two cells); conservative, and a uniform
+        T stays uniform.  With a reference profile the anomaly T − T_ref(z) is diffused instead
+        (Mellor & Blumberg 1985 [verificar]), so a resting stratification is not mixed across
+        sloping σ-surfaces (e.g. a shelf step).
+        """
+        Tw = T
+        if self.rho_ref is not None and not isinstance(self.rho_ref, str) and self.t_coef != 0:
+            Tw = T - (self.t_ref + (self.rho0 - self.rho_ref(self.layer_heights(eta))) / self.t_coef)
+        Du, Dv = self.core.face_depths(eta)
+        okx = np.isfinite(self.fs.H_u) & np.isfinite(Du) & (Du > self.fs.d_min)
+        oky = np.isfinite(self.fs.H_v) & np.isfinite(Dv) & (Dv > self.fs.d_min)
+        ds = self.ds[:, None, None]
+        Fx = np.zeros((self.n,) + Du.shape)
+        Fy = np.zeros((self.n,) + Dv.shape)
+        Fx[..., 1:-1] = -self.kh * (self.fs.Lu * np.nan_to_num(Du) / self.fs.du)[None, :, 1:-1] * ds \
+            * (Tw[..., 1:] - Tw[..., :-1])
+        Fy[:, 1:-1, :] = -self.kh * (self.fs.Lv * np.nan_to_num(Dv) / self.fs.dv)[None, 1:-1, :] * ds \
+            * (Tw[:, 1:, :] - Tw[:, :-1, :])
+        Fx = np.where(okx[None], Fx, 0.0)
+        Fy = np.where(oky[None], Fy, 0.0)
+        div = Fx[..., 1:] - Fx[..., :-1] + Fy[:, 1:, :] - Fy[:, :-1, :]
+        return np.where(V > 0, T - self.dt * div / np.where(V > 0, V, 1.0), T)
+
     def _baroclinic_part(self, vel: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Depth mean Σ Δσ_k u_k and the baroclinic remainder u_k − ū (Σ Δσ_k u′_k = 0)."""
         mean = np.tensordot(self.ds, vel, axes=(0, 0))
@@ -611,6 +895,34 @@ class SigmaBaroclinic:
         sl[axis] = edge
         u_new[tuple(sl)] = np.where(open_, take(bar[None], edge) + pb, take(u_new, edge))
 
+    def _rhs_numpy(self, c: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, Fz: np.ndarray, ok: np.ndarray,
+                   centred: bool = False) -> np.ndarray:
+        """Advection RHS −∇·(Q c) of the stack c (ntr, N, ny, nx), vectorised reference path."""
+        okb = np.broadcast_to(ok, c.shape)
+        fx = Qx * self._open_faces(self._faces(c, np.broadcast_to(Qx, c.shape[:1] + Qx.shape), okb, 3, centred),
+                                   c, Qx, 3)
+        fy = Qy * self._open_faces(self._faces(c, np.broadcast_to(Qy, c.shape[:1] + Qy.shape), okb, 2, centred),
+                                   c, Qy, 2)
+        # vertical: Fz[j] is the volume flux through interface j (bottom of layer j; 0 = bed, N = surface)
+        fzc = np.broadcast_to(Fz[:-1], c.shape)
+        fz = np.zeros(c.shape[:1] + Fz.shape)
+        fz[:, :-1] = Fz[:-1] * self._faces(c, fzc, okb, 1, centred)
+        return -(fx[..., 1:] - fx[..., :-1] + fy[:, :, 1:, :] - fy[:, :, :-1, :] + fz[:, 1:] - fz[:, :-1])
+
+    def _rhs(self, c: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, Fz: np.ndarray, ok: np.ndarray,
+             centred: bool = False) -> np.ndarray:
+        """Advection RHS: the fused compiled kernel for WENO5 upwind faces, else the reference path."""
+        if centred or not self.tracer_scheme.startswith("weno5"):
+            return self._rhs_numpy(c, Qx, Qy, Fz, ok, centred)
+        c = np.ascontiguousarray(c, dtype=float)
+        ext = c if self.T_ext is None or not self.open else np.ascontiguousarray(
+            np.stack([self.T_ext, self.T_ext**2])[: c.shape[0]])
+        numba.set_num_threads(_THREADS[0])
+        return _advect_div(c, np.ascontiguousarray(Qx, dtype=float), np.ascontiguousarray(Qy, dtype=float),
+                           np.ascontiguousarray(Fz, dtype=float), np.ascontiguousarray(np.broadcast_to(ok, c.shape[1:])),
+                           ext, "west" in self.open, "east" in self.open, "south" in self.open,
+                           "north" in self.open, self.tracer_scheme == "weno5")
+
     def _advect(self, C: np.ndarray, V0: np.ndarray, V1: np.ndarray, Qx: np.ndarray, Qy: np.ndarray,
                 Fz: np.ndarray, ok: np.ndarray) -> np.ndarray:
         """
@@ -619,18 +931,7 @@ class SigmaBaroclinic:
         the interfaces); layer volumes go linearly from V0 to V1.
         """
         dt = self.dt
-
-        def rhs(c, centred=False):
-            okb = np.broadcast_to(ok, c.shape)
-            fx = Qx * self._open_faces(self._faces(c, np.broadcast_to(Qx, c.shape[:1] + Qx.shape), okb, 3, centred),
-                                       c, Qx, 3)
-            fy = Qy * self._open_faces(self._faces(c, np.broadcast_to(Qy, c.shape[:1] + Qy.shape), okb, 2, centred),
-                                       c, Qy, 2)
-            # vertical: Fz[j] is the volume flux through interface j (bottom of layer j; 0 = bed, N = surface)
-            fzc = np.broadcast_to(Fz[:-1], c.shape)
-            fz = np.zeros(c.shape[:1] + Fz.shape)
-            fz[:, :-1] = Fz[:-1] * self._faces(c, fzc, okb, 1, centred)
-            return -(fx[..., 1:] - fx[..., :-1] + fy[:, :, 1:, :] - fy[:, :, :-1, :] + fz[:, 1:] - fz[:, :-1])
+        rhs = lambda c, centred=False: self._rhs(c, Qx, Qy, Fz, ok, centred)          # noqa: E731
 
         dV = V1 - V0
         safe = lambda q, v: np.where(v > 0, q / np.where(v > 0, v, 1.0), C)     # noqa: E731
@@ -708,6 +1009,13 @@ class SigmaBaroclinic:
         C = self._advect(np.stack([st.T, st.T**2]), V0, V1, Qx, Qy, Fz, ok)
         T_new = C[0]
         mix = V1 * (C[1] - C[0] ** 2) / dt
+        if self.kh > 0:
+            T_new = self._diffuse_h(T_new, V1, eta_new)
+        if self.kv > 0:
+            D1 = np.maximum(np.nan_to_num(self.H + eta_new, nan=self.fs.d_min), self.fs.d_min)
+            dz = (D1[None] * self.ds[:, None, None]).reshape(n, -1)
+            T_new = vertical_implicit(T_new.reshape(n, -1), dz, np.full((n + 1, dz.shape[1]), self.kv),
+                                      np.zeros(dz.shape[1]), dt).reshape(T_new.shape)
         if self._sp_c is not None and self.sponge_tracer:
             r = dt * self._sp_c[None]
             T_new = (T_new + r * self.T_ext) / (1.0 + r)
