@@ -35,6 +35,8 @@ Correr los mismos casos de prueba en varios modelos de referencia y luego reprod
 | Inestabilidad baroclínica | **Listo** `tutorial_reentrant_channel` | **Listo** `JET` | `Phillips_2layer` | — | Tasa de crecimiento de Eady/Phillips | horas | 3, 4 |
 | Advección de trazadores | **Listo** `advect_xy`, `advect_xz` | **Listo** `TS_HADV_TEST` | **Listo** `torus_advection_test` | — | Exacta: errores L1, L2, L∞; extremos; orden de convergencia | s | 1 |
 | Columna 1-D con KPP | **Listo** `vermix` | **Listo** `SINGLE_COLUMN` (con `LMD_MIXING`) | **Listo** `CVmix_SCM_tests` | — | Kato–Phillips, h ≈ 1.05 u*(t/N₀)^½ (Price 1979); convección | s | 1 |
+| Mojado-secado: cubeta parabólica | Propio | **Listo** `THACKER` (`THACKER_2DV`, Coriolis, dt 60 s) | — | — | Analítica exacta (Thacker 1981): oscilación de la línea de costa | min | 2 |
+| Mojado-secado: planicie de marea | — | **Listo** `TIDAL_FLAT` | — | — | Volumen intermareal; frente de inundación; comparación con CROCO | min | 2 |
 | Columna de flujos aire–mar | **Listo** `1D_ocean_ice_column` (EXF + KPP) | Propio | **Listo** `single_column` (BATS) | Vía GOMb0.08 | Q_net, τ, SST(t) | s | 2 |
 
 **No aplican**, porque son no hidrostáticos: CROCO `TANK`, `ACOUSTIC` y `KH_INST`; MIT `short_surf_wave`.
@@ -68,6 +70,11 @@ Correr los mismos casos de prueba en varios modelos de referencia y luego reprod
 9. **Monte submarino y flujo pendiente abajo**
    - Modelos: MOM6 (z, sigma, rho y capas), CROCO, MIT `dome` y HYCOM propio.
    - Sirve de criterio de entrada a la Fase 3.
+
+10. **Mojado-secado** (antes de aplicarlo al Alto Golfo de California)
+    - Modelos: CROCO `THACKER` y `TIDAL_FLAT`.
+    - Métricas: posición de la línea de costa y η(t) contra Thacker (1981); volumen intermareal; conservación de masa; ausencia de profundidades negativas.
+    - Motivo: en PAC_MEX, la profundidad mínima controla la co-oscilación del Golfo de California (5 m: fase rms 18.7°; 10 m: 26°; 20 m: 34°).
 
 Casos extra, de un solo modelo: CROCO `CANYON` y `UPWELLING` (Fase 4) y MIT `tutorial_reentrant_channel`.
 
@@ -105,4 +112,5 @@ Ya instalado en Homebrew: gfortran, mpich, netcdf, netcdf-fortran (`nf-config`) 
 | `validation/hycom_kara`: `bulk_kara` contra el código compilado de HYCOM | ✅ Coincide a 1e-10 (616 casos) |
 | `validation/mitgcm_exf`: `bulk_ncar` contra MITgcm `exf` (LY04 y LY09, 1000 casos) | ✅ Mediana 0.2–0.3 % para U ≥ 0.5 m/s. Todas las diferencias mayores tienen causa documentada: c_pa 1005 vs 1000.5; MITgcm usa la velocidad sin recortar con U < 0.5; 2 iteraciones no convergen con viento débil y estable. Para reproducir: `./build_and_run.sh all && python compare.py all` |
 | `validation/bayiw_seiche`: seiche barotrópico de la bahía BayIW contra las corridas de MITgcm de la tesis | ✅ Periodo 3.83 h contra 3.81–3.83 h; correlación 0.990–0.998 y RMSE ≤ 0.5 mm en 0–27 h |
+| `validation/hycom_ioa`: marea de pyOCEAN contra HYCOM-IOA (PAC_MEX, salidas operativas) | ✅ En la banda de marea, RMS contra IOC: HYCOM 4.9 cm, pyOCEAN 5.1 cm; los dos fallan igual en el Golfo de California |
 | Casos 1–9 | Pendientes |
