@@ -70,4 +70,9 @@ La mezcla de más es vertical a lo largo de la interfaz, y la acompaña una velo
 2. el acoplamiento barotrópico/baroclínico: superficie libre θ-implícita con corrección uniforme, contra el split-explicit filtrado de Shchepetkin & McWilliams (2005);
 3. la vertical de la advección de momento: ω en las caras u como promedio de las celdas.
 
+**Respaldo en la literatura** (biblioteca local, `Ilicak_2012`):
+- §3.4: "grid-scale noise in the velocity fields enhances numerical mixing of transported scalars". ROMS mezcla menos que MITgcm y MOM porque su advección de momento upwind lleva disipación adaptativa con un paso predictor-corrector (Shchepetkin & McWilliams 2005). Esto coincide con nuestro diagnóstico: w es más ruidosa en pyOCEAN.
+- §3.5: los esquemas no limitados crean extremos falsos que hacen *bajar* la RPE, así que aparentan mezclar menos. Es lo que vimos con UP3 en trazadores (9.2e-6 con T entre 1.95 y 13.2). Por eso la RPE solo se compara entre esquemas que respetan el rango.
+- Fig. 6: la mezcla espuria queda "topada" para Re_Δ > 100 y cae un orden de magnitud para Re_Δ < 5. Nuestro barrido de A_h sigue la misma tendencia.
+
 **Siguiente prueba:** medir la RPE con un filtro de momento o LF-AM3. Falta también el barrido de A_h en CROCO para la curva RPE contra Re_Δ.
