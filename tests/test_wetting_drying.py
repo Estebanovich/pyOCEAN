@@ -239,3 +239,17 @@ class TestFlather:
         e1, u1, _ = fs.step(eta, u, v, u.copy(), v.copy(), flather_eta=np.full((1, 11), 0.5),
                             flather_ubar=np.zeros((1, 11)))
         assert u1[0, -1] == 0.0 and e1[0, -1] == pytest.approx(1.0)
+
+
+def test_cg_solver_matches_direct():
+    # Warm-started Jacobi-preconditioned CG (large grids) = direct solve
+    x, e_direct, *_ = thacker_run(2000.0, 0.5 * PERIOD)
+    nx = x.size
+    hg = create_cartesian_grid(nx=nx, ny=1, dx=2000.0, dy=2000.0, f0=0.0)
+    H = D0 * (1 - (x / L) ** 2)[None, :]
+    fs = WetDryFreeSurface(hg, H, dt=60.0, theta=0.55, g=G, solver="cg", cg_rtol=1e-12)
+    eta = thacker_exact(x, 0.0)[0][None, :]
+    u, v = np.zeros((1, nx + 1)), np.zeros((2, nx))
+    for _ in range(int(round(0.5 * PERIOD / 60.0))):
+        eta, u, v = fs.step(eta, u, v, u.copy(), v.copy())
+    np.testing.assert_allclose(eta[0], e_direct, atol=1e-8)

@@ -43,7 +43,7 @@ from __future__ import annotations
 import numpy as np
 import scipy.sparse as sp
 import xarray as xr
-from scipy.sparse.linalg import spsolve
+from scipy.sparse.linalg import LinearOperator, cg, spsolve
 
 G = 9.81
 
@@ -70,13 +70,23 @@ class WetDryFreeSurface:
         total depth of the adjacent cell D = H + η_c (closed while it is dry):
         outward transport Q = L D [ū_ext,out + √(g/D)(η_c − η_ext)], θ-weighted
         between n and n+1 as in ``ImplicitFreeSurface``.
+    solver : {'direct', 'cg'}
+        Sparse direct solve each step, or Jacobi-preconditioned conjugate
+        gradients warm-started from η^n (the matrix changes every step, so a
+        factorisation cannot be reused; CG is much cheaper on large grids).
+    cg_rtol : float
+        Relative residual tolerance of CG.
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, theta: float = 0.6,
                  g: float = G, d_min: float = 0.05, flather_u: np.ndarray | None = None,
-                 flather_v: np.ndarray | None = None) -> None:
+                 flather_v: np.ndarray | None = None, solver: str = "direct", cg_rtol: float = 1e-10) -> None:
         if not 0.5 <= theta <= 1.0:
             raise ValueError(f"theta must be in [0.5, 1], got {theta}")
+        if solver not in ("direct", "cg"):
+            raise ValueError(f"solver must be 'direct' or 'cg', got {solver!r}")
+        self.solver, self.cg_rtol = solver, cg_rtol
+        self.cg_iterations = 0
         self.dt, self.theta, self.g, self.d_min = float(dt), float(theta), float(g), float(d_min)
         H = np.asarray(bathy, float)
         self.H = H
@@ -214,7 +224,21 @@ class WetDryFreeSurface:
         rhs = rhs_full[self.active]
         cu = g * th**2 * dt**2 * self.Lu * Du / self.du
         cv = g * th**2 * dt**2 * self.Lv * Dv / self.dv
-        x = spsolve(self._matrix(np.where(wu, cu, 0.0), np.where(wv, cv, 0.0), extra[self.active]).tocsc(), rhs)
+        A = self._matrix(np.where(wu, cu, 0.0), np.where(wv, cv, 0.0), extra[self.active])
+        if self.solver == "direct":
+            x = spsolve(A.tocsc(), rhs)
+        else:
+            dinv = 1.0 / A.diagonal()
+            M = LinearOperator(A.shape, matvec=lambda r: dinv * r)
+            count = [0]
+
+            def _cb(_):
+                count[0] += 1
+            x, info = cg(A, rhs, x0=eta[self.active], rtol=self.cg_rtol, atol=0.0, M=M, maxiter=10 * rhs.size,
+                         callback=_cb)
+            if info != 0:
+                raise RuntimeError(f"wet-dry free-surface CG did not converge (info={info})")
+            self.cg_iterations = count[0]
         eta_new = np.array(eta, float, copy=True)
         eta_new[self.active] = x
 
