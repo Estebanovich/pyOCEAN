@@ -100,28 +100,42 @@ Coordinate transform code lives in `core/grid/vertical.py`.
 
 ---
 
+## Project Goal
+
+pyOCEAN aims to be the best community regional/coastal ocean model, not a tool tailored to one user. "Best" is measured on accuracy against truth, cost, robustness and usability/transparency. Strategy, gaps and roadmap: `docs/design/vision_roadmap.md` (approved 2026-10-11).
+
+---
+
 ## Validation Strategy
 
 All physics modules are validated in this order:
 1. **Analytical solution** (if available) — e.g., linear wave dispersion
-2. **MITgcm comparison** — Esteban's existing simulation output (BayIW_Rectan configs)
-3. **HYCOM comparison** — operational Gulf of Mexico output
+2. **Laboratory / observations** — tide gauges, ADCP, CTD, lab experiments (the real "truth")
+3. **Cross-model comparison** — MITgcm (BayIW_Rectan), CROCO/ROMS, MOM6, HYCOM-IOA
 
-Validation notebooks live in `notebooks/validation/`.
+Rules for every benchmark:
+- Classify each difference as (a) our bug, (b) missing physics, (c) numerical choice, (d) reference-model error. Only (a) and (b) change the model; never tune to a single case.
+- End each benchmark with a "what pyOCEAN should improve" list and update the scorecard (§7 of `vision_roadmap.md`).
+- Run the reference case in its full configuration too (e.g. CROCO TIDAL_FLAT in 3D), not only a reduced one.
+
+### Systematic literature checks (Consensus)
+
+Before implementing a scheme or parameterisation, and when a benchmark shows an unexplained difference, search the literature with Consensus to (1) validate the chosen approach against the current state of the art and (2) look for existing solutions. Record the key papers (with link/DOI) in the module docstring or the benchmark README. References recalled from memory are marked **[verificar]** until checked.
 
 ---
 
-## Development Phases
+## Development Phases (roadmap stages)
 
-When working on this project, follow the phase order strictly. Do not add Phase 3 features while Phase 1 is incomplete.
+Follow the stage order of `docs/design/vision_roadmap.md` §8; a stage closes when its scorecard rows are ✅ or the difference is explained. Phase 1 (z-level core) is complete; Phase 2 (forcing, tides, OBC, W/D) is largely done.
 
-| Phase | Key modules | Validation target |
-|-------|-------------|-------------------|
-| 1 | grid, dynamics, timestepping, basic mixing | MITgcm rectangular bay seiches |
-| 2 | OBCS (Orlanski+sponge), real bathymetry, ERA5 forcing | Gulf of Mexico subdomain |
-| 3 | Hybrid vertical coordinate | HYCOM comparison |
-| 4 | Internal wave parameterization | M.Sc. thesis results |
-| 5 | Operational pipeline, restart files | HYCOM-IOA forecast |
+| Stage | Content | Validation target |
+|-------|---------|-------------------|
+| A — Quality foundations | spurious-mixing diagnostics (RPE, variance decay), bit-for-bit restarts, AB3/LF-AM3, LU reuse / PyAMG, CF/Zarr output, domain checker + blow-up post-mortem, log-law drag in regional runs | lock exchange, internal seiche (Ilicak 2012); restart CI |
+| B — 3-D physics | vertical advection + stratification in σ-3D, finite-volume PGF, vector-invariant momentum, Casulli subgrid W/D + Stelling–Duinmeijer fronts, low-frequency-only sponge | seamount, Thacker (xfail → pass), BayIW baroclinic seiche vs MITgcm |
+| C — ALE hybrid (old Phase 3) | general ALE regrid–remap (PPM/PQM) with z*, σ, z̃, HYCOM-hybrid and adaptive targets; split-explicit barotropic mode | DOME overflow, seamount, HYCOM comparison |
+| D — Differentiable | JAX backend (functional kernels), custom VJPs for the free-surface solve and Thomas, smoothed W/D gradients, checkpointing | gradients vs finite differences; inversion vs TICON gauges |
+| E — Internal waves (old Phase 4) | baroclinic tides in PAC_MEX, KPP without background diffusivity, optional nonhydrostatic | M.Sc. thesis results, IW spectra |
+| F — Operational + ML (old Phase 5) | forecast cycle, regional emulator / learned boundaries (Anemoi, ACE), NVIDIA GPU via JAX | HYCOM-IOA forecast vs independent observations |
 
 ---
 
@@ -175,10 +189,12 @@ Last updated: 2026-10-10.  All tests run with `pytest tests/`.
 | JSL internal-tide drag (tidal.rh generation + HYCOM tiddrg=1 drag) | `physics/tides/drag.py` | `tests/test_tidal_drag.py` | ✅ 8/8 |
 | Raw sea-level QC + harmonic analysis (spikes, stuck, datum steps, clock, twin sensors) | `diagnostics/sealevel_qc.py` | `tests/test_sealevel_qc.py` | ✅ 37/37 |
 | Nonlinear shallow-water terms (−∇·(ηu), advection centred/upwind3, Laplacian viscosity) | `core/dynamics/nonlinear.py` | `tests/test_nonlinear.py` | ✅ 18/18 |
-| Wetting and drying (Casulli semi-implicit, total depth, Flather) — Thacker exact + CROCO THACKER/TIDAL_FLAT | `core/dynamics/wetting_drying.py` | `tests/test_wetting_drying.py` | ✅ 21/21 (+1 strict xfail) |
-| Log-law depth-dependent bottom drag C_d(D, z₀) (Soulsby 1997; matches CROCO 3D TIDAL_FLAT) | `physics/bottom_friction.py` | `tests/test_bottom_friction.py` | ✅ 4/4 |
+| Wetting and drying (Casulli semi-implicit, total depth, Flather) — Thacker exact + CROCO THACKER/TIDAL_FLAT | `core/dynamics/wetting_drying.py` | `tests/test_wetting_drying.py` | ✅ 22/22 (+1 strict xfail) |
+| Log-law depth-dependent bottom drag C_d(D, z₀) + first-layer law of the wall (Soulsby 1997; CROCO) | `physics/bottom_friction.py` | `tests/test_bottom_friction.py` | ✅ 4/4 |
+| GLS k-ε turbulence closure, Canuto A (column port of CROCO gls_mixing.F) + parabolic ν | `physics/mixing/gls.py`, `physics/mixing/parabolic.py` | `tests/test_gls.py` | ✅ 3/3 |
+| Homogeneous 3-D σ-layer wetting–drying model (Casulli & Cheng 1992) — CROCO 3D TIDAL_FLAT to 1.2 cm | `core/dynamics/sigma_wd.py` | `tests/test_sigma_wd.py` | ✅ 8/8 |
 
-**Phase 2 in progress — 819 total tests passing (+1 strict xfail).**
+**Phase 2 in progress — 831 total tests passing (+1 strict xfail).**
 
 ### Phase 2 build order
 
