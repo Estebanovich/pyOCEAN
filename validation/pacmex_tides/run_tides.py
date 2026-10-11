@@ -95,7 +95,7 @@ def _pacmex_axes() -> tuple[np.ndarray, np.ndarray]:
     return plon[0], plat[:, 0]
 
 
-def subdomain(domain: str = "pacmex", box: dict | None = None) -> dict:
+def subdomain(domain: str = "pacmex", box: dict | None = None, min_depth: float = MIN_DEPTH) -> dict:
     """
     Depth and grid origin of the run domain.
 
@@ -133,7 +133,7 @@ def subdomain(domain: str = "pacmex", box: dict | None = None) -> dict:
             return regrid_bilinear(np.where(np.isfinite(full), full, CD), lat1, lon1, LAT, LON)
     else:
         raise ValueError(domain)
-    depth = np.where(np.isfinite(depth) & (depth > 0), np.maximum(depth, MIN_DEPTH), 0.0)
+    depth = np.where(np.isfinite(depth) & (depth > 0), np.maximum(depth, min_depth), 0.0)
     return dict(domain=domain, box=box, i0=i0, j0=j0, depth=depth, dll=dll, lon0=lon0, lat0=lat0, sal=sal, cb=cb)
 
 
@@ -210,6 +210,7 @@ def main() -> None:
     ap.add_argument("--adv", default="upwind3", choices=["upwind3", "centred"],
                     help="momentum advection scheme with --nonlinear (centred is unstable in 1-cell channels)")
     ap.add_argument("--ah", type=float, default=0.0, help="Laplacian viscosity A_h [m²/s] (free slip)")
+    ap.add_argument("--min-depth", type=float, default=MIN_DEPTH, help="depth floor of wet cells [m]")
     ap.add_argument("--domain", default="pacmex", choices=["pacmex", "gebco100"])
     ap.add_argument("--box", nargs=4, type=float, metavar=("LON0", "LON1", "LAT0", "LAT1"))
     ap.add_argument("--bc", default="tpxo", help="'tpxo' or 'parent:<run_*.npz>' (harmonic one-way nesting)")
@@ -219,7 +220,7 @@ def main() -> None:
 
     t_setup = time.time()
     box = dict(lon=tuple(args.box[:2]), lat=tuple(args.box[2:])) if args.box else BOX
-    sd = subdomain(args.domain, box)
+    sd = subdomain(args.domain, box, args.min_depth)
     ny, nx = sd["depth"].shape
     hg = create_spherical_grid(nx, ny, sd["dll"], sd["dll"], lon0=sd["lon0"], lat0=sd["lat0"])
     vg = create_z_grid(1, [float(sd["depth"].max())])
@@ -405,7 +406,7 @@ def main() -> None:
         lon_t=lon_t, lat_t=lat_t, depth=sd["depth"], hc_U=hc_U, hc_V=hc_V,
         lon_1d=lon_t[0], lat_1d=lat_t[:, 0], lon_u_1d=hg["lon_u"].values[0], lat_v_1d=hg["lat_v"].values[:, 0],
         snap_t=np.array(snap_t, "datetime64[s]"), snap_eta=np.array(snap, np.float32),
-        meta=json.dumps(vars(args) | dict(box=box, dll=sd["dll"], min_depth=MIN_DEPTH, i0=int(sd["i0"]),
+        meta=json.dumps(vars(args) | dict(box=box, dll=sd["dll"], i0=int(sd["i0"]),
                                           j0=int(sd["j0"]))))
     print("saved", OUT / f"run_{args.tag}.npz", f"total {(time.time() - t_setup) / 60:.1f} min")
 
