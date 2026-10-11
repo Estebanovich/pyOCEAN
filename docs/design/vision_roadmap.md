@@ -152,7 +152,7 @@ No conviene asumir temprano: el port a GPU masivo, el anidamiento de dos vías y
 | Lock exchange: mezcla espuria (ΔRPE/RPE₀, 17 h) | Ilicak 2012 | 3.2e-5 (WENO-Z), 2.9e-5 (JS) | CROCO 2.2e-5 | 🔶 1.3–1.5× CROCO (paso de tiempo de los trazadores) |
 | Seiche interno lineal (periodo) | 2L/√(g′h₁h₂/H) | +5 a +7 % (converge) | — | 🔶 |
 | Monte submarino (gradiente de presión) | Reposo exacto | — | ROMS, CROCO | ⬜ pendiente |
-| Restart bit a bit | Corrida continua | — | MOM6 y SCHISM fallan | ⬜ pendiente |
+| Restart bit a bit (σ estratificado + GLS, incl. arranque AB3) | Corrida continua | idéntico (`np.array_equal`), en CI | MOM6 y SCHISM fallan | ✅ (pendiente: corridas 2DH de marea) |
 | Rendimiento | — | 33 días PAC_MEX 650×500 en 11 min, 1 núcleo | — | ⬜ falta medir HYCOM con la misma configuración |
 
 ## 8. Hoja de ruta propuesta

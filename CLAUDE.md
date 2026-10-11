@@ -199,9 +199,11 @@ Last updated: 2026-10-10.  All tests run with `pytest tests/`.
 | GLS k-ε turbulence closure, Canuto A (column port of CROCO gls_mixing.F) + parabolic ν | `physics/mixing/gls.py`, `physics/mixing/parabolic.py` | `tests/test_gls.py` | ✅ 3/3 |
 | Homogeneous 3-D σ-layer wetting–drying model (Casulli & Cheng 1992) — CROCO 3D TIDAL_FLAT to 1.2 cm | `core/dynamics/sigma_wd.py` | `tests/test_sigma_wd.py` | ✅ 8/8 |
 | Spurious-mixing diagnostics: RPE (Winters 1995/Ilicak 2012), online variance decay (Burchard & Rennau 2008) | `diagnostics/mixing.py` | `tests/test_mixing_diagnostics.py` | ✅ 8/8 |
-| Stratified σ-layer model: flux-form tracers + momentum (WENO5-Z/JS), ω, baroclinic PGF, AB3, SSP-RK3 — lock exchange = CROCO | `core/dynamics/sigma_baroclinic.py` | `tests/test_sigma_baroclinic.py` | ✅ 8/8 |
+| Stratified σ-layer model: flux-form tracers + momentum (WENO5-Z/JS), ω, baroclinic PGF, AB3, SSP-RK3 or predictor–corrector — lock exchange = CROCO | `core/dynamics/sigma_baroclinic.py` | `tests/test_sigma_baroclinic.py` | ✅ 10/10 |
+| Bit-for-bit restart (float64 CF NetCDF; AB history, transports, GLS state; config check) | `core/restart.py` | `tests/test_restart.py` | ✅ 5/5 |
+| Local literature search (first step before Consensus) | `scripts/litsearch.py` | `tests/test_litsearch.py` | ✅ 3/3 |
 
-**Phase 2 in progress — 847 total tests passing (+1 strict xfail).**
+**Phase 2 in progress — 857 total tests passing (+1 strict xfail).**
 
 ### Phase 2 build order
 
