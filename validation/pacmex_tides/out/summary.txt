@@ -1,0 +1,4 @@
+ref: 31 gauge records; median RSS model 1.95 cm, TPXO 1.87 cm; model better at 9/31
+ref: M2 vs TPXO10 over depth > 1000 m: RMS |Δh| = 1.58 cm, amp ratio median 1.010, phase diff median -0.6°
+nosal: 31 gauge records; median RSS model 3.35 cm, TPXO 1.87 cm; model better at 4/31
+nosal: M2 vs TPXO10 over depth > 1000 m: RMS |Δh| = 2.35 cm, amp ratio median 0.999, phase diff median -2.6°

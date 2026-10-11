@@ -249,23 +249,65 @@ def boundary_tides(
         zero except on the Flather faces; ready for
         ``ImplicitFreeSurface.step(flather_eta=(eta_u, eta_v), …)``.
     """
+    return boundary_tides_at(boundary_tide_constants(constants, h_grid, v_grid, hfac, flather_u, flather_v,
+                                                     constituents), t, ramp=ramp)
+
+
+def boundary_tide_constants(
+    constants: "xr.Dataset",
+    h_grid: "xr.Dataset",
+    v_grid: "xr.Dataset",
+    hfac: "xr.Dataset",
+    flather_u: np.ndarray,
+    flather_v: np.ndarray,
+    constituents: list[str] | None = None,
+) -> dict:
+    """
+    Harmonic constants of η and of the depth-mean normal velocity at the
+    Flather faces, interpolated once (``boundary_tides`` does this every
+    call).  Pass the result to ``boundary_tides_at`` each time step.
+
+    Returns
+    -------
+    dict with ``names`` and, per face type (u, v): the mask, complex η
+    constants (nf, nc) [m] and (transport constants (nf, nc) [m² s⁻¹], model
+    depth (nf,) [m]) — divided after prediction, as in ``boundary_tides`` —
+    or None without transports.
+    """
     names = list(constants["constituent"].values) if constituents is None else list(constituents)
     c = constants.sel(constituent=names)
     dz = v_grid["dz"].values[:, None, None]
-    out = {}
+    out = {"names": names}
     for axis, mask, trans, lat_n, lon_n in (("u", flather_u, "U", "lat", "lon_u"),
                                            ("v", flather_v, "V", "lat_v", "lon")):
         mask = np.asarray(mask, bool)
-        eta_f = np.zeros(mask.shape)
-        vel_f = np.zeros(mask.shape)
+        hc_eta = hc_vel = None
         if mask.any():
             lat = h_grid[f"lat_{axis}"].values[mask]
             lon = h_grid[f"lon_{axis}"].values[mask]
-            eta_f[mask] = ramp * predict(np.array([t]), _interp_complex(c["h"], "lat", "lon", lat, lon), names)[0]
+            hc_eta = _interp_complex(c["h"], "lat", "lon", lat, lon)
             if trans in c:
                 depth = np.sum(dz * hfac[f"hfac_{axis}"].values, axis=0)[mask]
-                q = predict(np.array([t]), _interp_complex(c[trans], lat_n, lon_n, lat, lon), names)[0]
-                vel_f[mask] = ramp * q / depth
+                hc_vel = (_interp_complex(c[trans], lat_n, lon_n, lat, lon), depth)
+        out[axis] = (mask, hc_eta, hc_vel)
+    return out
+
+
+def boundary_tides_at(bc: dict, t: np.datetime64, ramp: float = 1.0) -> dict[str, np.ndarray]:
+    """
+    Boundary tide at time ``t`` from ``boundary_tide_constants`` — the same
+    output as ``boundary_tides`` without re-interpolating the atlas.
+    """
+    out = {}
+    for axis in ("u", "v"):
+        mask, hc_eta, hc_vel = bc[axis]
+        eta_f = np.zeros(mask.shape)
+        vel_f = np.zeros(mask.shape)
+        if hc_eta is not None:
+            eta_f[mask] = ramp * predict(np.array([t]), hc_eta, bc["names"])[0]
+            if hc_vel is not None:
+                q, depth = hc_vel
+                vel_f[mask] = ramp * predict(np.array([t]), q, bc["names"])[0] / depth
         out[f"eta_{axis}"] = eta_f
         out["ubar_u" if axis == "u" else "vbar_v"] = vel_f
     return out

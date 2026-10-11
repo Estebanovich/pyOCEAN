@@ -23,7 +23,7 @@ from core.dynamics.free_surface import open_boundary_hfac
 from core.grid.horizontal import create_spherical_grid
 from core.grid.vertical import compute_hfac, create_z_grid
 from forcing.sources.tpxo import read_tpxo
-from forcing.tides import boundary_tides, predict
+from forcing.tides import boundary_tide_constants, boundary_tides, boundary_tides_at, predict
 
 D = 1.0 / 3.0
 LON_Z = np.arange(250.0, 270.0 + 1e-9, D)
@@ -158,6 +158,18 @@ class TestBoundaryTides:
         np.testing.assert_allclose(half["eta_u"], 0.5 * full["eta_u"])
         only_m2 = boundary_tides(tc, hg, vg, hf, fu, fv, t, constituents=["m2"])
         assert not np.allclose(only_m2["eta_u"], full["eta_u"])
+
+    def test_precomputed_face_constants_identical(self, tmp_path):
+        # Interpolate once, predict every step: same numbers as boundary_tides
+        hp, up, g = _write_tpxo(tmp_path)
+        tc = read_tpxo(hp, up, g, lon_range=(-104.0, -96.0), lat_range=(13.0, 20.0))
+        hg, vg, hf, fu, fv = self._model()
+        bc = boundary_tide_constants(tc, hg, vg, hf, fu, fv)
+        for t, ramp in ((np.datetime64("2026-10-10T06:00"), 1.0), (np.datetime64("2026-11-01T17:30"), 0.3)):
+            ref = boundary_tides(tc, hg, vg, hf, fu, fv, t, ramp=ramp)
+            new = boundary_tides_at(bc, t, ramp=ramp)
+            for k in ref:
+                np.testing.assert_array_equal(new[k], ref[k])
 
     def test_legacy_uppercase_transport_names(self, tmp_path):
         # Older OTIS atlases use URe/UIm/VRe/VIm
