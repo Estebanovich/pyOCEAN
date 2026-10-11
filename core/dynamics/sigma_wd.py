@@ -101,7 +101,9 @@ class SigmaWetDry:
     h_grid : horizontal grid
     bathy : (ny, nx) bed depth [m] (H > 0 water, H < 0 floodable land, NaN wall)
     dt : time step [s]
-    n_layers : number of equal-thickness σ-layers
+    n_layers : number of σ-layers
+    dsigma : (n_layers,) layer fractions Δσ_k, k = 0 at the bed (default uniform; see
+             core.grid.sigma_levels for stretched σ); must be positive and sum to 1
     z0 : bed roughness length [m] for the first-layer law of the wall (None: no bed stress)
     closure : 'gls' (k-ε, Canuto A, as CROCO; state at cell centres), 'parabolic'
               (ν = κ u* z(1 − z/D)), 'constant' (ν = nu_const) or 'none'
@@ -112,15 +114,21 @@ class SigmaWetDry:
                  z0: float | None = 1e-4, closure: str = "parabolic", nu_const: float = 1e-2,
                  nu_min: float = 1e-5, theta: float = 0.6, g: float = G, d_min: float = 0.05,
                  flather_u: np.ndarray | None = None, flather_v: np.ndarray | None = None,
-                 solver: str = "direct", cd_max: float = 0.1) -> None:
+                 solver: str = "direct", cd_max: float = 0.1, dsigma: np.ndarray | None = None) -> None:
         if closure not in CLOSURES:
             raise ValueError(f"unknown closure {closure!r}; use one of {CLOSURES}")
         self.fs = WetDryFreeSurface(h_grid, bathy, dt=dt, theta=theta, g=g, d_min=d_min,
                                     flather_u=flather_u, flather_v=flather_v, solver=solver)
         self.dt, self.n_layers, self.z0, self.closure = dt, n_layers, z0, closure
         self.nu_const, self.nu_min, self.d_min, self.cd_max = nu_const, nu_min, d_min, cd_max
-        self.dsigma = np.full(n_layers, 1.0 / n_layers)
-        self.sigma_w = np.linspace(0.0, 1.0, n_layers + 1)[:, None]
+        if dsigma is None:
+            dsigma = np.full(n_layers, 1.0 / n_layers)
+        dsigma = np.asarray(dsigma, float)
+        if dsigma.shape != (n_layers,) or np.any(dsigma <= 0) or abs(dsigma.sum() - 1.0) > 1e-12:
+            raise ValueError(f"dsigma must be {n_layers} positive fractions summing to 1")
+        self.dsigma = dsigma
+        self.sigma_w = np.concatenate([[0.0], np.cumsum(dsigma)])[:, None]          # interfaces, bed = 0
+        self.sigma_w[-1] = 1.0
         self.H = self.fs.H
         ny, nx = self.H.shape
         self._fl_u = np.zeros((ny, nx + 1), bool) if flather_u is None else np.asarray(flather_u, bool)

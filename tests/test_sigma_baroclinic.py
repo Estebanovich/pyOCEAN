@@ -8,8 +8,10 @@ diagnostics.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from core.dynamics.sigma_baroclinic import SigmaBaroclinic
+from core.grid.sigma_levels import stretched_sigma
 from core.grid.horizontal import create_cartesian_grid
 from diagnostics.mixing import reference_potential_energy
 
@@ -160,16 +162,15 @@ def test_predictor_corrector_tracers_keep_constancy_conservation_and_the_mixing_
 
 
 # ---------------------------------------------------------------- pressure-gradient schemes
-def _seamount_model(pgf, rho_ref=None, nx=24, ny=20, nz=12):
+def _seamount_model(pgf, rho_ref=None, nx=24, ny=20, nz=12, dsigma=None):
     dx = 8000.0
     hg = create_cartesian_grid(nx=nx, ny=ny, dx=dx, dy=dx, f0=1e-4)
     x = (np.arange(nx) + 0.5) * dx - nx * dx / 2
     y = (np.arange(ny) + 0.5) * dx - ny * dx / 2
     h = 4500.0 - 4050.0 * np.exp(-(x[None, :] ** 2 + y[:, None] ** 2) / 25e3**2)
     m = SigmaBaroclinic(hg, h, dt=600.0, n_layers=nz, rho0=RHO0, t_coef=0.2, z0=None, closure="constant",
-                        nu_const=1e-4, pgf=pgf, rho_ref=rho_ref)
-    z = -h[None] + h[None] * ((np.arange(nz) + 0.5) / nz)[:, None, None]
-    return m, z
+                        nu_const=1e-4, pgf=pgf, rho_ref=rho_ref, dsigma=dsigma)
+    return m, m.layer_heights(np.zeros((ny, nx)))
 
 
 def test_jacobian_pgf_is_exact_for_a_linear_density_over_a_flat_bed():
@@ -191,8 +192,9 @@ def test_jacobian_pgf_is_exact_for_a_linear_density_over_a_flat_bed():
     np.testing.assert_allclose(g2[:, :, 1:-1], gx[:, :, 1:-1], atol=1e-9)
 
 
-def test_jacobian_pgf_is_exact_for_linear_stratification_over_a_seamount():
-    m, z = _seamount_model("jacobian")
+@pytest.mark.parametrize("stretch", [False, True])
+def test_jacobian_pgf_is_exact_for_linear_stratification_over_a_seamount(stretch):
+    m, z = _seamount_model("jacobian", dsigma=stretched_sigma(12, 4.0, 0.6) if stretch else None)
     T = 20.0 + 0.005 * z                                                  # ρ linear in z
     gx, gy = m._baroclinic_pgf(np.zeros(z.shape[1:]), T)
     assert max(np.abs(gx).max(), np.abs(gy).max()) < 1e-13
@@ -314,7 +316,7 @@ def _channel(nx, x0, dx=1000.0, nz=10, dt=120.0, **kw):
     m = SigmaBaroclinic(hg, np.full((1, nx), H_CH), dt=dt, n_layers=nz, rho0=RHO0, t_coef=TCOEF, z0=None,
                         closure="constant", nu_const=1e-5, **kw)
     x = (np.arange(nx) + 0.5) * dx
-    z = -H_CH + H_CH * ((np.arange(nz) + 0.5) / nz)[:, None, None]
+    z = m.layer_heights(np.zeros((1, nx)))
     dTdz = N_BV**2 * RHO0 / (9.81 * TCOEF)
     zeta = 5.0 * np.sin(-np.pi * z / H_CH) * np.exp(-((x - x0) / 5e3) ** 2)[None, None, :]
     T = 10.0 + dTdz * (z + zeta)
@@ -373,3 +375,45 @@ def test_sponge_with_radiation_absorbs_the_internal_wave():
     # transparent combination (Chapman 1985), as in the MITgcm BayIW runs
     kw = dict(open_boundaries=("west", "east"), sponge_cells=10, sponge_tau=(1200.0, 120.0))
     assert _interior_error(kw, pad=10) < 0.05
+
+
+# ---------------------------------------------------------------- stretched σ-layers
+def test_layer_heights_follow_the_stretched_sigma():
+    hg = create_cartesian_grid(nx=3, ny=2, dx=1000.0, dy=1000.0, f0=0.0)
+    ds = np.array([0.4, 0.3, 0.2, 0.1])                                  # bed → surface
+    m = SigmaBaroclinic(hg, np.full((2, 3), 50.0), dt=10.0, n_layers=4, dsigma=ds)
+    eta = np.full((2, 3), 2.0)
+    z = m.layer_heights(eta)
+    np.testing.assert_allclose(z[:, 0, 0], -50.0 + 52.0 * np.array([0.2, 0.55, 0.8, 0.95]))
+    np.testing.assert_allclose(m.layer_volumes(eta)[:, 0, 0], 52.0 * ds * 1e6)
+    with pytest.raises(ValueError):
+        SigmaBaroclinic(hg, np.full((2, 3), 50.0), dt=10.0, n_layers=3, dsigma=ds)
+
+
+def test_stretched_layers_keep_a_uniform_tracer_uniform_and_conserved():
+    m = _box(dsigma=stretched_sigma(10, 5.0, 0.3))
+    x = (np.arange(32) + 0.5) * 2000.0
+    st = m.initial_state(0.5 * np.cos(np.pi * x / 64e3)[None, :], np.full((10, 1, 32), 7.0))
+    c0 = m.tracer_content(st)
+    for _ in range(200):
+        st = m.step(st)
+    np.testing.assert_allclose(st.T, 7.0, atol=1e-11)
+    assert abs(m.tracer_content(st) / c0 - 1) < 1e-13
+
+
+def test_mode_one_wave_on_stretched_layers_matches_uniform_layers():
+    # same channel pulse on 10 uniform and 10 stretched layers vs a 40-uniform-layer reference:
+    # mild stretching must not lose accuracy for this mid-depth mode-1 signal
+    def run(nz, ds):
+        m, st = _channel(80, 40e3, nz=nz, dsigma=ds)
+        st = _run(m, st, 6.0)
+        return m, st
+    ref_m, ref = run(40, None)
+    zr = ref_m.layer_heights(ref.eta)[:, 0, :]
+    errs = {}
+    for name, nz, ds in (("uniform", 10, None), ("stretched", 10, stretched_sigma(10, 2.0, 0.5))):
+        m, st = run(nz, ds)
+        z = m.layer_heights(st.eta)[:, 0, :]
+        Ti = np.array([np.interp(z[:, i], zr[:, i], ref.T[:, 0, i]) for i in range(80)]).T
+        errs[name] = np.sqrt(np.mean((st.T[:, 0, :] - Ti) ** 2))
+    assert errs["stretched"] < 1.3 * errs["uniform"]                    # measured 1.00×; θ_s = 5 surface-only: 4×

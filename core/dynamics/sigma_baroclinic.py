@@ -46,8 +46,15 @@ with the MITgcm OBCS profile on the baroclinic velocity and the tracer anomaly.
 Mode-1 internal-wave test (16 h, 60 km channel vs a 300 km truth): interior error
 0.82 closed, 0.16 Orlanski only, 0.015 with a 10-cell sponge.
 
+Vertical grid: σ-layers with any fixed fractions Δσ_k (``dsigma``; uniform by
+default, Song & Haidvogel 1994 stretching or MITgcm ``delR`` via
+core.grid.sigma_levels); the PGF, ω and transports use the actual layer
+heights, the vertical WENO/UP3 reconstruction works in layer-index space (as in
+CROCO).
+
 Limitations (documented, tested where it matters): Cartesian uniform spacing for
-the UP3/WENO face interpolation; salinity not included; the sponge relaxes towards
+the UP3/WENO face interpolation; fractions are the same in every column (no
+ROMS-type h_c / Vtransform 2 yet); salinity not included; the sponge relaxes towards
 a resting exterior (no prescribed external baroclinic state yet).
 
 References
@@ -278,8 +285,17 @@ def reference_profile(z: np.ndarray, rho: np.ndarray, n_bins: int = 400):
     mean = np.bincount(idx, weights=rf, minlength=n_bins) / np.maximum(cnt, 1)
     zc = np.bincount(idx, weights=zf, minlength=n_bins) / np.maximum(cnt, 1)
     keep = cnt > 0
-    zc, mean = zc[keep], mean[keep]
-    return lambda zz: np.interp(zz, zc, mean)
+    return ReferenceProfile(zc[keep], mean[keep])
+
+
+class ReferenceProfile:
+    """ρ_ref(z) tabulated at heights z [m] (increasing) with values rho [kg m⁻³]; linear in between."""
+
+    def __init__(self, z: np.ndarray, rho: np.ndarray) -> None:
+        self.z, self.rho = np.asarray(z, float), np.asarray(rho, float)
+
+    def __call__(self, zz: np.ndarray) -> np.ndarray:
+        return np.interp(zz, self.z, self.rho)
 
 
 EDGES = ("west", "east", "south", "north")
@@ -332,7 +348,7 @@ class SigmaBaroclinic:
                  tracer_time: str = "ssprk3", pgf: str = "jacobian", rho_ref=None,
                  open_boundaries: tuple[str, ...] = (), sponge_cells: int = 0,
                  sponge_tau: tuple[float, float] = (1200.0, 60.0), orlanski_cmax: float = 1.0,
-                 sponge_tracer: bool = True) -> None:
+                 sponge_tracer: bool = True, dsigma: np.ndarray | None = None) -> None:
         if pgf not in ("twoterm", "jacobian"):
             raise ValueError(f"unknown pressure-gradient scheme {pgf!r}")
         self.pgf, self.rho_ref = pgf, rho_ref
@@ -349,6 +365,7 @@ class SigmaBaroclinic:
             raise ValueError("a sponge needs open boundaries")
         self.open = tuple(open_boundaries)
         self.orlanski_cmax, self.sponge_tracer = orlanski_cmax, sponge_tracer
+        self.sponge_cells, self.sponge_tau = int(sponge_cells), tuple(float(t) for t in sponge_tau)
         act = np.isfinite(np.asarray(bathy, float))
         fl_u = np.zeros((act.shape[0], act.shape[1] + 1), bool)
         fl_v = np.zeros((act.shape[0] + 1, act.shape[1]), bool)
@@ -361,7 +378,7 @@ class SigmaBaroclinic:
         if "north" in self.open:
             fl_v[-1, :] = act[-1, :]
         self.core = SigmaWetDry(h_grid, bathy, dt=dt, n_layers=n_layers, z0=z0, closure=closure,
-                                nu_const=nu_const, theta=theta, g=g, d_min=d_min,
+                                nu_const=nu_const, theta=theta, g=g, d_min=d_min, dsigma=dsigma,
                                 flather_u=fl_u if self.open else None, flather_v=fl_v if self.open else None)
         self._sp_c, self._sp_u, self._sp_v = _sponge_rates(act.shape, self.open, sponge_cells, *sponge_tau)
         self.T_ext = None
@@ -371,6 +388,7 @@ class SigmaBaroclinic:
         self._fq = np.asarray(h_grid["f_q"].values, float)           # Coriolis at cell corners [s⁻¹]
         self.H = self.fs.H
         self.ds = self.core.dsigma
+        self.sigma_c = 0.5 * (self.core.sigma_w[1:, 0] + self.core.sigma_w[:-1, 0])   # layer centres (bed = 0)
         self.area = self.fs.area
 
     # ------------------------------------------------------------------ helpers
@@ -378,13 +396,17 @@ class SigmaBaroclinic:
         """Resting state; with ``rho_ref="auto"`` the reference profile is taken from this T."""
         ny, nx = self.H.shape
         if isinstance(self.rho_ref, str) and self.rho_ref == "auto":
-            D = np.maximum(np.nan_to_num(self.H + eta, nan=self.fs.d_min), self.fs.d_min)
-            z = -np.nan_to_num(self.H)[None] + D[None] * ((np.arange(self.n) + 0.5) / self.n)[:, None, None]
+            z = self.layer_heights(eta)
             act = np.broadcast_to(self.fs.active[None], z.shape)
             self.rho_ref = reference_profile(z[act], self.density(np.asarray(T, float))[act])
         self.T_ext = np.array(T, float)                                # inflow / sponge target at open boundaries
         return SigmaState(eta=np.array(eta, float), u=np.zeros((self.n, ny, nx + 1)),
                           v=np.zeros((self.n, ny + 1, nx)), T=np.array(T, float))
+
+    def layer_heights(self, eta: np.ndarray) -> np.ndarray:
+        """Height of the layer centres z_k = −H + D σ_c,k [m] (z = 0 at the rest surface), (N, ny, nx)."""
+        D = np.maximum(np.nan_to_num(self.H + eta, nan=self.fs.d_min), self.fs.d_min)
+        return -np.nan_to_num(self.H)[None] + D[None] * self.sigma_c[:, None, None]
 
     def density(self, T: np.ndarray) -> np.ndarray:
         """Linear EOS ρ = ρ₀ − α (T − T₀) [kg m⁻³]."""
@@ -425,8 +447,7 @@ class SigmaBaroclinic:
         n = self.n
         D = np.maximum(np.nan_to_num(self.H + eta, nan=self.fs.d_min), self.fs.d_min)
         h = D[None] * self.ds[:, None, None]
-        sig_c = (np.arange(n) + 0.5)[:, None, None] / n
-        z = -np.nan_to_num(self.H)[None] + D[None] * sig_c                # cell-centre height (z = 0 at rest surface)
+        z = -np.nan_to_num(self.H)[None] + D[None] * self.sigma_c[:, None, None]   # cell-centre height (z = 0 at rest)
         rho = self.density(T)
         rp = rho - (self.rho_ref(z) if self.rho_ref is not None else self.rho0)
         g = self.g

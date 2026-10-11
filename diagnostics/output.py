@@ -50,16 +50,18 @@ class OutputWriter:
     """
     path : output file (.nc) or store (.zarr);  h_grid : horizontal grid;  H : bathymetry [m] (NaN = wall)
     n_layers : number of σ-layers (0 for 2-D runs);  start : ISO date of t = 0
+    dsigma : layer fractions Δσ_k, k = 0 at the bed (default uniform; the model's ``core.dsigma``)
     """
 
     def __init__(self, path: str | Path, h_grid: xr.Dataset, H: np.ndarray, n_layers: int = 0,
                  start: str = "2000-01-01T00:00:00", fmt: str = "zarr", title: str = "pyOCEAN output",
-                 attrs: dict | None = None) -> None:
+                 attrs: dict | None = None, dsigma=None) -> None:
         if fmt not in ("zarr", "netcdf"):
             raise ValueError("fmt must be 'zarr' or 'netcdf'")
         self.path, self.fmt, self.start = Path(path), fmt, np.datetime64(start, "s")
         self.ny, self.nx = H.shape
         self.n = n_layers
+        self.dsigma = np.full(n_layers, 1.0 / max(n_layers, 1)) if dsigma is None else np.asarray(dsigma, float)
         self._records: list[xr.Dataset] = []
         self._first = True
         self.static = self._static(h_grid, np.asarray(H, float), title, attrs or {})
@@ -93,7 +95,8 @@ class OutputWriter:
                 "long_name": "SGRID topology of the Arakawa C-grid"}),
         }
         if self.n:
-            s_w = np.linspace(-1.0, 0.0, self.n + 1)
+            s_w = np.concatenate([[-1.0], -1.0 + np.cumsum(self.dsigma)])
+            s_w[-1] = 0.0
             coords["s_rho"] = xr.Variable(("s_rho",), 0.5 * (s_w[1:] + s_w[:-1]), {
                 "standard_name": "ocean_sigma_coordinate", "long_name": "σ at layer centres",
                 "positive": "up", "formula_terms": "sigma: s_rho eta: eta depth: h", "axis": "Z"})

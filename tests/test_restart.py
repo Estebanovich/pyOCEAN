@@ -94,3 +94,41 @@ def test_restart_file_is_cf_netcdf_with_float64(tmp_path):
     ds = xr.open_dataset(tmp_path / "rst.nc")
     assert ds["u"].dtype == np.float64 and ds["T"].dims == ("layer", "y", "x")
     assert "units" in ds["eta"].attrs and ds.attrs["model"] == "SigmaBaroclinic"
+
+
+def _open_kw():
+    from core.grid.sigma_levels import stretched_sigma
+    return dict(closure="constant", open_boundaries=("west", "east"), sponge_cells=4, sponge_tau=(600.0, 60.0),
+                dsigma=stretched_sigma(NZ, 3.0, 0.5), rho_ref="auto")
+
+
+def test_restart_with_open_boundaries_stretched_layers_and_auto_reference_profile(tmp_path):
+    # hidden state beyond the AB history: the external (inflow / sponge) tracer and the reference
+    # density profile built by initial_state must be restored too
+    m = _model(**_open_kw())
+    st = _initial(m)
+    for _ in range(40):
+        st = m.step(st)
+    m1 = _model(**_open_kw())
+    st1 = _initial(m1)
+    for _ in range(15):
+        st1 = m1.step(st1)
+    write_restart(tmp_path / "rst.nc", m1, st1)
+    m2 = _model(**_open_kw())
+    st2 = read_restart(tmp_path / "rst.nc", m2)
+    for _ in range(25):
+        st2 = m2.step(st2)
+    _assert_identical(st2, st)
+
+
+def test_restart_refuses_other_layers_or_boundaries(tmp_path):
+    m = _model(**_open_kw())
+    write_restart(tmp_path / "rst.nc", m, m.step(_initial(m)))
+    kw = _open_kw()
+    kw.pop("dsigma")
+    with pytest.raises(ValueError, match="sigma"):
+        read_restart(tmp_path / "rst.nc", _model(**kw))
+    kw = _open_kw()
+    kw["open_boundaries"] = ("west",)
+    with pytest.raises(ValueError, match="open_boundaries"):
+        read_restart(tmp_path / "rst.nc", _model(**kw))

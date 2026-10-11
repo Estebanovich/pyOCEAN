@@ -26,7 +26,7 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
-from core.dynamics.sigma_baroclinic import SigmaBaroclinic, SigmaState
+from core.dynamics.sigma_baroclinic import ReferenceProfile, SigmaBaroclinic, SigmaState
 
 _FIELDS = {          # name: (dims, units, long name)
     "eta": (("y", "x"), "m", "sea surface height"),
@@ -46,7 +46,13 @@ _OPTIONAL = {
 def _config(model: SigmaBaroclinic) -> dict:
     """Configuration that must match between the writer and the reader."""
     core = model.core
+    rr = model.rho_ref
     return dict(dt=model.dt, n_layers=model.n, theta=model.fs.theta, d_min=model.fs.d_min,
+                sigma_w=" ".join(f"{x:.17g}" for x in core.sigma_w[:, 0]), pgf=model.pgf,
+                rho_ref="none" if rr is None else ("auto" if isinstance(rr, (str, ReferenceProfile)) else "callable"),
+                open_boundaries=",".join(model.open) or "none",
+                sponge_cells=model.sponge_cells, sponge_tau=" ".join(f"{t:.17g}" for t in model.sponge_tau),
+                orlanski_cmax=model.orlanski_cmax, sponge_tracer=int(model.sponge_tracer),
                 closure=core.closure, z0=-1.0 if core.z0 is None else core.z0, nu_const=core.nu_const,
                 adv=model.adv, tracer_scheme=model.tracer_scheme, tracer_time=model.tracer_time,
                 rho0=model.rho0, t_coef=model.t_coef, t_ref=model.t_ref, ah=model.ah,
@@ -74,6 +80,13 @@ def write_restart(path: str | Path, model: SigmaBaroclinic, state: SigmaState) -
         for name, units in (("tke", "m2 s-2"), ("eps", "m2 s-3"), ("akv", "m2 s-1")):
             data[f"gls_{name}"] = xr.Variable(("level", "y", "x"), getattr(gls, name).reshape(-1, ny, nx),
                                               {"units": units, "long_name": f"GLS {name} at layer interfaces"})
+    if model.open and model.T_ext is not None:
+        data["T_ext"] = xr.Variable(("layer", "y", "x"), np.asarray(model.T_ext, np.float64),
+                                    {"units": "degC", "long_name": "external temperature (open-boundary inflow, sponge)"})
+    if isinstance(model.rho_ref, ReferenceProfile):
+        data["rho_ref_z"] = xr.Variable(("ref",), model.rho_ref.z, {"units": "m", "long_name": "reference profile height"})
+        data["rho_ref_rho"] = xr.Variable(("ref",), model.rho_ref.rho,
+                                          {"units": "kg m-3", "long_name": "reference density profile ρ_ref(z)"})
     attrs = {"model": type(model).__name__, "time": float(state.time), "time_units": "s",
              "Conventions": "CF-1.8", "title": "pyOCEAN bit-for-bit restart"}
     attrs.update({f"config_{k}": v for k, v in _config(model).items()})
@@ -108,4 +121,12 @@ def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
             raise ValueError("restart has no GLS state but the model uses closure='gls'")
         gls = model.core.gls
         gls.tke, gls.eps, gls.akv = (ds[f"gls_{n}"].values.reshape(gls.tke.shape).copy() for n in ("tke", "eps", "akv"))
+    if model.open:
+        if "T_ext" not in ds:
+            raise ValueError("restart has no external tracer but the model has open boundaries")
+        model.T_ext = ds["T_ext"].values.copy()
+    if isinstance(model.rho_ref, (str, ReferenceProfile)):
+        if "rho_ref_z" not in ds:
+            raise ValueError("restart has no reference density profile but the model uses rho_ref='auto'")
+        model.rho_ref = ReferenceProfile(ds["rho_ref_z"].values.copy(), ds["rho_ref_rho"].values.copy())
     return SigmaState(g_hist=hist, time=float(ds.attrs["time"]), **kw)

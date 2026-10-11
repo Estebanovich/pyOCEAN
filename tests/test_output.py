@@ -73,3 +73,14 @@ def test_two_dimensional_fields_and_unknown_names(tmp_path):
     w.close()
     ds = xr.open_dataset(tmp_path / "out.nc")
     assert ds["ubar"].dims == ("time", "yh", "xq") and ds["ubar"].attrs["units"] == "m s-1"
+
+
+def test_stretched_sigma_coordinates_are_written(tmp_path):
+    hg = create_cartesian_grid(nx=NX, ny=NY, dx=1000.0, dy=1000.0, f0=1e-4)
+    w = OutputWriter(tmp_path / "out.nc", hg, np.full((NY, NX), 20.0), n_layers=3, fmt="netcdf",
+                     dsigma=[0.5, 0.3, 0.2])                                # bed → surface
+    w.write(60.0, eta=np.zeros((NY, NX)))
+    w.close()
+    ds = xr.open_dataset(tmp_path / "out.nc")
+    np.testing.assert_allclose(ds["s_w"].values, [-1.0, -0.5, -0.2, 0.0])
+    np.testing.assert_allclose(ds["s_rho"].values, [-0.75, -0.35, -0.1])
