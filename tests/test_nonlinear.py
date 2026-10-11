@@ -220,3 +220,16 @@ class TestUpwind3:
         _, wet_u, wet_v = _wet()
         with pytest.raises(ValueError, match="scheme"):
             advection_u(np.zeros(wet_u.shape), np.zeros(wet_v.shape), hg, wet_u, scheme="quick")
+
+
+def test_upwind3_damps_checkerboard_next_to_walls():
+    # Where the 4-point stencil reaches land (1-cell channels, coasts) the scheme
+    # must stay dissipative (first-order upwind), not fall back to centred
+    hg, *_ = _grid()
+    _, wet_u, wet_v = _wet()
+    pert = 0.05 * (-1.0) ** np.arange(NX + 1)[None, :] * np.ones((NY, 1))
+    u = np.where(wet_u, 0.5 + pert, 0.0)
+    up3 = advection_u(u, np.zeros(wet_v.shape), hg, wet_u, scheme="upwind3")
+    cols = [2, NX - 2]                     # ±1 neighbours wet, the ±2 neighbour is the wall face
+    near = up3[2:-2, cols]
+    assert np.all(np.sign(-near) == -np.sign(pert[2:-2, cols]))

@@ -135,8 +135,10 @@ def _upwind3(f, wet, axis, c, h_lo, h_hi):
         c > 0:  (2 f₊₁ + 3 f₀ − 6 f₋₁ + f₋₂) / (6 h)
         c < 0:  (−f₊₂ + 6 f₊₁ − 3 f₀ − 2 f₋₁) / (6 h)
     = centred derivative + a hyperdiffusion |c| h³/12 ∂⁴f that damps the 2Δx
-    mode.  Falls back to the centred difference where the 4-point stencil
-    reaches land or the edge.
+    mode.  Where the 4-point stencil reaches land or the edge (one-cell
+    channels, coasts) it falls back to first-order upwind, which stays
+    dissipative — a centred fallback would remove the damping exactly where
+    flows are strongest.
     """
     m1, p1, wm1, wp1 = _pair(f, wet, axis, 1)
     m2, p2, wm2, wp2 = _pair(f, wet, axis, 2)
@@ -144,9 +146,10 @@ def _upwind3(f, wet, axis, c, h_lo, h_hi):
         h = 0.5 * (h_lo + h_hi)
         pos = (2 * p1 + 3 * f - 6 * m1 + m2) / (6 * h)
         neg = (-p2 + 6 * p1 - 3 * f - 2 * m1) / (6 * h)
-    cen = _centred(f, wet, axis, h_lo, h_hi)
+        first_pos = (f - m1) / h_lo                    # first-order upwind, still dissipative
+        first_neg = (p1 - f) / h_hi
     ok = wet & wm1 & wp1
-    up = np.where(c >= 0, np.where(ok & wm2, pos, cen), np.where(ok & wp2, neg, cen))
+    up = np.where(c >= 0, np.where(ok & wm2, pos, first_pos), np.where(ok & wp2, neg, first_neg))
     return np.where(ok, up, 0.0)
 
 
