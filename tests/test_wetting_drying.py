@@ -163,3 +163,79 @@ class TestValidation:
         hg = create_cartesian_grid(nx=3, ny=3, dx=100.0, dy=100.0, f0=0.0)
         with pytest.raises(ValueError, match="theta"):
             WetDryFreeSurface(hg, np.ones((3, 3)), dt=1.0, theta=0.4)
+
+
+class TestFlather:
+    """Flather (1976) radiation on domain-edge faces, with the total depth D = H + η_c."""
+
+    @staticmethod
+    def _channel(nx=200, H0=10.0, dx=500.0):
+        hg = create_cartesian_grid(nx=nx, ny=1, dx=dx, dy=dx, f0=0.0)
+        fu = np.zeros((1, nx + 1), bool)
+        fu[0, -1] = True                                                    # open east edge
+        return hg, np.full((1, nx), H0), fu
+
+    def test_outgoing_wave_leaves_the_domain(self):
+        hg, H, fu = self._channel()
+        c = np.sqrt(G * 10.0)
+        dt = 0.5 * 500.0 / c
+        fs = WetDryFreeSurface(hg, H, dt=dt, theta=0.5, g=G, flather_u=fu)
+        x = (np.arange(200) + 0.5) * 500.0
+        eta = 0.01 * np.exp(-((x - 70e3) / 4e3) ** 2)[None, :]           # small: η/H = 1e-3
+        u, v = np.zeros((1, 201)), np.zeros((2, 200))
+        area = hg.area_t.values
+        e0 = np.sum(area * eta**2)
+        zero = np.zeros((1, 201))
+        for _ in range(int(2.5 * 100e3 / c / dt)):
+            eta, u, v = fs.step(eta, u, v, u.copy(), v.copy(), flather_eta=zero, flather_ubar=zero)
+        assert np.sum(area * eta**2) < 1e-3 * e0
+
+    def test_volume_budget_through_flather_face(self):
+        hg, H, fu = self._channel(nx=20)
+        fs = WetDryFreeSurface(hg, H, dt=30.0, theta=0.7, g=G, flather_u=fu)
+        rng = np.random.default_rng(1)
+        eta = rng.normal(0, 0.05, (1, 20))
+        u = rng.normal(0, 0.1, (1, 21))
+        u[0, [0, -1]] = 0.0
+        v = np.zeros((2, 20))
+        ext_eta, ext_u = np.full((1, 21), 0.03), np.full((1, 21), -0.02)
+        area = hg.area_t.values
+        vol0 = np.sum(area * eta)
+        eta1, u1, _ = fs.step(eta, u, v, u.copy(), v.copy(), flather_eta=ext_eta, flather_ubar=ext_u)
+        D = 10.0 + eta[0, -1]                                               # total depth of the boundary cell at n
+        dy = hg.dy_u.values[0, -1]
+        q = lambda e: dy * D * (-0.02 + np.sqrt(G / D) * (e[0, -1] - 0.03))   # noqa: E731
+        assert np.sum(area * eta1) == pytest.approx(vol0 - 30.0 * (0.3 * q(eta) + 0.7 * q(eta1)), rel=1e-12)
+        assert u1[0, -1] == pytest.approx(q(eta1) / (dy * D), rel=1e-12)
+
+    def test_deep_limit_matches_linear_free_surface_with_flather(self):
+        nx, H0 = 40, 1000.0
+        hg = create_cartesian_grid(nx=nx, ny=2, dx=5000.0, dy=5000.0, f0=0.0)
+        vg = create_z_grid(1, [H0])
+        from core.dynamics.free_surface import open_boundary_hfac
+        hf = open_boundary_hfac(compute_hfac(vg, np.full((2, nx), H0)), ["east"])
+        fu = np.zeros((2, nx + 1), bool)
+        fu[:, -1] = True
+        lin = ImplicitFreeSurface(hg, vg, hf, dt=120.0, theta=0.6, g=G, flather_u=fu)
+        wd = WetDryFreeSurface(hg, np.full((2, nx), H0), dt=120.0, theta=0.6, g=G, flather_u=fu)
+        el = ew = np.zeros((2, nx))
+        ul, vl = np.zeros((1, 2, nx + 1)), np.zeros((1, 3, nx))
+        uw, vw = np.zeros((2, nx + 1)), np.zeros((3, nx))
+        peak, worst = 0.0, 0.0
+        for n in range(200):
+            ext = np.full((2, nx + 1), 1e-3 * np.sin(2 * np.pi * (n + 0.5) * 120.0 / 44714.0))
+            el, ul, vl = lin.step(el, ul, vl, ul.copy(), vl.copy(), flather_eta=ext, flather_ubar=np.zeros_like(ext))
+            ew, uw, vw = wd.step(ew, uw, vw, uw.copy(), vw.copy(), flather_eta=ext, flather_ubar=np.zeros_like(ext))
+            peak, worst = max(peak, np.abs(el).max()), max(worst, np.abs(ew - el).max())
+        assert peak > 5e-4                                                  # the tide got in
+        assert worst < 1e-3 * 1e-5 * 10                                     # D = H + η vs H: η/H = 1e-6
+
+    def test_dry_boundary_cell_closes_the_face(self):
+        hg, H, fu = self._channel(nx=10)
+        H[0, -1] = -1.0                                                     # emerged land at the open edge
+        fs = WetDryFreeSurface(hg, H, dt=10.0, theta=0.6, g=G, flather_u=fu)
+        eta = np.where(H > 0, 0.0, -H)
+        u, v = np.zeros((1, 11)), np.zeros((2, 10))
+        e1, u1, _ = fs.step(eta, u, v, u.copy(), v.copy(), flather_eta=np.full((1, 11), 0.5),
+                            flather_ubar=np.zeros((1, 11)))
+        assert u1[0, -1] == 0.0 and e1[0, -1] == pytest.approx(1.0)

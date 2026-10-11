@@ -65,10 +65,16 @@ class WetDryFreeSurface:
         Gravity [m s⁻²].
     d_min : float
         Face depth [m] below which a face is dry (CROCO ``Dcrit`` analogue).
+    flather_u, flather_v : (ny, nx+1), (ny+1, nx) bool, optional
+        Domain-edge faces with the Flather (1976) radiation condition, using the
+        total depth of the adjacent cell D = H + η_c (closed while it is dry):
+        outward transport Q = L D [ū_ext,out + √(g/D)(η_c − η_ext)], θ-weighted
+        between n and n+1 as in ``ImplicitFreeSurface``.
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, theta: float = 0.6,
-                 g: float = G, d_min: float = 0.05) -> None:
+                 g: float = G, d_min: float = 0.05, flather_u: np.ndarray | None = None,
+                 flather_v: np.ndarray | None = None) -> None:
         if not 0.5 <= theta <= 1.0:
             raise ValueError(f"theta must be in [0.5, 1], got {theta}")
         self.dt, self.theta, self.g, self.d_min = float(dt), float(theta), float(g), float(d_min)
@@ -88,6 +94,35 @@ class WetDryFreeSurface:
         self.index = -np.ones((ny, nx), dtype=np.int64)
         self.index[self.active] = np.arange(self.active.sum())
         self.last_clip_volume = 0.0
+        # Flather faces: (axis, face indices, adjacent cell indices, outward sign, face length)
+        self._flather = []
+        for mask, axis in ((flather_u, "u"), (flather_v, "v")):
+            if mask is None:
+                continue
+            mask = np.asarray(mask, bool)
+            inner = mask.copy()
+            if axis == "u":
+                inner[:, [0, -1]] = False
+            else:
+                inner[[0, -1], :] = False
+            if inner.any():
+                raise ValueError("Flather faces must lie on the domain edge")
+            for edge in (0, -1):
+                sel = np.zeros_like(mask)
+                if axis == "u":
+                    sel[:, edge] = mask[:, edge]
+                    jj, ii = np.nonzero(sel)
+                    cj, ci = jj, (ii if edge == 0 else ii - 1)
+                    length = self.Lu[jj, ii]
+                else:
+                    sel[edge, :] = mask[edge, :]
+                    jj, ii = np.nonzero(sel)
+                    cj, ci = (jj if edge == 0 else jj - 1), ii
+                    length = self.Lv[jj, ii]
+                keep = self.active[cj, ci]
+                if keep.any():
+                    self._flather.append(dict(axis=axis, face=(jj[keep], ii[keep]), cell=(cj[keep], ci[keep]),
+                                              sign=-1.0 if edge == 0 else 1.0, length=length[keep]))
 
     # ------------------------------------------------------------------
     def _face_depth(self, eta: np.ndarray, vel: np.ndarray, axis: int) -> tuple[np.ndarray, np.ndarray]:
@@ -114,9 +149,11 @@ class WetDryFreeSurface:
     def _divergence(self, fu: np.ndarray, fv: np.ndarray) -> np.ndarray:
         return fu[:, 1:] - fu[:, :-1] + fv[1:, :] - fv[:-1, :]
 
-    def _matrix(self, cu: np.ndarray, cv: np.ndarray) -> sp.csr_matrix:
+    def _matrix(self, cu: np.ndarray, cv: np.ndarray, extra_diag: np.ndarray | None = None) -> sp.csr_matrix:
         n = int(self.active.sum())
         diag = self.area[self.active].copy()
+        if extra_diag is not None:
+            diag += extra_diag
         rows, cols, vals = [], [], []
         for c, a, b in ((cu[:, 1:-1], self.index[:, :-1], self.index[:, 1:]),
                         (cv[1:-1, :], self.index[:-1, :], self.index[1:, :])):
@@ -134,12 +171,15 @@ class WetDryFreeSurface:
 
     # ------------------------------------------------------------------
     def step(self, eta: np.ndarray, u_n: np.ndarray, v_n: np.ndarray, u_hat: np.ndarray,
-             v_hat: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+             v_hat: np.ndarray, flather_eta=None, flather_ubar: np.ndarray | None = None,
+             flather_vbar: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Advance η and the depth-mean velocities one step.
 
         u_n, v_n : (ny, nx+1), (ny+1, nx) velocities at time n [m s⁻¹]
         u_hat, v_hat : velocities after all other (explicit) tendencies
+        flather_eta : external η at the Flather faces (array, or tuple (eta_u, eta_v))
+        flather_ubar, flather_vbar : external depth-mean velocity there (model sign)
         Returns η^{n+1}, u^{n+1}, v^{n+1} (u = 0 on dry faces).
         """
         th, dt, g = self.theta, self.dt, self.g
@@ -152,10 +192,29 @@ class WetDryFreeSurface:
         vn = np.where(wv, v_n, 0.0)
         flux = self._divergence(self.Lu * Du * (th * us + (1 - th) * un),
                                 self.Lv * Dv * (th * vs + (1 - th) * vn))
-        rhs = (self.area * eta - dt * flux)[self.active]
+        rhs_full = self.area * eta - dt * flux
+        extra = np.zeros(self.area.shape)
+        fl_state = []
+        if self._flather:
+            if flather_eta is None:
+                raise ValueError("Flather faces need flather_eta (and the external depth-mean velocity)")
+            for fl in self._flather:
+                e_all = (flather_eta[0] if fl["axis"] == "u" else flather_eta[1]) \
+                    if isinstance(flather_eta, tuple) else flather_eta
+                vel = flather_ubar if fl["axis"] == "u" else flather_vbar
+                e_ext = np.asarray(e_all)[fl["face"]]
+                ub = np.zeros_like(e_ext) if vel is None else np.asarray(vel)[fl["face"]]
+                D = np.maximum(self.H[fl["cell"]] + eta[fl["cell"]], 0.0)
+                open_ = D > self.d_min
+                c = np.where(open_, fl["length"] * np.sqrt(g * D), 0.0)
+                known = np.where(open_, fl["length"] * D * fl["sign"] * ub + c * ((1 - th) * eta[fl["cell"]] - e_ext), 0.0)
+                np.add.at(rhs_full, fl["cell"], -dt * known)
+                np.add.at(extra, fl["cell"], dt * th * c)
+                fl_state.append((D, open_, c, e_ext, ub))
+        rhs = rhs_full[self.active]
         cu = g * th**2 * dt**2 * self.Lu * Du / self.du
         cv = g * th**2 * dt**2 * self.Lv * Dv / self.dv
-        x = spsolve(self._matrix(np.where(wu, cu, 0.0), np.where(wv, cv, 0.0)).tocsc(), rhs)
+        x = spsolve(self._matrix(np.where(wu, cu, 0.0), np.where(wv, cv, 0.0), extra[self.active]).tocsc(), rhs)
         eta_new = np.array(eta, float, copy=True)
         eta_new[self.active] = x
 
@@ -168,4 +227,8 @@ class WetDryFreeSurface:
         gx1, gy1 = self._gradient(eta_new)
         u_new = np.where(wu, us - g * th * dt * gx1, 0.0)
         v_new = np.where(wv, vs - g * th * dt * gy1, 0.0)
+        for fl, (D, open_, c, e_ext, ub) in zip(self._flather, fl_state):
+            q = fl["length"] * D * fl["sign"] * ub + c * (eta_new[fl["cell"]] - e_ext)     # outward, at n+1
+            vel = np.where(open_, fl["sign"] * q / np.where(open_, fl["length"] * D, 1.0), 0.0)
+            (u_new if fl["axis"] == "u" else v_new)[fl["face"]] = vel
         return eta_new, u_new, v_new
