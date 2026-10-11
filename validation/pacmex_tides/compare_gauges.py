@@ -133,9 +133,14 @@ def main() -> None:
             continue
         df = analyse(tag, tc, ticon, bad)
         frames[tag] = df
+        goc = (df.lat > 23) & (df.lon > -114.8) & ~((df.lat > 30) & (df.lon < -115.5))
+        lagoon = df.lat.between(30.4, 30.6)                    # San Quintín, inside the lagoon
+        pac = ~goc & ~lagoon
         lines.append(f"{tag}: {len(df)} gauge records; median RSS model {df.rss_mod_cm.median():.2f} cm, "
                      f"TPXO {df.rss_tpxo_cm.median():.2f} cm; model better at "
-                     f"{(df.rss_mod_cm < df.rss_tpxo_cm).sum()}/{len(df)}")
+                     f"{(df.rss_mod_cm < df.rss_tpxo_cm).sum()}/{len(df)} | Pacific {df.rss_mod_cm[pac].median():.2f} "
+                     f"(TPXO {df.rss_tpxo_cm[pac].median():.2f}) | Gulf of California "
+                     f"{df.rss_mod_cm[goc].median():.2f} (TPXO {df.rss_tpxo_cm[goc].median():.2f}) cm")
         lines.append(m2_map(tag, tc))
     if "ref" in frames:
         df = frames["ref"].sort_values("lat")

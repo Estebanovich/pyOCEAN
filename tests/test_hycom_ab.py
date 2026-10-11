@@ -199,6 +199,22 @@ class TestOtherDialects:
         assert [r.name for r in read_b(b).records] == ["SAL-m2R", "SAL-m2I"]
         np.testing.assert_allclose(read_field(b, "SAL-m2I", idm=IDM, jdm=JDM), 5.7942215e-02, rtol=1e-6)
 
+    def test_unnamed_minmax_dialect(self, tmp_path):
+        # JSL.b (HYCOM-examples GLBp0.08) and tidal.rh.b: a single "min, max =" line, no name
+        x = np.full((JDM, IDM), 2.2973286e-03)
+        x[0, 0] = 0.0
+        b = self._write(tmp_path, "tidal.rh", [f"min, max =   0.0000000E+00   {x.max():14.7E}"], [x])
+        r = read_b(b).records
+        assert len(r) == 1 and r[0].name == "tidal.rh"
+        np.testing.assert_allclose(read_field(b, "tidal.rh", idm=IDM, jdm=JDM), x, rtol=1e-6)
+
+    def test_dash_named_minmax_dialect(self, tmp_path):
+        # relax/DRAG/cb.b (HYCOM-IOA spatial bottom drag): "CB - min, max = a b"
+        x = np.linspace(2.5e-3, 5.2e-3, IDM * JDM).reshape(JDM, IDM)
+        b = self._write(tmp_path, "cb", [f"CB - min, max = {x.min():15.8E} {x.max():15.8E}"], [x])
+        assert read_b(b).records[0].name == "CB"
+        np.testing.assert_allclose(read_field(b, "CB", idm=IDM, jdm=JDM), x, rtol=1e-6)
+
     def test_name_with_space(self, tmp_path):
         recs = [np.full((JDM, IDM), 8e-6)]
         b = self._write(tmp_path, "rivers", ["Monthly river inflow", "", "", "",

@@ -53,6 +53,7 @@ _ARCHIVE = re.compile(
 # "name: labels = v1 … min max"  (labels e.g. "min,max", "range", "day,span,range", "month,range")
 _LABELLED = re.compile(r"^\s*([A-Za-z][\w.\- ]*?)\s*:\s*([a-z, ]+?)\s*=\s*((?:[-+0-9.eE]+\s*)+)$")
 # "min,max name = min max"  (regional.depth)
+_MINMAX_ANON = re.compile(r"^\s*(?:(\w[\w.]*)\s+-\s+)?min\s*,\s*max\s*=\s*([-+0-9.eE]+)\s+([-+0-9.eE]+)\s*$")
 _MINMAX_NAMED = re.compile(r"^\s*min,max\s+(\w+)\s*=\s*([-+0-9.eE]+)\s+([-+0-9.eE]+)")
 _IJDM = re.compile(r"i/jdm\s*=\s*(\d+)\s+(\d+)")
 
@@ -98,7 +99,7 @@ def read_b(path: str | Path) -> BFile:
     previous = ""
     for line in Path(path).read_text(errors="replace").splitlines():
         n_before = len(out.records)
-        _parse_b_line(line, out)
+        _parse_b_line(line, out, Path(path).name[:-2] if str(path).endswith(".b") else Path(path).stem)
         # "i/jdm = …" counts only on the line right before the first record
         # (HYCOM tool convention); title lines may quote other grids.
         if n_before == 0 and out.records and (m := _IJDM.search(previous)):
@@ -108,7 +109,7 @@ def read_b(path: str | Path) -> BFile:
     return out
 
 
-def _parse_b_line(line: str, out: BFile) -> None:
+def _parse_b_line(line: str, out: BFile, default_name: str = "") -> None:
     """Append a record or header value parsed from one ``.b`` line, if any."""
     if m := _ARCHIVE.match(line):
         out.records.append(BRecord(name=m[1], k=int(m[4]), day=float(m[3]),
@@ -121,6 +122,8 @@ def _parse_b_line(line: str, out: BFile) -> None:
         dens = values[labels.index("dens")] if "dens" in labels else None
         out.records.append(BRecord(name=m[1], k=k, day=day, density=dens,
                                    min=values[-2], max=values[-1]))
+    elif m := _MINMAX_ANON.match(line):              # "[NAME - ]min, max = a b" (else named after the file)
+        out.records.append(BRecord(name=m[1] or default_name, min=float(m[2]), max=float(m[3])))
     elif m := _MINMAX_NAMED.match(line):
         out.records.append(BRecord(name=m[1], min=float(m[2]), max=float(m[3])))
     elif m := _HEADER.match(line):

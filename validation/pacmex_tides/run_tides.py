@@ -53,6 +53,7 @@ from core.grid.horizontal import create_spherical_grid  # noqa: E402
 from core.grid.vertical import compute_hfac, create_z_grid  # noqa: E402
 from forcing.sources.hycom_ab import read_field  # noqa: E402
 from forcing.sources.tpxo import read_tpxo  # noqa: E402
+from physics.tides.drag import jsl_to_rh, regrid_bilinear, rh_at_faces, tidal_drag_rate  # noqa: E402
 from forcing.tides import (  # noqa: E402
     CONSTITUENTS,
     body_force,
@@ -68,6 +69,7 @@ REFS = Path.home() / "pyOCEAN_refs"
 ATLAS = REFS / "TPXO10_atlas_v2_nc"
 SAL_B = REFS / "tidal.salReIm_tpxo10.b"
 IDM, JDM, DLL = 1600, 1125, 0.04
+GLB = REFS / "hycom_GLBp0.08"                         # HYCOM-examples GLBp0.08: JSL.[ab] + regional.grid
 BOX = dict(lon=(-118.0, -92.0), lat=(12.0, 32.0))
 MIN_DEPTH = 10.0
 CD = 2.5e-3
@@ -126,6 +128,10 @@ def main() -> None:
     ap.add_argument("--theta", type=float, default=0.6)
     ap.add_argument("--no-sal", action="store_true", help="body tide without SAL (sensitivity)")
     ap.add_argument("--cd", type=float, default=CD, help="quadratic bottom drag coefficient")
+    ap.add_argument("--cb-file", action="store_true",
+                    help="spatial quadratic drag from ~/HYCOM/relax/DRAG/cb.[ab] (HYCOM-IOA, cb < 0)")
+    ap.add_argument("--drgscl", type=float, default=0.0,
+                    help="JSL internal-tide drag scale (HYCOM tiddrg=1; 0 = off)")
     ap.add_argument("--benchmark", type=int, default=0, help="run N steps and report timing")
     ap.add_argument("--tag", default="ref")
     args = ap.parse_args()
@@ -145,6 +151,23 @@ def main() -> None:
     fl_v = np.zeros_like(wet_v)
     fl_v[[0, -1], :] = wet_v[[0, -1], :]
     fs = ImplicitFreeSurface(hg, vg, hf, dt=args.dt, theta=args.theta, g=G, flather_u=fl_u, flather_v=fl_v)
+
+    # ---- bottom drag coefficients at faces --------------------------------------
+    cd_t = np.full((ny, nx), args.cd)
+    if args.cb_file:
+        cb = read_field(HYCOM / "relax" / "DRAG" / "cb.b", "CB", idm=IDM, jdm=JDM)[sd["j0"]:sd["j1"], sd["i0"]:sd["i1"]]
+        cd_t = np.where(np.isfinite(cb), cb, args.cd)
+    cd_u, cd_v = rh_at_faces(cd_t, wet_t)
+    r_jsl_u, r_jsl_v = np.zeros_like(hu), np.zeros_like(hv)
+    if args.drgscl > 0:
+        glon = read_field(GLB / "topo/topo/regional.grid.b", "plon")[0]
+        glat = read_field(GLB / "topo/topo/regional.grid.b", "plat")[:, 0]
+        jsl_g = read_field(GLB / "relax_DRAG/relax/DRAG/JSL.b", "JSL", idm=4500, jdm=2251)
+        jsl = regrid_bilinear(jsl_g, glat, glon, hg["lat_t"].values, hg["lon_t"].values)
+        # rate on the p-grid (HYCOM: drag on p-points, increment averaged to faces), then to faces
+        rh = jsl_to_rh(jsl, np.where(wet_t, sd["depth"], np.nan))
+        r_jsl_u, r_jsl_v = rh_at_faces(tidal_drag_rate(rh, sd["depth"], args.drgscl), wet_t)
+        print(f"JSL drag: drgscl {args.drgscl}, max rate {r_jsl_u.max() * 86400:.2f}/day", flush=True)
 
     f_u = 2 * OMEGA_E * np.sin(np.deg2rad(hg["lat_u"].values))
     f_v = 2 * OMEGA_E * np.sin(np.deg2rad(hg["lat_v"].values))
@@ -203,9 +226,9 @@ def main() -> None:
             gu_ab, gv_ab = 1.5 * gu - 0.5 * g_prev[0], 1.5 * gv - 0.5 * g_prev[1]
         g_prev = (gu, gv)
 
-        # quadratic bottom drag, semi-implicit: û = (u + Δt G) / (1 + Δt C_d |u| / H)
-        r_u = np.where(wet_u, args.cd * np.hypot(u[0], v_at_u) / np.where(wet_u, hu, 1.0), 0.0)
-        r_v = np.where(wet_v, args.cd * np.hypot(v[0], u_at_v) / np.where(wet_v, hv, 1.0), 0.0)
+        # bottom drag, semi-implicit: û = (u + Δt G) / (1 + Δt (C_d |u| / H + drgscl rh / H))
+        r_u = np.where(wet_u, cd_u * np.hypot(u[0], v_at_u) / np.where(wet_u, hu, 1.0), 0.0) + r_jsl_u
+        r_v = np.where(wet_v, cd_v * np.hypot(v[0], u_at_v) / np.where(wet_v, hv, 1.0), 0.0) + r_jsl_v
         u_hat = ((u[0] + dt * gu_ab) / (1.0 + dt * r_u))[None]
         v_hat = ((v[0] + dt * gv_ab) / (1.0 + dt * r_v))[None]
 
