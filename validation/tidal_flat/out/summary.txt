@@ -1,0 +1,14 @@
+pyOCEAN tidal flat: dx 500 m, dt 15 s, theta 0.55, dmin 0.1 m, Cd 0.0025, advection upwind3, 36 h
+  shoreline (last period): 77.75–90.25 km; clipped volume 0.0e+00 m³ per channel width
+CROCO (tidal_flat_his.nc), last tidal period:
+  CROCO shoreline 77.25–90.25 km; shoreline difference rms 0.35 km, max 0.50 km
+  η difference where both wet: rms 1.1 cm, max 5.1 cm
+  stations  x[km]  η range py/CROCO [m]   η rms diff [cm]   ū max py/CROCO [m/s]   ū rms diff [m/s]
+             10.0   4.06 /  4.06           1.2            1.21 /  1.21           0.007
+             50.0   4.04 /  4.05           1.1            1.03 /  1.02           0.006
+             75.0   2.89 /  2.91           0.7            0.91 /  0.90           0.009
+             80.0   2.19 /  2.20           1.1            0.87 /  0.86           0.033
+             82.5   1.68 /  1.68           1.1            0.82 /  0.81           0.032
+             85.0   1.16 /  1.17           0.9            0.72 /  0.72           0.029
+             87.5   0.63 /  0.64           0.6            0.55 /  0.56           0.017
+             90.0   0.14 /  0.15           0.4            0.21 /  0.18           0.019

@@ -14,6 +14,9 @@ h(x) = D (1 − x²/L²) — the setup of CROCO's THACKER (THACKER_2DV) test cas
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -253,3 +256,72 @@ def test_cg_solver_matches_direct():
     for _ in range(int(round(0.5 * PERIOD / 60.0))):
         eta, u, v = fs.step(eta, u, v, u.copy(), v.copy())
     np.testing.assert_allclose(eta[0], e_direct, atol=1e-8)
+
+
+# ---------------------------------------------------------------------------
+# Cross-model: CROCO TIDAL_FLAT (2DH) — moving shoreline under a 4 m tide with
+# advection and quadratic drag.  Reference written by
+# validation/tidal_flat/make_reference.py from the CROCO run (README there).
+# ---------------------------------------------------------------------------
+_TF_REF = Path(__file__).parent / "data" / "tidal_flat_croco_reference.npz"
+
+
+@pytest.fixture(scope="module")
+def tidal_flat():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation" / "tidal_flat"))
+    from run_tidal_flat import DX, croco_bed, run, shoreline
+    ref = np.load(_TF_REF)
+    ts, etas, us, H, clip = run(theta=0.55, dt=15.0, hours=36.0, dmin=0.1, cd=2.5e-3, adv="upwind3", every=60)
+    x = (np.arange(H.size) + 0.5) * DX
+    k = [int(np.argmin(np.abs(ts - t))) for t in ref["t"]]
+    sh = np.array([shoreline(x, H + e, 0.1) for e in etas[k]])
+    return ref, etas[k], us[k], sh, clip, croco_bed()
+
+
+class TestTidalFlatVsCroco:
+    def test_bed_matches_croco(self, tidal_flat):
+        ref, *_, bed = tidal_flat
+        np.testing.assert_allclose(bed, ref["h"], atol=1e-5)
+
+    def test_surface_matches_croco_at_stations(self, tidal_flat):
+        ref, etas, *_ = tidal_flat
+        d = etas[:, ref["i_sta"]] - ref["zeta_sta"]
+        assert np.sqrt(np.mean(d ** 2)) < 0.02                 # CROCO tide range 4 m
+        assert np.abs(d).max() < 0.06
+
+    def test_velocity_matches_croco_at_stations(self, tidal_flat):
+        ref, _, us, *_ = tidal_flat
+        i = ref["i_sta"]
+        up = 0.5 * (us[:, i] + us[:, i + 1])
+        assert np.sqrt(np.mean((up - ref["ubar_sta"]) ** 2)) < 0.04
+
+    def test_shoreline_within_one_cell(self, tidal_flat):
+        ref, _, _, sh, *_ = tidal_flat
+        assert np.abs(sh - ref["shoreline"]).max() <= 500.0 + 1e-6
+
+    def test_no_volume_clipped(self, tidal_flat):
+        assert tidal_flat[4] == 0.0
+
+
+class TestTidalFlatVsCroco3D:
+    """
+    CROCO's original 3-D TIDAL_FLAT (GLS k-ε, log-law bed with z₀ = 1e-4 m;
+    sediment off).  Its effective drag falls with depth, so a constant C_d
+    over-damps the tide (η ~30 cm rms off at the stations); the log-law C_d(D) of
+    physics.bottom_friction recovers it to a few cm.
+    """
+
+    @staticmethod
+    def _eta_rms(z0, cd=2.5e-3):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation" / "tidal_flat"))
+        from run_tidal_flat import run
+        ref = np.load(Path(__file__).parent / "data" / "tidal_flat_croco_3d_reference.npz")
+        ts, etas, *_ = run(theta=0.55, dt=15.0, hours=36.0, dmin=0.1, cd=cd, adv="upwind3", every=60, z0=z0)
+        k = [int(np.argmin(np.abs(ts - t))) for t in ref["t"]]
+        return np.sqrt(np.mean((etas[k][:, ref["i_sta"]] - ref["zeta_sta"]) ** 2))
+
+    def test_constant_cd_overdamps(self):
+        assert self._eta_rms(None) > 0.20
+
+    def test_log_law_drag_matches_croco_3d(self):
+        assert self._eta_rms(1e-4) < 0.08                  # 6.6 cm at the stations (constant C_d: ~30)

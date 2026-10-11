@@ -174,8 +174,11 @@ Last updated: 2026-10-10.  All tests run with `pytest tests/`.
 | Tide-gauge comparison + defect diagnosis (TICON-3) | `diagnostics/tide_gauges.py` | `tests/test_tide_gauges.py` | ✅ 19/19 |
 | JSL internal-tide drag (tidal.rh generation + HYCOM tiddrg=1 drag) | `physics/tides/drag.py` | `tests/test_tidal_drag.py` | ✅ 8/8 |
 | Raw sea-level QC + harmonic analysis (spikes, stuck, datum steps, clock, twin sensors) | `diagnostics/sealevel_qc.py` | `tests/test_sealevel_qc.py` | ✅ 37/37 |
+| Nonlinear shallow-water terms (−∇·(ηu), advection centred/upwind3, Laplacian viscosity) | `core/dynamics/nonlinear.py` | `tests/test_nonlinear.py` | ✅ 18/18 |
+| Wetting and drying (Casulli semi-implicit, total depth, Flather) — Thacker exact + CROCO THACKER/TIDAL_FLAT | `core/dynamics/wetting_drying.py` | `tests/test_wetting_drying.py` | ✅ 21/21 (+1 strict xfail) |
+| Log-law depth-dependent bottom drag C_d(D, z₀) (Soulsby 1997; matches CROCO 3D TIDAL_FLAT) | `physics/bottom_friction.py` | `tests/test_bottom_friction.py` | ✅ 4/4 |
 
-**Phase 2 in progress — 771 total tests passing.**
+**Phase 2 in progress — 819 total tests passing (+1 strict xfail).**
 
 ### Phase 2 build order
 
