@@ -125,6 +125,7 @@ def main() -> None:
     ap.add_argument("--dt", type=float, default=120.0)
     ap.add_argument("--theta", type=float, default=0.6)
     ap.add_argument("--no-sal", action="store_true", help="body tide without SAL (sensitivity)")
+    ap.add_argument("--cd", type=float, default=CD, help="quadratic bottom drag coefficient")
     ap.add_argument("--benchmark", type=int, default=0, help="run N steps and report timing")
     ap.add_argument("--tag", default="ref")
     args = ap.parse_args()
@@ -203,8 +204,8 @@ def main() -> None:
         g_prev = (gu, gv)
 
         # quadratic bottom drag, semi-implicit: û = (u + Δt G) / (1 + Δt C_d |u| / H)
-        r_u = np.where(wet_u, CD * np.hypot(u[0], v_at_u) / np.where(wet_u, hu, 1.0), 0.0)
-        r_v = np.where(wet_v, CD * np.hypot(v[0], u_at_v) / np.where(wet_v, hv, 1.0), 0.0)
+        r_u = np.where(wet_u, args.cd * np.hypot(u[0], v_at_u) / np.where(wet_u, hu, 1.0), 0.0)
+        r_v = np.where(wet_v, args.cd * np.hypot(v[0], u_at_v) / np.where(wet_v, hv, 1.0), 0.0)
         u_hat = ((u[0] + dt * gu_ab) / (1.0 + dt * r_u))[None]
         v_hat = ((v[0] + dt * gv_ab) / (1.0 + dt * r_v))[None]
 
@@ -246,7 +247,7 @@ def main() -> None:
         gauge_t=np.array(g_t, "datetime64[s]"), gauge_eta=np.array(g_eta, np.float32),
         hc_map=hc_map.astype(np.complex64), ha_cons=np.array(HA_CONS),
         lon_t=lon_t, lat_t=lat_t, depth=sd["depth"],
-        meta=json.dumps(vars(args) | dict(box=BOX, min_depth=MIN_DEPTH, cd=CD, i0=int(sd["i0"]), j0=int(sd["j0"]))))
+        meta=json.dumps(vars(args) | dict(box=BOX, min_depth=MIN_DEPTH, i0=int(sd["i0"]), j0=int(sd["j0"]))))
     print("saved", OUT / f"run_{args.tag}.npz", f"total {(time.time() - t_setup) / 60:.1f} min")
 
 
