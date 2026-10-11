@@ -277,3 +277,99 @@ def test_coriolis_conserves_kinetic_energy_of_the_term():
     v[:, [0, -1], :] = 0.0
     cu, cv = m._coriolis(u, v)
     assert abs(np.sum(u * cu) + np.sum(v * cv)) < 1e-12 * np.sum(u**2)
+
+
+# ---------------------------------------------------------------- wind stress
+def test_uniform_wind_gives_the_inertial_ekman_transport():
+    # far from the walls of a large f-plane box, a uniform eastward stress switched on at t = 0
+    # gives the depth-integrated transport  Mx = (τ/ρ₀f) sin ft,  My = (τ/ρ₀f)(cos ft − 1):
+    # on average τ/(ρ₀ f) to the right of the wind (Ekman 1905; Gill 1982 §9.2)
+    f0, nx, dx, dt, depth, tau = 1e-4, 80, 25000.0, 300.0, 10.0, 0.1
+    hg = create_cartesian_grid(nx=nx, ny=nx, dx=dx, dy=dx, f0=f0)
+    m = SigmaBaroclinic(hg, np.full((nx, nx), depth), dt=dt, n_layers=5, rho0=RHO0, z0=None,
+                        closure="constant", nu_const=1e-3)
+    st = m.initial_state(np.zeros((nx, nx)), np.full((5, nx, nx), 10.0))
+    tau_x = np.full((nx, nx + 1), tau)
+    scale = tau / (RHO0 * f0)                                           # 1 m² s⁻¹
+    c = nx // 2
+    err = 0.0
+    for _ in range(int(round(2 * np.pi / f0 / dt))):
+        st = m.step(st, tau_x=tau_x)
+        D = depth + st.eta[c, c]
+        Mx = D / 5 * st.u[:, c, c].sum()
+        My = D / 5 * st.v[:, c, c].sum()
+        ft = f0 * st.time
+        err = max(err, abs(Mx - scale * np.sin(ft)), abs(My - scale * (np.cos(ft) - 1)))
+    assert err < 0.005 * scale                                         # measured 0.045 %
+    assert st.u[-1, c, c] != st.u[0, c, c]                              # stress enters at the top
+
+
+# ---------------------------------------------------------------- open boundaries
+N_BV, H_CH = 0.02, 200.0
+
+
+def _channel(nx, x0, dx=1000.0, nz=10, dt=120.0, **kw):
+    """Linear stratification (N = 0.02 s⁻¹, c₁ = NH/π = 1.27 m/s) with a mode-1 isopycnal bump at x0."""
+    hg = create_cartesian_grid(nx=nx, ny=1, dx=dx, dy=dx, f0=0.0)
+    m = SigmaBaroclinic(hg, np.full((1, nx), H_CH), dt=dt, n_layers=nz, rho0=RHO0, t_coef=TCOEF, z0=None,
+                        closure="constant", nu_const=1e-5, **kw)
+    x = (np.arange(nx) + 0.5) * dx
+    z = -H_CH + H_CH * ((np.arange(nz) + 0.5) / nz)[:, None, None]
+    dTdz = N_BV**2 * RHO0 / (9.81 * TCOEF)
+    zeta = 5.0 * np.sin(-np.pi * z / H_CH) * np.exp(-((x - x0) / 5e3) ** 2)[None, None, :]
+    T = 10.0 + dTdz * (z + zeta)
+    return m, m.initial_state(np.zeros((1, nx)), T)
+
+
+def _run(m, st, hours):
+    for _ in range(int(round(hours * 3600 / m.dt))):
+        st = m.step(st)
+    return st
+
+
+def test_open_boundaries_keep_a_uniform_tracer_uniform():
+    # Flather faces carry volume; the layer transports there must add up to exactly the free-surface
+    # flux and the inflowing tracer must be the boundary value, or a uniform tracer would change
+    hg = create_cartesian_grid(nx=30, ny=1, dx=1000.0, dy=1000.0, f0=0.0)
+    m = SigmaBaroclinic(hg, np.full((1, 30), 20.0), dt=30.0, n_layers=6, z0=None, closure="constant",
+                        nu_const=1e-4, open_boundaries=("west", "east"))
+    x = (np.arange(30) + 0.5) * 1000.0
+    st = m.initial_state(0.3 * np.exp(-((x - 12e3) / 3e3) ** 2)[None, :], np.full((6, 1, 30), 7.0))
+    vol0 = m.layer_volumes(st.eta).sum()
+    st = _run(m, st, 1.0)
+    np.testing.assert_allclose(st.T, 7.0, atol=1e-11)
+    assert m.layer_volumes(st.eta).sum() < 0.9 * vol0 + 0.1 * (20.0 * 30e3 * 1e3)   # the bump left
+    assert np.abs(st.u[:, 0, [0, -1]]).max() > 0                         # boundary faces carry flow
+
+
+def _interior_error(open_kw, nx_small=60, pad=0):
+    """rms interior T difference from a 300 km 'truth' channel, relative to the initial anomaly."""
+    big, sb = _channel(300, 150e3)
+    small, ss = _channel(nx_small + 2 * pad, (nx_small / 2 + pad) * 1e3, **open_kw)
+    T_init = ss.T[..., pad:pad + nx_small].copy()
+    sb, ss = _run(big, sb, 16.0), _run(small, ss, 16.0)
+    sl = slice(150 - nx_small // 2, 150 + nx_small // 2)
+    diff = ss.T[..., pad:pad + nx_small] - sb.T[..., sl]
+    bg = T_init.mean(axis=-1, keepdims=True)
+    return np.sqrt(np.mean(diff**2)) / np.sqrt(np.mean((T_init - bg) ** 2))
+
+
+def test_closed_channel_reflects_the_internal_wave():
+    assert _interior_error({}) > 0.3                                     # the reference the OBCs must beat
+
+
+def test_orlanski_radiation_lets_most_of_the_internal_wave_out():
+    # Flather for the depth mean + Orlanski (1976) radiation of the baroclinic normal velocity.
+    # Measured 0.157 (closed 0.82): a single phase speed per layer cannot fit the mode-1 + mode-2
+    # mixture of the pulse — the known weakness of radiation-only OBCs for stratified flow
+    # (Jensen 1998; Palma & Matano 1998); hence the sponge below
+    assert _interior_error(dict(open_boundaries=("west", "east"))) < 0.2
+
+
+def test_sponge_with_radiation_absorbs_the_internal_wave():
+    # flow-relaxation sponge (Martinsen & Engedahl 1987; MITgcm OBCS profile) on the baroclinic
+    # velocity and the tracer anomaly, outside the 60 km interior
+    # measured 0.015 (Orlanski alone in the same padded domain 0.133): sponge + radiation is the most
+    # transparent combination (Chapman 1985), as in the MITgcm BayIW runs
+    kw = dict(open_boundaries=("west", "east"), sponge_cells=10, sponge_tau=(1200.0, 120.0))
+    assert _interior_error(kw, pad=10) < 0.05

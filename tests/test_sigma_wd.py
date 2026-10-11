@@ -52,6 +52,23 @@ def _dense_solve(u, dz, nu, r, dt):
     return np.linalg.solve(A, dz * u)
 
 
+@pytest.mark.parametrize("closure,z0", [("constant", None), ("none", None), ("parabolic", 1e-3)])
+def test_surface_stress_puts_its_momentum_into_the_column(closure, z0):
+    # kinematic surface stress τ/ρ₀ enters as the top boundary flux of the implicit viscous solve:
+    # without bed stress Σ Δz_k u_k gains exactly Δt τ/ρ₀; with bed stress somewhat less
+    hg = create_cartesian_grid(nx=4, ny=3, dx=1000.0, dy=1000.0, f0=0.0)
+    m = SigmaWetDry(hg, np.full((3, 4), 20.0), dt=60.0, n_layers=6, z0=z0, closure=closure, nu_const=1e-3)
+    u = np.zeros((6, 3, 5))
+    tau = np.full((3, 5), 1e-4)                                         # 0.1 N m⁻² / 1000 kg m⁻³
+    out = m.column_step(u, None, np.full((3, 5), 20.0), tau=tau)
+    gained = (out * 20.0 / 6).sum(0)
+    if z0 is None:
+        np.testing.assert_allclose(gained, 60.0 * 1e-4, rtol=1e-12)
+        assert out[-1, 0, 0] > out[0, 0, 0] if closure == "constant" else out[-1, 0, 0] > 0
+    else:
+        assert np.all(gained <= 60.0 * 1e-4 * (1 + 1e-12)) and np.all(gained > 0)
+
+
 def test_vertical_implicit_matches_dense_solve():
     rng = np.random.default_rng(0)
     n, m = 8, 5

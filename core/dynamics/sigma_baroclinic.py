@@ -33,9 +33,22 @@ Over sloping beds use the finite-volume PGF of Adcroft et al. 2008 — roadmap
 stage B, seamount test).  Equation of state: ρ = ρ₀ − α (T − T₀), as CROCO
 ``lin_EOS_cff``.
 
+Surface (wind) stress τ enters as the top flux of the implicit vertical viscosity
+(``step(st, tau_x, tau_y)``; Ekman transport τ/ρ₀f to 0.05 %).
+
+Open boundaries (``open_boundaries``, any of west/east/south/north), after Chapman
+(1985) and Marsaleix et al. (2006): Flather (1976) radiation of the depth mean to a
+resting exterior; Orlanski (1976) radiation of the baroclinic normal velocity;
+upstream tracer values at the open faces (external T on inflow); layer transports
+there equal to Δσ × the free-surface flux + the baroclinic part, so ω and tracer
+constancy are exact; optional flow-relaxation sponge (Martinsen & Engedahl 1987)
+with the MITgcm OBCS profile on the baroclinic velocity and the tracer anomaly.
+Mode-1 internal-wave test (16 h, 60 km channel vs a 300 km truth): interior error
+0.82 closed, 0.16 Orlanski only, 0.015 with a 10-cell sponge.
+
 Limitations (documented, tested where it matters): Cartesian uniform spacing for
-the UP3 face interpolation; closed domains for tracers (Flather faces are not yet
-tracer-consistent); salinity not included.
+the UP3/WENO face interpolation; salinity not included; the sponge relaxes towards
+a resting exterior (no prescribed external baroclinic state yet).
 
 References
 ----------
@@ -45,6 +58,11 @@ Shchepetkin, A.F. & McWilliams, J.C. (2005). Ocean Modell. 9, 347–404.
 Shu, C.-W. & Osher, S. (1988). J. Comput. Phys. 77, 439–471.
 Jiang, G.-S. & Shu, C.-W. (1996). Efficient implementation of weighted ENO
     schemes. J. Comput. Phys. 126, 202–228.
+Chapman, D.C. (1985). J. Phys. Oceanogr. 15, 1060–1075.
+Flather, R.A. (1976). Mém. Soc. R. Sci. Liège 6(10), 141–164.
+Marsaleix, P., Auclair, F. & Estournel, C. (2006). J. Atmos. Oceanic Technol. 23, 1604–1613.
+Martinsen, E.A. & Engedahl, H. (1987). Coastal Eng. 11, 603–627.
+Orlanski, I. (1976). J. Comput. Phys. 21, 251–269.
 Borges, R., Carmona, M., Costa, B. & Don, W.S. (2008). An improved weighted
     essentially non-oscillatory scheme for hyperbolic conservation laws.
     J. Comput. Phys. 227, 3191–3211.
@@ -264,6 +282,36 @@ def reference_profile(z: np.ndarray, rho: np.ndarray, n_bins: int = 400):
     return lambda zz: np.interp(zz, zc, mean)
 
 
+EDGES = ("west", "east", "south", "north")
+
+
+def _sponge_rates(shape: tuple[int, int], edges: tuple[str, ...], n_cells: int, tau_inner: float,
+                  tau_bound: float):
+    """
+    Relaxation rates [s⁻¹] of the open-boundary sponge at cells, u- and v-faces, with the MITgcm
+    OBCS profile (obcs_sponge.F, useLinearSponge = .FALSE.): at distance d = 1 … N cells from the
+    boundary the time scale is τ(d) = [(N − d) τ_bound + d τ_inner]/N and the relaxation acts on
+    (N − d)/N of the departure, i.e. rate(d) = (N − d)/(N τ(d)) — strong at the edge, zero at d = N.
+    Returns (None, None, None) without a sponge.
+    """
+    if not n_cells:
+        return None, None, None
+    ny, nx = shape
+    j, i = np.mgrid[0:ny, 0:nx]
+    dist = {"west": i + 1, "east": nx - i, "south": j + 1, "north": ny - j}
+    d = np.min([dist[e] for e in edges], axis=0).astype(float)
+    N = float(n_cells)
+    tau = ((N - d) * tau_bound + d * tau_inner) / N
+    rc = np.where(d < N, (N - d) / (N * tau), 0.0)
+    ru = np.empty((ny, nx + 1))
+    ru[:, 1:-1] = 0.5 * (rc[:, :-1] + rc[:, 1:])
+    ru[:, 0], ru[:, -1] = rc[:, 0], rc[:, -1]
+    rv = np.empty((ny + 1, nx))
+    rv[1:-1] = 0.5 * (rc[:-1] + rc[1:])
+    rv[0], rv[-1] = rc[0], rc[-1]
+    return rc, ru, rv
+
+
 class SigmaBaroclinic:
     """
     Stratified σ-layer model (see module docstring).
@@ -281,7 +329,10 @@ class SigmaBaroclinic:
                  rho0: float = 1000.0, t_coef: float = 0.2, t_ref: float = 0.0, z0: float | None = None,
                  closure: str = "constant", nu_const: float = 1e-4, ah: float = 0.0, adv: str = "flux",
                  theta: float = 0.6, d_min: float = 0.05, g: float = G, tracer_scheme: str = "weno5",
-                 tracer_time: str = "ssprk3", pgf: str = "jacobian", rho_ref=None) -> None:
+                 tracer_time: str = "ssprk3", pgf: str = "jacobian", rho_ref=None,
+                 open_boundaries: tuple[str, ...] = (), sponge_cells: int = 0,
+                 sponge_tau: tuple[float, float] = (1200.0, 60.0), orlanski_cmax: float = 1.0,
+                 sponge_tracer: bool = True) -> None:
         if pgf not in ("twoterm", "jacobian"):
             raise ValueError(f"unknown pressure-gradient scheme {pgf!r}")
         self.pgf, self.rho_ref = pgf, rho_ref
@@ -291,8 +342,29 @@ class SigmaBaroclinic:
         if tracer_scheme not in ("weno5", "weno5js", "upwind3", "upwind1"):
             raise ValueError(f"unknown tracer scheme {tracer_scheme!r}")
         self.tracer_scheme = tracer_scheme
+        bad = set(open_boundaries) - set(EDGES)
+        if bad:
+            raise ValueError(f"unknown open boundaries {sorted(bad)}; use {EDGES}")
+        if sponge_cells and not open_boundaries:
+            raise ValueError("a sponge needs open boundaries")
+        self.open = tuple(open_boundaries)
+        self.orlanski_cmax, self.sponge_tracer = orlanski_cmax, sponge_tracer
+        act = np.isfinite(np.asarray(bathy, float))
+        fl_u = np.zeros((act.shape[0], act.shape[1] + 1), bool)
+        fl_v = np.zeros((act.shape[0] + 1, act.shape[1]), bool)
+        if "west" in self.open:
+            fl_u[:, 0] = act[:, 0]
+        if "east" in self.open:
+            fl_u[:, -1] = act[:, -1]
+        if "south" in self.open:
+            fl_v[0, :] = act[0, :]
+        if "north" in self.open:
+            fl_v[-1, :] = act[-1, :]
         self.core = SigmaWetDry(h_grid, bathy, dt=dt, n_layers=n_layers, z0=z0, closure=closure,
-                                nu_const=nu_const, theta=theta, g=g, d_min=d_min)
+                                nu_const=nu_const, theta=theta, g=g, d_min=d_min,
+                                flather_u=fl_u if self.open else None, flather_v=fl_v if self.open else None)
+        self._sp_c, self._sp_u, self._sp_v = _sponge_rates(act.shape, self.open, sponge_cells, *sponge_tau)
+        self.T_ext = None
         self.hg, self.dt, self.n, self.g = h_grid, dt, n_layers, g
         self.rho0, self.t_coef, self.t_ref, self.ah, self.adv = rho0, t_coef, t_ref, ah, adv
         self.fs = self.core.fs
@@ -310,6 +382,7 @@ class SigmaBaroclinic:
             z = -np.nan_to_num(self.H)[None] + D[None] * ((np.arange(self.n) + 0.5) / self.n)[:, None, None]
             act = np.broadcast_to(self.fs.active[None], z.shape)
             self.rho_ref = reference_profile(z[act], self.density(np.asarray(T, float))[act])
+        self.T_ext = np.array(T, float)                                # inflow / sponge target at open boundaries
         return SigmaState(eta=np.array(eta, float), u=np.zeros((self.n, ny, nx + 1)),
                           v=np.zeros((self.n, ny + 1, nx)), T=np.array(T, float))
 
@@ -466,6 +539,57 @@ class SigmaBaroclinic:
             return _weno5_faces(c, flux, ok, axis, variant="js" if self.tracer_scheme == "weno5js" else "z")
         return _up3_faces(c, flux, ok, axis, order=1 if self.tracer_scheme == "upwind1" else 3)
 
+    def _open_faces(self, face: np.ndarray, c: np.ndarray, Q: np.ndarray, axis: int) -> np.ndarray:
+        """
+        Tracer values on the open-boundary faces: upstream (Marsaleix et al. 2006, advection
+        equation for tracers) — the boundary cell when flowing out, the external value
+        ``T_ext`` (and its square for the T² stack) when flowing in.
+        """
+        if not self.open:
+            return face
+        ext = np.stack([self.T_ext, self.T_ext**2])[: c.shape[0]]
+        face = np.array(face, copy=True)
+        lo, hi = ("west", "east") if axis == 3 else ("south", "north")
+        for edge, f_i, c_i, inflow_sign in ((lo, 0, 0, 1.0), (hi, -1, -1, -1.0)):
+            if edge not in self.open:
+                continue
+            sl_f = [slice(None)] * face.ndim
+            sl_c = [slice(None)] * c.ndim
+            sl_f[axis], sl_c[axis] = f_i, c_i
+            q = np.take(Q, f_i, axis=axis - 1)
+            face[tuple(sl_f)] = np.where(inflow_sign * q > 0, ext[tuple(sl_c)], c[tuple(sl_c)])
+        return face
+
+    def _baroclinic_part(self, vel: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Depth mean Σ Δσ_k u_k and the baroclinic remainder u_k − ū (Σ Δσ_k u′_k = 0)."""
+        mean = np.tensordot(self.ds, vel, axes=(0, 0))
+        return mean, vel - mean[None]
+
+    def _radiate(self, u_old: np.ndarray, u_new: np.ndarray, axis: int, edge: int) -> None:
+        """
+        Orlanski (1976) radiation of the baroclinic normal velocity at one open edge, implicit
+        upstream form as ROMS u3dbc (Marchesiello et al. 2001, normal part only):
+
+            r = c Δt/Δx = (φ₁ⁿ − φ₁ⁿ⁺¹)(φ₁ⁿ − φ₂ⁿ) / (φ₁ⁿ − φ₂ⁿ)²,  clipped to [0, r_max]
+            φ_Bⁿ⁺¹ = (φ_Bⁿ + r φ₁ⁿ⁺¹) / (1 + r)
+
+        with B the boundary face and 1, 2 the next faces inwards (r = 0: incoming → clamped).
+        The depth-mean part (Flather) is kept; u_new is modified in place.
+        """
+        _, po = self._baroclinic_part(u_old)
+        bar, pn = self._baroclinic_part(u_new)
+        i1, i2 = (1, 2) if edge == 0 else (-2, -3)
+        take = lambda a, i: np.take(a, i, axis=axis)                                  # noqa: E731
+        grad = take(po, i1) - take(po, i2)
+        cx = (take(po, i1) - take(pn, i1)) * grad
+        r = np.clip(cx / np.maximum(grad**2, 1e-30), 0.0, self.orlanski_cmax)
+        pb = (take(po, edge) + r * take(pn, i1)) / (1.0 + r)
+        pb -= np.tensordot(self.ds, pb, axes=(0, 0))[None]                            # keep Σ Δσ u′ = 0
+        open_ = take((self.fs.last_open_Du if axis == 2 else self.fs.last_open_Dv)[None], edge) > 0
+        sl = [slice(None)] * u_new.ndim
+        sl[axis] = edge
+        u_new[tuple(sl)] = np.where(open_, take(bar[None], edge) + pb, take(u_new, edge))
+
     def _advect(self, C: np.ndarray, V0: np.ndarray, V1: np.ndarray, Qx: np.ndarray, Qy: np.ndarray,
                 Fz: np.ndarray, ok: np.ndarray) -> np.ndarray:
         """
@@ -477,8 +601,10 @@ class SigmaBaroclinic:
 
         def rhs(c, centred=False):
             okb = np.broadcast_to(ok, c.shape)
-            fx = Qx * self._faces(c, np.broadcast_to(Qx, c.shape[:1] + Qx.shape), okb, 3, centred)
-            fy = Qy * self._faces(c, np.broadcast_to(Qy, c.shape[:1] + Qy.shape), okb, 2, centred)
+            fx = Qx * self._open_faces(self._faces(c, np.broadcast_to(Qx, c.shape[:1] + Qx.shape), okb, 3, centred),
+                                       c, Qx, 3)
+            fy = Qy * self._open_faces(self._faces(c, np.broadcast_to(Qy, c.shape[:1] + Qy.shape), okb, 2, centred),
+                                       c, Qy, 2)
             # vertical: Fz[j] is the volume flux through interface j (bottom of layer j; 0 = bed, N = surface)
             fzc = np.broadcast_to(Fz[:-1], c.shape)
             fz = np.zeros(c.shape[:1] + Fz.shape)
@@ -504,7 +630,12 @@ class SigmaBaroclinic:
         return safe(q3, V1)
 
     # ------------------------------------------------------------------ step
-    def step(self, st: SigmaState) -> SigmaState:
+    def step(self, st: SigmaState, tau_x: np.ndarray | None = None, tau_y: np.ndarray | None = None) -> SigmaState:
+        """
+        Advance one step.  tau_x (ny, nx+1), tau_y (ny+1, nx): surface (wind) stress at the u- and
+        v-faces [N m⁻²]; τ/ρ₀ enters as the top boundary flux of the implicit vertical viscosity
+        (as ROMS/CROCO sustr/svstr), not through the AB3 extrapolation.
+        """
         dt, th, n = self.dt, self.fs.theta, self.n
         gu, gv = self._tendencies(st)
         hist = [(gu, gv)] + st.g_hist[:2]
@@ -515,13 +646,38 @@ class SigmaBaroclinic:
         else:
             gu_ab = AB3[0] * gu + AB3[1] * hist[1][0] + AB3[2] * hist[2][0]
             gv_ab = AB3[0] * gv + AB3[1] * hist[1][1] + AB3[2] * hist[2][1]
-        eta_new, u_new, v_new = self.core.step(st.eta, st.u, st.v, G_u=gu_ab, G_v=gv_ab)
+        tu = None if tau_x is None else np.asarray(tau_x, float) / self.rho0
+        tv = None if tau_y is None else np.asarray(tau_y, float) / self.rho0
+        fl = {}
+        if self.open:                                                   # radiate to a resting exterior (η = 0, ū = 0)
+            zu, zv = np.zeros(self.fs.H_u.shape), np.zeros(self.fs.H_v.shape)
+            fl = dict(flather_eta=(zu, zv), flather_ubar=zu, flather_vbar=zv)
+        eta_new, u_new, v_new = self.core.step(st.eta, st.u, st.v, G_u=gu_ab, G_v=gv_ab, tau_u=tu, tau_v=tv, **fl)
+        if self._sp_u is not None:
+            # flow-relaxation sponge on the baroclinic velocity (implicit; the depth mean, and so the
+            # free-surface volume fluxes, are untouched — barotropic waves leave through Flather)
+            for vel, rate in ((u_new, self._sp_u), (v_new, self._sp_v)):
+                bar, prime = self._baroclinic_part(vel)
+                vel[...] = bar[None] + prime / (1.0 + dt * rate[None])
+        if self.open:
+            for name, vel, old, axis, edge in (("west", u_new, st.u, 2, 0), ("east", u_new, st.u, 2, -1),
+                                                ("south", v_new, st.v, 1, 0), ("north", v_new, st.v, 1, -1)):
+                if name in self.open:
+                    self._radiate(old, vel, axis, edge)
 
         # layer transports consistent with the free-surface flux (fs.last_Du / last_Dv: upwind face depth)
         un = np.where(self.fs.last_wet_u[None], st.u, 0.0)
         vn = np.where(self.fs.last_wet_v[None], st.v, 0.0)
         Qx = (self.fs.Lu * self.fs.last_Du)[None] * self.ds[:, None, None] * (th * u_new + (1 - th) * un)
         Qy = (self.fs.Lv * self.fs.last_Dv)[None] * self.ds[:, None, None] * (th * v_new + (1 - th) * vn)
+        if self.open:
+            # open faces: Δσ_k × the free-surface (Flather) flux + the baroclinic part, so Σ_k Q_k is exactly
+            # the volume flux of the continuity equation
+            for Q, D, Qo, L, vo, vn1 in ((Qx, self.fs.last_open_Du, self.fs.last_open_Qu, self.fs.Lu, st.u, u_new),
+                                         (Qy, self.fs.last_open_Dv, self.fs.last_open_Qv, self.fs.Lv, st.v, v_new)):
+                po, pn = self._baroclinic_part(vo)[1], self._baroclinic_part(vn1)[1]
+                ds = self.ds[:, None, None]
+                Q[...] = np.where((D > 0)[None], ds * Qo[None] + (L * D)[None] * ds * (th * pn + (1 - th) * po), Q)
         V0, V1 = self.layer_volumes(st.eta), self.layer_volumes(eta_new)
         divh = Qx[..., 1:] - Qx[..., :-1] + Qy[:, 1:, :] - Qy[:, :-1, :]
         Fz = np.zeros((n + 1,) + self.H.shape)                              # volume flux through interface k (k=0 bed)
@@ -531,6 +687,9 @@ class SigmaBaroclinic:
         C = self._advect(np.stack([st.T, st.T**2]), V0, V1, Qx, Qy, Fz, ok)
         T_new = C[0]
         mix = V1 * (C[1] - C[0] ** 2) / dt
+        if self._sp_c is not None and self.sponge_tracer:
+            r = dt * self._sp_c[None]
+            T_new = (T_new + r * self.T_ext) / (1.0 + r)
         omega = Fz / np.where(self.area > 0, self.area, 1.0)[None]
         return SigmaState(eta=eta_new, u=u_new, v=v_new, T=T_new, g_hist=hist, omega=omega, mix_num=mix,
                           Qx=Qx, Qy=Qy, Fz=Fz, time=st.time + dt)

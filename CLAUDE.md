@@ -197,16 +197,16 @@ Last updated: 2026-10-10.  All tests run with `pytest tests/`.
 | Wetting and drying (Casulli semi-implicit, total depth, Flather; CG with lagged-LU preconditioner) — Thacker exact + CROCO THACKER/TIDAL_FLAT | `core/dynamics/wetting_drying.py` | `tests/test_wetting_drying.py` | ✅ 24/24 (+1 strict xfail) |
 | Log-law depth-dependent bottom drag C_d(D, z₀) + first-layer law of the wall (Soulsby 1997; CROCO) | `physics/bottom_friction.py` | `tests/test_bottom_friction.py` | ✅ 4/4 |
 | GLS k-ε turbulence closure, Canuto A (column port of CROCO gls_mixing.F) + parabolic ν | `physics/mixing/gls.py`, `physics/mixing/parabolic.py` | `tests/test_gls.py` | ✅ 3/3 |
-| Homogeneous 3-D σ-layer wetting–drying model (Casulli & Cheng 1992) — CROCO 3D TIDAL_FLAT to 1.2 cm | `core/dynamics/sigma_wd.py` | `tests/test_sigma_wd.py` | ✅ 8/8 |
+| Homogeneous 3-D σ-layer wetting–drying model (Casulli & Cheng 1992), surface stress as top flux — CROCO 3D TIDAL_FLAT to 1.2 cm | `core/dynamics/sigma_wd.py` | `tests/test_sigma_wd.py` | ✅ 11/11 |
 | Spurious-mixing diagnostics: RPE (Winters 1995/Ilicak 2012), online variance decay (Burchard & Rennau 2008) | `diagnostics/mixing.py` | `tests/test_mixing_diagnostics.py` | ✅ 8/8 |
-| Stratified σ-layer model: flux-form tracers + momentum (WENO5-Z/JS), ω, energy-conserving Coriolis, density-Jacobian PGF + reference profile (seamount 0.2–0.4 cm/s), AB3, SSP-RK3 or predictor–corrector — lock exchange = CROCO | `core/dynamics/sigma_baroclinic.py` | `tests/test_sigma_baroclinic.py` | ✅ 18/18 |
+| Stratified σ-layer model: flux-form tracers + momentum (WENO5-Z/JS), ω, energy-conserving Coriolis, density-Jacobian PGF + reference profile (seamount 0.2–0.4 cm/s), AB3, SSP-RK3 or predictor–corrector, wind stress (Ekman 0.05 %), open boundaries (Flather + Orlanski + MITgcm-profile sponge; mode-1 IW interior error 0.015 vs 0.82 closed) — lock exchange = CROCO | `core/dynamics/sigma_baroclinic.py` | `tests/test_sigma_baroclinic.py` | ✅ 23/23 |
 | Bit-for-bit restart (float64 CF NetCDF; AB history, transports, GLS state; config check) | `core/restart.py` | `tests/test_restart.py` | ✅ 5/5 |
 | Domain checker (rx0/rx1, isolated water bodies, pits, isolated cells, CFL advice) | `diagnostics/domain_check.py` | `tests/test_domain_check.py` | ✅ 7/7 |
 | Blow-up post-mortem guard (NaN/limit location, lat/lon, depth, CFL, history, state dump) | `diagnostics/postmortem.py` | `tests/test_postmortem.py` | ✅ 4/4 |
 | CF-1.8/SGRID output, Zarr (appendable) or NetCDF4, σ formula_terms | `diagnostics/output.py` | `tests/test_output.py` | ✅ 4/4 |
 | Local literature search (first step before Consensus) | `scripts/litsearch.py` | `tests/test_litsearch.py` | ✅ 3/3 |
 
-**Phase 2 in progress — 883 total tests passing (+1 strict xfail).**
+**Phase 2 in progress — 891 total tests passing (+1 strict xfail).**
 
 ### Phase 2 build order
 

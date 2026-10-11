@@ -278,8 +278,16 @@ class WetDryFreeSurface:
         self.last_Du, self.last_Dv = Du, Dv                  # upwind total face depth used in the fluxes
         u_new = np.where(wu, us - g * th * dt * gx1, 0.0)
         v_new = np.where(wv, vs - g * th * dt * gy1, 0.0)
+        # θ-weighted volume flux through the Flather faces as used by the continuity equation (model sign)
+        # and the total depth there: the σ-layer transports must add up to exactly this flux
+        self.last_open_Qu, self.last_open_Qv = np.zeros(self.H_u.shape), np.zeros(self.H_v.shape)
+        self.last_open_Du, self.last_open_Dv = np.zeros(self.H_u.shape), np.zeros(self.H_v.shape)
         for fl, (D, open_, c, e_ext, ub) in zip(self._flather, fl_state):
             q = fl["length"] * D * fl["sign"] * ub + c * (eta_new[fl["cell"]] - e_ext)     # outward, at n+1
             vel = np.where(open_, fl["sign"] * q / np.where(open_, fl["length"] * D, 1.0), 0.0)
             (u_new if fl["axis"] == "u" else v_new)[fl["face"]] = vel
+            q_th = fl["length"] * D * fl["sign"] * ub + c * ((1 - th) * eta[fl["cell"]] + th * eta_new[fl["cell"]] - e_ext)
+            Q, Dd = (self.last_open_Qu, self.last_open_Du) if fl["axis"] == "u" else (self.last_open_Qv, self.last_open_Dv)
+            Q[fl["face"]] = np.where(open_, fl["sign"] * q_th, 0.0)
+            Dd[fl["face"]] = np.where(open_, D, 0.0)
         return eta_new, u_new, v_new

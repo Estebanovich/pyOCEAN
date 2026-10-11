@@ -210,6 +210,11 @@ class TestFlather:
         q = lambda e: dy * D * (-0.02 + np.sqrt(G / D) * (e[0, -1] - 0.03))   # noqa: E731
         assert np.sum(area * eta1) == pytest.approx(vol0 - 30.0 * (0.3 * q(eta) + 0.7 * q(eta1)), rel=1e-12)
         assert u1[0, -1] == pytest.approx(q(eta1) / (dy * D), rel=1e-12)
+        # the θ-weighted volume flux actually used by the continuity equation is exposed (model sign,
+        # zero elsewhere) together with the depth, so 3-D transports can be made consistent with it
+        assert fs.last_open_Qu[0, -1] == pytest.approx(0.3 * q(eta) + 0.7 * q(eta1), rel=1e-12)
+        assert fs.last_open_Du[0, -1] == pytest.approx(D, rel=1e-12)
+        assert np.count_nonzero(fs.last_open_Qu) == 1 and not fs.last_open_Qv.any()
 
     def test_deep_limit_matches_linear_free_surface_with_flather(self):
         nx, H0 = 40, 1000.0

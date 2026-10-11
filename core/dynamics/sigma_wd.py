@@ -48,17 +48,19 @@ G = 9.81
 CLOSURES = ("gls", "parabolic", "constant", "none")
 
 
-def vertical_implicit(u: np.ndarray, dz: np.ndarray, nu: np.ndarray, r_bed: np.ndarray, dt: float) -> np.ndarray:
+def vertical_implicit(u: np.ndarray, dz: np.ndarray, nu: np.ndarray, r_bed: np.ndarray, dt: float,
+                      tau_top: np.ndarray | None = None) -> np.ndarray:
     """
     Backward-Euler vertical diffusion of momentum with a linearised bed stress
     (tridiagonal, Thomas algorithm; columns are independent).
 
         Δz_k (u_k' − u_k)/Δt = ν_{k+½}(u'_{k+1} − u'_k)/h_{k+½} − ν_{k−½}(u'_k − u'_{k−1})/h_{k−½}
-                               − δ_{k,0} r u'_0
+                               − δ_{k,0} r u'_0 + δ_{k,N−1} τ_s/ρ₀
 
     u, dz : (N, M) layer velocity [m s⁻¹] and thickness [m], k = 0 at the bed
     nu : (N+1, M) viscosity at the interfaces [m² s⁻¹] (bed and surface values unused)
     r_bed : (M,) bed stress rate r = C_d |u_b| [m s⁻¹] (0 = free slip)
+    tau_top : (M,) kinematic surface stress τ_s/ρ₀ [m² s⁻²], the momentum flux into the top layer
     """
     n = u.shape[0]
     h = 0.5 * (dz[1:] + dz[:-1])                          # interface spacing, (N−1, M)
@@ -72,6 +74,8 @@ def vertical_implicit(u: np.ndarray, dz: np.ndarray, nu: np.ndarray, r_bed: np.n
     diag[:-1] += c
     diag[0] += dt * r_bed
     rhs = dz * u
+    if tau_top is not None:
+        rhs[-1] = rhs[-1] + dt * tau_top
     # Thomas forward sweep
     cp = np.zeros_like(u)
     dp = np.zeros_like(u)
@@ -125,11 +129,12 @@ class SigmaWetDry:
 
     # ------------------------------------------------------------------ columns
     def column_step(self, u: np.ndarray, G_k: np.ndarray | None, depth: np.ndarray,
-                    nu: np.ndarray | None = None) -> np.ndarray:
+                    nu: np.ndarray | None = None, tau: np.ndarray | None = None) -> np.ndarray:
         """
         Step 1 for the columns of one velocity component: û = (vertical viscosity
         + bed stress)⁻¹ (u + Δt G).  u, G_k : (N, ...); depth : (...) total depth [m];
         nu : (N+1, ...) viscosity at the interfaces (closure 'gls': supplied by ``step``).
+        tau : (...) kinematic surface stress τ_s/ρ₀ [m² s⁻²] (wind), a flux into the top layer.
         """
         shape = u.shape
         n = shape[0]
@@ -151,9 +156,13 @@ class SigmaWetDry:
             nu = np.full((n + 1, D.size), self.nu_const)
         else:
             nu = np.zeros((n + 1, D.size))
+        tau = None if tau is None else np.asarray(tau, float).reshape(-1)
         if self.closure == "none" and self.z0 is None:
+            if tau is not None:
+                uu = uu.copy()
+                uu[-1] += self.dt * tau / dz[-1]
             return uu.reshape(shape)
-        return vertical_implicit(uu, dz, nu, r, self.dt).reshape(shape)
+        return vertical_implicit(uu, dz, nu, r, self.dt, tau_top=tau).reshape(shape)
 
     def face_depths(self, eta: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Total depth at u- and v-faces: mean of the two cells (edge faces: the inner cell) [m]."""
@@ -169,10 +178,12 @@ class SigmaWetDry:
     # ------------------------------------------------------------------ full step
     def step(self, eta: np.ndarray, u: np.ndarray, v: np.ndarray, G_u: np.ndarray | None = None,
              G_v: np.ndarray | None = None, flather_eta=None, flather_ubar: np.ndarray | None = None,
-             flather_vbar: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+             flather_vbar: np.ndarray | None = None, tau_u: np.ndarray | None = None,
+             tau_v: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Advance η and the layer velocities u (N, ny, nx+1), v (N, ny+1, nx) one step.
         G_u, G_v : explicit tendencies per layer [m s⁻²] (advection, Coriolis, body force).
+        tau_u, tau_v : kinematic surface stress τ/ρ₀ at u- and v-faces [m² s⁻²] (wind).
         Returns η^{n+1}, u^{n+1}, v^{n+1}.
         """
         ds = self.dsigma[:, None, None]
@@ -180,8 +191,8 @@ class SigmaWetDry:
         nu_u = nu_v = None
         if self.gls is not None:
             nu_u, nu_v = self._gls_at_faces()
-        u_hat = self.column_step(u, G_u, Du, nu_u)
-        v_hat = self.column_step(v, G_v, Dv, nu_v)
+        u_hat = self.column_step(u, G_u, Du, nu_u, tau=tau_u)
+        v_hat = self.column_step(v, G_v, Dv, nu_v, tau=tau_v)
         ubar_n, vbar_n = (ds * u).sum(0), (ds * v).sum(0)
         ubar_hat, vbar_hat = (ds * u_hat).sum(0), (ds * v_hat).sum(0)
         eta_new, ubar_new, vbar_new = self.fs.step(eta, ubar_n, vbar_n, ubar_hat, vbar_hat, flather_eta=flather_eta,
