@@ -148,7 +148,9 @@ No conviene asumir temprano: el port a GPU masivo, el anidamiento de dos vías y
 | Acapulco M2 | TICON | 0.6 cm | TPXO10 5–6 cm | ✅ adelante |
 | Alto Golfo de California M2 | TPXO10 y TICON | amplitud rms 3.8 cm (log-law, z₀ = 1e-3), fase 12.7° (−7 a −9° a lo largo del eje, heredado de la frontera) | TPXO10 = referencia | 🔶 cerca; falta la fase |
 | Banda de marea, HYCOM-IOA | IOC | 5.1 cm | HYCOM-IOA 4.9 cm | 🔶 similar |
-| Mezcla espuria (*lock exchange*, seiche interno, RPE) | Ilicak 2012 | — | MITgcm, MOM, ROMS, MPAS-O | ⬜ pendiente |
+| Lock exchange: frente | Benjamin ½√(g′H) = 0.495 | 0.463 / 0.486 m/s | CROCO 0.463 / 0.486 | ✅ igual a CROCO |
+| Lock exchange: mezcla espuria (ΔRPE/RPE₀, 17 h) | Ilicak 2012 | 3.2e-5 (WENO-Z), 2.9e-5 (JS) | CROCO 2.2e-5 | 🔶 1.3–1.5× CROCO (paso de tiempo de los trazadores) |
+| Seiche interno lineal (periodo) | 2L/√(g′h₁h₂/H) | +5 a +7 % (converge) | — | 🔶 |
 | Monte submarino (gradiente de presión) | Reposo exacto | — | ROMS, CROCO | ⬜ pendiente |
 | Restart bit a bit | Corrida continua | — | MOM6 y SCHISM fallan | ⬜ pendiente |
 | Rendimiento | — | 33 días PAC_MEX 650×500 en 11 min, 1 núcleo | — | ⬜ falta medir HYCOM con la misma configuración |

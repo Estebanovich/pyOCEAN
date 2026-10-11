@@ -1,0 +1,7 @@
+Lock exchange 128×40, Δt = 10 s, 17 h; Benjamin U = 0.495 m/s
+run                                   dense / light front speed 2–8 h [m/s]   ΔRPE/RPE₀ (end)      T range (end)
+CROCO GRAV_ADJ (WENO5, no A_h)                   0.463 / 0.486              2.19e-05    5.00–10.00
+pyOCEAN flux/weno5 A_h=0 (Re_Δ=inf)               0.463 / 0.486              3.22e-05    5.00–10.00   (1.2 min)
+pyOCEAN flux/weno5 A_h=1 (Re_Δ=248)               0.463 / 0.486              3.18e-05    5.00–10.00   (1.5 min)
+pyOCEAN flux/weno5 A_h=10 (Re_Δ=24.8)               0.463 / 0.486              2.86e-05    5.00–10.00   (1.5 min)
+pyOCEAN flux/weno5 A_h=100 (Re_Δ=2.48)               0.509 / 0.509              1.26e-05    5.00–10.00   (1.5 min)

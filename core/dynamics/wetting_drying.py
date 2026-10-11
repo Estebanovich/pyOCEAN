@@ -250,6 +250,7 @@ class WetDryFreeSurface:
 
         gx1, gy1 = self._gradient(eta_new)
         self.last_wet_u, self.last_wet_v = wu, wv            # faces that carried flow in this step
+        self.last_Du, self.last_Dv = Du, Dv                  # upwind total face depth used in the fluxes
         u_new = np.where(wu, us - g * th * dt * gx1, 0.0)
         v_new = np.where(wv, vs - g * th * dt * gy1, 0.0)
         for fl, (D, open_, c, e_ext, ub) in zip(self._flather, fl_state):
