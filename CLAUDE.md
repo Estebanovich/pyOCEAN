@@ -201,9 +201,11 @@ Last updated: 2026-10-10.  All tests run with `pytest tests/`.
 | Spurious-mixing diagnostics: RPE (Winters 1995/Ilicak 2012), online variance decay (Burchard & Rennau 2008) | `diagnostics/mixing.py` | `tests/test_mixing_diagnostics.py` | ✅ 8/8 |
 | Stratified σ-layer model: flux-form tracers + momentum (WENO5-Z/JS), ω, baroclinic PGF, AB3, SSP-RK3 or predictor–corrector — lock exchange = CROCO | `core/dynamics/sigma_baroclinic.py` | `tests/test_sigma_baroclinic.py` | ✅ 10/10 |
 | Bit-for-bit restart (float64 CF NetCDF; AB history, transports, GLS state; config check) | `core/restart.py` | `tests/test_restart.py` | ✅ 5/5 |
+| Domain checker (rx0/rx1, isolated water bodies, pits, isolated cells, CFL advice) | `diagnostics/domain_check.py` | `tests/test_domain_check.py` | ✅ 7/7 |
+| Blow-up post-mortem guard (NaN/limit location, lat/lon, depth, CFL, history, state dump) | `diagnostics/postmortem.py` | `tests/test_postmortem.py` | ✅ 4/4 |
 | Local literature search (first step before Consensus) | `scripts/litsearch.py` | `tests/test_litsearch.py` | ✅ 3/3 |
 
-**Phase 2 in progress — 857 total tests passing (+1 strict xfail).**
+**Phase 2 in progress — 868 total tests passing (+1 strict xfail).**
 
 ### Phase 2 build order
 

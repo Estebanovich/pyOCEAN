@@ -112,3 +112,12 @@
 | | Espinosa et al. 2026, DLESyM-Ocean | [10.48550/arXiv.2608.11545](https://doi.org/10.48550/arXiv.2608.11545) | `Espinosa_2026 - DLESyM-Ocean.pdf` | ✅ |
 | | Bolton & Zanna 2019, Deep learning for ocean data inference and subgrid parameterization, JAMES | [10.1029/2018MS001472](https://doi.org/10.1029/2018MS001472) | `Bolton_Zanna_2019 - Applications of Deep Learning to Ocean Data Inference and Subgrid Parameterization.pdf` | ✅ |
 | | Sonnewald et al. 2021, Bridging observations, theory and simulation with ML, ERL | [10.1088/1748-9326/ac0eb0](https://doi.org/10.1088/1748-9326/ac0eb0) | `Sonnewald_2021 - Bridging Observations Theory and Numerical Simulation of the Ocean Using ML.pdf` | ✅ |
+
+## 7. Preparación de dominio y gradiente de presión en σ (`diagnostics/domain_check.py`)
+
+| | Referencia | DOI | Archivo sugerido | Estado |
+|---|---|---|---|---|
+| ★ | Beckmann & Haidvogel 1993, Numerical simulation of flow around a tall isolated seamount, JPO (rx0) | [10.1175/1520-0485(1993)023<1736:NSOFAA>2.0.CO;2](https://doi.org/10.1175/1520-0485(1993)023%3C1736:NSOFAA%3E2.0.CO;2) [verificar] | `Beckmann_Haidvogel_1993 - Numerical Simulation of Flow around a Tall Isolated Seamount.pdf` | ⬜ |
+| ★ | Haney 1991, On the pressure gradient force over steep topography in sigma coordinate ocean models, JPO (rx1) | [10.1175/1520-0485(1991)021<0610:OTPGFO>2.0.CO;2](https://doi.org/10.1175/1520-0485(1991)021%3C0610:OTPGFO%3E2.0.CO;2) [verificar] | `Haney_1991 - On the Pressure Gradient Force over Steep Topography in Sigma Coordinate Models.pdf` | ⬜ |
+| | Shchepetkin & McWilliams 2003, A method for computing horizontal pressure-gradient force in an oceanic model with a nonaligned vertical coordinate, JGR | [10.1029/2001JC001047](https://doi.org/10.1029/2001JC001047) [verificar] | `Shchepetkin_McWilliams_2003 - Computing Horizontal Pressure-Gradient Force with a Nonaligned Vertical Coordinate.pdf` | ⬜ |
+| ✓ | Cushman-Roisin & Beckers 2011, §20.6 (error del gradiente de presión en σ, consistencia hidrostática) | libro | `CushmanRoisin_Beckers_2011 - Introduction to Geophysical Fluid Dynamics Physical and Numerical Aspects.pdf` | ✅ |

@@ -51,6 +51,8 @@ from forcing.tides import (  # noqa: E402
     predict,
     read_sal_hycom,
 )
+from diagnostics.domain_check import check_domain  # noqa: E402
+from diagnostics.postmortem import BlowupGuard  # noqa: E402
 from physics.bottom_friction import log_law_cd  # noqa: E402
 from physics.tides.drag import jsl_to_rh, regrid_bilinear, rh_at_faces, tidal_drag_rate  # noqa: E402
 
@@ -168,6 +170,10 @@ def main() -> None:
     n_ha = 0
     g_t, g_eta = [], []
     H0 = np.nan_to_num(H)
+    # pre-run domain check and blow-up post-mortem (diagnostics/domain_check.py, postmortem.py)
+    print(check_domain(hg, H, dt=dt, u_max=2.0, implicit_free_surface=True).summary(), flush=True)
+    guard = BlowupGuard(limits={"eta": 20.0, "u": 10.0, "v": 10.0}, dump_path=RT.OUT / f"blowup_{args.tag}.npz",
+                        lat=lat_t, lon=lon_t, depth=H, dt=dt, dx=float(np.nanmin(hg["dx_t"].values)))
     tic = time.time()
     for n in range(nsteps):
         t_mid = t0 + np.timedelta64(int((n + 0.5) * dt), "s")
@@ -193,8 +199,7 @@ def main() -> None:
         bt = boundary_tides_at(bcon, t_mid, ramp=ramp)
         eta, u, v = fs.step(eta, u, v, u_hat, v_hat, flather_eta=(bt["eta_u"], bt["eta_v"]),
                             flather_ubar=bt["ubar_u"], flather_vbar=bt["vbar_v"])
-        if not np.isfinite(eta).all() or np.abs(np.where(act, eta, 0)).max() > 20:
-            raise RuntimeError(f"blow-up at step {n}")
+        guard.check(step=n, time=(n + 1) * dt, eta=np.where(act, eta, 0.0), u=u, v=v)
         t_new = t0 + np.timedelta64(int((n + 1) * dt), "s")
         if (n + 1) % every_g == 0:
             g_t.append(t_new)
