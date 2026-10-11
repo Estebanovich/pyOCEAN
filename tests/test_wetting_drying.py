@@ -100,6 +100,22 @@ class TestThacker:
             errs.append(np.sqrt(np.mean((eta - ex)[wet] ** 2)))
         assert errs[1] < 0.75 * errs[0] and errs[2] < 0.75 * errs[1]
 
+    @staticmethod
+    def _amplitude_after(periods: int) -> float:
+        t_end = periods * PERIOD
+        x, eta, *_ = thacker_run(1000.0, t_end, theta=0.5)
+        m = np.abs(x) < 60e3
+        return np.polyfit(x[m], eta[m], 1)[0] / (2 * ETA0 * D0 / L * np.cos(OMEGA * t_end))
+
+    def test_front_dissipation_regression(self):
+        # Known limitation: faces that become wet start from rest, a momentum sink at the
+        # moving shoreline: −1 %/period of the planar amplitude (0.970 after 3 periods)
+        assert self._amplitude_after(3) > 0.965
+
+    @pytest.mark.xfail(strict=True, reason="front momentum loss ~1 %/period; CROCO THACKER loses 0.2 %/period")
+    def test_front_dissipation_as_low_as_croco(self):
+        assert self._amplitude_after(3) > 0.99
+
     def test_mass_conserved_and_depth_non_negative(self):
         *_, min_depth, vol_err = thacker_run(1000.0, 2 * PERIOD)
         assert min_depth >= -1e-10

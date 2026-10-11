@@ -1,0 +1,9 @@
+pyOCEAN Thacker: dx 1000 m, dt 60 s, theta 0.5, 72 h (7.22 periods)
+  η error in the wet region: rms 4.58 cm, max 31.45 cm (wet η range ±2.19 m)
+  last period rms 6.89 cm
+  shoreline error (right/left): rms 0.81 / 0.83 km
+  volume error max 4.2e-16; clipped volume 7.7e-06 m³ per m of channel
+CROCO (thacker_his.nc): 145 records
+  η error in the wet region: rms 1.99 cm, max 12.70 cm
+  shoreline error (right/left): rms 0.62 / 0.65 km
+  last period rms 2.94 cm
