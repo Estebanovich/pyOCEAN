@@ -7,7 +7,8 @@ Compares, north of 27.5°N, against TPXO10 (axis) and TICON-3 (gauges):
     s_min5          1/25° parent, depth floor 5 m
     n100_min5_par   1/100° nest, floor 5 m, parent boundary
     wd_floor5       1/120° GEBCO nest, floor 5 m, wet-dry solver (no drying happens)
-    wd_raw          1/120° GEBCO nest, raw intertidal topography, wetting and drying
+    wd_raw          1/120° GEBCO nest, raw intertidal topography, wetting and drying (HYCOM cb drag)
+    wd_raw_z0_*     same with log-law C_d(D, z0) (physics/bottom_friction.py)
 
 Usage:  python validation/pacmex_tides/compare_wd.py [TAG ...]
 Output: out/wd_summary.txt, out/wd_m2_maps.png
@@ -51,7 +52,7 @@ def gauge_from_map(r, lat: float, lon: float) -> np.ndarray:
 
 
 def main() -> None:
-    tags = sys.argv[1:] or ["s_min5", "n100_min5_par", "wd_floor5", "wd_raw"]
+    tags = sys.argv[1:] or ["s_min5", "n100_min5_par", "wd_floor5", "wd_raw", "wd_raw_z0_1e-4", "wd_raw_z0_1e-3"]
     tc = read_tpxo([ATLAS / f"h_{c}_tpxo10_atlas_30_v2.nc" for c in CONS], None, ATLAS / "grid_tpxo10atlas_v2.nc",
                    lon_range=(-116, -108), lat_range=(24.5, 32.5))
     ticon = load_ticon(TICON, (-115.5, -109.0), (27.0, 32.0), CONS)

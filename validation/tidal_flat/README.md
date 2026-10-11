@@ -83,15 +83,54 @@ El residuo (pyOCEAN ~0.1 m menos de rango y secado más lento en bajamar) equiva
 - con C_d constante el rms en las estaciones debe ser > 20 cm;
 - con log-law, < 8 cm.
 
+## pyOCEAN 3D: capas sigma + GLS k-ε
+
+Nuevo modelo 3D homogéneo con mojado-secado, `core/dynamics/sigma_wd.py::SigmaWetDry`:
+- N capas sigma iguales sobre la profundidad total.
+- Viscosidad vertical implícita y fricción log-law en la capa de fondo, C_d = [κ / ln(Δz₁ / (2z₀))]², como CROCO.
+- η y ū con el mismo `WetDryFreeSurface`, más una corrección barotrópica uniforme (Casulli & Cheng 1992).
+- Cierres de turbulencia:
+  - `gls`: k-ε con Canuto-A, `physics/mixing/gls.py`, port de columna de `gls_mixing.F`;
+  - `parabolic`: ν = κu*z(1 − z/D);
+  - `constant` y `none`.
+
+```bash
+python validation/tidal_flat/run_tidal_flat.py --croco ~/pyOCEAN_refs/croco_runs/tidal_flat3d/tidal_flat_his.nc \
+    --z0 1e-4 --layers 10 --closure gls
+```
+
+| Contra CROCO 3D (último periodo) | η rms (celdas mojadas) | η máx | ū rms (estaciones) | Línea de costa máx |
+|---|---|---|---|---|
+| 2D, C_d = 2.5e-3 | 27.0 cm | 128 cm | 0.17–0.29 m/s | 3.5 km |
+| 2D, log-law | 4.5 cm | 39 cm | 0.02–0.10 m/s | 1.5 km |
+| 3D sigma, parabólica | 5.2 cm | 45 cm | 0.03–0.12 m/s | 2.0 km |
+| **3D sigma, GLS k-ε** | **1.2 cm** | 8.7 cm | **0.01–0.05 m/s** | 1.0 km |
+
+- Los rangos de marea coinciden con diferencia de 2 cm o menos en todas las estaciones (a 50 km: 4.72 / 4.72 m).
+- Los perfiles por capa difieren ~1 cm/s a 50 km y ~4 cm/s a 85 km.
+- Corre en ~14 s.
+
+**Por qué la parabólica no basta:** se anula en la superficie y es instantánea. GLS deja ν ≈ 0.024 m²/s en la superficie y tiene memoria, así que concentra la cizalla cerca del fondo. Con GLS la velocidad de la capa de fondo es una fracción menor de ū, y la fricción efectiva baja 12 %.
+
+**Tests:**
+- `tests/test_gls.py`:
+  - c_μ⁰ = 0.527 de Canuto-A;
+  - decaimiento positivo sin cizalla;
+  - equilibrio de capa log en flujo uniforme: ν ≈ κu*z y k ≈ u*²/c_μ⁰²; el ū resultante es 6 % mayor que con la 2D log-law.
+- `tests/test_sigma_wd.py`:
+  - solver vertical contra solución densa;
+  - conservación de momento;
+  - en flujo uniforme el ū llega al de Chézy log-law (0.96–0.99);
+  - sin fricción reproduce exactamente al 2D;
+  - GLS positivo y masa conservada.
+- `TestTidalFlatVsCroco3D::test_sigma_gls_model_matches_croco_3d`: η rms < 2.5 cm (da 1.2) y ū < 5 cm/s (da 3.1).
+
 ## Qué debe mejorar pyOCEAN (de este caso)
 
 1. ✅ **Arrastre log-law dependiente de la profundidad** en los modelos 2D: hecho. Pendiente aplicarlo en `run_tides.py` y `run_tides_wd.py`, que siguen con C_d constante; es justo la física de las planicies del Alto Golfo.
-2. **Modelo 3D homogéneo con mojado-secado:**
-   - capas sigma sobre la profundidad total;
-   - viscosidad vertical implícita;
-   - esfuerzo de fondo log-law en la primera capa;
-   - η con `WetDryFreeSurface` sobre el transporte integrado (Casulli & Cheng 1992).
-
-   Hoy el 3D de pyOCEAN (z-levels, Fase 1) no tiene viscosidad vertical, arrastre de fondo, advección de momento ni mojado-secado.
-3. **Cierre turbulento para la capa límite de fondo.** El KPP solo actúa desde la superficie. Para mareas hace falta GLS k-ε (Umlauf & Burchard 2003) o, como primer paso, una viscosidad parabólica ν = κu*z(1 − z/D).
+2. ✅ **Modelo 3D homogéneo con mojado-secado** (`SigmaWetDry`): hecho.
+3. ✅ **Cierre GLS k-ε para la capa límite de fondo:** hecho. La viscosidad parabólica no basta (5.2 cm contra 1.2 cm).
+5. **Advección vertical (ω ∂u/∂σ):** no está incluida y, aun así, el resultado coincide. Hace falta antes de agregar estratificación.
+6. **Rendimiento:** los barridos de Thomas recorren las capas en Python. Con 10 capas en 200 columnas cuesta 3× el 2D. Para el Alto Golfo (~100 000 celdas) conviene pasarlos a Numba.
+7. **Acoplamiento presión–fricción:** con el paso fraccionado, la fricción implícita no ve el incremento de presión del mismo paso. Casulli & Cheng resuelven ambos juntos; con Δt = 15 s no se nota, pero hay que medirlo con Δt grande.
 4. **Frente de mojado-secado:** pyOCEAN seca una celda más tarde que CROCO en el reflujo; está relacionado con el `xfail` de Thacker.

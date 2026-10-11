@@ -77,6 +77,7 @@ Correr los mismos casos de prueba en varios modelos de referencia y luego reprod
     - Estado (2026-10-11):
       - `THACKER` (`validation/thacker/`): η rms 4.6 cm (CROCO 2.0) y línea de costa 0.8 km (CROCO 0.6). pyOCEAN pierde ~1 % de amplitud por periodo en el frente (CROCO 0.2 %); queda como `xfail`.
       - `TIDAL_FLAT` 2DH (`validation/tidal_flat/`): contra CROCO, η rms 1.1 cm sobre una marea de 4 m; ū ≤ 3.3 cm/s; línea de costa dentro de una celda (0.5 km). Hace falta el Flather con velocidad interior equivalente a `OBC_REDUCED_PHYSICS`.
+      - `TIDAL_FLAT` 3D original (GLS, z₀ = 1e-4): la 2D con C_d constante queda a 27 cm; con log-law C_d(D), a 4.5 cm. El nuevo 3D sigma (`SigmaWetDry`, GLS k-ε Canuto-A) queda a 1.2 cm, con perfiles a ~1 cm/s.
       - Alto Golfo (`validation/pacmex_tides/run_tides_wd.py`): GEBCO crudo con mojado-secado lleva el error de amplitud de M2 de ~30 a 8.7 cm y el de fase de 20–33° a 13.6°.
     - Motivo: en PAC_MEX, la profundidad mínima controla la co-oscilación del Golfo de California (5 m: fase rms 18.7°; 10 m: 26°; 20 m: 34°).
 

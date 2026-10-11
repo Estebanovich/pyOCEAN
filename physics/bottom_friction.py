@@ -43,3 +43,20 @@ def log_law_cd(depth: np.ndarray | float, z0: float, kappa: float = KAPPA, cd_mi
         cd = (kappa / denom) ** 2
     cd = np.where(np.isfinite(D) & (D > z0) & (denom > 0) & np.isfinite(cd), cd, cd_max)
     return np.clip(cd, cd_min, cd_max)
+
+
+def first_layer_cd(dz_bottom: np.ndarray | float, z0: float, kappa: float = KAPPA, cd_min: float = 1e-4,
+                   cd_max: float = 0.1) -> np.ndarray:
+    """
+    Drag coefficient of a layered (3-D) model, τ_b/ρ₀ = C_d |u₁| u₁ with u₁ the
+    velocity of the bottom layer, taken as the law of the wall at its mid-point:
+
+        C_d = [ κ / ln(z₁/z₀) ]²,   z₁ = Δz₁ / 2        (CROCO set_depth/bottom stress;
+                                                         Soulsby 1997 §3)
+    dz_bottom : thickness of the bottom layer [m] (≤ 2 z₀ or invalid → cd_max)
+    """
+    dz = np.asarray(dz_bottom, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        cd = (kappa / np.log(0.5 * dz / z0)) ** 2
+    cd = np.where(np.isfinite(dz) & (0.5 * dz > z0) & np.isfinite(cd), cd, cd_max)
+    return np.clip(cd, cd_min, cd_max)

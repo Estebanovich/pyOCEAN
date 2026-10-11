@@ -51,6 +51,7 @@ from forcing.tides import (  # noqa: E402
     predict,
     read_sal_hycom,
 )
+from physics.bottom_friction import log_law_cd  # noqa: E402
 from physics.tides.drag import jsl_to_rh, regrid_bilinear, rh_at_faces, tidal_drag_rate  # noqa: E402
 
 GEBCO = RT.REFS / "gebco2021_alto_golfo" / "gebco2021_golfo_norte.nc"
@@ -85,6 +86,8 @@ def main() -> None:
     ap.add_argument("--theta", type=float, default=0.6)
     ap.add_argument("--cd", type=float, default=RT.CD)
     ap.add_argument("--drgscl", type=float, default=0.5)
+    ap.add_argument("--z0", type=float, default=None,
+                    help="log-law bed roughness [m]: C_d(D) (Soulsby 1997) instead of the HYCOM cb field")
     ap.add_argument("--floor", type=float, default=None, help="depth floor [m] (control run, no drying)")
     ap.add_argument("--d-min", type=float, default=0.05)
     ap.add_argument("--bc", required=True, help="parent:<run_*.npz> or tpxo")
@@ -179,11 +182,12 @@ def main() -> None:
         gv = np.where(face_v, -f_v * u_at_v + gy, 0.0)
         gu_ab, gv_ab = (gu, gv) if g_prev is None else (1.5 * gu - 0.5 * g_prev[0], 1.5 * gv - 0.5 * g_prev[1])
         g_prev = (gu, gv)
-        # drag on the total depth (faces), floored at d_min
+        # drag on the total depth (faces), floored at d_min; C_d from cb or the log law C_d(D, z0)
         eta_u, eta_v = cell_to_faces(eta + H0, act)                  # total depth averaged to faces
         Du, Dv = np.maximum(eta_u, args.d_min), np.maximum(eta_v, args.d_min)
-        r_u = cd_u * np.hypot(u, v_at_u) / Du + r_jsl_u
-        r_v = cd_v * np.hypot(v, u_at_v) / Dv + r_jsl_v
+        cdu, cdv = (cd_u, cd_v) if args.z0 is None else (log_law_cd(Du, args.z0), log_law_cd(Dv, args.z0))
+        r_u = cdu * np.hypot(u, v_at_u) / Du + r_jsl_u
+        r_v = cdv * np.hypot(v, u_at_v) / Dv + r_jsl_v
         u_hat = (u + dt * gu_ab) / (1.0 + dt * r_u)
         v_hat = (v + dt * gv_ab) / (1.0 + dt * r_v)
         bt = boundary_tides_at(bcon, t_mid, ramp=ramp)

@@ -39,6 +39,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from core.dynamics.nonlinear import advection_u  # noqa: E402
+from core.dynamics.sigma_wd import SigmaWetDry  # noqa: E402
 from core.dynamics.wetting_drying import WetDryFreeSurface  # noqa: E402
 from core.grid.horizontal import create_cartesian_grid  # noqa: E402
 from physics.bottom_friction import log_law_cd  # noqa: E402
@@ -101,6 +102,47 @@ def run(theta: float, dt: float, hours: float, dmin: float, cd: float, adv: str 
     return np.array(ts), np.array(etas), np.array(us), H[0], clip
 
 
+def run3d(theta: float, dt: float, hours: float, dmin: float, z0: float, adv: str | None, every: int,
+          n_layers: int, closure: str = "parabolic"):
+    """
+    Same case with the homogeneous σ-layer model (``SigmaWetDry``): N equal layers,
+    first-layer log-law bed stress with z0, vertical viscosity ``closure``,
+    horizontal advection per layer (no vertical advection yet).
+    Returns ts, η, depth-mean ū, H, clipped volume and the layer velocities.
+    """
+    hg = create_cartesian_grid(nx=NX, ny=1, dx=DX, dy=DX, f0=0.0)
+    H = croco_bed()[None, :]
+    fl_u = np.zeros((1, NX + 1), bool)
+    fl_u[0, 0] = True
+    m = SigmaWetDry(hg, H, dt=dt, n_layers=n_layers, z0=z0, closure=closure, theta=theta, g=G, d_min=dmin,
+                    flather_u=fl_u)
+    eta = np.where(H > dmin, 0.0, dmin - H)
+    u, v = np.zeros((n_layers, 1, NX + 1)), np.zeros((n_layers, 2, NX))
+    ds = m.dsigma[:, None, None]
+    nsteps = int(round(hours * 3600 / dt))
+    ts, etas, us, uk = [0.0], [eta[0].copy()], [u.sum(0)[0] * 0], [u[:, 0].copy()]
+    clip = 0.0
+    for n in range(nsteps):
+        t_mid = (n + 0.5) * dt
+        Du, _ = m.face_depths(eta)
+        wet_u = np.isfinite(m.fs.H_u) & np.isfinite(Du) & (Du > dmin)
+        G_u = None
+        if adv:
+            G_u = np.stack([-advection_u(u[k], np.zeros((2, NX)), hg, wet_u, scheme=adv) for k in range(n_layers)])
+        ubar = (ds * u).sum(0)
+        eta_ext = np.full(ubar.shape, ETA_B * np.sin(2 * np.pi * t_mid / T_TIDE))
+        eta, u, v = m.step(eta, u, v, G_u=G_u, flather_eta=eta_ext, flather_ubar=np.full(ubar.shape, ubar[0, 1]))
+        clip += m.fs.last_clip_volume
+        if not np.isfinite(eta).all():
+            raise RuntimeError(f"blow-up at step {n}")
+        if (n + 1) % every == 0:
+            ts.append((n + 1) * dt)
+            etas.append(eta[0].copy())
+            us.append((ds * u).sum(0)[0])
+            uk.append(u[:, 0].copy())
+    return np.array(ts), np.array(etas), np.array(us), H[0], clip, np.array(uk)
+
+
 def read_croco(path: Path) -> dict:
     import xarray as xr
     ds = xr.open_dataset(path, decode_times=False)
@@ -124,18 +166,29 @@ def main() -> None:
     ap.add_argument("--z0", type=float, help="log-law bed roughness [m] instead of a constant C_d (CROCO 3D: 1e-4)")
     ap.add_argument("--adv", default="upwind3", help="'upwind3', 'centred' or 'none'")
     ap.add_argument("--every", type=int, default=60, help="output every N steps (CROCO NWRT = 60)")
+    ap.add_argument("--layers", type=int, default=0, help="σ-layers (0 = 2-D model); needs --z0")
+    ap.add_argument("--closure", default="parabolic", help="vertical viscosity: gls, parabolic, constant, none")
     ap.add_argument("--tag", default="")
     args = ap.parse_args()
 
     adv = None if args.adv == "none" else args.adv
-    ts, etas, us, H, clip = run(args.theta, args.dt, args.hours, args.dmin, args.cd, adv, args.every,
-                                     args.z0)
+    uk = None
+    if args.layers:
+        if args.z0 is None:
+            raise SystemExit("--layers needs --z0")
+        ts, etas, us, H, clip, uk = run3d(args.theta, args.dt, args.hours, args.dmin, args.z0, adv, args.every,
+                                          args.layers, args.closure)
+    else:
+        ts, etas, us, H, clip = run(args.theta, args.dt, args.hours, args.dmin, args.cd, adv, args.every,
+                                    args.z0)
     x = (np.arange(NX) + 0.5) * DX
     OUT.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(OUT / f"tidal_flat_pyocean{args.tag}.npz", t=ts, x=x, eta=etas, u=us, H=H)
+    np.savez_compressed(OUT / f"tidal_flat_pyocean{args.tag}.npz", t=ts, x=x, eta=etas, u=us, H=H,
+                        **({} if uk is None else {"u_layers": uk}))
     sh = np.array([shoreline(x, H + e, args.dmin) for e in etas])
     last = ts > ts[-1] - T_TIDE
-    lines = [f"pyOCEAN tidal flat: dx {DX:.0f} m, dt {args.dt:.0f} s, theta {args.theta}, dmin {args.dmin} m, "
+    model = f"σ-layers {args.layers} ({args.closure})" if args.layers else "2-D"
+    lines = [f"pyOCEAN tidal flat [{model}]: dx {DX:.0f} m, dt {args.dt:.0f} s, theta {args.theta}, dmin {args.dmin} m, "
              f"{f'z0 {args.z0} m (log law)' if args.z0 else f'Cd {args.cd}'}, advection {args.adv}, {args.hours:.0f} h",
              f"  shoreline (last period): {np.nanmin(sh[last]) / 1e3:.2f}–{np.nanmax(sh[last]) / 1e3:.2f} km; "
              f"clipped volume {clip:.1e} m³ per channel width"]

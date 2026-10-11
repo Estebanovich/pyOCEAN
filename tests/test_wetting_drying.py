@@ -323,5 +323,18 @@ class TestTidalFlatVsCroco3D:
     def test_constant_cd_overdamps(self):
         assert self._eta_rms(None) > 0.20
 
+    def test_sigma_gls_model_matches_croco_3d(self):
+        # 10 σ-layers, k-ε GLS (Canuto A), first-layer log law: the 3-D physics of the CROCO run
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation" / "tidal_flat"))
+        from run_tidal_flat import run3d
+        ref = np.load(Path(__file__).parent / "data" / "tidal_flat_croco_3d_reference.npz")
+        ts, etas, us, *_ = run3d(theta=0.55, dt=15.0, hours=36.0, dmin=0.1, z0=1e-4, adv="upwind3", every=60,
+                                 n_layers=10, closure="gls")
+        k = [int(np.argmin(np.abs(ts - t))) for t in ref["t"]]
+        i = ref["i_sta"]
+        assert np.sqrt(np.mean((etas[k][:, i] - ref["zeta_sta"]) ** 2)) < 0.025          # 1.2 cm (ū 3.1 cm/s)
+        up = 0.5 * (us[k][:, i] + us[k][:, i + 1])
+        assert np.sqrt(np.mean((up - ref["ubar_sta"]) ** 2)) < 0.05
+
     def test_log_law_drag_matches_croco_3d(self):
         assert self._eta_rms(1e-4) < 0.08                  # 6.6 cm at the stations (constant C_d: ~30)
