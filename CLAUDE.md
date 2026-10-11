@@ -118,9 +118,14 @@ Rules for every benchmark:
 - End each benchmark with a "what pyOCEAN should improve" list and update the scorecard (§7 of `vision_roadmap.md`).
 - Run the reference case in its full configuration too (e.g. CROCO TIDAL_FLAT in 3D), not only a reduced one.
 
-### Systematic literature checks (Consensus)
+### Systematic literature checks (local library first, then Consensus)
 
-Before implementing a scheme or parameterisation, and when a benchmark shows an unexplained difference, search the literature with Consensus to (1) validate the chosen approach against the current state of the art and (2) look for existing solutions. Record the key papers (with link/DOI) in the module docstring or the benchmark README. References recalled from memory are marked **[verificar]** until checked.
+Before implementing a scheme or parameterisation, and when a benchmark shows an unexplained difference, check the literature to (1) validate the approach against the state of the art and (2) find existing solutions. Consensus searches are a limited budget, so:
+
+1. **Local library first:** `python scripts/litsearch.py "term 1" "term 2"` searches the `.md` text copies in `/Users/estebancruz/Documents/TESIS_InternalWaves-2/Literatura` (recursive; `--convert` makes `.md` for newly downloaded PDFs with pdftotext).
+2. **Consensus only if the library has nothing useful** — 1–2 focused searches per decision, not exploratory batches.
+3. **Every paper used from Consensus goes into `docs/literature/reading_list.md`** (DOI link, suggested file name `Author_Year - Title.pdf`, ★ if used in code, status ⬜/✅) so Esteban can download it for future local searches.
+4. Cite key papers (link/DOI) in the module docstring or benchmark README; references from memory are marked **[verificar]** until checked.
 
 ---
 
