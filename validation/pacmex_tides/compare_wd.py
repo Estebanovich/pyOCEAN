@@ -28,15 +28,26 @@ import matplotlib  # noqa: E402
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
+from scipy import ndimage  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).parent))
-from compare_nest import gauge_constants, rss  # noqa: E402
 from gulf_axis import ATLAS, CONS, TICON, load_ticon, m2_at, read_tpxo, tpxo_at  # noqa: E402
 
 OUT = Path(__file__).parent / "out"
 AXIS = [(28.0, -112.0), (28.8, -112.9), (29.6, -113.5), (30.5, -114.1), (31.0, -114.4), (31.3, -114.5),
         (31.6, -114.7)]
 GAUGES = [(28.96, -113.55, "Bahía de los Ángeles"), (27.92, -110.88, "Guaymas")]
+
+
+def gauge_from_map(r, lat: float, lon: float) -> np.ndarray:
+    """Harmonic constants of ``hc_map`` at the cell nearest to (lat, lon) that belongs to the largest
+    connected body of permanently wet cells (depth > 0), so that isolated pits are never sampled."""
+    wet = np.nan_to_num(r["depth"], nan=-1.0) > 0
+    lab, _ = ndimage.label(wet)
+    main = lab == np.bincount(lab.ravel())[1:].argmax() + 1
+    dist = np.hypot(r["lat_t"] - lat, (r["lon_t"] - lon) * np.cos(np.deg2rad(lat)))
+    dist[~main] = np.inf
+    return r["hc_map"][np.unravel_index(dist.argmin(), dist.shape)]
 
 
 def main() -> None:
@@ -63,20 +74,32 @@ def main() -> None:
         lines.append(f"{'':15s}  amplitude rms error {100 * np.sqrt(np.mean((np.abs(h[ok]) - np.abs(tp[ok])) ** 2)):.1f} cm, "
                      f"phase rms {np.sqrt(np.mean(dg[ok] ** 2)):.1f}°, head/29.6N ratio "
                      f"{abs(h[5]) / abs(h[2]):.2f} (TPXO {abs(tp[5]) / abs(tp[2]):.2f})")
-    lines.append("\nTICON gauges (M2 amplitude cm, phase error °, 8-constituent RSS cm):")
-    for t in rows:
-        g = gauge_constants(t, tc)
+    lines.append("\nTICON gauges, M2 only (amplitude cm, phase error °, vector error |ΔM2| cm; S2/K1 from the 30-day"
+                 "\n  map analysis are aliased by K2/P1, so no multi-constituent RSS here);"
+                 "\n  model value at the nearest cell of the main permanently-wet water body (GEBCO 2021 has"
+                 "\n  spurious 100–270 m pits inside Guaymas bay, isolated from the Gulf by never-flooded land)")
+    obs = {}
+    for la, lo, name in GAUGES:
+        o = ticon[(np.abs(ticon.lat - la) < 0.01) & (np.abs(ticon.lon - lo) < 0.01)]
+        obs[name] = o.sort_values("end").iloc[-1]["hc"] if len(o) else None
+    for t, (r, _) in [("TPXO10", (None, None))] + list(rows.items()):
         parts = []
         for la, lo, name in GAUGES:
-            key = min(g, key=lambda k: np.hypot(k[0] - la, k[1] - lo)) if g else None
-            if key is None or np.hypot(key[0] - la, key[1] - lo) > 0.05:
+            o = obs[name]
+            if o is None:
                 parts.append(f"{name}: —")
                 continue
-            obs = ticon[(np.abs(ticon.lat - key[0]) < 1e-3) & (np.abs(ticon.lon - key[1]) < 1e-3)]
-            o = obs.sort_values("end").iloc[-1]["hc"]
-            h = g[key]
-            dgm = (np.rad2deg(np.angle(o[0]) - np.angle(h[0])) + 180) % 360 - 180
-            parts.append(f"{name}: {100 * abs(h[0]):.1f} (obs {100 * abs(o[0]):.1f}), {dgm:+.0f}°, RSS {100 * rss(h - o):.1f}")
+            if r is None:
+                h = tpxo_at(tc, la, lo)[0]
+                cons = CONS
+            else:
+                h, cons = gauge_from_map(r, la, lo), list(r["ha_cons"])
+            k = [CONS.index(c) for c in cons]
+            h, o6 = np.asarray(h)[[cons.index(c) for c in cons]], o[k]
+            if r is None:
+                h = h[k]
+            dgm = (np.rad2deg(np.angle(o6[0]) - np.angle(h[0])) + 180) % 360 - 180
+            parts.append(f"{name}: {100 * abs(h[0]):.1f} (obs {100 * abs(o6[0]):.1f}), {dgm:+.0f}°, |ΔM2| {100 * abs(h[0] - o6[0]):.1f}")
         lines.append(f"  {t:15s} " + " | ".join(parts))
     if "wd_raw" in rows:
         r = rows["wd_raw"][0]

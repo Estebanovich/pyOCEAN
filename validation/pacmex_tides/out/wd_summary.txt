@@ -10,10 +10,14 @@ wd_floor5           17.6  -45     39.0  -18     75.3   -9    100.3   -5    121.6
 wd_raw              12.3  -29     48.9  -12     92.2  -10    120.8   -8    144.0   -8    158.3   -7    176.6   +3
                  amplitude rms error 8.7 cm, phase rms 13.6°, head/29.6N ratio 1.72 (TPXO 1.68)
 
-TICON gauges (M2 amplitude cm, phase error °, 8-constituent RSS cm):
-  s_min5          Bahía de los Ángeles: 53.2 (obs 65.4), -8°, RSS 12.5 | Guaymas: 19.8 (obs 13.5), -23°, RSS 7.5
-  n100_min5_par   Bahía de los Ángeles: 66.3 (obs 65.4), -21°, RSS 21.0 | Guaymas: 16.7 (obs 13.5), -1°, RSS 6.1
-  wd_floor5       Bahía de los Ángeles: 46.8 (obs 65.4), -12°, RSS 17.4 | Guaymas: 22.4 (obs 13.5), -21°, RSS 11.8
-  wd_raw          Bahía de los Ángeles: 59.1 (obs 65.4), -10°, RSS 11.7 | Guaymas: 0.0 (obs 13.5), -179°, RSS 27.7
+TICON gauges, M2 only (amplitude cm, phase error °, vector error |ΔM2| cm; S2/K1 from the 30-day
+  map analysis are aliased by K2/P1, so no multi-constituent RSS here);
+  model value at the nearest cell of the main permanently-wet water body (GEBCO 2021 has
+  spurious 100–270 m pits inside Guaymas bay, isolated from the Gulf by never-flooded land)
+  TPXO10          Bahía de los Ángeles: 67.4 (obs 65.4), +1°, |ΔM2| 2.4 | Guaymas: 14.0 (obs 13.5), -1°, |ΔM2| 0.6
+  s_min5          Bahía de los Ángeles: 53.4 (obs 65.4), -9°, |ΔM2| 15.3 | Guaymas: 19.7 (obs 13.5), -24°, |ΔM2| 9.2
+  n100_min5_par   Bahía de los Ángeles: 66.8 (obs 65.4), -22°, |ΔM2| 25.0 | Guaymas: 16.7 (obs 13.5), -3°, |ΔM2| 3.3
+  wd_floor5       Bahía de los Ángeles: 47.2 (obs 65.4), -13°, |ΔM2| 22.1 | Guaymas: 22.4 (obs 13.5), -22°, |ΔM2| 11.2
+  wd_raw          Bahía de los Ángeles: 58.8 (obs 65.4), -11°, |ΔM2| 13.2 | Guaymas: 15.7 (obs 13.5), -27°, |ΔM2| 7.2
 
 wd_raw intertidal cells (wet 2–98 % of the time): 2308 (1687 km² approx.)

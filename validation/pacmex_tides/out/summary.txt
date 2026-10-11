@@ -1,4 +1,10 @@
-ref: 31 gauge records; median RSS model 1.95 cm, TPXO 1.87 cm; model better at 9/31
-ref: M2 vs TPXO10 over depth > 1000 m: RMS |Δh| = 1.58 cm, amp ratio median 1.010, phase diff median -0.6°
-nosal: 31 gauge records; median RSS model 3.35 cm, TPXO 1.87 cm; model better at 4/31
-nosal: M2 vs TPXO10 over depth > 1000 m: RMS |Δh| = 2.35 cm, amp ratio median 0.999, phase diff median -2.6°
+cd0.0025: 31 gauge records; median RSS model 1.95 cm, TPXO 1.87 cm; model better at 9/31 | Pacific 1.60 (TPXO 1.79) | Gulf of California 12.54 (TPXO 5.12) cm
+cd0.0025: M2 vs TPXO10 over depth > 1000 m: RMS |Δh| = 1.58 cm, amp ratio median 1.010, phase diff median -0.6°
+jsl0.25: 31 gauge records; median RSS model 1.82 cm, TPXO 1.87 cm; model better at 11/31 | Pacific 1.56 (TPXO 1.79) | Gulf of California 12.39 (TPXO 5.12) cm
+jsl0.25: M2 vs TPXO10 over depth > 1000 m: RMS |Δh| = 1.51 cm, amp ratio median 1.006, phase diff median -0.5°
+jsl0.5: 31 gauge records; median RSS model 1.70 cm, TPXO 1.87 cm; model better at 11/31 | Pacific 1.50 (TPXO 1.79) | Gulf of California 12.25 (TPXO 5.12) cm
+jsl0.5: M2 vs TPXO10 over depth > 1000 m: RMS |Δh| = 1.47 cm, amp ratio median 1.002, phase diff median -0.3°
+jsl1.0: 31 gauge records; median RSS model 1.63 cm, TPXO 1.87 cm; model better at 13/31 | Pacific 1.44 (TPXO 1.79) | Gulf of California 11.98 (TPXO 5.12) cm
+jsl1.0: M2 vs TPXO10 over depth > 1000 m: RMS |Δh| = 1.44 cm, amp ratio median 0.995, phase diff median +0.1°
+jsl0.5_cb: 31 gauge records; median RSS model 1.63 cm, TPXO 1.87 cm; model better at 11/31 | Pacific 1.46 (TPXO 1.79) | Gulf of California 11.13 (TPXO 5.12) cm
+jsl0.5_cb: M2 vs TPXO10 over depth > 1000 m: RMS |Δh| = 1.32 cm, amp ratio median 1.000, phase diff median -0.3°
