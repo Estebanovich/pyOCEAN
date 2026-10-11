@@ -1,0 +1,19 @@
+M2 along the axis, amplitude [cm] / phase error vs TPXO [°] (G_run − G_TPXO):
+                       28.0N        28.8N        29.6N        30.5N        31.0N        31.3N        31.6N
+TPXO10              15.0 204°     54.0 256°    101.5 262°    130.8 262°    154.4 264°    170.4 266°    184.1 269°
+s_min5              15.2  -40     41.3  -14     94.4   -5    120.1   -4    140.3   -2    142.3  +10    113.3  +76
+                 amplitude rms error 30.1 cm, phase rms 33.1°, head/29.6N ratio 1.51 (TPXO 1.68)
+n100_min5_par       18.6  -14     56.1  -23     97.8  -21    123.7  -19    143.7  -15    146.2   -4     96.3  +71
+                 amplitude rms error 34.8 cm, phase rms 31.1°, head/29.6N ratio 1.49 (TPXO 1.68)
+wd_floor5           17.6  -45     39.0  -18     75.3   -9    100.3   -5    121.6   -2    135.4   +2    141.8  +20
+                 amplitude rms error 29.1 cm, phase rms 20.1°, head/29.6N ratio 1.80 (TPXO 1.68)
+wd_raw              12.3  -29     48.9  -12     92.2  -10    120.8   -8    144.0   -8    158.3   -7    176.6   +3
+                 amplitude rms error 8.7 cm, phase rms 13.6°, head/29.6N ratio 1.72 (TPXO 1.68)
+
+TICON gauges (M2 amplitude cm, phase error °, 8-constituent RSS cm):
+  s_min5          Bahía de los Ángeles: 53.2 (obs 65.4), -8°, RSS 12.5 | Guaymas: 19.8 (obs 13.5), -23°, RSS 7.5
+  n100_min5_par   Bahía de los Ángeles: 66.3 (obs 65.4), -21°, RSS 21.0 | Guaymas: 16.7 (obs 13.5), -1°, RSS 6.1
+  wd_floor5       Bahía de los Ángeles: 46.8 (obs 65.4), -12°, RSS 17.4 | Guaymas: 22.4 (obs 13.5), -21°, RSS 11.8
+  wd_raw          Bahía de los Ángeles: 59.1 (obs 65.4), -10°, RSS 11.7 | Guaymas: 0.0 (obs 13.5), -179°, RSS 27.7
+
+wd_raw intertidal cells (wet 2–98 % of the time): 2308 (1687 km² approx.)
