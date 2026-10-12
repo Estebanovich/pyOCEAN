@@ -33,7 +33,6 @@ def _ale_box(rule="zstar", nx=32, nz=10, depth=20.0, dx=2000.0, dt=30.0, bathy=N
     (dict(vertical_coordinate="zz"), "vertical_coordinate"),
     (dict(regrid="isopycnal"), "regrid"),
     (dict(remap_scheme="pqm"), "remap_scheme"),
-    (dict(open_boundaries=("west",)), "open boundaries"),
     (dict(z0=1e-3), "z0"),
     (dict(closure="gls"), "closure"),
     (dict(params={}), "dz_top"),
@@ -542,3 +541,194 @@ def test_ale_uses_the_ppm_thickness_flux_by_default():
     # MOM6 continuity_PPM (decision of 2026-10-12: with 21 layers the hybrid lock exchange matches MOM6)
     assert _ale_box("zstar").thickness_flux == "ppm"
     assert _ale_box("zstar", thickness_flux="upwind").thickness_flux == "upwind"
+
+
+# ---------------------------------------------------------------- open boundaries (Plan C, scope A)
+def test_radiation_with_face_weights_keeps_the_depth_mean_and_a_zero_weighted_baroclinic_part():
+    # spec 2026-10-12-ale-open-boundaries §3.2: Orlanski on u′, re-centred with the face weights
+    from core.vertical import ale
+    hg = create_cartesian_grid(nx=8, ny=2, dx=1000.0, dy=1000.0, f0=0.0)
+    m = SigmaBaroclinic(hg, np.full((2, 8), 20.0), dt=30.0, n_layers=4, z0=None, closure="constant",
+                        open_boundaries=("west", "east"))
+    st = m.initial_state(np.zeros((2, 8)), np.full((4, 2, 8), 7.0))
+    m.step(st)                                                           # sets the Flather face depths
+    rng = np.random.default_rng(21)
+    w = ale.face_fractions(rng.uniform(0.0, 4.0, (4, 2, 9)))
+    u_old, u_new = rng.normal(0.0, 0.2, (4, 2, 9)), rng.normal(0.0, 0.2, (4, 2, 9))
+    mean0 = (w * u_new).sum(0)
+    m._radiate(u_old, u_new, 2, 0, w)
+    np.testing.assert_allclose((w * u_new).sum(0)[:, 0], mean0[:, 0], atol=1e-15)
+    _, prime = ale.baroclinic_split(u_new, w)
+    np.testing.assert_allclose((w * prime).sum(0)[:, 0], 0.0, atol=1e-15)
+
+
+def _ale_open_box(rule, thickness_flux="ppm", nx=30, ny=1, open_=("west", "east"), **kw):
+    """20 m box with open edges, a Gaussian η bump at t = 0 (it leaves through Flather), uniform T = 7."""
+    nz = 6
+    params = dict(dz_top=np.full(nz, 20.0 / nz))
+    if rule == "hybrid":
+        # asymmetric margins: the water density must not fall exactly on a target (it would split layers)
+        params = dict(dz_top=np.full(nz, 0.5), rho_target=np.linspace(RHO0 - TCOEF * 7.0 - 1.0,
+                                                                    RHO0 - TCOEF * 7.0 + 1.5, nz + 1))
+    hg = create_cartesian_grid(nx=nx, ny=ny, dx=1000.0, dy=1000.0, f0=0.0)
+    m = SigmaBaroclinic(hg, np.full((ny, nx), 20.0), dt=30.0, n_layers=nz, rho0=RHO0, t_coef=TCOEF, z0=None,
+                        closure="constant", nu_const=1e-4, vertical_coordinate="ale", regrid=rule,
+                        regrid_params=params, pgf="fv", open_boundaries=open_, thickness_flux=thickness_flux, **kw)
+    x = (np.arange(nx) + 0.5) * 1000.0
+    y = (np.arange(ny) + 0.5) * 1000.0
+    r2 = (x[None, :] - x.mean()) ** 2 + ((y[:, None] - y.mean()) ** 2 if ny > 1 else 0.0)
+    return m, m.initial_state(0.3 * np.exp(-r2 / 3e3**2), np.full((nz, ny, nx), 7.0))
+
+
+@pytest.mark.parametrize("thickness_flux", ["ppm", "upwind"])                # review focus 5
+@pytest.mark.parametrize("rule", ["zstar", "hybrid"])
+def test_ale_open_boundaries_keep_a_uniform_tracer_uniform(rule, thickness_flux):
+    # spec §5 integration 1: the open-face layer fluxes add up to the Flather flux and inflow is the
+    # exterior value, or a uniform tracer would change; review focus 2 (η ≠ 0 at t = 0)
+    m, st = _ale_open_box(rule, thickness_flux)
+    vol0 = m.layer_volumes(st.eta, st.h).sum()
+    for _ in range(120):                                                 # 1 h
+        st = m.step(st)
+        np.testing.assert_allclose(st.h.sum(0), 20.0 + st.eta, rtol=1e-12)
+        assert (st.h >= 0).all()
+    np.testing.assert_allclose(st.T, 7.0, atol=1e-11)
+    assert m.layer_volumes(st.eta, st.h).sum() < 0.9 * vol0 + 0.1 * (20.0 * 30e3 * 1e3)   # the bump left
+    assert np.abs(st.u[:, 0, [0, -1]]).max() > 0                         # boundary faces carry flow
+
+
+@pytest.mark.parametrize("rule", ["zstar", "hybrid"])
+def test_ale_open_boundaries_on_four_edges_keep_a_uniform_tracer_uniform(rule):
+    # review focus 3: v-faces (south, north) and a sponge on all four edges in 2-D
+    m, st = _ale_open_box(rule, nx=14, ny=12, open_=("west", "east", "south", "north"), sponge_cells=3)
+    for _ in range(60):
+        st = m.step(st)
+        np.testing.assert_allclose(st.h.sum(0), 20.0 + st.eta, rtol=1e-12)
+    np.testing.assert_allclose(st.T, 7.0, atol=1e-11)
+    assert np.abs(st.v[:, [0, -1], :]).max() > 0
+
+
+def test_ale_open_boundaries_with_a_sponge_keep_a_resting_stratification_at_rest():
+    # spec §5 integration 2 (z*)
+    nz, nx = 10, 40
+    hg = create_cartesian_grid(nx=nx, ny=1, dx=1000.0, dy=1000.0, f0=0.0)
+    m = SigmaBaroclinic(hg, np.full((1, nx), 200.0), dt=120.0, n_layers=nz, rho0=RHO0, t_coef=TCOEF, z0=None,
+                        closure="constant", nu_const=1e-5, vertical_coordinate="ale", regrid="zstar",
+                        regrid_params=dict(dz_top=np.full(nz, 20.0)), pgf="fv", open_boundaries=("west", "east"),
+                        sponge_cells=8, sponge_tau=(1200.0, 120.0))
+    z = m.layer_heights(np.zeros((1, nx)))
+    st = m.initial_state(np.zeros((1, nx)), 10.0 + 0.02 * z)
+    for _ in range(200):
+        st = m.step(st)
+    assert np.abs(st.u).max() < 1e-10
+
+
+def test_ale_open_boundary_next_to_a_drying_cell_is_rejected():
+    # spec §4 item 2: drying columns at ALE open boundaries are out of scope
+    hg = create_cartesian_grid(nx=8, ny=1, dx=1000.0, dy=1000.0, f0=0.0)
+    H = np.linspace(-1.0, 10.0, 8)[None]
+    with pytest.raises(ValueError, match="H ≤ 0"):
+        SigmaBaroclinic(hg, H, dt=10.0, n_layers=4, z0=None, closure="constant", vertical_coordinate="ale",
+                        regrid="sigma", regrid_params={}, open_boundaries=("west",))
+
+
+N_CH, H_CH = 0.02, 200.0
+
+
+def _ale_channel(rule, nx, x0, dx=1000.0, nz=10, dt=120.0, amp=5.0, **kw):
+    """Linear stratification (N = 0.02 s⁻¹) with a mode-1 isopycnal bump at x0, ALE z* or hybrid."""
+    dTdz = N_CH**2 * RHO0 / (9.81 * TCOEF)
+    params = dict(dz_top=np.full(nz, H_CH / nz))
+    if rule == "hybrid":
+        rho = RHO0 - TCOEF * (10.0 + dTdz * np.linspace(-H_CH, 0.0, 401))
+        params = dict(dz_top=np.full(nz, 1.0), rho_target=rg.target_densities(rho, nz))
+    hg = create_cartesian_grid(nx=nx, ny=1, dx=dx, dy=dx, f0=0.0)
+    m = SigmaBaroclinic(hg, np.full((1, nx), H_CH), dt=dt, n_layers=nz, rho0=RHO0, t_coef=TCOEF, z0=None,
+                        closure="constant", nu_const=1e-5, vertical_coordinate="ale", regrid=rule,
+                        regrid_params=params, pgf="fv", **kw)
+    x = (np.arange(nx) + 0.5) * dx
+    z = m.layer_heights(np.zeros((1, nx)))
+    zeta = amp * np.sin(-np.pi * z / H_CH) * np.exp(-((x - x0) / 5e3) ** 2)[None, None, :]
+    return m, m.initial_state(np.zeros((1, nx)), 10.0 + dTdz * (z + zeta))
+
+
+def _on_levels(m, st, z_levels):
+    """T interpolated in z from the layer centres to fixed levels (1, nz_levels, nx): layers move in ALE."""
+    zc = m.layer_heights(st.eta, st.h)[:, 0, :]
+    T = st.T[:, 0, :]
+    return np.stack([np.interp(z_levels, zc[:, i], T[:, i]) for i in range(T.shape[1])], axis=-1)
+
+
+@functools.lru_cache(maxsize=None)
+def _ale_interior_error(rule, open_kw=(), nx_small=60, pad=0):
+    """rms interior T difference (on fixed z levels) from a 300 km channel, relative to the initial anomaly,
+    after 16 h; also the T range of the small channel over the run (min, max) and its initial range."""
+    open_kw = dict(open_kw)
+    zl = np.linspace(-195.0, -5.0, 39)
+    big, sb = _ale_channel(rule, 300, 150e3)
+    small, ss = _ale_channel(rule, nx_small + 2 * pad, (nx_small / 2 + pad) * 1e3, **open_kw)
+    T_init = _on_levels(small, ss, zl)[:, pad:pad + nx_small]
+    rng0 = (float(ss.T.min()), float(ss.T.max()))
+    lo, hi = rng0
+    for _ in range(int(round(16 * 3600 / big.dt))):
+        sb, ss = big.step(sb), small.step(ss)
+        lo, hi = min(lo, float(ss.T.min())), max(hi, float(ss.T.max()))
+    sl = slice(150 - nx_small // 2, 150 + nx_small // 2)
+    diff = _on_levels(small, ss, zl)[:, pad:pad + nx_small] - _on_levels(big, sb, zl)[:, sl]
+    bg = T_init.mean(axis=-1, keepdims=True)
+    err = np.sqrt(np.mean(diff**2)) / np.sqrt(np.mean((T_init - bg) ** 2))
+    return err, (lo, hi), rng0
+
+
+@pytest.mark.parametrize("rule", ["zstar", "hybrid"])
+def test_ale_closed_channel_reflects_the_internal_wave(rule):
+    assert _ale_interior_error(rule)[0] > 0.3                             # σ: 0.82
+
+
+@pytest.mark.parametrize("rule", ["zstar", "hybrid"])
+def test_ale_orlanski_radiation_lets_most_of_the_internal_wave_out(rule):
+    # measured (z-level metric): z* 0.162, hybrid 0.198 (σ 0.149). The hybrid margin is small: inflow T comes
+    # from the exterior remapped in z (spec §4.3, as MOM6 z-space segment data), so water of another density
+    # class enters displaced isopycnal layers and the regrid re-sorts it (inflow by layer index: 0.180)
+    err = _ale_interior_error(rule, (("open_boundaries", ("west", "east")),))[0]
+    assert err < 0.2, err                                                # σ: 0.157
+
+
+@pytest.mark.parametrize("rule", ["zstar", "hybrid"])
+def test_ale_sponge_with_radiation_absorbs_the_internal_wave(rule):
+    kw = (("open_boundaries", ("west", "east")), ("sponge_cells", 10), ("sponge_tau", (1200.0, 120.0)))
+    err, (lo, hi), (lo0, hi0) = _ale_interior_error(rule, kw, pad=10)
+    assert err < 0.05, err                                               # σ: 0.015
+    span = hi0 - lo0                                                     # review focus 4: no new extrema
+    assert lo >= lo0 - 0.01 * span and hi <= hi0 + 0.01 * span, (lo, hi, lo0, hi0)
+
+
+def test_ale_open_face_transport_uses_the_old_boundary_velocity(monkeypatch):
+    # the old velocity of an open face must not be masked by the wet flag of the free surface (False at
+    # the domain edge): masked, the θ-average dropped (1 − θ) uⁿ and the open edge reflected the internal
+    # wave (channel error 0.93 vs σ 0.15)
+    from core.dynamics import sigma_baroclinic as sb
+    m, st = _ale_open_box("zstar")
+    st.u[:, 0, 0] = np.linspace(-0.02, 0.02, st.u.shape[0])
+    seen = []
+    orig = sb.open_face_transport
+
+    def spy(h, un, uo, *a):
+        seen.append(uo.copy())
+        return orig(h, un, uo, *a)
+
+    monkeypatch.setattr(sb, "open_face_transport", spy)
+    m.step(st)
+    np.testing.assert_array_equal(seen[0], st.u[:, :, 0])
+
+
+@pytest.mark.parametrize("bad", ["none", "shape"])
+def test_ale_open_boundaries_need_a_consistent_exterior_profile(bad):
+    # T_ext and h_ext are set together by initial_state; a state built otherwise (or T_ext replaced alone,
+    # as one may do in σ) must give a clear error, not a TypeError or a silent mismatched remap
+    m, st = _ale_open_box("zstar")
+    if bad == "none":
+        m.h_ext = None
+    else:
+        m.T_ext = m.T_ext[:-1]
+    with pytest.raises(ValueError, match="h_ext"):
+        m.step(st)

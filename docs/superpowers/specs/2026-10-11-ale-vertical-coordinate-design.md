@@ -246,7 +246,7 @@ Cada fase se cierra con sus tests y su validación de nivel 1 o 2:
 3. h pronóstico y paso lagrangiano; regresión ALE-σ.
 4. Gradiente de presión de volumen finito; test del escalón; seamount.
 4b. Plan B2 (2026-10-12): transporte aguas arriba con recorte (B2a, hecho), conservación de capas isopicnas (B2c), luego PPM en el transporte de grosor (B2b) si el lock exchange híbrido lo justifica.
-5. Fronteras: datos en z, reservorio, nudging, esponja, estado auxiliar.
+5. Fronteras: datos en z, reservorio, nudging, esponja, estado auxiliar. Hecho con alcance A el 2026-10-12 (spec 2026-10-12-ale-open-boundaries); reservorio y nudging pendientes.
 6. BayIW con z\* contra MITgcm.
 7. Regla híbrida; casos idealizados de nivel 2; BayIW con la híbrida.
 8. Restart, salida, verificador de dominio, documentación y tabla de §7.

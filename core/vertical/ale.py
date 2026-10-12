@@ -45,6 +45,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from core.vertical import remap as rm
+
 H_THIN_BED = 0.01      # [m] bed layers thinner than this carry no velocity (HYCOM hybgen.F90:1757-1764)
 DZ_FLOOR = 1e-6        # [m] smallest thickness passed to the implicit vertical solvers
 
@@ -296,3 +298,54 @@ def ppm_transport_x(h: np.ndarray, ut: np.ndarray, L: np.ndarray, Q_bt: np.ndarr
     qR = np.where((qR.sum(axis=0) > 0)[None], qR, alt)
     tot = qR.sum(axis=0)
     return np.where(open_, F + R[None] * qR / np.where(tot > 0, tot, 1.0)[None], 0.0)
+
+
+# ---------------------------------------------------------------- open boundaries (Plan C, scope A)
+def baroclinic_split(vel: np.ndarray, w: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Depth mean and baroclinic part of a face velocity with layer weights w (Σ_k w_k = 1):
+
+        ū = Σ_k w_k u_k,   u′_k = u_k − ū,   so Σ_k w_k u′_k = 0
+
+    w = Δσ in σ, the face fractions ``face_fractions`` in ALE (spec 2026-10-12-ale-open-boundaries §3.1).
+    vel, w (N, …); returns (ū (…), u′ (N, …)) [m s⁻¹].
+    """
+    mean = (w * vel).sum(axis=0)
+    return mean, vel - mean[None]
+
+
+def open_face_transport(h_int: np.ndarray, u_new: np.ndarray, u_old: np.ndarray, Q_bt: np.ndarray,
+                        L: np.ndarray, theta: float) -> np.ndarray:
+    """
+    Layer volume fluxes through the faces of one open edge [m³ s⁻¹] (spec §3.4):
+
+        Q_k = (h_k / Σ_j h_j) Q_bt + L h_k (θ u′_kⁿ⁺¹ + (1 − θ) u′_kⁿ)
+
+    with h_k the thickness of the interior cell (MOM6 MOM_continuity_PPM.F90:1237-1248) and u′ split
+    with the interior fractions h_k/Σh, so Σ_k Q_k = Q_bt (the Flather flux of the free surface) to
+    round-off and a vanished layer carries nothing.  h_int, u_new, u_old (N, m); Q_bt, L (m,).
+    """
+    tot = h_int.sum(axis=0)
+    wet = tot > 0
+    w = np.where(wet[None], h_int / np.where(wet, tot, 1.0)[None], 0.0)
+    pn = u_new - (w * u_new).sum(axis=0)[None]
+    po = u_old - (w * u_old).sum(axis=0)[None]
+    Q = w * Q_bt[None] + L[None] * h_int * (theta * pn + (1.0 - theta) * po)
+    return np.where(wet[None], Q, 0.0)
+
+
+def exterior_on_layers(h_ext: np.ndarray, T_ext: np.ndarray, h: np.ndarray, mask: np.ndarray,
+                       scheme: int) -> np.ndarray:
+    """
+    Exterior tracer profile on the current layers (spec §3.5): the profile (h_ext, T_ext), kept in z
+    since the initial state, is stretched to the current column, h_ext Σh/Σh_ext (= (H + η)/H for a
+    resting initial state, z*-like), and remapped conservatively (core.vertical.remap, ``scheme``)
+    onto the thicknesses h — the external data on its own z axis of MOM6 (MOM_open_boundary.F90:1188-1204),
+    on the *current* thicknesses (avoiding OBC_TRACER_DZ_BUG, :778-781).  Columns outside ``mask``
+    (ny, nx) or without water keep T_ext.  (N, ny, nx) arrays.
+    """
+    tot_e, tot = h_ext.sum(axis=0), h.sum(axis=0)
+    wet = np.asarray(mask, bool) & (tot_e > 0) & (tot > 0)
+    scale = np.where(wet, tot / np.where(wet, tot_e, 1.0), 1.0)
+    out = rm.remap_columns(h_ext * scale[None], T_ext, h, scheme, wet)
+    return np.where(wet[None], out, T_ext)

@@ -254,3 +254,90 @@ def test_ppm_transport_respects_the_clip_at_the_shallower_bed():
     qe, qw, dx_t, Lf, act = _ppm_case(h, u, clip=True, H=H)
     Q, _ = ale.ppm_fluxes_x(h, u, Lf, qe, qw, act, 10.0, dx_t)
     np.testing.assert_allclose(Q[:4, 0, 2], 0.0, atol=1e-12)
+
+
+# ---------------------------------------------------------------- Plan C: open boundaries (scope A)
+def test_baroclinic_split_with_sigma_weights_matches_the_sigma_mean():
+    rng = np.random.default_rng(11)
+    ds = np.array([0.4, 0.3, 0.2, 0.1])
+    u = rng.normal(0.0, 0.3, (4, 2, 5))
+    mean, prime = ale.baroclinic_split(u, np.broadcast_to(ds[:, None, None], u.shape))
+    np.testing.assert_allclose(mean, np.tensordot(ds, u, axes=(0, 0)), rtol=1e-14, atol=1e-16)
+    np.testing.assert_allclose(prime, u - mean[None], rtol=0, atol=0)
+
+
+def test_baroclinic_split_prime_has_zero_weighted_mean_with_vanished_layers():
+    rng = np.random.default_rng(12)
+    hf = rng.uniform(0.0, 5.0, (6, 3, 7))
+    hf[2] = 0.0                                                          # a vanished layer
+    hf[:, 0, 0] = 0.0                                                    # a face with no water
+    w = ale.face_fractions(hf)
+    u = rng.normal(0.0, 0.5, hf.shape)
+    mean, prime = ale.baroclinic_split(u, w)
+    np.testing.assert_allclose((w * prime).sum(axis=0), 0.0, atol=1e-15)
+    np.testing.assert_allclose(mean[None] + prime, u, rtol=0, atol=1e-15)
+
+
+def test_open_face_transport_adds_up_to_the_flather_flux():
+    rng = np.random.default_rng(13)
+    h = rng.uniform(0.1, 8.0, (5, 6))
+    un, uo = rng.normal(0.0, 0.4, (5, 6)), rng.normal(0.0, 0.4, (5, 6))
+    Qbt, L = rng.normal(0.0, 50.0, 6), np.full(6, 1000.0)
+    Q = ale.open_face_transport(h, un, uo, Qbt, L, 0.6)
+    np.testing.assert_allclose(Q.sum(axis=0), Qbt, rtol=1e-12, atol=1e-9)
+
+
+def test_open_face_transport_vanished_layers_carry_nothing():
+    # review focus 1: a vanished layer and a fully dry face column
+    h = np.array([[0.0, 0.0], [3.0, 0.0], [0.0, 0.0], [2.0, 0.0]])
+    un = np.full((4, 2), 0.3)
+    uo = np.full((4, 2), -0.1)
+    Q = ale.open_face_transport(h, un, uo, np.array([10.0, 0.0]), np.array([100.0, 100.0]), 0.6)
+    assert np.isfinite(Q).all()
+    assert (Q[[0, 2], 0] == 0).all() and (Q[:, 1] == 0).all()
+    np.testing.assert_allclose(Q[:, 0].sum(), 10.0, rtol=1e-14)
+
+
+def test_open_face_transport_reduces_to_the_sigma_formula():
+    # h_k = D Δσ_k: Q_k = Δσ_k Q_bt + L D Δσ_k (θ u′ⁿ⁺¹ + (1 − θ) u′ⁿ), u′ with Δσ weights
+    rng = np.random.default_rng(14)
+    ds, D, L, th = np.array([0.1, 0.2, 0.3, 0.4]), np.array([20.0, 35.0, 50.0]), np.full(3, 500.0), 0.6
+    un, uo = rng.normal(0.0, 0.3, (4, 3)), rng.normal(0.0, 0.3, (4, 3))
+    Qbt = rng.normal(0.0, 100.0, 3)
+    pn, po = un - np.tensordot(ds, un, axes=(0, 0)), uo - np.tensordot(ds, uo, axes=(0, 0))
+    ref = ds[:, None] * Qbt[None] + (L * D)[None] * ds[:, None] * (th * pn + (1 - th) * po)
+    Q = ale.open_face_transport(D[None] * ds[:, None], un, uo, Qbt, L, th)
+    np.testing.assert_allclose(Q, ref, rtol=1e-12, atol=1e-10)
+
+
+def test_exterior_on_layers_is_the_identity_on_the_same_grid():
+    rng = np.random.default_rng(15)
+    h = rng.uniform(0.5, 5.0, (6, 2, 3))
+    T = rng.uniform(5.0, 20.0, h.shape)
+    out = ale.exterior_on_layers(h, T, h.copy(), np.ones((2, 3), bool), 3)
+    np.testing.assert_allclose(out, T, rtol=1e-12)
+
+
+def test_exterior_on_layers_conserves_the_column_integral_after_scaling():
+    # review focus 2: the target column holds H + η ≠ Σ h_ext; scaled by Σh / Σh_ext
+    rng = np.random.default_rng(16)
+    h_ext = rng.uniform(0.5, 5.0, (6, 1, 4))
+    T = rng.uniform(5.0, 20.0, h_ext.shape)
+    h = rng.uniform(0.5, 5.0, (6, 1, 4))
+    mask = np.array([[True, True, False, True]])
+    out = ale.exterior_on_layers(h_ext, T, h, mask, 3)
+    scale = h.sum(0) / h_ext.sum(0)
+    np.testing.assert_allclose((h * out).sum(0)[mask], (scale * (h_ext * T).sum(0))[mask], rtol=1e-12)
+    np.testing.assert_array_equal(out[:, ~mask], T[:, ~mask])          # outside the mask: unchanged
+
+
+def test_exterior_on_layers_gives_the_layer_means_of_a_linear_profile():
+    # fine exterior layers with T linear in z; coarse targets get the exact layer means
+    z_w = np.linspace(-100.0, 0.0, 21)
+    h_ext = np.diff(z_w)[:, None, None] * np.ones((1, 1, 2))
+    T = (10.0 + 0.05 * 0.5 * (z_w[1:] + z_w[:-1]))[:, None, None] * np.ones((1, 1, 2))
+    zt = np.array([-100.0, -70.0, -50.0, -45.0, -10.0, 0.0])
+    h = np.zeros((20, 1, 2))
+    h[:5] = np.diff(zt)[:, None, None]                                   # 5 thick layers + 15 vanished at the top
+    out = ale.exterior_on_layers(h_ext, T, h, np.ones((1, 2), bool), 3)
+    np.testing.assert_allclose(out[:5, 0, 0], 10.0 + 0.05 * 0.5 * (zt[1:] + zt[:-1]), rtol=1e-10)
