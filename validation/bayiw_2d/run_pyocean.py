@@ -3,7 +3,7 @@
 BayIW 2-D section in pyOCEAN (spec docs/superpowers/specs/2026-10-12-bayiw-2d-section-design.md §4): every
 900 s η, T at 110/250 m and V at 110 m along the section, and the T section on the MITgcm level centres.
 
-Usage: NUMBA_NUM_THREADS=5 python validation/bayiw_2d/run_pyocean.py 2layer bay --coord zstar [--dt 30] [--hours 60]
+Usage: NUMBA_NUM_THREADS=5 python validation/bayiw_2d/run_pyocean.py 2layer bay --coord zstar [--dt 30] [--hours 60] [--layers 25]
 """
 from __future__ import annotations
 
@@ -46,11 +46,13 @@ def main() -> None:
     ap.add_argument("--coord", default="zstar", choices=("zstar", "hybrid"))
     ap.add_argument("--dt", type=float, default=30.0)
     ap.add_argument("--hours", type=float, default=60.0)
+    ap.add_argument("--layers", type=int, default=25, help="hybrid layers")
     a = ap.parse_args()
-    out = section.RUNS / "pyocean" / f"{a.case}_{a.bay}_{a.coord}"
+    tag = a.coord if a.coord == "zstar" or a.layers == 25 else f"{a.coord}{a.layers}"
+    out = section.RUNS / "pyocean" / f"{a.case}_{a.bay}_{tag}"
     out.mkdir(parents=True, exist_ok=True)
     set_threads(5)
-    m, st, wind = section.build_model(a.case, a.bay, a.coord, a.dt)
+    m, st, wind = section.build_model(a.case, a.bay, a.coord, a.dt, a.layers)
     buf = {k: [] for k in ("t_h", "eta", "T110", "T250", "V110", "T_sec", "n_trunc", "heat")}
     buf["t_h"].append(0.0)
     record(m, st, buf)

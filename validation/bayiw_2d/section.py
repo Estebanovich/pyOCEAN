@@ -40,14 +40,16 @@ def _write(path: Path, a: np.ndarray) -> None:
     np.ascontiguousarray(a, ">f8").tofile(path)
 
 
-def write_mitgcm_inputs(case: str, bay: str, run_dir: Path, periodic: bool = False) -> None:
+def write_mitgcm_inputs(case: str, bay: str, run_dir: Path, periodic: bool = False, balance: bool = True,
+                        sponge: bool = True) -> None:
     """
     MITgcm inputs and namelists of the section in run_dir: input/{dx,dy,bathy,theta,wind}.bin (big-endian
     float64, Nx = 3: the section column repeated, with land in columns 0 and 2 unless periodic) and data (the
     case's run_expand/data.stage1 with the section files, endTime 216 000 s and no pickup; hydrogSaltFile
     dropped: salt is not stepped and sBeta = 0), data.obcs (south only: Orlanski CMAX 0.45, cvelTimeScale
-    250 s, 30-cell velocity sponge 60 → 1200 s, balanceFacS = −1, as Esteban's runs), data.pkg (OBCS, MNC),
-    data.mnc, eedata.
+    250 s, 30-cell velocity sponge 60 → 1200 s, balanceFacS = −1 as Esteban's runs, or no balance when
+    balance is False: −1 zeroes the net transport through the south edge, obcs_balance_flow.F:76, which closes a
+    section for the barotropic mode; sponge False drops the velocity sponge), data.pkg (OBCS, MNC), data.mnc, eedata.
     """
     run_dir = Path(run_dir)
     (run_dir / "input").mkdir(parents=True, exist_ok=True)
@@ -72,12 +74,13 @@ def write_mitgcm_inputs(case: str, bay: str, run_dir: Path, periodic: bool = Fal
     src = re.sub(r"pChkptFreq *=.*", "pChkptFreq=0.,", src)
     (run_dir / "data").write_text(src)
     ob = "3*1" if periodic else "0, 1, 0"
+    bal = " useOBCSbalance=.TRUE.,\n OBCS_balanceFacS=-1.,\n" if balance else " useOBCSbalance=.FALSE.,\n"
     (run_dir / "data.obcs").write_text(
-        f" &OBCS_PARM01\n OB_Jsouth = {ob},\n useOrlanskiSouth=.TRUE.,\n useOBCSsponge=.TRUE.,\n"
-        " useLinearSponge=.FALSE.,\n OBCSsponge_Salt=.FALSE.,\n OBCSsponge_Theta=.FALSE.,\n useOBCSbalance=.TRUE.,\n"
-        " useOBCSprescribe=.FALSE.,\n OBCS_balanceFacS=-1.,\n &\n &OBCS_PARM02\n cvelTimeScale=250.0,\n CMAX=0.45,\n &\n"
-        " &OBCS_PARM03\n spongeThickness=30,\n Urelaxobcsinner=1200.E0,\n Vrelaxobcsinner=1200.E0,\n"
-        " Urelaxobcsbound=60.E0,\n Vrelaxobcsbound=60.E0,\n &\n")
+        f" &OBCS_PARM01\n OB_Jsouth = {ob},\n useOrlanskiSouth=.TRUE.,\n useOBCSsponge=.{str(sponge).upper()}.,\n"
+        " useLinearSponge=.FALSE.,\n OBCSsponge_Salt=.FALSE.,\n OBCSsponge_Theta=.FALSE.,\n" + bal +
+        " useOBCSprescribe=.FALSE.,\n &\n &OBCS_PARM02\n cvelTimeScale=250.0,\n CMAX=0.45,\n &\n"
+        + (" &OBCS_PARM03\n spongeThickness=30,\n Urelaxobcsinner=1200.E0,\n Vrelaxobcsinner=1200.E0,\n"
+           " Urelaxobcsbound=60.E0,\n Vrelaxobcsbound=60.E0,\n &\n" if sponge else ""))
     (run_dir / "data.pkg").write_text(" &PACKAGES\n useMNC=.TRUE.,\n useOBCS=.TRUE.,\n &\n")
     (run_dir / "data.mnc").write_text(" &MNC_01\n mnc_use_outdir=.TRUE.,\n mnc_outdir_str='mnc_',\n monitor_mnc=.FALSE.,\n"
                                       " pickup_read_mnc=.FALSE.,\n pickup_write_mnc=.FALSE.,\n &\n")
@@ -110,10 +113,10 @@ def read_mitgcm(case: str, bay: str, variant: str = "") -> dict:
     return dict(t_h=cat(t) / 3600.0, eta=cat(eta), T=cat(T), U=cat(U), V=cat(V), zc=bayiw.Z_C.copy())
 
 
-def build_model(case: str, bay: str, coord: str = "zstar", dt: float = 30.0):
+def build_model(case: str, bay: str, coord: str = "zstar", dt: float = 30.0, n_layers: int = 25):
     """
     pyOCEAN ALE model of the section with the MITgcm parameters (spec 3-D §3): z* on the 50 delR levels or
-    hybrid with 25 layers (N_LIGHT light targets keep the top 14.7 m in z*); west/east walls, south open
+    hybrid with n_layers layers (25 as the 3-D benchmark; N_LIGHT light targets keep the top 14.7 m in z*); west/east walls, south open
     (Flather + Orlanski 0.45 + 30-cell velocity sponge 60 → 1200 s), no mixing diagnostic.  Δt = 30 s as
     MITgcm.  Returns (model, initial state, wind records (nrec, 352, 1)).
     """
@@ -125,7 +128,7 @@ def build_model(case: str, bay: str, coord: str = "zstar", dt: float = 30.0):
     if coord == "zstar":
         nz, params = bayiw.DELR.size, dict(dz_top=bayiw.DELR.copy())
     elif coord == "hybrid":
-        nz = 25
+        nz = n_layers
         rho = bayiw.RHO0 - bayiw.T_COEF * (d["T"][:, np.isfinite(d["H"])] - t_ref)
         tgt = (bayiw.centred_targets(float(rho.min()), float(rho.max()), nz, bayiw.N_LIGHT) if case == "2layer"
                else bayiw.profile_targets(rho, nz, bayiw.N_LIGHT))

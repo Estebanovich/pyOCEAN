@@ -91,3 +91,26 @@ def test_mit_at_depth_samples_surface_first_levels():
     out = compare.mit_at_depth(dict(T=T, zc=zc), H, "T", bayiw.Z110)
     np.testing.assert_allclose(out[:, :2], np.interp(bayiw.Z110, zc[::-1], (zc ** 2)[::-1]), rtol=1e-12)
     assert np.isnan(out[:, 2:]).all()
+
+
+def test_mitgcm_nobal_variant_turns_the_balance_off(tmp_path):
+    # MITgcm balanceFacS = −1 zeroes the net south transport (obcs_balance_flow.F:76): closed for the
+    # barotropic mode in a section; 'nobal' keeps Orlanski + sponge only, the closest to pyOCEAN's Flather
+    from validation.bayiw_2d import section
+    section.write_mitgcm_inputs("2layer", "bay", tmp_path, balance=False)
+    obcs = (tmp_path / "data.obcs").read_text()
+    assert "useOBCSbalance=.FALSE." in obcs and "balanceFacS" not in obcs and "useOrlanskiSouth=.TRUE." in obcs
+
+
+def test_mitgcm_orl_variant_has_no_sponge(tmp_path):
+    # 'orl': Orlanski only (no balance, no velocity sponge), to test whether the full-velocity sponge reflects
+    from validation.bayiw_2d import section
+    section.write_mitgcm_inputs("2layer", "bay", tmp_path, balance=False, sponge=False)
+    obcs = (tmp_path / "data.obcs").read_text()
+    assert "useOBCSsponge=.FALSE." in obcs and "useOBCSbalance=.FALSE." in obcs and "OBCS_PARM03" not in obcs
+
+
+def test_section_hybrid_layer_count_is_a_parameter():
+    from validation.bayiw_2d import section
+    m, st, _ = section.build_model("linear", "bay", "hybrid", n_layers=50)
+    assert st.h.shape[0] == 50
