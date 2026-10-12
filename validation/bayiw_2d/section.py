@@ -82,3 +82,61 @@ def write_mitgcm_inputs(case: str, bay: str, run_dir: Path, periodic: bool = Fal
     (run_dir / "data.mnc").write_text(" &MNC_01\n mnc_use_outdir=.TRUE.,\n mnc_outdir_str='mnc_',\n monitor_mnc=.FALSE.,\n"
                                       " pickup_read_mnc=.FALSE.,\n pickup_write_mnc=.FALSE.,\n &\n")
     (run_dir / "eedata").write_text(" &EEPARMS\n nTx=1,\n nTy=1,\n &\n")
+
+
+def read_mitgcm(case: str, bay: str, variant: str = "") -> dict:
+    """
+    MITgcm MNC state dumps of a section run (one tile, t001), on the section column x-index 1: time [h],
+    η (n, 352) [m], T (n, 50, 352) [°C], U at its west face (n, 50, 352) and V (n, 50, 353) [m s⁻¹], level
+    centres zc (50,) [m].  variant '' (walls) or 'periodic'.
+    """
+    import glob
+
+    import netCDF4
+    run = RUNS / "mitgcm" / (f"{case}_{bay}" + (f"_{variant}" if variant else ""))
+    files = sorted(glob.glob(str(run / "mnc_*" / "state.*.t001.nc")))
+    if not files:
+        raise FileNotFoundError(f"no MNC state files in {run}")
+    t, eta, T, U, V = [], [], [], [], []
+    for f in files:
+        with netCDF4.Dataset(f) as ds:
+            t.append(np.asarray(ds["T"][:], float))
+            eta.append(np.asarray(ds["Eta"][:, :, 1], float))
+            T.append(np.asarray(ds["Temp"][:, :, :, 1], float))
+            U.append(np.asarray(ds["U"][:, :, :, 1], float))
+            V.append(np.asarray(ds["V"][:, :, :, 1], float))
+    order = np.argsort(np.concatenate(t))
+    cat = lambda xs: np.concatenate(xs)[order]                                     # noqa: E731
+    return dict(t_h=cat(t) / 3600.0, eta=cat(eta), T=cat(T), U=cat(U), V=cat(V), zc=bayiw.Z_C.copy())
+
+
+def build_model(case: str, bay: str, coord: str = "zstar", dt: float = 30.0):
+    """
+    pyOCEAN ALE model of the section with the MITgcm parameters (spec 3-D §3): z* on the 50 delR levels or
+    hybrid with 25 layers (N_LIGHT light targets keep the top 14.7 m in z*); west/east walls, south open
+    (Flather + Orlanski 0.45 + 30-cell velocity sponge 60 → 1200 s), no mixing diagnostic.  Δt = 30 s as
+    MITgcm.  Returns (model, initial state, wind records (nrec, 352, 1)).
+    """
+    from core.dynamics.sigma_baroclinic import SigmaBaroclinic
+    from core.grid.horizontal import create_cartesian_grid_stretched
+    d = section_inputs(case, bay)
+    hg = create_cartesian_grid_stretched(d["dx"], d["dy"], x0=d["x0"], y0=bayiw.Y0, f0=bayiw.F0)
+    t_ref = bayiw.CASES[case]["t_ref"]
+    if coord == "zstar":
+        nz, params = bayiw.DELR.size, dict(dz_top=bayiw.DELR.copy())
+    elif coord == "hybrid":
+        nz = 25
+        rho = bayiw.RHO0 - bayiw.T_COEF * (d["T"][:, np.isfinite(d["H"])] - t_ref)
+        tgt = (bayiw.centred_targets(float(rho.min()), float(rho.max()), nz, bayiw.N_LIGHT) if case == "2layer"
+               else bayiw.profile_targets(rho, nz, bayiw.N_LIGHT))
+        params = dict(dz_top=bayiw.DELR[:nz].copy(), rho_target=tgt)
+    else:
+        raise ValueError(f"unknown coord {coord!r}")
+    m = SigmaBaroclinic(hg, d["H"], dt=dt, n_layers=nz, rho0=bayiw.RHO0, t_coef=bayiw.T_COEF, t_ref=t_ref, z0=None,
+                        closure="constant", nu_const=1e-5, ah=100.0, kh=100.0, kv=1e-5, pgf="fv", rho_ref="auto",
+                        vertical_coordinate="ale", regrid=coord, regrid_params=params, open_boundaries=("south",),
+                        orlanski_cmax=0.45, sponge_cells=30, sponge_tau=(1200.0, 60.0), sponge_tracer=False,
+                        mix_diagnostic=False)
+    z = m.layer_heights(np.zeros(d["H"].shape))
+    st = m.initial_state(np.zeros(d["H"].shape), bayiw.mitgcm_profile_at(z, d["T"]))
+    return m, st, d["wind"]

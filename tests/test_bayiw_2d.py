@@ -50,3 +50,44 @@ def test_mitgcm_periodic_variant_has_three_wet_columns(tmp_path):
     np.testing.assert_array_equal(B[:, 2], B[:, 1])
     assert "OB_Jsouth = 3*1," in (tmp_path / "data.obcs").read_text()
     assert "hydrogSaltFile" not in (tmp_path / "data").read_text()
+
+
+def test_read_mitgcm_section_shapes():
+    # review focus 3: Nx = 3 (section = column 1, Xp1 = 4), time variable T, 241 dumps over 60 h
+    from validation.bayiw_2d import section
+    if not (section.RUNS / "mitgcm" / "2layer_bay").exists():
+        pytest.skip("MITgcm section run not done yet")
+    d = section.read_mitgcm("2layer", "bay")
+    n = d["t_h"].size
+    assert abs(d["t_h"][-1] - 60.0) < 1e-6 and n == 241
+    assert d["eta"].shape == (n, 352) and d["T"].shape == (n, 50, 352) and d["V"].shape == (n, 50, 353)
+    assert d["U"].shape == (n, 50, 352) and np.abs(d["U"]).max() == 0.0          # walls: no cross-section flow
+    np.testing.assert_allclose(d["T"][0, 0, 200], 22.767, atol=1e-3)
+    assert np.isfinite(d["eta"]).all() and np.abs(d["eta"]).max() > 0
+
+
+def test_section_model_steps():
+    # review focus 4: nx = 1 with closed west/east edges and open south
+    from validation.bayiw_2d import section
+    for coord in ("zstar", "hybrid"):
+        m, st, wind = section.build_model("2layer", "bay", coord)
+        assert st.h.shape[1:] == (352, 1)
+        tau = np.zeros((353, 1))
+        tau[:-1, :] = wind[3]
+        for _ in range(3):
+            st = m.step(st, tau_y=tau)
+        assert np.isfinite(st.u).all() and np.isfinite(st.v).all() and st.n_trunc == 0
+        assert np.abs(st.u).max() == 0.0                                       # walls: no cross-section flow
+        np.testing.assert_allclose(st.h.sum(0), np.nan_to_num(m.H) + st.eta, rtol=1e-12, atol=1e-12)
+
+
+def test_mit_at_depth_samples_surface_first_levels():
+    # MITgcm levels are surface first; a field quadratic in z must come back as the linear interpolation between
+    # the two neighbouring level centres at 110 m (not between the bed and the surface), NaN below the bed
+    from validation.bayiw_2d import compare
+    zc = bayiw.Z_C
+    T = np.broadcast_to((zc ** 2)[None, :, None], (2, 50, 4)).copy()
+    H = np.array([600.0, 300.0, 100.0, np.nan])
+    out = compare.mit_at_depth(dict(T=T, zc=zc), H, "T", bayiw.Z110)
+    np.testing.assert_allclose(out[:, :2], np.interp(bayiw.Z110, zc[::-1], (zc ** 2)[::-1]), rtol=1e-12)
+    assert np.isnan(out[:, 2:]).all()
