@@ -30,6 +30,7 @@ Leonard, B.P. (1979). A stable and accurate convective modelling procedure
 
 from __future__ import annotations
 
+import numba
 import numpy as np
 import xarray as xr
 
@@ -193,6 +194,46 @@ def _laplacian(f, wet, hw, he, hs, hn):
         h_hi = np.where(np.isfinite(h_hi), h_hi, 1.0)
         out += 2.0 * ((hi - f) / h_hi - (f - lo) / h_lo) / (h_lo + h_hi)
     return np.where(wet, out, 0.0)
+
+
+@numba.njit(parallel=True, cache=True)
+def _laplacian_3d_kernel(f, wet, hw, he, hs, hn, out):  # pragma: no cover
+    """Kernel of _laplacian for every layer of f (N, ny, nx): the same per-element arithmetic and order."""
+    n, ny, nx = f.shape
+    for p in numba.prange(n * ny):
+        k, j = p // ny, p % ny
+        for i in range(nx):
+            if not wet[j, i]:
+                out[k, j, i] = 0.0
+                continue
+            fc = f[k, j, i]
+            lo = f[k, j, i - 1] if i > 0 and wet[j, i - 1] else fc       # free slip: no gradient towards land
+            hi = f[k, j, i + 1] if i < nx - 1 and wet[j, i + 1] else fc
+            h_lo = hw[j, i] if np.isfinite(hw[j, i]) else 1.0
+            h_hi = he[j, i] if np.isfinite(he[j, i]) else 1.0
+            o = 0.0
+            o += 2.0 * ((hi - fc) / h_hi - (fc - lo) / h_lo) / (h_lo + h_hi)
+            lo = f[k, j - 1, i] if j > 0 and wet[j - 1, i] else fc
+            hi = f[k, j + 1, i] if j < ny - 1 and wet[j + 1, i] else fc
+            h_lo = hs[j, i] if np.isfinite(hs[j, i]) else 1.0
+            h_hi = hn[j, i] if np.isfinite(hn[j, i]) else 1.0
+            o += 2.0 * ((hi - fc) / h_hi - (fc - lo) / h_lo) / (h_lo + h_hi)
+            out[k, j, i] = o
+
+
+def laplacian_3d(f: np.ndarray, wet: np.ndarray, hw: np.ndarray, he: np.ndarray, hs: np.ndarray,
+                 hn: np.ndarray) -> np.ndarray:
+    """
+    ∇²f of every layer of f (N, ny, nx) at u- or v-faces [m⁻¹ s⁻¹], free slip at land/edges, with the
+    spacings of _spacings_u/_spacings_v computed once by the caller: identical to calling laplacian_u/v
+    layer by layer (Numba kernel, ALE performance task 5.2).
+    """
+    f = np.ascontiguousarray(f, dtype=float)
+    out = np.empty_like(f)
+    _laplacian_3d_kernel(f, np.ascontiguousarray(wet, dtype=np.bool_), np.ascontiguousarray(hw, dtype=float),
+                         np.ascontiguousarray(he, dtype=float), np.ascontiguousarray(hs, dtype=float),
+                         np.ascontiguousarray(hn, dtype=float), out)
+    return out
 
 
 def laplacian_u(u: np.ndarray, h_grid: xr.Dataset, wet_u: np.ndarray) -> np.ndarray:

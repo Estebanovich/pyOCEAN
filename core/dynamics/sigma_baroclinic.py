@@ -85,7 +85,7 @@ import xarray as xr
 from numba import njit, prange
 
 from core.dynamics import vector_invariant as vi
-from core.dynamics.nonlinear import advection_u, advection_v, laplacian_u, laplacian_v
+from core.dynamics.nonlinear import _spacings_u, _spacings_v, advection_u, advection_v, laplacian_3d
 from core.dynamics.sigma_wd import SigmaWetDry, vertical_implicit
 from diagnostics.mixing import reference_potential_energy
 from core.vertical import regrid as rg
@@ -1050,13 +1050,16 @@ class SigmaBaroclinic:
                 swap = lambda a: np.swapaxes(a, 1, 2)                                   # noqa: E731
                 gv += swap(_flux_form_u(swap(st.v), swap(st.Qy), swap(st.Qx), swap(st.Fz), swap(V),
                                         swap(wet_v[None]), lim))
-        for k in range(n):
-            if self.adv != "flux" and not vinv:
+        if self.adv != "flux" and not vinv:
+            for k in range(n):
                 gu[k] -= advection_u(st.u[k], st.v[k], self.hg, wet_u, scheme=self.adv)
                 gv[k] -= advection_v(st.u[k], st.v[k], self.hg, wet_v, scheme=self.adv)
-            if self.ah > 0:
-                gu[k] += self.ah * laplacian_u(st.u[k], self.hg, wet_u)
-                gv[k] += self.ah * laplacian_v(st.v[k], self.hg, wet_v)
+        if self.ah > 0:                                                 # spacings built once (performance task 5.2)
+            if getattr(self, "_lap", None) is None:
+                self._lap = (_spacings_u(self.hg), _spacings_v(self.hg))
+            numba.set_num_threads(_THREADS[0])
+            gu += self.ah * laplacian_3d(st.u, wet_u, *self._lap[0])
+            gv += self.ah * laplacian_3d(st.v, wet_v, *self._lap[1])
         if st.omega is not None and self.adv != "flux":
             om_u = np.zeros((n + 1,) + Du.shape)
             om_u[:, :, 1:-1] = 0.5 * (st.omega[:, :, 1:] + st.omega[:, :, :-1])

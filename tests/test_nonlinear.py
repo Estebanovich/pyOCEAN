@@ -233,3 +233,19 @@ def test_upwind3_damps_checkerboard_next_to_walls():
     cols = [2, NX - 2]                     # ±1 neighbours wet, the ±2 neighbour is the wall face
     near = up3[2:-2, cols]
     assert np.all(np.sign(-near) == -np.sign(pert[2:-2, cols]))
+
+
+def test_laplacian_3d_matches_the_per_layer_laplacian():
+    # ALE performance task 5.2: one 3-D kernel call, the same per-element arithmetic (bit-identical)
+    from core.dynamics.nonlinear import _spacings_u, _spacings_v, laplacian_3d, laplacian_v
+    from core.grid.horizontal import create_cartesian_grid_stretched
+    rng = np.random.default_rng(8)
+    ny, nx, n = 9, 13, 4
+    hg = create_cartesian_grid_stretched(rng.uniform(500.0, 1500.0, nx), rng.uniform(500.0, 1500.0, ny), f0=0.0)
+    wet_u = rng.uniform(size=(ny, nx + 1)) > 0.2
+    wet_v = rng.uniform(size=(ny + 1, nx)) > 0.2
+    u, v = rng.normal(size=(n, ny, nx + 1)), rng.normal(size=(n, ny + 1, nx))
+    ref_u = np.stack([laplacian_u(u[k], hg, wet_u) for k in range(n)])
+    ref_v = np.stack([laplacian_v(v[k], hg, wet_v) for k in range(n)])
+    assert np.array_equal(laplacian_3d(u, wet_u, *_spacings_u(hg)), ref_u)
+    assert np.array_equal(laplacian_3d(v, wet_v, *_spacings_v(hg)), ref_v)
