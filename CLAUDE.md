@@ -127,6 +127,19 @@ Before implementing a scheme or parameterisation, and when a benchmark shows an 
 3. **Every paper used from Consensus goes into `docs/literature/reading_list.md`** (DOI link, suggested file name `Author_Year - Title.pdf`, ★ if used in code, status ⬜/✅) so Esteban can download it for future local searches.
 4. Cite key papers (link/DOI) in the module docstring or benchmark README; references from memory are marked **[verificar]** until checked.
 
+### Reference model source code (check alongside the literature)
+
+Papers rarely give every detail (limiters, boundary treatment, thin-layer guards, step order, defaults). Before implementing a scheme that a production model already has, and when a benchmark differs from that model, read its source too and cite it as `file:line` (model + version) in the docstring or README:
+
+| Model | Local source |
+|-------|--------------|
+| MOM6 (ALE, remapping, PGF, barotropic) | `~/pyOCEAN_refs/MOM6/src/`; build deps `~/pyOCEAN_refs/FMS` (2025.02.01); idealised inputs `~/pyOCEAN_refs/MOM6-examples/ocean_only/` |
+| CROCO / ROMS (σ, GLS, OBC, W/D) | `~/pyOCEAN_refs/croco/` (compiled test cases in `~/pyOCEAN_refs/croco_runs/`) |
+| MITgcm (z / partial cells, OBCS, EXF) | `~/pyOCEAN_refs/MITgcm/` (also `/Volumes/ESTEBAN_MIT/MITgcm`, with the BayIW runs) |
+| HYCOM (hybgen, barotropic, forcing) | `~/pyOCEAN/HYCOM-src/` (git-ignored) |
+
+Large reads go to a subagent that returns the algorithm with `file:line` references. Report the source as a reference implementation, not as truth: when it disagrees with the paper, say so and decide explicitly.
+
 ---
 
 ## Development Phases (roadmap stages)
@@ -206,8 +219,10 @@ Last updated: 2026-10-10.  All tests run with `pytest tests/`.
 | CF-1.8/SGRID output, Zarr (appendable) or NetCDF4, σ formula_terms (stretched s_w) | `diagnostics/output.py` | `tests/test_output.py` | ✅ 5/5 |
 | Stretched σ-levels: Song & Haidvogel (1994) stretching, fractions from z-level thicknesses (MITgcm delR) | `core/grid/sigma_levels.py` | `tests/test_sigma_levels.py` | ✅ 6/6 |
 | Local literature search (first step before Consensus) | `scripts/litsearch.py` | `tests/test_litsearch.py` | ✅ 3/3 |
+| ALE column remapping PCM/PLM/PPM_H4 + threaded 3-D driver (= MOM6 remapping_core_h to ≤ 5e-12 on 120 columns incl. vanished/1e-10/1 mm layers in the end stencils, MOM6 closed-form H4 end values; Hallberg trick; order reduction counts active cells, unlike MOM6; dry columns keep their values) | `core/vertical/remap.py` | `tests/test_vertical_remap.py`, `tests/test_vertical_vs_mom6.py` | ✅ 23/23 + MOM6 |
+| ALE grid rules z*, σ, hybrid HYCOM1 (z* floor, max thickness, shallow-σ blend) + 3-D driver with input checks (= MOM6 coord_zlike/coord_sigma/regrid_interp P1M_H2 to ≤ 3e-14 m; σ also clamped from the top, unlike MOM6; full build_hycom1_column not yet compared; vs HYCOM hybgen in `validation/mom6_column/`) | `core/vertical/regrid.py` | `tests/test_vertical_regrid.py`, `tests/test_vertical_vs_mom6.py` | ✅ 29/29 + MOM6 |
 
-**Phase 2 in progress — 926 total tests passing (+1 strict xfail).**
+**Phase 2 in progress — 980 total tests passing (+1 strict xfail).**
 
 ### Phase 2 build order
 

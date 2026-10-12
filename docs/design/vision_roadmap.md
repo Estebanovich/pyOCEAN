@@ -158,6 +158,9 @@ No conviene asumir temprano: el port a GPU masivo, el anidamiento de dos vías y
 | Verificador de dominio (Alto Golfo GEBCO crudo) | Fosa de Guaymas encontrada a mano | la detecta solo (cuerpo aislado de 6 celdas, 189 m) + 1 cuerpo y 9 fosas más candidatos a artefacto | — | ✅ |
 | Solver de superficie libre con mojado-secado (Alto Golfo, 96 273 celdas) | — | CG + LU desfasado: 1–3 iteraciones, 0.053 s/paso (antes Jacobi ~110 it, 0.079 s/paso) | — | ✅ 1.5× |
 | Rendimiento | — | 33 días PAC_MEX 650×500 en 11 min, 1 núcleo | — | ⬜ falta medir HYCOM con la misma configuración |
+| Kit de columna ALE: remapeo PCM/PLM/PPM_H4 (nivel 1) | Fortran de MOM6 `remapping_core_h` | max \|Δ\| ≤ 5e-12 en 120 columnas, incluidas capas vacías, de 1e-10 m y de 1 mm en los extremos (fuera de la comparación: la reducción de orden cuenta capas activas, MOM6 cuenta todas) | MOM6 = referencia | ✅ igual a MOM6 |
+| Kit de columna ALE: reglas z\*, σ e interpolación P1M_H2 (nivel 1) | Fortran de MOM6 `coord_zlike`, `coord_sigma`, `regrid_interp` | z\*/σ ≤ 3e-14 m; P1M bit a bit (pendiente: `build_hycom1_column` completo) | MOM6 = referencia | ✅ igual a MOM6 |
+| Regla híbrida HYCOM1 frente a `hybgen` de HYCOM (puerto de MOM6), 10 ciclos | — (algoritmos distintos) | objetivos estilo OM4: Δz medio 4.0 m en BayIW y 0.8 m estratificada (≤ 0.4 capas en el interior); objetivos desde la superficie: 13–25 capas por las z fijas de hybgen y su modo nulo | hybgen | 🔶 no hace falta portar hybgen; el Plan B debe usar objetivos ligeros arriba o `max_h_top` (`validation/mom6_column/README.md`) |
 
 ## 8. Hoja de ruta propuesta
 

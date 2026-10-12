@@ -44,6 +44,8 @@
 
 ## 2. Coordenada vertical, ALE y HYCOM (etapas B y C)
 
+Consensus (2026-10-11): dos búsquedas para el diseño ALE (`docs/superpowers/specs/`).
+
 | | Referencia | DOI | Archivo sugerido | Estado |
 |---|---|---|---|---|
 | | Petersen et al. 2015, ALE vertical coordinate in MPAS-Ocean, Ocean Modell. | [10.1016/j.ocemod.2014.12.004](https://doi.org/10.1016/j.ocemod.2014.12.004) | `Petersen_2015 - Evaluation of the ALE Vertical Coordinate in MPAS-Ocean.pdf` | ✅ |
@@ -53,6 +55,15 @@
 | | Bruciaferri et al. 2024, Localized general vertical coordinates, JAMES | [10.1029/2023MS003893](https://doi.org/10.1029/2023MS003893) | `Bruciaferri_2024 - Localized General Vertical Coordinates for Quasi-Eulerian Models.pdf` | ✅ |
 | | Halliwell 2004, Vertical coordinate and mixing algorithms in HYCOM, Ocean Modell. | [10.1016/j.ocemod.2003.10.002](https://doi.org/10.1016/j.ocemod.2003.10.002) | `Halliwell_2004 - Evaluation of Vertical Coordinate and Vertical Mixing Algorithms in HYCOM.pdf` | ✅ |
 | | Klingbeil et al. 2019, Reducing spurious diapycnal mixing in ocean models (book chapter) | [10.1007/978-3-030-05704-6_8](https://doi.org/10.1007/978-3-030-05704-6_8) | `Eden_Iske_2019 - Energy Transfers in Atmosphere and Ocean.pdf` (libro completo; capítulo de Klingbeil et al.) | ✅ |
+| ★ | Griffies et al. 2020, A primer on the vertical Lagrangian-remap method in ocean models based on finite volume generalized vertical coordinates, JAMES | [10.1029/2019MS001954](https://doi.org/10.1029/2019ms001954) | `Griffies_2020 - A Primer on the Vertical Lagrangian-Remap Method in Ocean Models.pdf` | ✅ |
+| ★ | White & Adcroft 2008, A high-order finite volume remapping scheme for nonuniform grids: PQM, J. Comput. Phys. | [10.1016/j.jcp.2008.04.026](https://doi.org/10.1016/j.jcp.2008.04.026) | `White_Adcroft_2008 - A High-Order Finite Volume Remapping Scheme for Nonuniform Grids PQM.pdf` | ✅ |
+| ★ | White, Adcroft & Hallberg 2009, High-order regridding–remapping schemes for continuous isopycnal and generalized coordinates, J. Comput. Phys. | [10.1016/j.jcp.2009.08.016](https://doi.org/10.1016/j.jcp.2009.08.016) | `White_2009 - High-Order Regridding-Remapping Schemes for Continuous Isopycnal and Generalized Coordinates.pdf` | ✅ |
+| ★ | Bleck 2002, An oceanic general circulation model framed in hybrid isopycnic-Cartesian coordinates, Ocean Modell. | [10.1016/S1463-5003(01)00012-9](https://doi.org/10.1016/s1463-5003(01)00012-9) | `Bleck_2002 - An Oceanic General Circulation Model Framed in Hybrid Isopycnic-Cartesian Coordinates.pdf` | ✅ |
+| ★ | Adcroft et al. 2019, The GFDL global ocean and sea ice model OM4.0 (MOM6 hybrid z*–isopycnal), JAMES | [10.1029/2019MS001726](https://doi.org/10.1029/2019ms001726) | `Adcroft_2019 - The GFDL Global Ocean and Sea Ice Model OM4.0.pdf` | ✅ |
+| | Adcroft & Hallberg 2006, On methods for solving the oceanic equations of motion in generalized vertical coordinates, Ocean Modell. | [10.1016/j.ocemod.2004.12.007](https://doi.org/10.1016/j.ocemod.2004.12.007) | `Adcroft_Hallberg_2006 - On Methods for Solving the Oceanic Equations of Motion in Generalized Vertical Coordinates.pdf` | ✅ |
+| | Hofmeister, Burchard & Deleersnijder 2010, Non-uniform adaptive vertical grids for 3D ocean models, Ocean Modell. | [10.1016/j.ocemod.2009.12.003](https://doi.org/10.1016/j.ocemod.2009.12.003) | `Hofmeister_2010 - Non-Uniform Adaptive Vertical Grids for 3D Numerical Ocean Models.pdf` | ✅ |
+| | Chen et al. 2024, Gradient-tracking generalized vertical coordinate in ROMS (ALE), J. Mar. Sci. Eng. | [10.3390/jmse12122249](https://doi.org/10.3390/jmse12122249) | `Chen_2024 - Gradient-Tracking Generalized Vertical Coordinate for Ocean Models ROMS.pdf` | ✅ |
+| | Adcroft & Campin 2004, Rescaled height coordinates for accurate representation of free-surface flows (z*), Ocean Modell. 7, 269 | [10.1016/j.ocemod.2003.09.003](https://doi.org/10.1016/j.ocemod.2003.09.003) | `Adcroft_Campin_2004 - Rescaled Height Coordinates for Accurate Representation of Free-Surface Flows.pdf` | ✅ |
 
 ## 3. Advección, pasos de tiempo y frentes (`core/dynamics/sigma_baroclinic.py`)
 
@@ -132,7 +143,7 @@
 
 ## 8. Fronteras abiertas y forzamiento por viento (`core/dynamics/sigma_baroclinic.py`, etapa B, BayIW)
 
-Consensus (2026-10-11): una búsqueda; la biblioteca local solo tenía menciones indirectas (Ramos-Musalem 2023, Haidvogel 2008, Chang 2026).
+Consensus (2026-10-11): una búsqueda; la biblioteca local solo tenía menciones indirectas (Ramos-Musalem 2023, Haidvogel 2008, Chang 2026). Segunda búsqueda (2026-10-11, diseño ALE): fronteras con coordenadas generales y anidamiento; no hay literatura específica de OBC en ALE, la práctica está en el código de MOM6/HYCOM.
 
 | | Referencia | DOI | Archivo sugerido | Estado |
 |---|---|---|---|---|
@@ -147,6 +158,12 @@ Consensus (2026-10-11): una búsqueda; la biblioteca local solo tenía menciones
 | | Siyanbola et al. 2023, Remote internal wave forcing of regional ocean simulations near the U.S. West Coast, Ocean Modell. (reflexión en esponjas hasta 73 %) | [10.1016/j.ocemod.2022.102154](https://doi.org/10.1016/j.ocemod.2022.102154) | `Siyanbola_2023 - Remote Internal Wave Forcing of Regional Ocean Simulations.pdf` | ✅ |
 | | Lavelle & Thacker 2008, A pretty good sponge: dealing with open boundaries in limited-area ocean models, Ocean Modell. | [10.1016/j.ocemod.2007.10.002](https://doi.org/10.1016/j.ocemod.2007.10.002) | `Lavelle_Thacker_2008 - A Pretty Good Sponge.pdf` | ✅ |
 | ★ | Song & Haidvogel 1994, A semi-implicit ocean circulation model using a generalized topography-following coordinate system, J. Comput. Phys. (función de estiramiento σ; fórmula verificada en Shchepetkin & McWilliams 2003, ec. 4.3) | [10.1006/jcph.1994.1189](https://doi.org/10.1006/jcph.1994.1189) | `Song_Haidvogel_1994 - A Semi-Implicit Ocean Circulation Model Using a Generalized Topography-Following Coordinate System.pdf` | ✅ (escaneado) |
+
+| | Mason et al. 2010, Procedures for offline grid nesting in regional ocean models (ROMS; interpolation of parent data, volume correction), Ocean Modell. | [10.1016/j.ocemod.2010.05.007](https://doi.org/10.1016/j.ocemod.2010.05.007) | `Mason_2010 - Procedures for Offline Grid Nesting in Regional Ocean Models.pdf` | ⬜ |
+| | Klingbeil et al. 2018, The numerics of hydrostatic structured-grid coastal ocean models: state of the art (incl. OBC and nesting), Ocean Modell. | [10.1016/j.ocemod.2018.01.007](https://doi.org/10.1016/j.ocemod.2018.01.007) | `Klingbeil_2018 - The Numerics of Hydrostatic Structured-Grid Coastal Ocean Models.pdf` | ⬜ |
+| | Herzfeld et al. 2011, Realistic test cases for limited area ocean modelling (MOM4 OBC suite), Ocean Modell. | [10.1016/j.ocemod.2010.12.008](https://doi.org/10.1016/j.ocemod.2010.12.008) | `Herzfeld_2011 - Realistic Test Cases for Limited Area Ocean Modelling.pdf` | ⬜ |
+| | Oddo & Pinardi 2007 [verificar 2.º autor], Lateral open boundary conditions for nested limited area models: a scale selective approach (generalized Flather), Ocean Modell. | [10.1016/j.ocemod.2007.08.001](https://doi.org/10.1016/j.ocemod.2007.08.001) | `Oddo_2007 - Lateral Open Boundary Conditions for Nested Limited Area Models.pdf` | ⬜ |
+| | Cailleau et al. 2008, Comparison of numerical methods for the open boundary of a Bay of Biscay model (clamped, radiation, nesting, coupling), Ocean Modell. | [10.1016/j.ocemod.2008.05.009](https://doi.org/10.1016/j.ocemod.2008.05.009) | `Cailleau_2008 - Comparison of Different Numerical Methods Used to Handle the Open Boundary.pdf` | ⬜ |
 
 ## 9. Rendimiento y backends (`docs/design/performance.md`)
 
