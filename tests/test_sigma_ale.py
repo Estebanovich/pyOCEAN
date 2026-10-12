@@ -562,7 +562,7 @@ def test_radiation_with_face_weights_keeps_the_depth_mean_and_a_zero_weighted_ba
     np.testing.assert_allclose((w * prime).sum(0)[:, 0], 0.0, atol=1e-15)
 
 
-def _ale_open_box(rule, thickness_flux="ppm", nx=30, ny=1, open_=("west", "east"), **kw):
+def _ale_open_box(rule, thickness_flux="ppm", nx=30, ny=1, open_=("west", "east"), f0=0.0, **kw):
     """20 m box with open edges, a Gaussian η bump at t = 0 (it leaves through Flather), uniform T = 7."""
     nz = 6
     params = dict(dz_top=np.full(nz, 20.0 / nz))
@@ -570,7 +570,7 @@ def _ale_open_box(rule, thickness_flux="ppm", nx=30, ny=1, open_=("west", "east"
         # asymmetric margins: the water density must not fall exactly on a target (it would split layers)
         params = dict(dz_top=np.full(nz, 0.5), rho_target=np.linspace(RHO0 - TCOEF * 7.0 - 1.0,
                                                                     RHO0 - TCOEF * 7.0 + 1.5, nz + 1))
-    hg = create_cartesian_grid(nx=nx, ny=ny, dx=1000.0, dy=1000.0, f0=0.0)
+    hg = create_cartesian_grid(nx=nx, ny=ny, dx=1000.0, dy=1000.0, f0=f0)
     m = SigmaBaroclinic(hg, np.full((ny, nx), 20.0), dt=30.0, n_layers=nz, rho0=RHO0, t_coef=TCOEF, z0=None,
                         closure="constant", nu_const=1e-4, vertical_coordinate="ale", regrid=rule,
                         regrid_params=params, pgf="fv", open_boundaries=open_, thickness_flux=thickness_flux, **kw)
@@ -732,3 +732,31 @@ def test_ale_open_boundaries_need_a_consistent_exterior_profile(bad):
         m.T_ext = m.T_ext[:-1]
     with pytest.raises(ValueError, match="h_ext"):
         m.step(st)
+
+
+# ---------------------------------------------------------------- open boundaries with rotation (BayIW phase 0)
+@pytest.mark.parametrize("rule", ["zstar", "hybrid"])
+def test_rotating_open_boundaries_keep_a_uniform_tracer_uniform(rule):
+    m, st = _ale_open_box(rule, nx=14, ny=12, open_=("west", "east", "south"), f0=1e-4, sponge_cells=3)
+    vol0 = m.layer_volumes(st.eta, st.h).sum()
+    for _ in range(120):
+        st = m.step(st)
+        np.testing.assert_allclose(st.h.sum(0), 20.0 + st.eta, rtol=1e-12)
+    np.testing.assert_allclose(st.T, 7.0, atol=1e-11)
+    assert np.isfinite(st.u).all() and np.isfinite(st.v).all()
+    assert np.abs(st.v).max() > 0                                        # rotation turned the outflow
+    assert m.layer_volumes(st.eta, st.h).sum() < vol0
+
+
+def test_rotating_open_boundaries_keep_a_resting_stratification_at_rest():
+    nz, nx, ny = 10, 16, 12
+    hg = create_cartesian_grid(nx=nx, ny=ny, dx=1000.0, dy=1000.0, f0=1e-4)
+    m = SigmaBaroclinic(hg, np.full((ny, nx), 200.0), dt=120.0, n_layers=nz, rho0=RHO0, t_coef=TCOEF, z0=None,
+                        closure="constant", nu_const=1e-5, vertical_coordinate="ale", regrid="zstar",
+                        regrid_params=dict(dz_top=np.full(nz, 20.0)), pgf="fv",
+                        open_boundaries=("west", "east", "south"), sponge_cells=4, sponge_tau=(1200.0, 120.0))
+    z = m.layer_heights(np.zeros((ny, nx)))
+    st = m.initial_state(np.zeros((ny, nx)), 10.0 + 0.02 * z)
+    for _ in range(200):
+        st = m.step(st)
+    assert np.abs(st.u).max() < 1e-10 and np.abs(st.v).max() < 1e-10

@@ -95,11 +95,11 @@ Primer caso realista de pyOCEAN baroclínico: reproducir las corridas de MITgcm 
 - Si un criterio de §6 falla por (a) un error nuestro, me detengo, lo diagnostico y se lo reporto a Esteban antes de gastar más corridas.
 - Si falla por (b) o (c), se documenta y se sigue.
 
-**Costo:** ≈55 h de cómputo con Δt = 120 s.
+**Costo:** ≈28 h de cómputo con Δt = 120 s y corridas de 60 h (antes de la optimización que salga del perfil del paso ALE).
 
 ## 6. Comparación y criterios de éxito
 
-**Ventanas:** forzada (0–60 h) y libre (60–120 h).
+**Ventanas:** forzada (0–60 h). Por decisión de Esteban (2026-10-12) las corridas duran 60 h: la ventana libre (60–120 h) queda fuera, y las series de T a 250 m y U/V de MITgcm, que empiezan a las 27 h, se comparan entre 27 y 60 h.
 
 **Métricas:**
 1. **Seiche barotrópico:** Δη = η_bahía − η_sinbahía en Seiche y Seiche2: período, rango, correlación y e-folding, como en `validation/bayiw_seiche/compare.py`.
