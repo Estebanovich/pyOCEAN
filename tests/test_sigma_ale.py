@@ -764,9 +764,6 @@ def test_rotating_open_boundaries_keep_a_resting_stratification_at_rest():
 
 
 # ---------------------------------------------------------------- performance regression (spec 2026-10-12-ale-step-performance §4)
-_PERF_REF = Path(__file__).resolve().parents[1] / ".superpowers/sdd/2026-10-12-ale-step-performance"
-
-
 def _perf_cases():
     return {
         "lock": lambda: _hybrid_lock(128, 21, 20.0, 20.0, solver="direct"),
@@ -780,17 +777,21 @@ def _perf_cases():
 
 @pytest.mark.parametrize("name", ["lock", "channel", "step", "openbox"])
 def test_ale_results_unchanged_by_the_performance_kernels(name):
-    ref = _PERF_REF / f"ref_{name}.npz"
-    if not ref.exists():
-        pytest.skip("performance references not generated (plan 2026-10-12-ale-step-performance, Task 1)")
-    r = np.load(ref)
+    # scalar fingerprints (sum, Σx², max|x|, 7 samples) of the 100-step states computed before any kernel
+    # (tests/data/ale_perf_reference.json, generated from the NumPy code of commit c230423)
+    import json
+    ref = json.load(open(Path(__file__).parent / "data" / "ale_perf_reference.json"))[name]
     m, st = _perf_cases()[name]()
     for _ in range(100):
         st = m.step(st)
-    for k in ("u", "v", "T", "h", "eta"):
-        a, b = getattr(st, k), r[k]
-        scale = max(float(np.abs(b).max()), 1e-30)
-        assert float(np.abs(a - b).max()) <= 1e-10 * scale, (k, float(np.abs(a - b).max()), scale)
+    for k, r in ref.items():
+        a = np.asarray(getattr(st, k), float).ravel()
+        scale = max(r["maxabs"], 1e-30)
+        tol = 1e-10 * scale
+        assert abs(np.abs(a).max() - r["maxabs"]) <= tol, (k, "max")
+        np.testing.assert_allclose(a[r["idx"]], r["vals"], rtol=0, atol=tol, err_msg=k)
+        assert abs(a.sum() - r["sum"]) <= tol * a.size, (k, "sum")
+        assert abs((a * a).sum() - r["sumsq"]) <= 2 * tol * scale * a.size, (k, "sumsq")
 
 
 def test_ale_uses_the_lagged_lu_cg_free_surface_by_default():

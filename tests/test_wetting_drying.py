@@ -369,3 +369,20 @@ class TestTidalFlatVsCroco3D:
 
     def test_log_law_drag_matches_croco_3d(self):
         assert self._eta_rms(1e-4) < 0.08                  # 6.6 cm at the stations (constant C_d: ~30)
+
+
+def test_cg_exact_conservation_keeps_the_positivity_guard():
+    # review of the ALE performance plan: exactConserv recomputed η after the clip to −H, so with CG the
+    # total depth went negative (Thacker, Δt = 600 s, θ = 0.55: −9e-5 m in 89 cell-steps)
+    D0, L, eta0, dx, dt = 10.0, 80e3, 0.1, 2000.0, 600.0
+    P = 2 * np.pi / np.sqrt(2 * 9.81 * D0 / L**2)
+    nx = int(round(200e3 / dx))
+    hg = create_cartesian_grid(nx=nx, ny=1, dx=dx, dy=dx, f0=0.0)
+    x = -100e3 + (np.arange(nx) + 0.5) * dx
+    H = D0 * (1 - (x / L) ** 2)[None, :]
+    fs = WetDryFreeSurface(hg, H, dt=dt, theta=0.55, g=9.81, solver="cg")
+    eta = np.where(H[0] + 2 * eta0 * D0 / L * x > 0, 2 * eta0 * D0 / L * x, -H[0])[None, :]
+    u, v = np.zeros((1, nx + 1)), np.zeros((2, nx))
+    for _ in range(int(round(2 * P / dt))):
+        eta, u, v = fs.step(eta, u, v, u.copy(), v.copy())
+        assert (H + eta).min() >= 0.0

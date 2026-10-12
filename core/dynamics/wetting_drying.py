@@ -73,6 +73,9 @@ class WetDryFreeSurface:
     solver : {'direct', 'cg'}
         Sparse direct solve each step, or preconditioned conjugate gradients
         warm-started from η^n (the matrix changes every step with the total depth).
+        With 'cg', η^{n+1} is recomputed from the divergence of the final transports
+        (MITgcm exactConserv), so the CG tolerance does not leak into the volume budget;
+        the positivity guard is applied to that final η.
     cg_rtol : float
         Relative residual tolerance of CG.
     precond : {'lu', 'jacobi'}
@@ -300,4 +303,9 @@ class WetDryFreeSurface:
                 Q = self.last_open_Qu if fl["axis"] == "u" else self.last_open_Qv
                 np.add.at(div, fl["cell"], fl["sign"] * Q[fl["face"]])            # outward flux of the cell
             eta_new = np.where(self.active, eta - dt * div / np.where(self.active, self.area, 1.0), eta_new)
+            # positivity guard on the final η (the recompute above undoes the clip applied to the CG solution)
+            depth = self.H + eta_new
+            neg = self.active & (depth < 0)
+            self.last_clip_volume = float(np.sum(-depth[neg] * self.area[neg]))
+            eta_new[neg] = -self.H[neg]
         return eta_new, u_new, v_new
