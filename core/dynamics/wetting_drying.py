@@ -290,4 +290,14 @@ class WetDryFreeSurface:
             Q, Dd = (self.last_open_Qu, self.last_open_Du) if fl["axis"] == "u" else (self.last_open_Qv, self.last_open_Dv)
             Q[fl["face"]] = np.where(open_, fl["sign"] * q_th, 0.0)
             Dd[fl["face"]] = np.where(open_, D, 0.0)
+        if self.solver == "cg":
+            # exact conservation (MITgcm exactConserv): η^{n+1} from the divergence of the final θ-weighted
+            # transports and Flather fluxes, so the CG tolerance does not leak into the volume and tracer budgets
+            ui = np.where(wu, us - g * th * dt * gx1, 0.0)
+            vi = np.where(wv, vs - g * th * dt * gy1, 0.0)
+            div = self._divergence(self.Lu * Du * (th * ui + (1 - th) * un), self.Lv * Dv * (th * vi + (1 - th) * vn))
+            for fl in self._flather:
+                Q = self.last_open_Qu if fl["axis"] == "u" else self.last_open_Qv
+                np.add.at(div, fl["cell"], fl["sign"] * Q[fl["face"]])            # outward flux of the cell
+            eta_new = np.where(self.active, eta - dt * div / np.where(self.active, self.area, 1.0), eta_new)
         return eta_new, u_new, v_new

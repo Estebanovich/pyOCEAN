@@ -645,6 +645,8 @@ class SigmaBaroclinic:
           barotropic adjustment (B2b; core.vertical.ale.ppm_transport_x; hybrid lock exchange with 21
           layers = MOM6, needs ~20 layers in density currents) or 'upwind' = donor cell (B2a, 28 % cheaper)
     pgf : 'jacobian' (default), 'twoterm', or 'fv', finite volume (Adcroft et al. 2008; core.vertical.pgf)
+    solver : free-surface solver: 'direct' (σ default) or 'cg' (ALE default: CG preconditioned with the LU of a
+          lagged matrix, core.dynamics.wetting_drying; ≈1 s → ≈0.1 s per step on BayIW 560 × 352)
     open_boundaries, sponge_cells, sponge_tau, orlanski_cmax, sponge_tracer : also with vertical_coordinate='ale'
           (Plan C scope A: exterior at rest, T_ext/h_ext kept in z from the initial state; no H ≤ 0 cells at an edge)
     """
@@ -657,7 +659,7 @@ class SigmaBaroclinic:
                  open_boundaries: tuple[str, ...] = (), sponge_cells: int = 0,
                  sponge_tau: tuple[float, float] = (1200.0, 60.0), orlanski_cmax: float = 1.0,
                  sponge_tracer: bool = True, dsigma: np.ndarray | None = None, kh: float = 0.0,
-                 kv: float = 0.0, solver: str = "direct", vertical_coordinate: str = "sigma_eulerian",
+                 kv: float = 0.0, solver: str | None = None, vertical_coordinate: str = "sigma_eulerian",
                  regrid: str = "sigma", regrid_params: dict | None = None, remap_scheme: str = "ppm_h4",
                  h_thin_bed: float = 0.01, init_iterations: int = 10, momentum: str | None = None,
                  ke_scheme: str = "gudonov", max_truncations: int = 1000, thickness_flux: str = "ppm") -> None:
@@ -690,6 +692,8 @@ class SigmaBaroclinic:
             fl_v[0, :] = act[0, :]
         if "north" in self.open:
             fl_v[-1, :] = act[-1, :]
+        if solver is None:                     # ALE: CG with the lagged-LU preconditioner (1–3 iterations); the
+            solver = "cg" if vertical_coordinate == "ale" else "direct"   # σ mode keeps the direct solve, bit-identical
         self.core = SigmaWetDry(h_grid, bathy, dt=dt, n_layers=n_layers, z0=z0, closure=closure,
                                 nu_const=nu_const, theta=theta, g=g, d_min=d_min, dsigma=dsigma, solver=solver,
                                 flather_u=fl_u if self.open else None, flather_v=fl_v if self.open else None)

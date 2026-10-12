@@ -791,3 +791,25 @@ def test_ale_results_unchanged_by_the_performance_kernels(name):
         a, b = getattr(st, k), r[k]
         scale = max(float(np.abs(b).max()), 1e-30)
         assert float(np.abs(a - b).max()) <= 1e-10 * scale, (k, float(np.abs(a - b).max()), scale)
+
+
+def test_ale_uses_the_lagged_lu_cg_free_surface_by_default():
+    assert _ale_box("zstar").core.fs.solver == "cg"
+    sig = SigmaBaroclinic(create_cartesian_grid(nx=4, ny=1, dx=1e3, dy=1e3, f0=0.0), np.full((1, 4), 20.0),
+                          dt=10.0, n_layers=4)
+    assert sig.core.fs.solver == "direct"                                # σ stays bit-identical
+
+
+@pytest.mark.parametrize("build", ["openbox", "step"])
+def test_cg_free_surface_matches_the_direct_solve(build):
+    # review focus 5: open boundaries (Flather) and a 600 → 164 m step
+    def make(solver):
+        if build == "openbox":
+            return _ale_open_box("hybrid", nx=14, ny=12, open_=("west", "east", "south"), f0=1e-4, sponge_cells=3,
+                                 solver=solver)
+        return _step_section("zstar", solver=solver)
+    (m1, s1), (m2, s2) = make("direct"), make("cg")
+    for _ in range(50):
+        s1, s2 = m1.step(s1), m2.step(s2)
+    assert np.abs(s1.eta - s2.eta).max() <= 1e-9
+    assert np.abs(s1.u - s2.u).max() <= 1e-9 * max(np.abs(s1.u).max(), 1e-3)
