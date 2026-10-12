@@ -7,6 +7,7 @@ prognostic layer thickness, Lagrangian step + regrid + remap, finite-volume pres
 from __future__ import annotations
 
 import functools
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -760,3 +761,33 @@ def test_rotating_open_boundaries_keep_a_resting_stratification_at_rest():
     for _ in range(200):
         st = m.step(st)
     assert np.abs(st.u).max() < 1e-10 and np.abs(st.v).max() < 1e-10
+
+
+# ---------------------------------------------------------------- performance regression (spec 2026-10-12-ale-step-performance §4)
+_PERF_REF = Path(__file__).resolve().parents[1] / ".superpowers/sdd/2026-10-12-ale-step-performance"
+
+
+def _perf_cases():
+    return {
+        "lock": lambda: _hybrid_lock(128, 21, 20.0, 20.0, solver="direct"),
+        "channel": lambda: _ale_channel("hybrid", 60, 30e3, open_boundaries=("west", "east"), sponge_cells=10,
+                                        sponge_tau=(1200.0, 120.0), solver="direct"),
+        "step": lambda: _step_section("zstar", solver="direct"),
+        "openbox": lambda: _ale_open_box("hybrid", nx=14, ny=12, open_=("west", "east", "south"), f0=1e-4,
+                                         sponge_cells=3, solver="direct"),
+    }
+
+
+@pytest.mark.parametrize("name", ["lock", "channel", "step", "openbox"])
+def test_ale_results_unchanged_by_the_performance_kernels(name):
+    ref = _PERF_REF / f"ref_{name}.npz"
+    if not ref.exists():
+        pytest.skip("performance references not generated (plan 2026-10-12-ale-step-performance, Task 1)")
+    r = np.load(ref)
+    m, st = _perf_cases()[name]()
+    for _ in range(100):
+        st = m.step(st)
+    for k in ("u", "v", "T", "h", "eta"):
+        a, b = getattr(st, k), r[k]
+        scale = max(float(np.abs(b).max()), 1e-30)
+        assert float(np.abs(a - b).max()) <= 1e-10 * scale, (k, float(np.abs(a - b).max()), scale)
