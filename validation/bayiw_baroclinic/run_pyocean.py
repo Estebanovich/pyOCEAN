@@ -82,6 +82,7 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     set_threads(5)
     m, st, wind = bayiw.build_model(a.case, a.bay, a.coord, a.dt)
+    m.mix_diagnostic = False                               # mix_num is not used here (performance task 5.5)
     meta = dict(vars(a), out=str(out), stations=bayiw.STATIONS, order=STATION_ORDER, z110=bayiw.Z110,
                 z250=bayiw.Z250, zoom_i0=bayiw.ZOOM_I0, gamma=(bayiw.GAMMA_I, bayiw.GAMMA_J0))
     buf = {k: [] for k in ("t_h", "eta", "T110", "T250", "U110", "V110", "T110_zoom", "gamma", "n_trunc", "umax",

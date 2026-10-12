@@ -230,7 +230,7 @@ def _weno5_rows(c: np.ndarray, flux: np.ndarray, ok: np.ndarray, z_variant: bool
 
 
 @njit(cache=True, parallel=True)
-def _advect_div(c, Qx, Qy, Fz, ok, ext, open_w, open_e, open_s, open_n, z_variant):  # pragma: no cover
+def _advect_div(c, Qx, Qy, Fz, ok, ext, open_w, open_e, open_s, open_n, z_variant, vert):  # pragma: no cover
     """
     Fused flux-form advection RHS −∇·(Q c) of the tracer stack c (ntr, N, ny, nx) with WENO5 face
     values in x, y and z (same rules as ``_weno5_rows``) and upstream values on the open edges
@@ -240,7 +240,7 @@ def _advect_div(c, Qx, Qy, Fz, ok, ext, open_w, open_e, open_s, open_n, z_varian
     nt, n, ny, nx = c.shape
     fx = np.zeros((nt, n, ny, nx + 1))
     fy = np.zeros((nt, n, ny + 1, nx))
-    fz = np.zeros((nt, n + 1, ny, nx))
+    fz = np.zeros((nt, n + 1, ny, nx)) if vert else np.zeros((nt, 1, 1, 1))   # ALE (Fz ≡ 0): no vertical pass
     for p in prange(nt * n):
         t, k = p // n, p % n
         for j in range(ny):
@@ -288,31 +288,35 @@ def _advect_div(c, Qx, Qy, Fz, ok, ext, open_w, open_e, open_s, open_n, z_varian
             q = Qy[k, ny, i]
             if open_n:
                 fy[t, k, ny, i] = q * (ext[t, k, ny - 1, i] if q < 0.0 else c[t, k, ny - 1, i])
-    for p in prange(nt * ny):
-        t, j = p // ny, p % ny
-        for k in range(1, n):
-            for i in range(nx):
-                q = Fz[k, j, i]
-                if q == 0.0:                                     # ALE: no flux through the interfaces
-                    continue
-                if q >= 0.0:
-                    k1, k2, k3, k4, k5 = k - 3, k - 2, k - 1, k, k + 1
-                else:
-                    k1, k2, k3, k4, k5 = k + 2, k + 1, k, k - 1, k - 2
-                b1, b2, b3, b4, b5 = 0 <= k1 < n, 0 <= k2 < n, 0 <= k3 < n, 0 <= k4 < n, 0 <= k5 < n
-                v = _wval(c[t, k1, j, i] if b1 else 0.0, c[t, k2, j, i] if b2 else 0.0,
-                          c[t, k3, j, i] if b3 else 0.0, c[t, k4, j, i] if b4 else 0.0,
-                          c[t, k5, j, i] if b5 else 0.0,
-                          b1 and ok[k1, j, i], b2 and ok[k2, j, i], b3 and ok[k3, j, i],
-                          b4 and ok[k4, j, i], b5 and ok[k5, j, i], z_variant)
-                fz[t, k, j, i] = q * v
+    if vert:
+        for p in prange(nt * ny):
+            t, j = p // ny, p % ny
+            for k in range(1, n):
+                for i in range(nx):
+                    q = Fz[k, j, i]
+                    if q == 0.0:                                     # ALE: no flux through the interfaces
+                        continue
+                    if q >= 0.0:
+                        k1, k2, k3, k4, k5 = k - 3, k - 2, k - 1, k, k + 1
+                    else:
+                        k1, k2, k3, k4, k5 = k + 2, k + 1, k, k - 1, k - 2
+                    b1, b2, b3, b4, b5 = 0 <= k1 < n, 0 <= k2 < n, 0 <= k3 < n, 0 <= k4 < n, 0 <= k5 < n
+                    v = _wval(c[t, k1, j, i] if b1 else 0.0, c[t, k2, j, i] if b2 else 0.0,
+                              c[t, k3, j, i] if b3 else 0.0, c[t, k4, j, i] if b4 else 0.0,
+                              c[t, k5, j, i] if b5 else 0.0,
+                              b1 and ok[k1, j, i], b2 and ok[k2, j, i], b3 and ok[k3, j, i],
+                              b4 and ok[k4, j, i], b5 and ok[k5, j, i], z_variant)
+                    fz[t, k, j, i] = q * v
     out = np.empty_like(c)
     for p in prange(nt * n):
         t, k = p // n, p % n
         for j in range(ny):
             for i in range(nx):
-                out[t, k, j, i] = -(fx[t, k, j, i + 1] - fx[t, k, j, i] + fy[t, k, j + 1, i] - fy[t, k, j, i]
-                                    + fz[t, k + 1, j, i] - fz[t, k, j, i])
+                if vert:
+                    out[t, k, j, i] = -(fx[t, k, j, i + 1] - fx[t, k, j, i] + fy[t, k, j + 1, i] - fy[t, k, j, i]
+                                        + fz[t, k + 1, j, i] - fz[t, k, j, i])
+                else:
+                    out[t, k, j, i] = -(fx[t, k, j, i + 1] - fx[t, k, j, i] + fy[t, k, j + 1, i] - fy[t, k, j, i])
     return out
 
 
@@ -651,6 +655,8 @@ class SigmaBaroclinic:
           barotropic adjustment (B2b; core.vertical.ale.ppm_transport_x; hybrid lock exchange with 21
           layers = MOM6, needs ~20 layers in density currents) or 'upwind' = donor cell (B2a, 28 % cheaper)
     pgf : 'jacobian' (default), 'twoterm', or 'fv', finite volume (Adcroft et al. 2008; core.vertical.pgf)
+    mix_diagnostic : ALE: advect and remap T² for the spurious-mixing diagnostic ``mix_num`` (default True; False
+          halves the tracer work and leaves T unchanged; mix_num is then None)
     solver : free-surface solver: 'direct' (σ default) or 'cg' (ALE default: CG preconditioned with the LU of a
           lagged matrix, core.dynamics.wetting_drying; ≈1 s → ≈0.1 s per step on BayIW 560 × 352)
     open_boundaries, sponge_cells, sponge_tau, orlanski_cmax, sponge_tracer : also with vertical_coordinate='ale'
@@ -668,7 +674,8 @@ class SigmaBaroclinic:
                  kv: float = 0.0, solver: str | None = None, vertical_coordinate: str = "sigma_eulerian",
                  regrid: str = "sigma", regrid_params: dict | None = None, remap_scheme: str = "ppm_h4",
                  h_thin_bed: float = 0.01, init_iterations: int = 10, momentum: str | None = None,
-                 ke_scheme: str = "gudonov", max_truncations: int = 1000, thickness_flux: str = "ppm") -> None:
+                 ke_scheme: str = "gudonov", max_truncations: int = 1000, thickness_flux: str = "ppm",
+                 mix_diagnostic: bool = True) -> None:
         if pgf not in ("twoterm", "jacobian", "fv"):
             raise ValueError(f"unknown pressure-gradient scheme {pgf!r}")
         self.pgf, self.rho_ref = pgf, rho_ref
@@ -687,6 +694,7 @@ class SigmaBaroclinic:
         self.orlanski_cmax, self.sponge_tracer = orlanski_cmax, sponge_tracer
         self.sponge_cells, self.sponge_tau = int(sponge_cells), tuple(float(t) for t in sponge_tau)
         self.kh, self.kv = float(kh), float(kv)
+        self.mix_diagnostic = bool(mix_diagnostic)                      # ALE: advect/remap T² for mix_num
         act = np.isfinite(np.asarray(bathy, float))
         fl_u = np.zeros((act.shape[0], act.shape[1] + 1), bool)
         fl_v = np.zeros((act.shape[0] + 1, act.shape[1]), bool)
@@ -1258,7 +1266,7 @@ class SigmaBaroclinic:
         return _advect_div(c, np.ascontiguousarray(Qx, dtype=float), np.ascontiguousarray(Qy, dtype=float),
                            np.ascontiguousarray(Fz, dtype=float), np.ascontiguousarray(np.broadcast_to(ok, c.shape[1:])),
                            ext, "west" in self.open, "east" in self.open, "south" in self.open,
-                           "north" in self.open, self.tracer_scheme == "weno5")
+                           "north" in self.open, self.tracer_scheme == "weno5", bool(np.any(Fz != 0.0)))
 
     def _advect(self, C: np.ndarray, V0: np.ndarray, V1: np.ndarray, Qx: np.ndarray, Qy: np.ndarray,
                 Fz: np.ndarray, ok: np.ndarray) -> np.ndarray:
@@ -1334,8 +1342,9 @@ class SigmaBaroclinic:
         Fz = np.zeros((n + 1,) + self.H.shape)                              # Lagrangian: no flux through interfaces
         ok = np.broadcast_to(act[None], V1.shape) & (V1 > 0)
         self._T_in = self._exterior(st.h) if self.open else None          # inflow T on hⁿ (spec §3.5)
-        C = self._advect(np.stack([st.T, st.T**2]), V0, V1, Qx, Qy, Fz, ok)
-        mix = V1 * (C[1] - C[0] ** 2) / dt                                  # advection part
+        mixd = self.mix_diagnostic
+        C = self._advect(np.stack([st.T, st.T**2]) if mixd else st.T[None], V0, V1, Qx, Qy, Fz, ok)
+        mix = V1 * (C[1] - C[0] ** 2) / dt if mixd else None                # advection part
         T_lag = C[0]
         if self.kh > 0:
             T_lag = self._diffuse_h(T_lag, V1, eta_new, h_lag)
@@ -1346,8 +1355,10 @@ class SigmaBaroclinic:
         if self._sp_c is not None and self.sponge_tracer:                 # tracer sponge toward the exterior on h†
             r = dt * self._sp_c[None]
             T_lag = (T_lag + r * self._exterior(h_lag)) / (1.0 + r)
-        h_new, (T_new, T2_new) = self._regrid_remap(eta_new, h_lag, [T_lag, T_lag**2], T_lag)
-        mix = mix + self.layer_volumes(eta_new, h_new) * (T2_new - T_new**2) / dt   # remap part
+        h_new, rem = self._regrid_remap(eta_new, h_lag, [T_lag, T_lag**2] if mixd else [T_lag], T_lag)
+        T_new = rem[0]
+        if mixd:
+            mix = mix + self.layer_volumes(eta_new, h_new) * (rem[1] - T_new**2) / dt   # remap part
         hu_lag, hv_lag = self._mean_face_thickness(h_lag)
         hu1, hv1 = self._mean_face_thickness(h_new)
         u_new = zero_thin_bed_velocity(self._remap_faces(u_new, hu_lag, hu1), hu1, face_fractions(hu1), self.h_thin_bed)

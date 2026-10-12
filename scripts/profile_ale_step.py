@@ -23,7 +23,7 @@ from core.dynamics.sigma_baroclinic import SigmaBaroclinic, set_threads  # noqa:
 from core.grid.horizontal import create_cartesian_grid  # noqa: E402
 
 
-def box_model(coord: str, solver: str | None):
+def box_model(coord: str, solver: str | None, mix: bool = True):
     """200 × 120 × 30 box, 400 m deep with a 100 m shelf, open W/E/S edges, 10-cell sponge, linear stratification."""
     nx, ny, nz = 200, 120, 30
     hg = create_cartesian_grid(nx=nx, ny=ny, dx=2000.0, dy=2000.0, f0=1e-4)
@@ -35,6 +35,7 @@ def box_model(coord: str, solver: str | None):
                                                                                      nz + 1)))
     if solver:
         kw["solver"] = solver
+    kw["mix_diagnostic"] = mix
     m = SigmaBaroclinic(hg, H, dt=120.0, n_layers=nz, rho0=1000.0, t_coef=0.2, z0=None, closure="constant",
                         nu_const=1e-5, ah=10.0, kh=10.0, kv=1e-5, pgf="fv", rho_ref="auto", vertical_coordinate="ale",
                         regrid=coord, open_boundaries=("west", "east", "south"), sponge_cells=10,
@@ -45,9 +46,10 @@ def box_model(coord: str, solver: str | None):
     return m, m.initial_state(np.zeros((ny, nx)), T), None
 
 
-def bayiw_model(coord: str, solver: str | None):
+def bayiw_model(coord: str, solver: str | None, mix: bool = True):
     from validation.bayiw_baroclinic import bayiw
     m, st, wind = bayiw.build_model("2layer", "bay", coord, 120.0)
+    m.mix_diagnostic = mix
     if solver:
         m.core.fs.solver = solver
     return m, st, wind
@@ -73,13 +75,15 @@ def main() -> None:
     ap.add_argument("--steps", type=int, default=5)
     ap.add_argument("--solver", choices=("direct", "cg"), default=None)
     ap.add_argument("--profile", action="store_true")
+    ap.add_argument("--no-mix", action="store_true", help="switch off the T² spurious-mixing diagnostic")
     a = ap.parse_args()
     set_threads(5)
-    m, st, wind = (bayiw_model if a.case == "bayiw" else box_model)(a.coord, a.solver)
+    m, st, wind = (bayiw_model if a.case == "bayiw" else box_model)(a.coord, a.solver, not a.no_mix)
     st = run(m, st, wind, 3, 0)                                              # warm-up (JIT, LU)
     tic = time.perf_counter()
     st = run(m, st, wind, a.steps, 3)
-    print(f"{a.case} {a.coord} solver={m.core.fs.solver}: {(time.perf_counter() - tic) / a.steps:.3f} s/step")
+    print(f"{a.case} {a.coord} solver={m.core.fs.solver} mix={m.mix_diagnostic}: "
+          f"{(time.perf_counter() - tic) / a.steps:.3f} s/step")
     if a.profile:
         pr = cProfile.Profile()
         pr.enable()

@@ -890,3 +890,32 @@ In ALE every vertical flux is zero (Lagrangian step), and land and closed faces 
 **Measure. Commit.**
 
 After 5.4: profile again. If a piece still saves more than 5 % of the step (candidates: `fv_pgf`, `_diffuse_h`, `remap_columns` call count, NumPy arithmetic inside `_step_ale`), add Task 5.5+ in the same format; otherwise go to Task 6.
+
+## Wave 3 (written after the Task 5.4 profile, 2026-10-12)
+
+Profile after 5.4 (BayIW z\*, cProfile 3.66 s/step):
+
+| Piece | s/step | % |
+|---|---|---|
+| advection (kernel + RK3 NumPy + copies) | 0.97 | 27 |
+| `fv_pgf` (NumPy around the kernels) | 0.36 | 10 |
+| `_diffuse_h` | 0.35 | 10 |
+| `remap_columns` | 0.31 | 8 |
+| `ascontiguousarray` copies | 0.23 | 6 |
+| `_step_ale` NumPy | 0.21 | 6 |
+| `cumsum` (layer heights) | 0.20 | 5 |
+
+### Task 5.5: Advection without a vertical pass in ALE; optional mixing diagnostic
+
+- **No vertical pass:** `_advect_div` gets a `vert` flag. With `vert=False` (all Fz = 0, the ALE Lagrangian step), `fz` is a (nt, 1, 1, 1) dummy and the z loop and the z terms are skipped. The x + 0.0 terms of the old code do not change a value, so σ (`vert=True`) is bit-identical. `_rhs` passes `vert = bool(np.any(Fz != 0.0))`.
+- **Optional mixing diagnostic:** `SigmaBaroclinic(..., mix_diagnostic: bool = True)`. With False, the ALE step advects and remaps only T (no T² stack) and `mix_num` is None.
+- **Tests (fail first):** `test_mixing_diagnostic_off_leaves_T_unchanged`, which compares T, h and u with and without the diagnostic under `np.array_equal` (an unknown keyword fails first). Then the σ bit-identity check and the ALE regression.
+- **Runner:** the BayIW runner and the profile script get `--no-mix` (the profile reports both settings).
+
+### Task 5.6: Layer-height cache and horizontal diffusion kernel
+
+- **Layer heights:** `layer_heights(eta, h)` caches its result by the identity of `h` (the last two arrays, as `_transport_thickness`).
+- **Diffusion:** `_diffuse_h` in ALE becomes one parallel kernel (x and y fluxes with the min face thickness and the same masks, then the divergence and the update). The NumPy version is kept as `_diffuse_h_numpy`.
+- **Tests (fail first):** kernel == NumPy (`np.array_equal`) on a random ALE state with land and vanished layers; regression.
+
+After 5.6: profile again, and stop if no piece would save more than 5 % of the step.

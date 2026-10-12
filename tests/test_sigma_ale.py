@@ -824,3 +824,18 @@ def test_transport_thickness_cache_is_keyed_on_identity_and_recomputes_new_array
     h2[0] *= 0.5
     b = m._transport_thickness(h2)
     assert b is not a and not np.allclose(b[0][0], a[0][0])
+
+
+def test_mixing_diagnostic_off_leaves_T_unchanged():
+    # ALE performance task 5.5: the T² stack is only the spurious-mixing diagnostic
+    runs = []
+    for mix in (True, False):
+        m, st = _ale_open_box("hybrid", nx=14, ny=12, open_=("west", "east", "south"), f0=1e-4, sponge_cells=3,
+                              mix_diagnostic=mix)
+        for _ in range(30):
+            st = m.step(st)
+        runs.append(st)
+    a, b = runs
+    for k in ("T", "h", "u", "v", "eta"):
+        assert np.array_equal(getattr(a, k), getattr(b, k)), k
+    assert a.mix_num is not None and b.mix_num is None
