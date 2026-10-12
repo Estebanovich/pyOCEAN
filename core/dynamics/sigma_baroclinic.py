@@ -640,8 +640,9 @@ class SigmaBaroclinic:
           entering a cell; MOM6 lock_exchange — gravity-current fronts and bores lose energy, ALE-σ lock
           exchange 0.98 U vs 0.91/0.84 U with 'arakawa') or 'arakawa' (energy conserving, MOM6 production)
     max_truncations : ALE: stop after this many CFL velocity truncations at faces thicker than h_thin_bed
-    thickness_flux : ALE layer thickness at the faces: 'upwind' (default) = donor cell (B2a), 'ppm' = MOM6
-          continuity_PPM with the barotropic adjustment (B2b; core.vertical.ale.ppm_transport_x)
+    thickness_flux : ALE layer thickness at the faces: 'ppm' (default) = MOM6 continuity_PPM with the
+          barotropic adjustment (B2b; core.vertical.ale.ppm_transport_x; hybrid lock exchange with 21
+          layers = MOM6, needs ~20 layers in density currents) or 'upwind' = donor cell (B2a, 28 % cheaper)
     pgf : 'jacobian' (default), 'twoterm', or 'fv', finite volume (Adcroft et al. 2008; core.vertical.pgf)
     """
 
@@ -656,7 +657,7 @@ class SigmaBaroclinic:
                  kv: float = 0.0, solver: str = "direct", vertical_coordinate: str = "sigma_eulerian",
                  regrid: str = "sigma", regrid_params: dict | None = None, remap_scheme: str = "ppm_h4",
                  h_thin_bed: float = 0.01, init_iterations: int = 10, momentum: str | None = None,
-                 ke_scheme: str = "gudonov", max_truncations: int = 1000, thickness_flux: str = "upwind") -> None:
+                 ke_scheme: str = "gudonov", max_truncations: int = 1000, thickness_flux: str = "ppm") -> None:
         if pgf not in ("twoterm", "jacobian", "fv"):
             raise ValueError(f"unknown pressure-gradient scheme {pgf!r}")
         self.pgf, self.rho_ref = pgf, rho_ref
@@ -704,7 +705,7 @@ class SigmaBaroclinic:
 
     def _setup_ale(self, vertical_coordinate, regrid, regrid_params, remap_scheme, z0, closure, h_thin_bed,
                    init_iterations, act, momentum=None, ke_scheme="gudonov", max_truncations=1000,
-                   thickness_flux="upwind") -> None:
+                   thickness_flux="ppm") -> None:
         """Check and store the ALE configuration (spec §2, §6.2); scope limits of ALE Plan B raise."""
         if vertical_coordinate not in ("sigma_eulerian", "ale"):
             raise ValueError(f"unknown vertical_coordinate {vertical_coordinate!r}; use 'sigma_eulerian' or 'ale'")

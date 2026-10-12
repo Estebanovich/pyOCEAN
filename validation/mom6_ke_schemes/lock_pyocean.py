@@ -19,15 +19,10 @@ from core.dynamics.sigma_baroclinic import set_threads  # noqa: E402
 from tests.test_sigma_ale import RHO0, TCOEF  # noqa: E402
 
 
-# target margin [kg m⁻³] that puts both water masses at the centre of a density bracket: with 21 layers
-# the default margin 1 puts them exactly on targets and each may split between two layers
-MARGIN = {10: 1.0, 21: 0.78125}
-
-
 def run(rule: str, nz: int, ke: str, flux: str = "upwind", nx: int = 128, depth: float = 20.0,
         dt: float = 20.0) -> dict:
     if rule == "hybrid":
-        m, st = t._hybrid_lock(nx, nz, depth, dt, margin=MARGIN[nz], thickness_flux=flux)
+        m, st = t._hybrid_lock(nx, nz, depth, dt, thickness_flux=flux)
     else:
         m = t._ale_box("sigma", nx=nx, nz=nz, depth=depth, dx=500.0, dt=dt, params={})
         st = m.initial_state(np.zeros((1, nx)), np.where(np.arange(nx) < nx // 2, 5.0, 10.0)[None, None, :]

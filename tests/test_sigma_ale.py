@@ -302,10 +302,16 @@ def test_flux_form_momentum_limiter_leaves_thick_cells_below_courant_one_half(co
 
 
 # ---------------------------------------------------------------- hybrid rule in the model
-def _hybrid_lock(nx=128, nz=10, depth=20.0, dt=20.0, margin=1.0, **kw):
+# target margin [kg m⁻³] that puts both water masses at the centre of a density bracket: with 21 layers a
+# margin of 1 puts them exactly on targets and each may split between two layers
+CENTRED_MARGIN = {10: 1.0, 21: 0.78125}
+
+
+def _hybrid_lock(nx=128, nz=21, depth=20.0, dt=20.0, margin=None, **kw):
     """Lock exchange (Δρ = 5 kg m⁻³) on isopycnal layers: each water mass sits in one layer, which
-    has vanished on the other side of the lock.  Targets span [ρ_l − margin, ρ_d + margin]; a water
-    density that falls exactly on a target (nz = 21 with margin 1) may split between two layers."""
+    has vanished on the other side of the lock.  Targets span [ρ_l − margin, ρ_d + margin].  21 layers
+    as MOM6 lock_exchange: the PPM thickness flux needs them (10 layers: dense body 1.26 U)."""
+    margin = CENTRED_MARGIN[nz] if margin is None else margin
     m0 = _ale_box("sigma", nx=nx, nz=nz, depth=depth, dx=500.0, dt=dt, params={})
     rho_l, rho_d = m0.density(10.0 / TCOEF), m0.density(5.0 / TCOEF)
     params = dict(dz_top=np.full(nz, 0.01), rho_target=np.linspace(rho_l - margin, rho_d + margin, nz + 1))
@@ -316,7 +322,7 @@ def _hybrid_lock(nx=128, nz=10, depth=20.0, dt=20.0, margin=1.0, **kw):
 
 
 @functools.lru_cache(maxsize=None)
-def _lock_run(rule: str, nx: int = 128, nz: int = 10, depth: float = 20.0, dt: float = 20.0):
+def _lock_run(rule: str, nx: int = 128, nz: int = 21, depth: float = 20.0, dt: float = 20.0):
     """6 h lock exchange: front speeds / Benjamin for 1 m and 5 m thick fronts, RPE gain, checks."""
     if rule == "hybrid":
         m, st = _hybrid_lock(nx, nz, depth, dt)
@@ -361,12 +367,9 @@ def test_hybrid_lock_exchange_mixes_much_less_than_sigma():
     assert abs(r["heat"]) < 1e-12
 
 
-@pytest.mark.xfail(strict=True, reason="open (vector-invariant plan, 2026-10-12): body 1.05 / 1.05 U and RPE 3.0e6 J "
-                   "meet the criteria, but the dense 1 m nose runs at 1.12 U (light 1.05 U) and max|u| reaches 0.94 m/s "
-                   "inside the dense current (MOM6, 21 layers: 0.56 m/s); with 21 layers and thickness_flux='ppm' (MOM6's "
-                   "configuration) 1.05 / 0.98 U and 0.74 m/s pass — default flux pending Esteban's decision")
 def test_hybrid_lock_exchange_nose_moves_at_the_benjamin_speed_without_runaway_velocities():
-    # spec §6: 1 m fronts within ±10 %, max|u| ≤ 1.5 × MOM6 (0.56 m/s), no truncation
+    # spec §6: 1 m fronts within ±10 %, max|u| ≤ 1.5 × MOM6 (0.56 m/s), no truncation.  Needs the PPM
+    # thickness flux and 21 layers (MOM6's configuration): 1.05 / 0.98 U, 0.74 m/s; upwind or 10 layers fail
     r = _lock_run("hybrid")
     for k in range(2):
         assert abs(r["speed"][1.0][k] - 1) < 0.10, r["speed"]
@@ -533,3 +536,9 @@ def test_ppm_thickness_flux_keeps_the_zstar_step_at_rest():
     for _ in range(720):
         st = m.step(st)
     assert np.abs(st.u).max() < 1e-10
+
+
+def test_ale_uses_the_ppm_thickness_flux_by_default():
+    # MOM6 continuity_PPM (decision of 2026-10-12: with 21 layers the hybrid lock exchange matches MOM6)
+    assert _ale_box("zstar").thickness_flux == "ppm"
+    assert _ale_box("zstar", thickness_flux="upwind").thickness_flux == "upwind"

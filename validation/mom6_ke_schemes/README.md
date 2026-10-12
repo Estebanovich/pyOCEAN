@@ -78,6 +78,6 @@ Las salidas de MOM6 van a `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/mom6_ke/`. Cada cas
 ## Qué debe mejorar pyOCEAN
 
 1. ~~`initial_state` híbrido~~ ✅ (capas σ + `init_iterations`).
-2. **Transporte de grosor por defecto:** `thickness_flux='ppm'` con 21 capas cumple el criterio de la punta; con 10 capas no. Decisión pendiente de Esteban: PPM por defecto en ALE (como MOM6) o upwind.
+2. **Transporte de grosor por defecto:** `thickness_flux='ppm'` (decisión de Esteban, 2026-10-12), como MOM6. Con 21 capas cumple el criterio de la punta; con 10 capas no, así que en corrientes de densidad conviene usar unas 20 capas o más. ALE-σ da lo mismo con los dos (frentes 0.98 U con 21 capas) y el seamount z\* queda en 0.08 cm/s el día 10 (upwind 0.07).
 3. **Energía cinética por defecto:** Godunov (decisión de Esteban, 2026-10-12): pyOCEAN es costero/regional, donde dominan frentes, plumas y corrientes de densidad. Arakawa (`ke_scheme='arakawa'`) queda como opción para estudios de ondas internas, donde amortigua la mitad.
 4. **Regla híbrida con densidades sobre un objetivo:** agua de densidad exactamente igual a un objetivo puede quedar en dos capas. En el océano real es un caso de medida cero, pero vale un test o un desempate explícito.
