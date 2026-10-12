@@ -166,3 +166,43 @@ def test_compiled_vertical_solver_matches_the_numpy_reference():
     tau = rng.normal(0, 1e-4, size=m)
     np.testing.assert_allclose(vertical_implicit(u, dz, nu, r, 60.0, tau_top=tau),
                                _vertical_implicit_numpy(u, dz, nu, r, 60.0, tau_top=tau), rtol=1e-13, atol=1e-15)
+
+
+def _wd_basin():
+    from core.grid.horizontal import create_cartesian_grid
+    hg = create_cartesian_grid(nx=12, ny=10, dx=1000.0, dy=1000.0, f0=1e-4)
+    m = SigmaWetDry(hg, np.full((10, 12), 20.0), dt=30.0, n_layers=4, z0=None, closure="constant", nu_const=1e-3)
+    x = (np.arange(12) + 0.5) * 1000.0
+    y = (np.arange(10) + 0.5) * 1000.0
+    eta = 0.3 * np.exp(-((x[None] - 6e3) ** 2 + (y[:, None] - 5e3) ** 2) / 3e3**2)
+    rng = np.random.default_rng(1)
+    u = 0.05 * rng.standard_normal((4, 10, 13))
+    v = 0.05 * rng.standard_normal((4, 11, 12))
+    u[..., [0, -1]] = 0.0
+    v[:, [0, -1]] = 0.0
+    return m, eta, u, v
+
+
+def test_explicit_sigma_geometry_reproduces_the_default_step_bit_for_bit():
+    m, eta, u, v = _wd_basin()
+    e0, u0, v0 = m.step(eta, u, v)
+    Du, Dv = m.face_depths(eta)
+    ds = m.dsigma[:, None, None]
+    flo = lambda D: np.maximum(np.nan_to_num(D, nan=m.d_min), m.d_min)                 # noqa: E731
+    e1, u1, v1 = m.step(eta, u, v, wu=np.broadcast_to(ds, u.shape), wv=np.broadcast_to(ds, v.shape),
+                        hu=flo(Du)[None] * ds, hv=flo(Dv)[None] * ds)
+    assert np.array_equal(e0, e1) and np.array_equal(u0, u1) and np.array_equal(v0, v1)
+
+
+def test_layer_transports_with_face_fractions_add_up_to_the_free_surface_flux():
+    m, eta, u, v = _wd_basin()
+    w = np.array([0.05, 0.15, 0.3, 0.5])[:, None, None]                 # not the σ fractions
+    wu, wv = np.broadcast_to(w, u.shape), np.broadcast_to(w, v.shape)
+    Du, Dv = m.face_depths(eta)
+    e1, u1, v1 = m.step(eta, u, v, wu=wu, wv=wv, hu=np.nan_to_num(Du)[None] * w, hv=np.nan_to_num(Dv)[None] * w)
+    th, fs = m.fs.theta, m.fs
+    un, vn = np.where(fs.last_wet_u, u, 0.0), np.where(fs.last_wet_v, v, 0.0)
+    Qx = (fs.Lu * fs.last_Du)[None] * wu * (th * u1 + (1 - th) * un)
+    Qy = (fs.Lv * fs.last_Dv)[None] * wv * (th * v1 + (1 - th) * vn)
+    div = (Qx[..., 1:] - Qx[..., :-1] + Qy[:, 1:] - Qy[:, :-1]).sum(0)
+    np.testing.assert_allclose(fs.area * (e1 - eta), -m.dt * div, atol=1e-9 * fs.area.max() * 0.3)

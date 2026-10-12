@@ -61,6 +61,9 @@ def _config(model: SigmaBaroclinic) -> dict:
 
 def write_restart(path: str | Path, model: SigmaBaroclinic, state: SigmaState) -> None:
     """Write ``state`` and the model's hidden state to a float64 NetCDF4 restart file."""
+    if getattr(model, "ale", False):
+        raise NotImplementedError("restart of an ALE model (vertical_coordinate='ale') needs h and is not "
+                                  "implemented yet (ALE Plan D)")
     data = {}
     for name, (dims, units, long) in _FIELDS.items():
         data[name] = xr.Variable(dims, np.asarray(getattr(state, name), np.float64),
@@ -95,6 +98,9 @@ def write_restart(path: str | Path, model: SigmaBaroclinic, state: SigmaState) -
 
 def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
     """Read a restart into a ``SigmaState`` and restore the hidden state of ``model``."""
+    if getattr(model, "ale", False):
+        raise NotImplementedError("restart of an ALE model (vertical_coordinate='ale') needs h and is not "
+                                  "implemented yet (ALE Plan D)")
     with xr.open_dataset(path, engine="netcdf4") as ds:
         ds = ds.load()
     if ds.attrs.get("model") != type(model).__name__:

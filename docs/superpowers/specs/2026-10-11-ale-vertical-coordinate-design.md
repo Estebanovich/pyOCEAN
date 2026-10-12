@@ -78,12 +78,17 @@ Cada regla es una función pura por columna: recibe (h†, T, S, H, η) y devuel
    - reconstrucción P1M y búsqueda de Newton de cada densidad objetivo dentro de su celda (`regrid_interp.F90:378-511`);
    - **piso z\*:** una interfaz no queda por encima de su posición z\* (`coord_hycom.F90:255-267`);
    - **grosor máximo por capa** (`MAX_LAYER_THICKNESS`), por la falta de resolución en zonas poco estratificadas que reportan Chang et al. (2026);
-   - **paso a σ en aguas someras**, como HYCOM: q = clip((D − d_s)/(d_p − d_s), 0, 1), dp0 = q·dp0_z + (1 − q)·dp0_σ (`hybgen.F90:392-428`);
+   - **paso a σ en aguas someras por ventana** (decisión del 2026-10-11, sustituye a la mezcla de posiciones del Plan A):
+     - q = clip((D − d_σ)/(d_hyb − d_σ), 0, 1);
+     - cada interfaz k queda entre un límite superior U_k = q·z\*_k + (1 − q)·σ_k y uno inferior L_k = q·(−H) + (1 − q)·σ_k, es decir, z_k = clip(z_k^híbrida, L_k, U_k), y después se aplica el grosor mínimo;
+     - q = 0 da σ pura (mojado-secado); q = 1 da la híbrida sin cambios; en medio, las isopicnas que caben en la ventana se respetan (12 de 19 interfaces a q = 0.5 en una columna de estratificación lineal, contra 0 con la mezcla de posiciones);
+     - es continua en D (que cambia con la marea), las interfaces no se cruzan y Σh = D;
+     - HYCOM hace otra cosa (`MOM_hybgen_regrid.F90:590-620`): mezcla los mínimos dp0k/ds0k con un peso que hace que sumen D, así que entre dsns y dpns la columna es σ pura y no sigue isopicnas; la ventana da una transición gradual;
    - el paso a σ también define dónde se permite el mojado-secado;
-   - función auxiliar para elegir las densidades objetivo desde el perfil inicial;
+   - función auxiliar para elegir las densidades objetivo desde el perfil inicial, con la opción de objetivos más ligeros que el agua superficial en las capas de arriba (estilo OM4) para que la capa de mezcla quede resuelta en z;
    - filtro temporal de la malla opcional y apagado por defecto (`MOM_regridding.F90:1461-1608`).
 
-**Fuera de alcance:** el puerto exacto de `hybgen` de HYCOM (cushion, relajación, unmixing). Se hará solo si la validación del §8 muestra diferencias atribuibles a la coordenada. Referencia modular para entonces: `MOM_hybgen_regrid.F90`.
+**`hybgen` no se porta** (decisión del 2026-10-11, tras la comparación de `validation/mom6_column/`). Con objetivos ligeros arriba, la regla híbrida coincide con `hybgen` en el interior (diferencia media de 4.0 m en BayIW y 0.8 m en la columna estratificada, ≤ 0.4 grosores de capa locales). Las diferencias mayores vienen de dos rasgos de `hybgen`: capas z superiores fijas (`fixlay`) y capas vacías alternadas, el "thin-thick-thin null mode" que reconoce el propio MOM6 (`MOM_hybgen_regrid.F90:806-813`). En su lugar se mejora la regla propia: objetivos ligeros arriba, grosor máximo por capa y la transición por ventana.
 
 ## 4. Remapeo
 
@@ -166,7 +171,8 @@ Revisión de código de MOM6, HYCOM y CROCO, y de literatura. Ningún modelo res
   - Σh preservado y grosor mínimo;
   - z\* = `delR` escalado;
   - σ = sus fracciones;
-  - híbrida: interfaces en sus densidades objetivo (columna con estratificación lineal), piso z\*, paso a σ somero, grosor máximo.
+  - híbrida: interfaces en sus densidades objetivo (columna con estratificación lineal), piso z\*, paso a σ somero, grosor máximo;
+  - ventana somera: σ pura con D ≤ d_σ, híbrida sin cambios con D ≥ d_hyb, interfaces en su isopicna dentro de la ventana con q intermedia, continuidad en D y orden de las interfaces.
 - **Gradiente de presión:**
   - fuerza cero en reposo estratificado con capas inclinadas arbitrarias (EOS lineal);
   - error del seamount ≤ al actual.
@@ -190,7 +196,7 @@ Revisión de código de MOM6, HYCOM y CROCO, y de literatura. Ningún modelo res
 - **Remapeo** PLM, PPM_H4 y PQM contra `remapping_core_h` de MOM6, más los valores esperados de `test_MOM_remapping.F90`.
 - **Reglas de malla:** HYCOM1 contra `coord_hycom.F90`; z\* contra `coord_zlike.F90`; σ contra `coord_sigma.F90`.
 - **Gradiente de presión** contra `int_density_dz_generic_plm` con EOS lineal.
-- **HYCOM:** nuestra regla híbrida contra `hybgen` en columnas típicas (estratificada, mezclada, somera, capa de fondo ligera). Es una comparación cuantitativa de la posición de las interfaces, no a redondeo, porque los algoritmos difieren. Si las diferencias importan, eso justifica portar `hybgen`.
+- **HYCOM:** nuestra regla híbrida contra `hybgen` en columnas típicas (estratificada, mezclada, somera, capa de fondo ligera). Es una comparación cuantitativa de la posición de las interfaces, no a redondeo, porque los algoritmos difieren. Hecho en el Plan A: las diferencias no justifican portar `hybgen` (§3).
 
 **Nivel 2: casos idealizados contra cada modelo completo** (con z\*, σ e híbrida en pyOCEAN):
 
@@ -224,7 +230,7 @@ Cada fase se cierra con sus tests y su validación de nivel 1 o 2:
 
 ## 10. Fuera de alcance (evaluar después)
 
-- `hybgen` exacto;
+- `hybgen` exacto: descartado el 2026-10-11 (§3);
 - z̃ (Leclair & Madec 2011) y coordenadas adaptativas (Hofmeister et al. 2010; Chen et al. 2024);
 - frontera por relaciones de polarización (Marsaleix et al. 2009b);
 - salida remapeada a niveles z;

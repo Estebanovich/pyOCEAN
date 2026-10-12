@@ -97,6 +97,23 @@ def test_hybrid_unstratified_column_does_not_fail():
     assert np.isfinite(zw).all() and (np.diff(zw) > 0).all()
 
 
+def test_hybrid_ignores_the_stale_density_of_a_massless_bed_layer():
+    # gravity-current head: 0.7 m of dense water (layer 1) arrived over a massless bed layer that
+    # still holds the light water of the start.  Monotonising with that light value would make the
+    # whole column light and dissolve the current; massless layers take the density of the layer
+    # with mass above them (HYCOM hybgen.F90:904-925)
+    n = 10
+    rho_l, rho_d = 1020.0, 1025.0
+    targets = np.linspace(rho_l - 1.0, rho_d + 1.0, n + 1)
+    h = np.full(n, rg.H_MIN)
+    h[1], h[8], h[9] = 0.7, 19.3 - 7 * rg.H_MIN - 0.01, 0.01
+    rho = np.full(n, rho_l)
+    rho[1:8] = rho_d                                                    # dense current and vanished layers above it
+    zw = _hybrid(20.0, 0.0, h, rho, targets, dz=np.full(n, 0.01))
+    dense_top = -20.0 + rg.H_MIN + 0.7
+    assert dense_top - zw[n - 2] < 0.1 * 0.7       # < 10 % of the dense water goes into the light layer (was 100 %)
+
+
 def test_hybrid_targets_out_of_range_keep_layers_separate():
     h, rho = _linear_column()
     targets = np.linspace(1000.0, 1100.0, 11)                           # far outside the column range
@@ -125,16 +142,114 @@ def test_hybrid_maximum_layer_thickness():
     np.testing.assert_allclose(np.diff(zw).sum(), 201.0, rtol=1e-14)
 
 
-def test_blend_shallow_sigma_endpoints_and_middle():
-    a = np.array([-10.0, -6.0, 0.0])
-    b = np.array([-10.0, -4.0, 0.0])
-    zw = np.empty(3)
-    rg.blend_shallow_sigma(a, b, 5.0, 10.0, 30.0, zw)
-    np.testing.assert_allclose(zw, b)                                   # D ≤ d_sigma: pure σ
-    rg.blend_shallow_sigma(a, b, 40.0, 10.0, 30.0, zw)
-    np.testing.assert_allclose(zw, a)                                   # D ≥ d_hybrid: pure hybrid
-    rg.blend_shallow_sigma(a, b, 20.0, 10.0, 30.0, zw)
-    np.testing.assert_allclose(zw, 0.5 * (a + b))
+def _window_targets(H, n=10):
+    """Isopycnals crowded towards the surface (depths H s², s = 0 … 1), so they differ from uniform σ."""
+    return 1024.0 + 0.02 * H * np.linspace(0.0, 1.0, n + 1) ** 2
+
+
+def _window_case(H, d_sigma=50.0, d_hybrid=100.0, n=10):
+    """Hybrid, σ and z* interfaces of a linearly stratified column of depth H (η = 0)."""
+    zw_t = np.linspace(-H, 0.0, n + 1)
+    zc = 0.5 * (zw_t[1:] + zw_t[:-1])
+    h, rho = np.diff(zw_t), 1024.0 - 0.02 * zc
+    dz = np.full(n, 2.0)                                                  # z* floor: top 20 m
+    targets = _window_targets(H, n)
+    hyb, sig, zs = np.empty(n + 1), np.empty(n + 1), np.empty(n + 1)
+    rg.hycom1_column(H, 0.0, h, rho, targets, dz, np.full(n, np.inf), rg.H_MIN, hyb)
+    rg.sigma_column(H, 0.0, np.full(n, 1.0 / n), rg.H_MIN, sig)
+    rg.zstar_column(H, 0.0, dz, rg.H_MIN, zs)
+    out = np.empty(n + 1)
+    rg.window_shallow_sigma(hyb, sig, zs, H, H, d_sigma, d_hybrid, rg.H_MIN, out)
+    return hyb, sig, zs, out
+
+
+def test_window_is_sigma_in_shallow_water_and_hybrid_in_deep_water():
+    hyb, sig, _, out = _window_case(40.0)                               # D ≤ d_sigma
+    np.testing.assert_array_equal(out, sig)
+    hyb, sig, _, out = _window_case(120.0)                              # D ≥ d_hybrid
+    np.testing.assert_array_equal(out, hyb)
+
+
+def test_window_keeps_the_isopycnals_that_fit_in_the_window():
+    H = 75.0                                                            # q = 0.5
+    hyb, sig, zs, out = _window_case(H)
+    q = 0.5
+    lo, hi = q * (-H) + (1 - q) * sig, q * zs + (1 - q) * sig
+    assert ((out >= lo - 1e-12) & (out <= hi + 1e-12)).all()
+    inside = (hyb > lo) & (hyb < hi)
+    inside[[0, -1]] = False
+    # depths: hybrid 2, 4, 6.75, 12, … (z* floor, then H s²), window tops 4.75, 9.5, …: 3 deep
+    # interfaces stay on their isopycnal, 6 shallow ones are clipped (a position blend would move all)
+    assert inside.sum() == 3 and (~inside[1:-1]).sum() == 6
+    np.testing.assert_allclose(out[inside], hyb[inside], atol=1e-12)    # those stay on their isopycnal
+    clipped = ~inside
+    clipped[[0, -1]] = False
+    np.testing.assert_allclose(out[clipped], np.clip(hyb, lo, hi)[clipped], atol=1e-12)
+    assert (np.diff(out) > 0).all()
+    np.testing.assert_allclose(out[-1] - out[0], H, rtol=1e-14)
+
+
+@pytest.mark.parametrize("H, other", [(50.0 + 1e-6, "sig"), (100.0 - 1e-6, "hyb")])
+def test_window_is_continuous_at_both_ends_of_the_transition(H, other):
+    # no jump in the grid when the total depth crosses d_sigma or d_hybrid (tide, wetting–drying)
+    hyb, sig, _, out = _window_case(H)
+    ref = sig if other == "sig" else hyb
+    assert np.abs(out - ref).max() < 1e-4
+
+
+def test_regrid_columns_hybrid_with_transition_matches_the_window():
+    hyb, sig, zs, out = _window_case(75.0)
+    n = 10
+    zw_t = np.linspace(-75.0, 0.0, n + 1)
+    zc = 0.5 * (zw_t[1:] + zw_t[:-1])
+    h3 = np.diff(zw_t)[:, None, None].repeat(2, 1)
+    r3 = (1024.0 - 0.02 * zc)[:, None, None].repeat(2, 1)
+    params = dict(dz_top=np.full(n, 2.0), rho_target=_window_targets(75.0, n),
+                  dsigma=np.full(n, 1.0 / n), d_sigma=50.0, d_hybrid=100.0)
+    zw3 = rg.regrid_columns("hybrid", np.full((2, 1), 75.0), np.zeros((2, 1)), h3, r3, params, np.ones((2, 1), bool))
+    np.testing.assert_allclose(zw3[:, 0, 0], out, atol=1e-12)
+
+
+def test_light_top_targets_keep_the_mixed_layer_in_z():
+    # 40 m mixed layer over a linear pycnocline: with targets that start at the surface density the
+    # first interface sinks to the base of the mixed layer (HYCOM1 lumps it); targets lighter than
+    # any water (OM4 style) keep the top interfaces on their z* floor
+    H, n = 201.0, 10
+    zw_t = np.linspace(-H, 0.0, n + 1)
+    zc = 0.5 * (zw_t[1:] + zw_t[:-1])
+    rho = np.where(zc > -40.0, 1024.0, 1024.0 + 0.02 * (-40.0 - zc))
+    h = np.diff(zw_t)
+    t0 = rg.target_densities(rho, n)
+    t3 = rg.target_densities(rho, n, n_light=3)
+    assert t3.shape == (n + 1,) and (np.diff(t3) > 0).all() and (t3[:3] < rho.min()).all()
+    np.testing.assert_allclose(t3[3:], np.linspace(rho.min(), rho.max(), n - 2))
+    np.testing.assert_array_equal(t0, rg.target_densities(rho, n, n_light=0))
+    z0 = _hybrid(H, 0.0, h, rho, t0)[::-1]                              # surface first
+    z3 = _hybrid(H, 0.0, h, rho, t3)[::-1]
+    assert z0[1] <= -35.0                                               # lumped mixed layer
+    np.testing.assert_allclose(z3[1:4], -np.cumsum(DELR)[:3], atol=1e-12)   # on the z* floor
+
+
+def test_target_densities_rejects_bad_n_light():
+    with pytest.raises(ValueError):
+        rg.target_densities(np.array([1024.0, 1025.0]), 4, n_light=5)
+
+
+def test_sigma_rule_accepts_floodable_columns_and_hybrid_only_in_its_sigma_zone():
+    H = np.array([[-0.5, 10.0]])
+    eta = np.array([[0.7, 0.0]])                                        # flooded land: D = 0.2 m
+    h3 = np.ones((10, 1, 2))
+    wet = np.ones((1, 2), bool)
+    zw = rg.regrid_columns("sigma", H, eta, h3, None, dict(dsigma=np.full(10, 0.1)), wet)
+    np.testing.assert_allclose(zw[-1] - zw[0], H + eta, rtol=1e-12)
+    r3 = np.full((10, 1, 2), 1025.0)
+    base = dict(dz_top=np.ones(10), rho_target=np.linspace(1024, 1026, 11), dsigma=np.full(10, 0.1))
+    with pytest.raises(ValueError):
+        rg.regrid_columns("hybrid", H, eta, h3, r3, base, wet)                       # no σ zone
+    zw = rg.regrid_columns("hybrid", H, eta, h3, r3, dict(base, d_sigma=5.0, d_hybrid=20.0), wet)
+    np.testing.assert_allclose(np.diff(zw[:, 0, 0]), 0.02, rtol=1e-12)               # pure σ there
+    with pytest.raises(ValueError):
+        rg.regrid_columns("zstar", H, eta, h3, None, base, wet)
 
 
 def test_regrid_columns_hybrid_matches_single_column():
@@ -219,3 +334,17 @@ def test_p1m_positions_defined_when_no_cell_matches():
     x = np.full(6, -999.0)
     rg._p1m_h2_positions(h, rho, np.linspace(1024.0, 1028.0, 6), x)
     assert np.isfinite(x).all() and (x >= 0).all() and (x <= 10.0).all()
+
+
+def test_hybrid_flooded_land_deeper_than_d_sigma_stays_sigma():
+    # final review of Plan B: land (H ≤ 0) flooded deeper than d_sigma (storm surge) must stay pure σ,
+    # not raise mid-run or need a hybrid grid with no z* floor
+    H = np.array([[-0.5, 10.0]])
+    eta = np.array([[3.0, 0.0]])                                        # flooded land: D = 2.5 m > d_sigma
+    h3 = np.ones((10, 1, 2))
+    r3 = np.full((10, 1, 2), 1025.0)
+    params = dict(dz_top=np.ones(10), rho_target=np.linspace(1024, 1026, 11), dsigma=np.full(10, 0.1),
+                  d_sigma=1.0, d_hybrid=2.0)
+    zw = rg.regrid_columns("hybrid", H, eta, h3, r3, params, np.ones((1, 2), bool))
+    np.testing.assert_allclose(np.diff(zw[:, 0, 0]), 0.25, rtol=1e-12)
+

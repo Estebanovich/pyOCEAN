@@ -132,3 +132,15 @@ def test_restart_refuses_other_layers_or_boundaries(tmp_path):
     kw["open_boundaries"] = ("west",)
     with pytest.raises(ValueError, match="open_boundaries"):
         read_restart(tmp_path / "rst.nc", _model(**kw))
+
+
+def test_restart_refuses_an_ale_model(tmp_path):
+    from core.grid.horizontal import create_cartesian_grid
+    hg = create_cartesian_grid(nx=6, ny=1, dx=1000.0, dy=1000.0, f0=0.0)
+    m = SigmaBaroclinic(hg, np.full((1, 6), 20.0), dt=10.0, n_layers=4, z0=None, closure="constant",
+                        vertical_coordinate="ale", regrid="zstar", regrid_params=dict(dz_top=np.full(4, 5.0)))
+    st = m.initial_state(np.zeros((1, 6)), np.full((4, 1, 6), 10.0))
+    with pytest.raises(NotImplementedError, match="ALE"):
+        write_restart(tmp_path / "r.nc", m, st)
+    with pytest.raises(NotImplementedError, match="ALE"):
+        read_restart(tmp_path / "r.nc", m)

@@ -87,9 +87,15 @@ from numba import njit, prange
 from core.dynamics.nonlinear import advection_u, advection_v, laplacian_u, laplacian_v
 from core.dynamics.sigma_wd import SigmaWetDry, vertical_implicit
 from diagnostics.mixing import reference_potential_energy
+from core.vertical import regrid as rg
+from core.vertical import remap as rm
+from core.vertical.ale import (DZ_FLOOR, face_fractions, face_thickness, face_transport_thickness, lagrangian_thickness,
+                               upwind_transport_x, zero_thin_bed_velocity)
+from core.vertical.pgf import fv_pgf
 
 G = 9.81
 AB3 = (23.0 / 12.0, -16.0 / 12.0, 5.0 / 12.0)
+REMAP_SCHEMES = {"pcm": rm.PCM, "plm": rm.PLM, "ppm_h4": rm.PPM_H4}
 
 
 @dataclass
@@ -99,6 +105,7 @@ class SigmaState:
     u: np.ndarray
     v: np.ndarray
     T: np.ndarray
+    h: np.ndarray | None = None                              # ALE layer thickness (N,ny,nx) [m], k = 0 at the bed
     g_hist: list = field(default_factory=list)              # past explicit tendencies (AB3)
     omega: np.ndarray | None = None                          # ω at interfaces (N+1,ny,nx) [m s⁻¹]
     mix_num: np.ndarray | None = None                        # volume-weighted numerical mixing [T² m³ s⁻¹]
@@ -392,8 +399,8 @@ def _centred_faces(c: np.ndarray, ok: np.ndarray, axis: int, n_out: int | None =
 
 
 @njit(cache=True, parallel=True)
-def _flux_form_u_kernel(u, Qx, Qy, Fz, V, ok):  # pragma: no cover
-    """Compiled ``_flux_form_u_numpy`` (same transports, WENO5-Z values and face rules)."""
+def _flux_form_u_kernel(u, Qx, Qy, Fz, V, ok, dt):  # pragma: no cover
+    """Compiled ``_flux_form_u_numpy`` (same transports, WENO5-Z values, face rules and limiter)."""
     n, ny, nx1 = u.shape
     nx = nx1 - 1
     Fx = np.zeros((n, ny, nx))
@@ -461,20 +468,24 @@ def _flux_form_u_kernel(u, Qx, Qy, Fz, V, ok):  # pragma: no cover
                 w_hi = 0.5 * (Fz[k + 1, j, i - 1] + Fz[k + 1, j, i])
                 w_lo = 0.5 * (Fz[k, j, i - 1] + Fz[k, j, i])
                 mass = uc_hi - uc_lo + vq_hi - vq_lo + w_hi - w_lo
+                if dt > 0.0:                                         # vanished-cell limiter (ALE)
+                    inflow = max(uc_lo, 0.0) + max(-uc_hi, 0.0) + max(vq_lo, 0.0) + max(-vq_hi, 0.0) \
+                        + max(w_lo, 0.0) + max(-w_hi, 0.0)
+                    vu = max(vu, 2.0 * dt * inflow)
                 out[k, j, i] = -(div - u[k, j, i] * mass) / vu
     return out
 
 
 def _flux_form_u(u: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, Fz: np.ndarray, V: np.ndarray,
-                 ok_u: np.ndarray) -> np.ndarray:
+                 ok_u: np.ndarray, dt: float = 0.0) -> np.ndarray:
     """Flux-form momentum advection (see ``_flux_form_u_numpy``), compiled."""
-    c = lambda a, dt=float: np.ascontiguousarray(a, dtype=dt)                     # noqa: E731
+    c = lambda a, t=float: np.ascontiguousarray(a, dtype=t)                       # noqa: E731
     numba.set_num_threads(_THREADS[0])
-    return _flux_form_u_kernel(c(u), c(Qx), c(Qy), c(Fz), c(V), c(np.broadcast_to(ok_u, u.shape), bool))
+    return _flux_form_u_kernel(c(u), c(Qx), c(Qy), c(Fz), c(V), c(np.broadcast_to(ok_u, u.shape), bool), float(dt))
 
 
 def _flux_form_u_numpy(u: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, Fz: np.ndarray, V: np.ndarray,
-                       ok_u: np.ndarray) -> np.ndarray:
+                       ok_u: np.ndarray, dt: float = 0.0) -> np.ndarray:
     """
     Momentum-conserving advection of u (N,ny,nx+1) by the layer transports
     (flux form, as ROMS/CROCO; Shchepetkin & McWilliams 2005):
@@ -486,6 +497,11 @@ def _flux_form_u_numpy(u: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, Fz: np.nda
     WENO5 values upwind of each transport.  Subtracting u × (mass divergence)
     gives the velocity tendency while the momentum flux stays conservative, which
     sets the speed of fronts and jumps (Borden & Meiburg 2013; Ungarish et al. 2018).
+    With dt > 0 (ALE: layers that vanish) V_u is replaced by max(V_u, 2 Δt Q_in), Q_in the
+    transport into the u-cell: a vanished cell flooded by a current relaxes to the current's
+    velocity at the rate 1/(2Δt) at most, inside the AB3 stability limit (λΔt < 6/11), instead
+    of Q_in Δt/V_u ≫ 1.  Cells with inflow Courant number ≤ ½ are unchanged.  Same purpose as the
+    CFL truncation of MOM6 (MOM_vert_friction.F90:2555, vertvisc_limit_vel), but continuous.
     Returns the tendency on interior u-faces [m s⁻²].
     """
     n, ny, nx1 = u.shape
@@ -518,6 +534,11 @@ def _flux_form_u_numpy(u: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, Fz: np.nda
     mass += Vq[:, 1:] - Vq[:, :-1] + Wz[1:] - Wz[:-1]
     Vu = np.zeros_like(u)
     Vu[..., 1:-1] = 0.5 * (V[..., :-1] + V[..., 1:])
+    if dt > 0:
+        inflow = np.zeros_like(u)
+        inflow[..., 1:-1] = np.maximum(Uc[..., :-1], 0) + np.maximum(-Uc[..., 1:], 0)
+        inflow += np.maximum(Vq[:, :-1], 0) + np.maximum(-Vq[:, 1:], 0) + np.maximum(Wz[:-1], 0) + np.maximum(-Wz[1:], 0)
+        Vu = np.where(Vu > 0, np.maximum(Vu, 2.0 * dt * inflow), Vu)
     out = np.where(Vu > 0, -(div - u * mass) / np.where(Vu > 0, Vu, 1.0), 0.0)
     out[..., [0, -1]] = 0.0
     return np.where(okx, out, 0.0)
@@ -594,6 +615,15 @@ class SigmaBaroclinic:
     ah : horizontal Laplacian viscosity [m² s⁻¹] (free slip)
     adv : momentum advection: 'flux' (default; momentum-conserving flux form with WENO5,
           as CROCO) or the advective form 'upwind3' / 'centred' of core.dynamics.nonlinear
+    vertical_coordinate : 'sigma_eulerian' (default; σ-layers with vertical advection) or 'ale'
+          (Lagrangian step + regrid + remap each step; spec docs/superpowers/specs/2026-10-11-ale-...)
+    regrid : ALE grid rule 'sigma' | 'zstar' | 'hybrid' (core.vertical.regrid)
+    regrid_params : rule parameters (dz_top, rho_target, max_h_top, d_sigma, d_hybrid, h_min; dsigma
+          defaults to the model's)
+    remap_scheme : 'pcm' | 'plm' | 'ppm_h4' (default)
+    h_thin_bed : bed face layers thinner than this [m] carry no velocity (HYCOM)
+    init_iterations : regrid–remap passes of the initial state with the hybrid rule
+    pgf : 'jacobian' (default), 'twoterm', or 'fv', finite volume (Adcroft et al. 2008; core.vertical.pgf)
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, n_layers: int = 10,
@@ -604,8 +634,10 @@ class SigmaBaroclinic:
                  open_boundaries: tuple[str, ...] = (), sponge_cells: int = 0,
                  sponge_tau: tuple[float, float] = (1200.0, 60.0), orlanski_cmax: float = 1.0,
                  sponge_tracer: bool = True, dsigma: np.ndarray | None = None, kh: float = 0.0,
-                 kv: float = 0.0, solver: str = "direct") -> None:
-        if pgf not in ("twoterm", "jacobian"):
+                 kv: float = 0.0, solver: str = "direct", vertical_coordinate: str = "sigma_eulerian",
+                 regrid: str = "sigma", regrid_params: dict | None = None, remap_scheme: str = "ppm_h4",
+                 h_thin_bed: float = 0.01, init_iterations: int = 10) -> None:
+        if pgf not in ("twoterm", "jacobian", "fv"):
             raise ValueError(f"unknown pressure-gradient scheme {pgf!r}")
         self.pgf, self.rho_ref = pgf, rho_ref
         if tracer_time not in ("ssprk3", "pc"):
@@ -647,44 +679,151 @@ class SigmaBaroclinic:
         self.ds = self.core.dsigma
         self.sigma_c = 0.5 * (self.core.sigma_w[1:, 0] + self.core.sigma_w[:-1, 0])   # layer centres (bed = 0)
         self.area = self.fs.area
+        self._setup_ale(vertical_coordinate, regrid, regrid_params, remap_scheme, z0, closure, h_thin_bed,
+                        init_iterations, act)
+
+    def _setup_ale(self, vertical_coordinate, regrid, regrid_params, remap_scheme, z0, closure, h_thin_bed,
+                   init_iterations, act) -> None:
+        """Check and store the ALE configuration (spec §2, §6.2); scope limits of ALE Plan B raise."""
+        if vertical_coordinate not in ("sigma_eulerian", "ale"):
+            raise ValueError(f"unknown vertical_coordinate {vertical_coordinate!r}; use 'sigma_eulerian' or 'ale'")
+        self.ale = vertical_coordinate == "ale"
+        if not self.ale:
+            return
+        if regrid not in ("sigma", "zstar", "hybrid"):
+            raise ValueError(f"unknown regrid rule {regrid!r}; use 'sigma', 'zstar' or 'hybrid'")
+        if remap_scheme not in REMAP_SCHEMES:
+            raise ValueError(f"unknown remap_scheme {remap_scheme!r}; use one of {sorted(REMAP_SCHEMES)}")
+        if self.open:
+            raise ValueError("open boundaries with vertical_coordinate='ale' are not implemented yet (ALE Plan C)")
+        if z0 is not None:
+            raise ValueError("vertical_coordinate='ale' needs z0=None for now: the law-of-the-wall drag uses "
+                             "the bed layer, which can vanish under z*")
+        if closure not in ("constant", "none"):
+            raise ValueError("vertical_coordinate='ale' needs closure 'constant' or 'none' for now "
+                             "(GLS and the parabolic ν assume σ-layers)")
+        params = dict(regrid_params or {})
+        params.setdefault("dsigma", self.ds)
+        for key in {"sigma": (), "zstar": ("dz_top",), "hybrid": ("dz_top", "rho_target")}[regrid]:
+            if key not in params:
+                raise ValueError(f"regrid={regrid!r} needs regrid_params[{key!r}]")
+        floodable = act & (np.nan_to_num(np.asarray(self.H, float), nan=1.0) <= 0)
+        if floodable.any() and (regrid == "zstar" or (regrid == "hybrid" and float(params.get("d_hybrid", 0.0)) <= 0)):
+            raise ValueError("cells with H ≤ 0 can dry: use regrid='sigma', or 'hybrid' with a shallow σ zone "
+                             "(regrid_params d_sigma, d_hybrid > 0) covering them")
+        self.regrid_rule, self.regrid_params = regrid, params
+        self.remap_code = REMAP_SCHEMES[remap_scheme]
+        self.h_thin_bed, self.init_iterations = float(h_thin_bed), int(init_iterations)
 
     # ------------------------------------------------------------------ helpers
     def initial_state(self, eta: np.ndarray, T: np.ndarray) -> SigmaState:
-        """Resting state; with ``rho_ref="auto"`` the reference profile is taken from this T."""
+        """
+        Resting state; T on the layers of ``layer_heights(eta)``.  With ``rho_ref="auto"`` the reference
+        profile is taken from this T.  ALE: h is the rule's grid (z* for 'hybrid', followed by
+        ``init_iterations`` regrid–remap passes towards the isopycnal grid).
+        """
         ny, nx = self.H.shape
         if isinstance(self.rho_ref, str) and self.rho_ref == "auto":
             z = self.layer_heights(eta)
             act = np.broadcast_to(self.fs.active[None], z.shape)
             self.rho_ref = reference_profile(z[act], self.density(np.asarray(T, float))[act])
         self.T_ext = np.array(T, float)                                # inflow / sponge target at open boundaries
-        return SigmaState(eta=np.array(eta, float), u=np.zeros((self.n, ny, nx + 1)),
-                          v=np.zeros((self.n, ny + 1, nx)), T=np.array(T, float))
+        st = SigmaState(eta=np.array(eta, float), u=np.zeros((self.n, ny, nx + 1)),
+                        v=np.zeros((self.n, ny + 1, nx)), T=np.array(T, float),
+                        h=self._initial_h(np.asarray(eta, float)) if self.ale else None)
+        if self.ale and self.regrid_rule == "hybrid":
+            for _ in range(self.init_iterations):
+                st.h, (st.T,) = self._regrid_remap(st.eta, st.h, [st.T], st.T)
+        return st
 
-    def layer_heights(self, eta: np.ndarray) -> np.ndarray:
-        """Height of the layer centres z_k = −H + D σ_c,k [m] (z = 0 at the rest surface), (N, ny, nx)."""
-        D = np.maximum(np.nan_to_num(self.H + eta, nan=self.fs.d_min), self.fs.d_min)
-        return -np.nan_to_num(self.H)[None] + D[None] * self.sigma_c[:, None, None]
+    def layer_heights(self, eta: np.ndarray, h: np.ndarray | None = None) -> np.ndarray:
+        """
+        Height of the layer centres [m] (z = 0 at the rest surface), (N, ny, nx): σ-layers
+        z_k = −H + D σ_c,k, or the centres of thicknesses h (ALE; default the initial grid).
+        """
+        if h is None and self.ale:
+            h = self._initial_h(np.asarray(eta, float))
+        if h is None:
+            D = np.maximum(np.nan_to_num(self.H + eta, nan=self.fs.d_min), self.fs.d_min)
+            return -np.nan_to_num(self.H)[None] + D[None] * self.sigma_c[:, None, None]
+        zw = -np.nan_to_num(self.H)[None] + np.concatenate([np.zeros((1,) + h.shape[1:]), np.cumsum(h, axis=0)])
+        return 0.5 * (zw[1:] + zw[:-1])
 
     def density(self, T: np.ndarray) -> np.ndarray:
         """Linear EOS ρ = ρ₀ − α (T − T₀) [kg m⁻³]."""
         return self.rho0 - self.t_coef * (T - self.t_ref)
 
-    def layer_volumes(self, eta: np.ndarray) -> np.ndarray:
+    def layer_volumes(self, eta: np.ndarray, h: np.ndarray | None = None) -> np.ndarray:
+        """Layer volumes [m³]: D Δσ_k A, or h_k A (ALE)."""
+        if h is not None:
+            return h * self.area[None]
         D = np.maximum(np.nan_to_num(self.H + eta, nan=0.0), 0.0)
         return D[None] * self.ds[:, None, None] * self.area[None]
 
     def tracer_content(self, st: SigmaState, power: int = 1) -> float:
-        V = self.layer_volumes(st.eta)
+        V = self.layer_volumes(st.eta, st.h)
         return float(np.sum(V * st.T**power))
 
     def rpe(self, st: SigmaState) -> float:
         """Reference potential energy [J] (flat-bottom basin: area = wet area)."""
-        V = self.layer_volumes(st.eta)
+        V = self.layer_volumes(st.eta, st.h)
         act = np.broadcast_to(self.fs.active[None], V.shape)
         return reference_potential_energy(self.density(st.T)[act], V[act], area=float(self.area[self.fs.active].sum()))
 
+    # ------------------------------------------------------------------ ALE helpers
+    def _initial_h(self, eta: np.ndarray) -> np.ndarray:
+        """ALE layer thicknesses of the rule's grid at η [m] (z* for 'hybrid', σ where H ≤ 0); 0 on dry/land."""
+        H = np.nan_to_num(np.asarray(self.H, float))
+        wet = self.fs.active & (H + eta > 0)
+        h0 = np.zeros((self.n,) + H.shape)
+        rule = "zstar" if self.regrid_rule == "hybrid" else self.regrid_rule
+        sig = wet & (H <= 0) if rule == "zstar" else np.zeros_like(wet)
+        numba.set_num_threads(_THREADS[0])                                 # parallel regrid kernel
+        for r, mask in ((rule, wet & ~sig), ("sigma", sig)):
+            if mask.any():
+                zw = rg.regrid_columns(r, H, eta, h0, None, self.regrid_params, mask)
+                h0 = np.where(mask[None], np.diff(zw, axis=0), h0)
+        return h0
+
+    def _regrid_remap(self, eta: np.ndarray, h_src: np.ndarray, fields: list, T: np.ndarray):
+        """Regrid with the rule (spec §3) at surface η and remap ``fields`` (spec §4): (h_new, remapped)."""
+        H = np.nan_to_num(np.asarray(self.H, float))
+        wet = self.fs.active & (H + eta > 0) & (h_src.sum(axis=0) > 0)
+        rho = self.density(T) if self.regrid_rule == "hybrid" else None
+        numba.set_num_threads(_THREADS[0])                                 # parallel regrid kernel
+        zw = rg.regrid_columns(self.regrid_rule, H, eta, h_src, rho, self.regrid_params, wet)
+        h_new = np.where(wet[None], np.diff(zw, axis=0), h_src)
+        return h_new, [rm.remap_columns(h_src, f, h_new, self.remap_code, wet) for f in fields]
+
+    def _transport_thickness(self, h: np.ndarray):
+        """
+        Upwind face thicknesses ((q_E, q_W) at u-faces, (q_N, q_S) at v-faces swapped to (N, nx, ny+1)):
+        clipped at the shallower bed for z* and hybrid, not for σ (core.vertical.ale).
+        """
+        clip = self.regrid_rule != "sigma"
+        H, act = np.nan_to_num(np.asarray(self.H, float)), self.fs.active
+        x = face_transport_thickness(h, H, act, clip)
+        y = face_transport_thickness(h.swapaxes(1, 2), H.T, act.T, clip)
+        return x, y
+
+    def _mean_face_thickness(self, h: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Direction-independent face thickness (q_E + q_W)/2 at u- and v-faces [m]."""
+        (qe, qw), (qn, qs) = self._transport_thickness(h)
+        return 0.5 * (qe + qw), (0.5 * (qn + qs)).swapaxes(1, 2)
+
+    def _remap_faces(self, vel: np.ndarray, hf_src: np.ndarray, hf_tgt: np.ndarray) -> np.ndarray:
+        """
+        Remap face velocities between two face-layer geometries in fraction space: thicknesses
+        w_src S → w_tgt S with the same column total S, so Σ w u (the depth mean of the free
+        surface) is conserved exactly (spec §2 step 4).
+        """
+        tot = hf_src.sum(axis=0)
+        wet = tot > 0
+        S = np.where(wet, tot, 1.0)[None]
+        return rm.remap_columns(face_fractions(hf_src) * S, vel, face_fractions(hf_tgt) * S, self.remap_code, wet)
+
     # ------------------------------------------------------------------ explicit tendencies
-    def _baroclinic_pgf(self, eta: np.ndarray, T: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def _baroclinic_pgf(self, eta: np.ndarray, T: np.ndarray, h: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
         """
         Baroclinic pressure-gradient force at u- and v-faces [m s⁻²].
 
@@ -701,10 +840,15 @@ class SigmaBaroclinic:
                      starting at the surface z = η with ρ′ extrapolated linearly from the two
                      top layers.  Exact for ρ linear in z over any topography.
         """
+        if self.pgf == "fv":
+            return self._fv_pgf(eta, T, h)
         n = self.n
-        D = np.maximum(np.nan_to_num(self.H + eta, nan=self.fs.d_min), self.fs.d_min)
-        h = D[None] * self.ds[:, None, None]
-        z = -np.nan_to_num(self.H)[None] + D[None] * self.sigma_c[:, None, None]   # cell-centre height (z = 0 at rest)
+        if h is None:
+            D = np.maximum(np.nan_to_num(self.H + eta, nan=self.fs.d_min), self.fs.d_min)
+            h = D[None] * self.ds[:, None, None]
+            z = -np.nan_to_num(self.H)[None] + D[None] * self.sigma_c[:, None, None]   # cell-centre height (z = 0 at rest)
+        else:
+            z = self.layer_heights(eta, h)
         rho = self.density(T)
         rp = rho - (self.rho_ref(z) if self.rho_ref is not None else self.rho0)
         g = self.g
@@ -753,6 +897,18 @@ class SigmaBaroclinic:
         gy[:, 1:-1, :] = np.where(oky, -ay / self.fs.dv[1:-1, :] / self.rho0, 0.0)
         return gx, gy
 
+    def _fv_pgf(self, eta: np.ndarray, T: np.ndarray, h: np.ndarray | None) -> tuple[np.ndarray, np.ndarray]:
+        """Finite-volume PGF (core.vertical.pgf) on σ-layers (h=None) or ALE layers, with ρ_ref(z) if set."""
+        if h is None:
+            D = np.maximum(np.nan_to_num(self.H + eta, nan=self.fs.d_min), self.fs.d_min)
+            h = D[None] * self.ds[:, None, None]
+        ref = None if isinstance(self.rho_ref, str) else self.rho_ref        # "auto" before initial_state: ρ₀
+        numba.set_num_threads(_THREADS[0])
+        gx, gy = fv_pgf(h, np.nan_to_num(self.H), np.nan_to_num(eta), np.nan_to_num(T), self.fs.du, self.fs.dv,
+                        self.rho0, self.t_coef, self.t_ref, ref, self.g)
+        return (np.where(np.isfinite(self.fs.H_u)[None], gx, 0.0),
+                np.where(np.isfinite(self.fs.H_v)[None], gy, 0.0))
+
     def _coriolis(self, u: np.ndarray, v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
         Energy-conserving C-grid Coriolis terms (+f v̄ at u-faces, −f ū at v-faces):
@@ -782,17 +938,18 @@ class SigmaBaroclinic:
         Du, Dv = self.core.face_depths(st.eta)
         wet_u = np.isfinite(self.fs.H_u) & np.isfinite(Du) & (Du > self.fs.d_min)
         wet_v = np.isfinite(self.fs.H_v) & np.isfinite(Dv) & (Dv > self.fs.d_min)
-        gu, gv = self._baroclinic_pgf(st.eta, st.T)
+        gu, gv = self._baroclinic_pgf(st.eta, st.T, st.h)
         cu, cv = self._coriolis(st.u, st.v)
         gu += cu
         gv += cv
         if self.adv == "flux":
             if st.Qx is not None:
-                V = self.layer_volumes(st.eta)
-                gu += _flux_form_u(st.u, st.Qx, st.Qy, st.Fz, V, wet_u[None])
+                V = self.layer_volumes(st.eta, st.h)
+                lim = self.dt if self.ale else 0.0                                      # vanished-cell limiter
+                gu += _flux_form_u(st.u, st.Qx, st.Qy, st.Fz, V, wet_u[None], lim)
                 swap = lambda a: np.swapaxes(a, 1, 2)                                   # noqa: E731
                 gv += swap(_flux_form_u(swap(st.v), swap(st.Qy), swap(st.Qx), swap(st.Fz), swap(V),
-                                        swap(wet_v[None])))
+                                        swap(wet_v[None]), lim))
         for k in range(n):
             if self.adv != "flux":
                 gu[k] -= advection_u(st.u[k], st.v[k], self.hg, wet_u, scheme=self.adv)
@@ -838,28 +995,35 @@ class SigmaBaroclinic:
             face[tuple(sl_f)] = np.where(inflow_sign * q > 0, ext[tuple(sl_c)], c[tuple(sl_c)])
         return face
 
-    def _diffuse_h(self, T: np.ndarray, V: np.ndarray, eta: np.ndarray) -> np.ndarray:
+    def _diffuse_h(self, T: np.ndarray, V: np.ndarray, eta: np.ndarray, h: np.ndarray | None = None) -> np.ndarray:
         """
         Explicit Laplacian diffusion along σ-surfaces in flux form (MITgcm diffKhT):
             V_k ∂T/∂t = −Σ_faces F,   F_x = −K_h L_u h_{u,k} (T_i − T_{i−1}) / Δx_u
-        with h_{u,k} = D_u Δσ_k (mean total depth of the two cells); conservative, and a uniform
+        with h_{u,k} = D_u Δσ_k (σ) or the face layer thickness min(h_L, h_R) (ALE); conservative, and a uniform
         T stays uniform.  With a reference profile the anomaly T − T_ref(z) is diffused instead
         (Mellor & Blumberg 1985 [verificar]), so a resting stratification is not mixed across
         sloping σ-surfaces (e.g. a shelf step).
         """
         Tw = T
         if self.rho_ref is not None and not isinstance(self.rho_ref, str) and self.t_coef != 0:
-            Tw = T - (self.t_ref + (self.rho0 - self.rho_ref(self.layer_heights(eta))) / self.t_coef)
+            Tw = T - (self.t_ref + (self.rho0 - self.rho_ref(self.layer_heights(eta, h))) / self.t_coef)
         Du, Dv = self.core.face_depths(eta)
         okx = np.isfinite(self.fs.H_u) & np.isfinite(Du) & (Du > self.fs.d_min)
         oky = np.isfinite(self.fs.H_v) & np.isfinite(Dv) & (Dv > self.fs.d_min)
         ds = self.ds[:, None, None]
         Fx = np.zeros((self.n,) + Du.shape)
         Fy = np.zeros((self.n,) + Dv.shape)
-        Fx[..., 1:-1] = -self.kh * (self.fs.Lu * np.nan_to_num(Du) / self.fs.du)[None, :, 1:-1] * ds \
-            * (Tw[..., 1:] - Tw[..., :-1])
-        Fy[:, 1:-1, :] = -self.kh * (self.fs.Lv * np.nan_to_num(Dv) / self.fs.dv)[None, 1:-1, :] * ds \
-            * (Tw[:, 1:, :] - Tw[:, :-1, :])
+        if h is None:
+            Fx[..., 1:-1] = -self.kh * (self.fs.Lu * np.nan_to_num(Du) / self.fs.du)[None, :, 1:-1] * ds \
+                * (Tw[..., 1:] - Tw[..., :-1])
+            Fy[:, 1:-1, :] = -self.kh * (self.fs.Lv * np.nan_to_num(Dv) / self.fs.dv)[None, 1:-1, :] * ds \
+                * (Tw[:, 1:, :] - Tw[:, :-1, :])
+        else:                                                        # ALE: face layer thickness (min of the cells)
+            hu, hv = face_thickness(h, self.fs.active)
+            Fx[..., 1:-1] = -self.kh * (self.fs.Lu / self.fs.du)[None, :, 1:-1] * hu[..., 1:-1] \
+                * (Tw[..., 1:] - Tw[..., :-1])
+            Fy[:, 1:-1, :] = -self.kh * (self.fs.Lv / self.fs.dv)[None, 1:-1, :] * hv[:, 1:-1, :] \
+                * (Tw[:, 1:, :] - Tw[:, :-1, :])
         Fx = np.where(okx[None], Fx, 0.0)
         Fy = np.where(oky[None], Fy, 0.0)
         div = Fx[..., 1:] - Fx[..., :-1] + Fy[:, 1:, :] - Fy[:, :-1, :]
@@ -951,6 +1115,55 @@ class SigmaBaroclinic:
         q3 = q0 / 3.0 + 2.0 / 3.0 * (q2 + dt * rhs(c2))
         return safe(q3, V1)
 
+    def _step_ale(self, st: SigmaState, gu_ab: np.ndarray, gv_ab: np.ndarray, tu, tv, hist: list) -> SigmaState:
+        """
+        ALE step (spec §2): (1) Lagrangian step with no flux through the layer interfaces —
+        free surface with the depth mean ū = Σ w_k u_k on the mean face thicknesses of hⁿ, donor-cell
+        layer transports of u_k^θ = θ u_k^{n+1} + (1−θ) u_k^n corrected to the free-surface flux
+        (core.vertical.ale.upwind_transport_x), layer continuity h† = hⁿ − Δt ∇·Q_k / A, flux-form
+        tracer advection with Fz = 0; (2) vertical physics on h†; (3) regrid with the rule; (4)
+        conservative remap of T (and T² for the mixing diagnostic) and of u, v in face-fraction
+        space.  Velocity is zero in bed layers thin on both sides of a face (HYCOM hybgen.F90:1757-1764).
+        """
+        dt, th, n = self.dt, self.fs.theta, self.n
+        act = self.fs.active
+        (qe, qw), (qn, qs) = self._transport_thickness(st.h)
+        hu, hv = 0.5 * (qe + qw), (0.5 * (qn + qs)).swapaxes(1, 2)
+        wu, wv = face_fractions(hu), face_fractions(hv)
+        eta_new, u_new, v_new = self.core.step(st.eta, st.u, st.v, G_u=gu_ab, G_v=gv_ab, tau_u=tu, tau_v=tv,
+                                               wu=wu, wv=wv, hu=np.maximum(hu, DZ_FLOOR), hv=np.maximum(hv, DZ_FLOOR))
+        u_new = zero_thin_bed_velocity(u_new, hu, wu, self.h_thin_bed)
+        v_new = zero_thin_bed_velocity(v_new, hv, wv, self.h_thin_bed)
+        un = np.where(self.fs.last_wet_u[None], st.u, 0.0)
+        vn = np.where(self.fs.last_wet_v[None], st.v, 0.0)
+        utx, uty = th * u_new + (1 - th) * un, th * v_new + (1 - th) * vn
+        Qbx = self.fs.Lu * self.fs.last_Du * (wu * utx).sum(axis=0)        # free-surface volume fluxes
+        Qby = self.fs.Lv * self.fs.last_Dv * (wv * uty).sum(axis=0)
+        Qx = upwind_transport_x(qe, qw, utx, self.fs.Lu, Qbx)
+        Qy = upwind_transport_x(qn, qs, uty.swapaxes(1, 2), self.fs.Lv.T, Qby.T).swapaxes(1, 2)
+        divh = Qx[..., 1:] - Qx[..., :-1] + Qy[:, 1:, :] - Qy[:, :-1, :]
+        h_lag = lagrangian_thickness(st.h, divh, dt, self.area)
+        V0, V1 = self.layer_volumes(st.eta, st.h), self.layer_volumes(eta_new, h_lag)
+        Fz = np.zeros((n + 1,) + self.H.shape)                              # Lagrangian: no flux through interfaces
+        ok = np.broadcast_to(act[None], V1.shape) & (V1 > 0)
+        C = self._advect(np.stack([st.T, st.T**2]), V0, V1, Qx, Qy, Fz, ok)
+        mix = V1 * (C[1] - C[0] ** 2) / dt                                  # advection part
+        T_lag = C[0]
+        if self.kh > 0:
+            T_lag = self._diffuse_h(T_lag, V1, eta_new, h_lag)
+        if self.kv > 0:
+            dz = np.maximum(h_lag, DZ_FLOOR).reshape(n, -1)
+            T_lag = vertical_implicit(T_lag.reshape(n, -1), dz, np.full((n + 1, dz.shape[1]), self.kv),
+                                      np.zeros(dz.shape[1]), dt).reshape(T_lag.shape)
+        h_new, (T_new, T2_new) = self._regrid_remap(eta_new, h_lag, [T_lag, T_lag**2], T_lag)
+        mix = mix + self.layer_volumes(eta_new, h_new) * (T2_new - T_new**2) / dt   # remap part
+        hu_lag, hv_lag = self._mean_face_thickness(h_lag)
+        hu1, hv1 = self._mean_face_thickness(h_new)
+        u_new = zero_thin_bed_velocity(self._remap_faces(u_new, hu_lag, hu1), hu1, face_fractions(hu1), self.h_thin_bed)
+        v_new = zero_thin_bed_velocity(self._remap_faces(v_new, hv_lag, hv1), hv1, face_fractions(hv1), self.h_thin_bed)
+        return SigmaState(eta=eta_new, u=u_new, v=v_new, T=T_new, h=h_new, g_hist=hist, omega=None, mix_num=mix,
+                          Qx=Qx, Qy=Qy, Fz=Fz, time=st.time + dt)
+
     # ------------------------------------------------------------------ step
     def step(self, st: SigmaState, tau_x: np.ndarray | None = None, tau_y: np.ndarray | None = None) -> SigmaState:
         """
@@ -970,6 +1183,8 @@ class SigmaBaroclinic:
             gv_ab = AB3[0] * gv + AB3[1] * hist[1][1] + AB3[2] * hist[2][1]
         tu = None if tau_x is None else np.asarray(tau_x, float) / self.rho0
         tv = None if tau_y is None else np.asarray(tau_y, float) / self.rho0
+        if self.ale:
+            return self._step_ale(st, gu_ab, gv_ab, tu, tv, hist)
         fl = {}
         if self.open:                                                   # radiate to a resting exterior (η = 0, ū = 0)
             zu, zv = np.zeros(self.fs.H_u.shape), np.zeros(self.fs.H_v.shape)

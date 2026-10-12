@@ -101,10 +101,10 @@ def hycom1(c: dict, dz: np.ndarray, tgt_iface: np.ndarray, blend: bool) -> np.nd
     rg.hycom1_column(c["H"], 0.0, c["h"][::-1].copy(), c["r"][::-1].copy(), tgt_iface, dz,
                      np.full(n, np.inf), H_MIN, zw)
     if blend:
-        sig = np.empty(n + 1)
+        sig, zs, out = np.empty(n + 1), np.empty(n + 1), np.empty(n + 1)
         rg.sigma_column(c["H"], 0.0, np.full(n, 1.0 / n), H_MIN, sig)
-        out = np.empty(n + 1)
-        rg.blend_shallow_sigma(zw, sig, c["H"], 50.0, 100.0, out)
+        rg.zstar_column(c["H"], 0.0, dz, H_MIN, zs)
+        rg.window_shallow_sigma(zw, sig, zs, c["H"], c["H"], 50.0, 100.0, H_MIN, out)
         zw = out
     return -zw[::-1]
 
