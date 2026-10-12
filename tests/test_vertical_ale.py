@@ -358,3 +358,51 @@ def test_transport_thickness_kernel_matches_numpy(clip):
     b = ale.face_transport_thickness_numpy(h, H, active, clip)
     for x, y in zip(a, b):
         np.testing.assert_allclose(x, y, rtol=1e-14, atol=1e-14)
+
+
+def _ppm_random(seed, n=6, ny=4, nx=9, clip=False, land=False, vanish=False):
+    rng = np.random.default_rng(seed)
+    H = rng.uniform(50.0, 300.0, (ny, nx)) if clip else np.full((ny, nx), 100.0)
+    active = (rng.uniform(size=(ny, nx)) > 0.2) if land else np.ones((ny, nx), bool)
+    frac = rng.uniform(0.05, 1.0, (n, ny, nx))
+    if vanish:
+        frac[rng.uniform(size=frac.shape) < 0.3] = 0.0
+        frac[:, 0, 0] = 0.0
+        frac[2, 0, 0] = 1.0
+    h = frac / frac.sum(0) * H[None]
+    ut = rng.normal(0.0, 0.3, (n, ny, nx + 1))
+    qe, qw = ale.face_transport_thickness_numpy(h, H, active, clip)
+    dx_t = rng.uniform(800.0, 1200.0, (ny, nx))
+    L = rng.uniform(800.0, 1200.0, (ny, nx + 1))
+    F0, _ = ale.ppm_fluxes_x(h, ut, L, qe, qw, active, 60.0, dx_t)
+    Qbt = F0.sum(0) + rng.normal(0.0, 50.0, (ny, nx + 1))                 # needs a Newton correction
+    return h, ut, L, Qbt, qe, qw, active, dx_t
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+def test_ppm_kernel_matches_numpy(seed):
+    args = _ppm_random(seed)
+    a = ale.ppm_transport_x(*args[:7], 60.0, args[7])
+    b = ale.ppm_transport_x_numpy(*args[:7], 60.0, args[7])
+    np.testing.assert_allclose(a, b, rtol=1e-12, atol=1e-9)
+
+
+@pytest.mark.parametrize("seed", [4, 5])
+def test_ppm_kernel_matches_numpy_with_clip_and_vanished_layers(seed):
+    # review focus 1–3: bed clip, vanished layers, land, edge faces; Newton with the global stop of the NumPy loop
+    args = _ppm_random(seed, clip=True, land=True, vanish=True)
+    a = ale.ppm_transport_x(*args[:7], 60.0, args[7])
+    b = ale.ppm_transport_x_numpy(*args[:7], 60.0, args[7])
+    np.testing.assert_allclose(a, b, rtol=1e-12, atol=1e-9)
+    assert np.isfinite(a).all()
+
+
+def test_ppm_edges_kernel_matches_numpy():
+    args = _ppm_random(7, clip=True, land=True, vanish=True)
+    h, active = args[0], args[6]
+    hc = np.where(active[None], h, 0.0)
+    hw, he = np.empty_like(hc), np.empty_like(hc)
+    ale._ppm_edges_kernel(np.ascontiguousarray(hc), np.ascontiguousarray(active), ale.H_PPM_MIN, hw, he)
+    rw, re = ale.ppm_edges_x(hc, active)
+    np.testing.assert_allclose(hw, rw, rtol=1e-14, atol=1e-14)
+    np.testing.assert_allclose(he, re, rtol=1e-14, atol=1e-14)

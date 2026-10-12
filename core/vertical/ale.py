@@ -305,10 +305,12 @@ def ppm_fluxes_x(h: np.ndarray, ut: np.ndarray, L: np.ndarray, q_e: np.ndarray, 
     return _ppm_fluxes(h, h_w, h_e, ut, L, q_e, q_w, _open_faces(active), dt, dx_t)
 
 
-def ppm_transport_x(h: np.ndarray, ut: np.ndarray, L: np.ndarray, Q_bt: np.ndarray, q_e: np.ndarray,
-                    q_w: np.ndarray, active: np.ndarray, dt: float, dx_t: np.ndarray,
-                    max_iter: int = 20) -> np.ndarray:
+def ppm_transport_x_numpy(h: np.ndarray, ut: np.ndarray, L: np.ndarray, Q_bt: np.ndarray, q_e: np.ndarray,
+                          q_w: np.ndarray, active: np.ndarray, dt: float, dx_t: np.ndarray,
+                          max_iter: int = 20) -> np.ndarray:
     """
+    NumPy reference of ppm_transport_x (test oracle).
+
     Layer volume fluxes through the u-faces [m³ s⁻¹] with PPM thickness (MOM6 continuity_PPM,
     OM4 defaults) and a uniform velocity correction du per face column so that
     Σ_k L (u_k + du) h̄_k(u_k + du) = Q_bt (zonal_flux_adjust, MOM_continuity_PPM.F90:1368-1546:
@@ -351,6 +353,191 @@ def ppm_transport_x(h: np.ndarray, ut: np.ndarray, L: np.ndarray, Q_bt: np.ndarr
     qR = np.where((qR.sum(axis=0) > 0)[None], qR, alt)
     tot = qR.sum(axis=0)
     return np.where(open_, F + R[None] * qR / np.where(tot > 0, tot, 1.0)[None], 0.0)
+
+
+@numba.njit(parallel=True, cache=True)
+def _ppm_edges_kernel(h, active, h_min, h_w, h_e):  # pragma: no cover
+    """Kernel of ppm_edges_x (same operations, MOM_continuity_PPM.F90:2827-2942 and 3184-3226)."""
+    n, ny, nx = h.shape
+    for j in numba.prange(ny):
+        slp = np.empty(nx)
+        for k in range(n):
+            for i in range(nx):
+                m = 1.0 if active[j, i] else 0.0
+                mw = (1.0 if active[j, i - 1] else 0.0) if i > 0 else 0.0
+                me = (1.0 if active[j, i + 1] else 0.0) if i < nx - 1 else 0.0
+                hc = h[k, j, i]
+                hm1 = mw * h[k, j, i - 1] + (1.0 - mw) * hc if i > 0 else hc
+                hp1 = me * h[k, j, i + 1] + (1.0 - me) * hc if i < nx - 1 else hc
+                s = 0.5 * (hp1 - hm1)
+                dmx = max(max(hp1, hm1), hc) - hc
+                dmn = hc - min(min(hp1, hm1), hc)
+                a = min(abs(s), 2.0 * min(dmx, dmn))
+                s = a if s > 0.0 else (-a if s < 0.0 else 0.0)
+                slp[i] = s if mw * me * m > 0.0 else 0.0
+            for i in range(nx):
+                mw = (1.0 if active[j, i - 1] else 0.0) if i > 0 else 0.0
+                me = (1.0 if active[j, i + 1] else 0.0) if i < nx - 1 else 0.0
+                hc = h[k, j, i]
+                hm1 = mw * h[k, j, i - 1] + (1.0 - mw) * hc if i > 0 else hc
+                hp1 = me * h[k, j, i + 1] + (1.0 - me) * hc if i < nx - 1 else hc
+                sw = slp[i - 1] if i > 0 else 0.0
+                se = slp[i + 1] if i < nx - 1 else 0.0
+                hw = 0.5 * (hm1 + hc) + (sw - slp[i]) / 6.0
+                he = 0.5 * (hp1 + hc) + (slp[i] - se) / 6.0
+                curv = 3.0 * ((hw + he) - 2.0 * hc)
+                dh = he - hw
+                inside = curv > 0.0 and abs(dh) < curv
+                if inside and hc <= h_min:
+                    h_w[k, j, i] = hc
+                    h_e[k, j, i] = hc
+                    continue
+                sc = 1.0
+                if inside:
+                    num = 12.0 * curv * (hc - h_min)
+                    den = curv * curv + 3.0 * dh * dh
+                    if num < den:
+                        sc = num / den
+                h_w[k, j, i] = hc + sc * (hw - hc)
+                h_e[k, j, i] = hc + sc * (he - hc)
+
+
+@numba.njit(cache=True)
+def _face_flux(k, j, f, u, h, h_w, h_e, dx_t, q_e, q_w, L_f, dt, nx):  # pragma: no cover
+    """(F, dF/du) of layer k at u-face (j, f): _swept_thickness + _ppm_fluxes for one open face (MOM6 flux_elem)."""
+    iw = f - 1 if f > 0 else 0
+    ie = f if f < nx else nx - 1
+    if u >= 0.0:
+        c = min(abs(u) * dt / dx_t[j, iw], 1.0)
+        hu, ww, ee = h[k, j, iw], h_w[k, j, iw], h_e[k, j, iw]
+        curv3, dh, edge, q = (ww + ee) - 2.0 * hu, ww - ee, ee, q_e[k, j, f]
+    else:
+        c = min(abs(u) * dt / dx_t[j, ie], 1.0)
+        hu, ww, ee = h[k, j, ie], h_w[k, j, ie], h_e[k, j, ie]
+        curv3, dh, edge, q = (ww + ee) - 2.0 * hu, ee - ww, ww, q_w[k, j, f]
+    mean = edge + c * (0.5 * dh + curv3 * (c - 1.5))
+    marg = edge + c * (dh + 3.0 * curv3 * (c - 1.0))
+    if q < hu:                                                         # bed clip (z*, hybrid)
+        mean = min(mean, q)
+        marg = min(marg, q)
+    return L_f * u * max(mean, 0.0), L_f * max(marg, 0.0)
+
+
+@numba.njit(parallel=True, cache=True)
+def _ppm_transport_kernel(h, h_w, h_e, ut, L, Q_bt, q_e, q_w, active, dt, dx_t, max_iter, out):  # pragma: no cover
+    """
+    Kernel of ppm_transport_x_numpy: Newton with bracketing bisection on the uniform correction du of each face
+    column (zonal_flux_adjust, MOM_continuity_PPM.F90:1368-1546), stopped when *all* faces have converged, as
+    the NumPy loop (identical iteration count), then the HYCOM residual share (cnuity.F90:585-620).
+    """
+    n, ny, nx = h.shape
+    nf = nx + 1
+    du = np.zeros((ny, nf))
+    lo = np.empty((ny, nf))
+    hi = np.empty((ny, nf))
+    err = np.empty((ny, nf))
+    dsum = np.empty((ny, nf))
+    for j in numba.prange(ny):
+        for f in range(nf):
+            iw = f - 1 if f > 0 else 0
+            ie = f if f < nx else nx - 1
+            limw, lime = 0.5 * dx_t[j, iw] / dt, 0.5 * dx_t[j, ie] / dt
+            mnw, mxe = np.inf, -np.inf
+            for k in range(n):
+                mnw = min(mnw, limw - ut[k, j, f])
+                mxe = max(mxe, -(lime + ut[k, j, f]))
+            hi[j, f] = max(min(limw, mnw), 0.0)
+            lo[j, f] = min(max(-lime, mxe), 0.0)
+            s, sd = 0.0, 0.0
+            if active[j, iw] and active[j, ie]:
+                for k in range(n):
+                    F, dF = _face_flux(k, j, f, ut[k, j, f], h, h_w, h_e, dx_t, q_e, q_w, L[j, f], dt, nx)
+                    s += F
+                    sd += dF
+            err[j, f] = s - Q_bt[j, f]
+            dsum[j, f] = sd
+    for _ in range(max_iter):
+        for j in numba.prange(ny):
+            for f in range(nf):
+                e, d = err[j, f], du[j, f]
+                if e > 0.0:
+                    hi[j, f] = d
+                if e < 0.0:
+                    lo[j, f] = d
+                step = -e / dsum[j, f] if dsum[j, f] > 0.0 else 0.0
+                new = d + step
+                if step > 0.0 and new >= hi[j, f]:
+                    new = 0.5 * (d + hi[j, f])
+                if step < 0.0 and new <= lo[j, f]:
+                    new = 0.5 * (d + lo[j, f])
+                du[j, f] = new
+                iw = f - 1 if f > 0 else 0
+                ie = f if f < nx else nx - 1
+                s, sd = 0.0, 0.0
+                if active[j, iw] and active[j, ie]:
+                    for k in range(n):
+                        F, dF = _face_flux(k, j, f, ut[k, j, f] + new, h, h_w, h_e, dx_t, q_e, q_w, L[j, f], dt, nx)
+                        s += F
+                        sd += dF
+                err[j, f] = s - Q_bt[j, f]
+                dsum[j, f] = sd
+        done = True
+        for j in range(ny):
+            for f in range(nf):
+                if abs(err[j, f]) > 1e-12 * max(abs(Q_bt[j, f]), 1.0):
+                    done = False
+        if done:
+            break
+    for j in numba.prange(ny):
+        Fk = np.empty(n)
+        for f in range(nf):
+            iw = f - 1 if f > 0 else 0
+            ie = f if f < nx else nx - 1
+            if not (active[j, iw] and active[j, ie]):
+                for k in range(n):
+                    out[k, j, f] = 0.0
+                continue
+            s = 0.0
+            for k in range(n):
+                Fk[k] = _face_flux(k, j, f, ut[k, j, f] + du[j, f], h, h_w, h_e, dx_t, q_e, q_w, L[j, f], dt, nx)[0]
+                s += Fk[k]
+            R = Q_bt[j, f] - s
+            te, tw = 0.0, 0.0
+            for k in range(n):
+                te += q_e[k, j, f]
+                tw += q_w[k, j, f]
+            use_e = R >= 0.0
+            tot = te if use_e else tw
+            if tot <= 0.0:
+                use_e = not use_e
+                tot = te if use_e else tw
+            den = tot if tot > 0.0 else 1.0
+            for k in range(n):
+                out[k, j, f] = Fk[k] + R * (q_e[k, j, f] if use_e else q_w[k, j, f]) / den
+
+
+def ppm_transport_x(h: np.ndarray, ut: np.ndarray, L: np.ndarray, Q_bt: np.ndarray, q_e: np.ndarray,
+                    q_w: np.ndarray, active: np.ndarray, dt: float, dx_t: np.ndarray,
+                    max_iter: int = 20) -> np.ndarray:
+    """
+    Layer volume fluxes through the u-faces [m³ s⁻¹] with PPM thickness (MOM6 continuity_PPM,
+    OM4 defaults) and a uniform velocity correction du per face column so that
+    Σ_k L (u_k + du) h̄_k(u_k + du) = Q_bt (zonal_flux_adjust, MOM_continuity_PPM.F90:1368-1546:
+    Newton with bracketing bisection; du keeps every layer under CFL ½, :773-874).  The
+    remaining residual is shared like HYCOM (cnuity.F90:585-620) so Σ_k Q_k = Q_bt to
+    round-off.  Only the fluxes change, not u (as MOM6).  For the v-faces call it on swapped axes.
+    Numba kernels (_ppm_edges_kernel, _ppm_transport_kernel); ppm_transport_x_numpy is the reference.
+    """
+    hc = np.ascontiguousarray(np.where(active[None], np.nan_to_num(h), 0.0))
+    act = np.ascontiguousarray(active)
+    h_w, h_e = np.empty_like(hc), np.empty_like(hc)
+    _ppm_edges_kernel(hc, act, H_PPM_MIN, h_w, h_e)
+    out = np.empty(np.shape(ut))
+    c = np.ascontiguousarray
+    _ppm_transport_kernel(hc, h_w, h_e, c(ut, dtype=float), c(L, dtype=float), c(Q_bt, dtype=float),
+                          c(q_e, dtype=float), c(q_w, dtype=float), act, float(dt), c(dx_t, dtype=float),
+                          int(max_iter), out)
+    return out
 
 
 # ---------------------------------------------------------------- open boundaries (Plan C, scope A)
