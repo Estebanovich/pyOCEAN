@@ -170,3 +170,51 @@ def test_implicit_viscosity_slaves_a_vanishing_layer_to_its_neighbours():
     dz = np.array([[1.0], [1e-4], [1.0]])
     out = vertical_implicit(u, dz, np.full((4, 1), 1e-4), np.zeros(1), 20.0)
     assert abs(out[1, 0] - 0.5) < 0.1
+
+
+# ---------------------------------------------------------------- performance kernels (ALE performance task 5.3)
+def _vi_random(seed=3, n=4, ny=7, nx=9):
+    from core.grid.horizontal import create_cartesian_grid_stretched
+    rng = np.random.default_rng(seed)
+    hg = create_cartesian_grid_stretched(rng.uniform(500.0, 1500.0, nx), rng.uniform(500.0, 1500.0, ny), f0=1e-4)
+    g = {k: np.asarray(hg[k].values, float) for k in ("dx_u", "dy_v", "area_t", "area_u", "area_v")}
+    active = rng.uniform(size=(ny, nx)) > 0.15
+    g["area_q"], g["mask_q"] = vi.corner_area(g["dx_u"], g["dy_v"]), vi.corner_mask(active)
+    u, v = rng.normal(0, 0.3, (n, ny, nx + 1)), rng.normal(0, 0.3, (n, ny + 1, nx))
+    h = rng.uniform(0.0, 10.0, (n, ny, nx))
+    h[0, 2, 3] = 0.0
+    Qx, Qy = rng.normal(0, 50.0, u.shape), rng.normal(0, 50.0, v.shape)
+    fq = np.full((ny + 1, nx + 1), 1e-4)
+    return g, active, u, v, h, Qx, Qy, fq
+
+
+def test_vorticity_and_pv_kernels_match_numpy():
+    g, active, u, v, h, Qx, Qy, fq = _vi_random()
+    z = vi.vorticity_q(u, v, g["dx_u"], g["dy_v"], g["area_q"], g["mask_q"])
+    assert np.array_equal(z, vi.vorticity_q_numpy(u, v, g["dx_u"], g["dy_v"], g["area_q"], g["mask_q"]))
+    assert np.array_equal(vi.pv_q(z, fq, h, g["area_t"], active), vi.pv_q_numpy(z, fq, h, g["area_t"], active))
+
+
+@pytest.mark.parametrize("bound", [True, False])
+def test_coriolis_kernel_matches_numpy(bound):
+    g, active, u, v, h, Qx, Qy, fq = _vi_random(4)
+    z = vi.vorticity_q_numpy(u, v, g["dx_u"], g["dy_v"], g["area_q"], g["mask_q"])
+    q = vi.pv_q_numpy(z, fq, h, g["area_t"], active)
+    a = vi.coriolis_pv(q, fq[None] + z, Qx, Qy, u, v, g["dx_u"], g["dy_v"], bound)
+    b = vi.coriolis_pv_numpy(q, fq[None] + z, Qx, Qy, u, v, g["dx_u"], g["dy_v"], bound)
+    assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1])
+
+
+@pytest.mark.parametrize("scheme", ["arakawa", "gudonov"])
+def test_kinetic_energy_kernel_matches_numpy(scheme):
+    g, active, u, v, h, Qx, Qy, fq = _vi_random(5)
+    a = vi.kinetic_energy(u, v, g["area_u"], g["area_v"], g["area_t"], scheme)
+    b = vi.kinetic_energy_numpy(u, v, g["area_u"], g["area_v"], g["area_t"], scheme)
+    assert np.array_equal(a, b)
+
+
+def test_fused_vorticity_and_pv_match_numpy():
+    g, active, u, v, h, Qx, Qy, fq = _vi_random(6)
+    z, q = vi.vorticity_and_pv(u, v, g["dx_u"], g["dy_v"], g["area_q"], g["mask_q"], fq, h, g["area_t"], active)
+    zr = vi.vorticity_q_numpy(u, v, g["dx_u"], g["dy_v"], g["area_q"], g["mask_q"])
+    assert np.array_equal(z, zr) and np.array_equal(q, vi.pv_q_numpy(zr, fq, h, g["area_t"], active))

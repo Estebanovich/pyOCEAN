@@ -1013,8 +1013,9 @@ class SigmaBaroclinic:
         the first step uses L u h̄.
         """
         g = self._vi
-        zeta = vi.vorticity_q(st.u, st.v, g["dx_u"], g["dy_v"], g["area_q"], g["mask_q"])
-        q = vi.pv_q(zeta, self._fq, st.h, g["area_t"], self.fs.active)
+        numba.set_num_threads(_THREADS[0])                                 # vector-invariant kernels
+        zeta, q = vi.vorticity_and_pv(st.u, st.v, g["dx_u"], g["dy_v"], g["area_q"], g["mask_q"], self._fq, st.h,
+                                      g["area_t"], self.fs.active)
         Qx, Qy = st.Qx, st.Qy
         if Qx is None or Qy is None:
             hu, hv = self._mean_face_thickness(st.h)

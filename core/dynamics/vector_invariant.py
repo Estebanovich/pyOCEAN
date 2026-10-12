@@ -18,6 +18,7 @@ Mon. Wea. Rev. 109, 18–36.  Bleck, R. & Smith, L. T. (1990). JGR 95, 3273–32
 
 from __future__ import annotations
 
+import numba
 import numpy as np
 
 V_NEGLECT = 1e-20 * 1e-8   # [m³] negligible volume in q: H_subroundoff (1e-4 m)² (MOM_CoriolisAdv.F90:337)
@@ -36,9 +37,10 @@ def corner_area(dx_u: np.ndarray, dy_v: np.ndarray) -> np.ndarray:
     return 0.5 * (dxp[:-1] + dxp[1:]) * 0.5 * (dyp[:, :-1] + dyp[:, 1:])
 
 
-def vorticity_q(u: np.ndarray, v: np.ndarray, dx_u: np.ndarray, dy_v: np.ndarray, area_q: np.ndarray,
+def vorticity_q_numpy(u: np.ndarray, v: np.ndarray, dx_u: np.ndarray, dy_v: np.ndarray, area_q: np.ndarray,
                 mask_q: np.ndarray) -> np.ndarray:
     """
+    NumPy reference of vorticity_q (test oracle).
     Relative vorticity at the corners [s⁻¹] in circulation form, ζ = (δx(v Δy) − δy(u Δx))/A_q,
     free slip: 0 at corners touching land or the domain edge (MOM_CoriolisAdv.F90:595-610).
     """
@@ -58,8 +60,9 @@ def _corner_sum(x: np.ndarray) -> np.ndarray:
     return p[..., :-1, :-1] + p[..., :-1, 1:] + p[..., 1:, :-1] + p[..., 1:, 1:]
 
 
-def pv_q(zeta: np.ndarray, f_q: np.ndarray, h: np.ndarray, area_t: np.ndarray, active: np.ndarray) -> np.ndarray:
+def pv_q_numpy(zeta: np.ndarray, f_q: np.ndarray, h: np.ndarray, area_t: np.ndarray, active: np.ndarray) -> np.ndarray:
     """
+    NumPy reference of pv_q (test oracle).
     Potential vorticity at the corners [m⁻¹ s⁻¹], q = (f + ζ) Σ A/(Σ A h + V_neglect) over the wet
     cells around the corner (MOM_CoriolisAdv.F90:337, 364-367, 429-437, 625-629).
     """
@@ -68,9 +71,10 @@ def pv_q(zeta: np.ndarray, f_q: np.ndarray, h: np.ndarray, area_t: np.ndarray, a
     return (f_q[None] + zeta) * _corner_sum(A)[None] / (_corner_sum(Ah) + V_NEGLECT)
 
 
-def coriolis_pv(q: np.ndarray, abs_vort: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, u: np.ndarray,
+def coriolis_pv_numpy(q: np.ndarray, abs_vort: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, u: np.ndarray,
                 v: np.ndarray, dx_u: np.ndarray, dy_v: np.ndarray, bound: bool = True) -> tuple[np.ndarray, np.ndarray]:
     """
+    NumPy reference of coriolis_pv (test oracle).
     Sadourny (1975) energy-conserving PV flux [m s⁻²] (MOM_CoriolisAdv.F90:818-823, 1071-1076):
 
         CAu[j,I] =  ¼/Δx_u (q[j+1,I](Qy[j+1,I−1] + Qy[j+1,I]) + q[j,I](Qy[j,I−1] + Qy[j,I]))
@@ -99,9 +103,10 @@ def coriolis_pv(q: np.ndarray, abs_vort: np.ndarray, Qx: np.ndarray, Qy: np.ndar
     return cu, cv
 
 
-def kinetic_energy(u: np.ndarray, v: np.ndarray, area_u: np.ndarray, area_v: np.ndarray, area_t: np.ndarray,
+def kinetic_energy_numpy(u: np.ndarray, v: np.ndarray, area_u: np.ndarray, area_v: np.ndarray, area_t: np.ndarray,
                    scheme: str = "arakawa") -> np.ndarray:
     """
+    NumPy reference of kinetic_energy (test oracle).
     Kinetic energy at cell centres [m² s⁻²] (MOM6 gradKE, MOM_CoriolisAdv.F90:1377-1535).
     'arakawa': K = ¼(A_u u_E² + A_u u_W² + A_v v_N² + A_v v_S²)/A_T.
     'gudonov': K = ½(max(u_m² A_uE, u_p² A_uW) + max(v_m² A_vN, v_p² A_vS))/A_T with u_p = max(u_W, 0),
@@ -146,3 +151,177 @@ def truncate_cfl(u: np.ndarray, dt: float, dx_t: np.ndarray, h_face: np.ndarray,
     counted = over & (h_face > h_count)
     first = tuple(int(a[0]) for a in np.nonzero(counted)) if counted.any() else None
     return out, int(counted.sum()), first
+
+
+# ---------------------------------------------------------------- Numba kernels (ALE performance task 5.3)
+@numba.njit(parallel=True, cache=True)
+def _vort_pv_kernel(u, v, dx_u, dy_v, area_q, mask_q, f_q, h, area_t, active, zeta, q):  # pragma: no cover
+    """ζ (vorticity_q_numpy) and q (pv_q_numpy) at the corners with the same per-element arithmetic."""
+    n, ny, nx1 = u.shape
+    nx = nx1 - 1
+    for p in numba.prange(n * (ny + 1)):
+        k, J = p // (ny + 1), p % (ny + 1)
+        for I in range(nx1):
+            dvdx = 0.0
+            dudy = 0.0
+            if 0 < I < nx:
+                dvdx = v[k, J, I] * dy_v[J, I] - v[k, J, I - 1] * dy_v[J, I - 1]
+            if 0 < J < ny:
+                dudy = u[k, J, I] * dx_u[J, I] - u[k, J - 1, I] * dx_u[J - 1, I]
+            z = (dvdx - dudy) / area_q[J, I] if mask_q[J, I] else 0.0
+            zeta[k, J, I] = z
+            sa = 0.0
+            sah = 0.0
+            for jj, ii in ((J - 1, I - 1), (J - 1, I), (J, I - 1), (J, I)):
+                a = 0.0
+                ah = 0.0
+                if 0 <= jj < ny and 0 <= ii < nx and active[jj, ii]:
+                    a = area_t[jj, ii]
+                    hv = h[k, jj, ii]
+                    ah = (hv if np.isfinite(hv) else 0.0) * a
+                sa += a
+                sah += ah
+            q[k, J, I] = (f_q[J, I] + z) * sa / (sah + V_NEGLECT)
+
+
+def vorticity_q(u: np.ndarray, v: np.ndarray, dx_u: np.ndarray, dy_v: np.ndarray, area_q: np.ndarray,
+                mask_q: np.ndarray) -> np.ndarray:
+    """
+    Relative vorticity at the corners [s⁻¹] in circulation form, ζ = (δx(v Δy) − δy(u Δx))/A_q,
+    free slip: 0 at corners touching land or the domain edge (MOM_CoriolisAdv.F90:595-610).
+    Numba kernel; vorticity_q_numpy is the reference.
+    """
+    ny, nx1 = u.shape[1], u.shape[2]
+    return vorticity_and_pv(u, v, dx_u, dy_v, area_q, mask_q, np.zeros((ny + 1, nx1)),
+                            np.zeros((u.shape[0], ny, nx1 - 1)), np.ones((ny, nx1 - 1)),
+                            np.zeros((ny, nx1 - 1), bool))[0]
+
+
+def vorticity_and_pv(u: np.ndarray, v: np.ndarray, dx_u: np.ndarray, dy_v: np.ndarray, area_q: np.ndarray,
+                     mask_q: np.ndarray, f_q: np.ndarray, h: np.ndarray, area_t: np.ndarray,
+                     active: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(ζ, q) at the corners in one pass: vorticity_q and pv_q fused (Numba kernel, same arithmetic)."""
+    n, ny, nx1 = u.shape
+    zeta, q = np.empty((n, ny + 1, nx1)), np.empty((n, ny + 1, nx1))
+    c = np.ascontiguousarray
+    _vort_pv_kernel(c(u, dtype=float), c(v, dtype=float), c(dx_u, dtype=float), c(dy_v, dtype=float),
+                    c(area_q, dtype=float), c(mask_q, dtype=np.bool_), c(f_q, dtype=float), c(h, dtype=float),
+                    c(area_t, dtype=float), c(active, dtype=np.bool_), zeta, q)
+    return zeta, q
+
+
+@numba.njit(parallel=True, cache=True)
+def _pv_kernel(zeta, f_q, h, area_t, active, q):  # pragma: no cover
+    """q of pv_q_numpy with the same per-element arithmetic."""
+    n, ny1, nx1 = zeta.shape
+    ny, nx = ny1 - 1, nx1 - 1
+    for p in numba.prange(n * ny1):
+        k, J = p // ny1, p % ny1
+        for I in range(nx1):
+            sa = 0.0
+            sah = 0.0
+            for jj, ii in ((J - 1, I - 1), (J - 1, I), (J, I - 1), (J, I)):
+                a = 0.0
+                ah = 0.0
+                if 0 <= jj < ny and 0 <= ii < nx and active[jj, ii]:
+                    a = area_t[jj, ii]
+                    hv = h[k, jj, ii]
+                    ah = (hv if np.isfinite(hv) else 0.0) * a
+                sa += a
+                sah += ah
+            q[k, J, I] = (f_q[J, I] + zeta[k, J, I]) * sa / (sah + V_NEGLECT)
+
+
+def pv_q(zeta: np.ndarray, f_q: np.ndarray, h: np.ndarray, area_t: np.ndarray, active: np.ndarray) -> np.ndarray:
+    """
+    Potential vorticity at the corners [m⁻¹ s⁻¹], q = (f + ζ) Σ A/(Σ A h + V_neglect) over the wet
+    cells around the corner (MOM_CoriolisAdv.F90:337, 364-367, 429-437, 625-629).  Numba kernel;
+    pv_q_numpy is the reference.
+    """
+    q = np.empty(np.shape(zeta))
+    c = np.ascontiguousarray
+    _pv_kernel(c(zeta, dtype=float), c(f_q, dtype=float), c(h, dtype=float), c(area_t, dtype=float),
+               c(active, dtype=np.bool_), q)
+    return q
+
+
+@numba.njit(parallel=True, cache=True)
+def _coriolis_kernel(q, av, Qx, Qy, u, v, dx_u, dy_v, bound, cu, cv):  # pragma: no cover
+    """coriolis_pv_numpy with the same per-element arithmetic (Sadourny 1975; BOUND_CORIOLIS)."""
+    n, ny, nx1 = Qx.shape
+    nx = nx1 - 1
+    for p in numba.prange(n * ny):
+        k, j = p // ny, p % ny
+        cu[k, j, 0] = 0.0
+        cu[k, j, nx] = 0.0
+        for I in range(1, nx):
+            x = 0.25 / dx_u[j, I] * (q[k, j + 1, I] * (Qy[k, j + 1, I - 1] + Qy[k, j + 1, I])
+                                     + q[k, j, I] * (Qy[k, j, I - 1] + Qy[k, j, I]))
+            if bound:
+                aN, aS = av[k, j + 1, I], av[k, j, I]
+                c1, c2, c3, c4 = aN * v[k, j + 1, I], aN * v[k, j + 1, I - 1], aS * v[k, j, I], aS * v[k, j, I - 1]
+                x = min(max(x, min(min(c1, c2), min(c3, c4))), max(max(c1, c2), max(c3, c4)))
+            cu[k, j, I] = x
+    for p in numba.prange(n * (ny + 1)):
+        k, J = p // (ny + 1), p % (ny + 1)
+        for i in range(nx):
+            if J == 0 or J == ny:
+                cv[k, J, i] = 0.0
+                continue
+            x = -0.25 / dy_v[J, i] * (q[k, J, i] * (Qx[k, J - 1, i] + Qx[k, J, i])
+                                      + q[k, J, i + 1] * (Qx[k, J - 1, i + 1] + Qx[k, J, i + 1]))
+            if bound:
+                aW, aE = av[k, J, i], av[k, J, i + 1]
+                c1, c2 = -aW * u[k, J - 1, i], -aW * u[k, J, i]
+                c3, c4 = -aE * u[k, J - 1, i + 1], -aE * u[k, J, i + 1]
+                x = min(max(x, min(min(c1, c2), min(c3, c4))), max(max(c1, c2), max(c3, c4)))
+            cv[k, J, i] = x
+
+
+def coriolis_pv(q: np.ndarray, abs_vort: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, u: np.ndarray,
+                v: np.ndarray, dx_u: np.ndarray, dy_v: np.ndarray, bound: bool = True) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Sadourny (1975) energy-conserving PV flux [m s⁻²] (MOM_CoriolisAdv.F90:818-823, 1071-1076) with
+    BOUND_CORIOLIS (:1008-1023, 1260-1275); see coriolis_pv_numpy for the formulae.  Domain-edge faces 0.
+    Numba kernel; coriolis_pv_numpy is the reference.
+    """
+    cu, cv = np.empty(np.shape(Qx)), np.empty(np.shape(Qy))
+    c = np.ascontiguousarray
+    _coriolis_kernel(c(q, dtype=float), c(abs_vort, dtype=float), c(Qx, dtype=float), c(Qy, dtype=float),
+                     c(u, dtype=float), c(v, dtype=float), c(dx_u, dtype=float), c(dy_v, dtype=float), bool(bound),
+                     cu, cv)
+    return cu, cv
+
+
+@numba.njit(parallel=True, cache=True)
+def _ke_kernel(u, v, area_u, area_v, area_t, godunov, K):  # pragma: no cover
+    """kinetic_energy_numpy with the same per-element arithmetic."""
+    n, ny, nx1 = u.shape
+    nx = nx1 - 1
+    for p in numba.prange(n * ny):
+        k, j = p // ny, p % ny
+        for i in range(nx):
+            aE, aW, aN, aS = area_u[j, i + 1], area_u[j, i], area_v[j + 1, i], area_v[j, i]
+            if godunov:
+                up, um = max(u[k, j, i], 0.0), min(u[k, j, i + 1], 0.0)
+                vp, vm = max(v[k, j, i], 0.0), min(v[k, j + 1, i], 0.0)
+                K[k, j, i] = 0.5 * (max(um ** 2 * aE, up ** 2 * aW) + max(vm ** 2 * aN, vp ** 2 * aS)) / area_t[j, i]
+            else:
+                K[k, j, i] = 0.25 * (aE * u[k, j, i + 1] ** 2 + aW * u[k, j, i] ** 2 + aN * v[k, j + 1, i] ** 2
+                                     + aS * v[k, j, i] ** 2) / area_t[j, i]
+
+
+def kinetic_energy(u: np.ndarray, v: np.ndarray, area_u: np.ndarray, area_v: np.ndarray, area_t: np.ndarray,
+                   scheme: str = "arakawa") -> np.ndarray:
+    """
+    Kinetic energy at cell centres [m² s⁻²] (MOM6 gradKE, MOM_CoriolisAdv.F90:1377-1535), 'arakawa' or
+    'gudonov' (see kinetic_energy_numpy).  Numba kernel; kinetic_energy_numpy is the reference.
+    """
+    if scheme not in ("arakawa", "gudonov"):
+        raise ValueError(f"unknown ke_scheme {scheme!r}; use 'arakawa' or 'gudonov'")
+    n, ny, nx1 = u.shape
+    K = np.empty((n, ny, nx1 - 1))
+    c = np.ascontiguousarray
+    _ke_kernel(c(u, dtype=float), c(v, dtype=float), c(area_u, dtype=float), c(area_v, dtype=float),
+               c(area_t, dtype=float), scheme == "gudonov", K)
+    return K
