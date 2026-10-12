@@ -172,15 +172,15 @@ def upwind_transport_x(q_e: np.ndarray, q_w: np.ndarray, ut: np.ndarray, L: np.n
     return F + R[None] * qR / np.where(tot > 0, tot, 1.0)[None]
 
 
-def face_fractions(hf: np.ndarray) -> np.ndarray:
-    """w_k = h_k,f / Σ_k h_k,f (uniform 1/N on faces with no water, so ū stays defined)."""
+def face_fractions_numpy(hf: np.ndarray) -> np.ndarray:
+    """NumPy reference of face_fractions (test oracle).  w_k = h_k,f / Σ_k h_k,f (uniform 1/N on faces with no water, so ū stays defined)."""
     tot = hf.sum(axis=0)
     wet = tot > 0
     return np.where(wet[None], hf / np.where(wet, tot, 1.0)[None], 1.0 / hf.shape[0])
 
 
-def zero_thin_bed_velocity(u: np.ndarray, hf: np.ndarray, w: np.ndarray, h_thin: float = H_THIN_BED) -> np.ndarray:
-    """
+def zero_thin_bed_velocity_numpy(u: np.ndarray, hf: np.ndarray, w: np.ndarray, h_thin: float = H_THIN_BED) -> np.ndarray:
+    """NumPy reference of zero_thin_bed_velocity (test oracle).  
     Zero velocity in the run of face layers thinner than ``h_thin`` that starts at the bed
     (HYCOM hybgen.F90:1757-1764: "thin near-bottom layer, zero total current").  The removed
     part Σ_thin w u is spread over the other layers in proportion to w, so the depth mean
@@ -541,8 +541,8 @@ def ppm_transport_x(h: np.ndarray, ut: np.ndarray, L: np.ndarray, Q_bt: np.ndarr
 
 
 # ---------------------------------------------------------------- open boundaries (Plan C, scope A)
-def baroclinic_split(vel: np.ndarray, w: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """
+def baroclinic_split_numpy(vel: np.ndarray, w: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """NumPy reference of baroclinic_split (test oracle).  
     Depth mean and baroclinic part of a face velocity with layer weights w (Σ_k w_k = 1):
 
         ū = Σ_k w_k u_k,   u′_k = u_k − ū,   so Σ_k w_k u′_k = 0
@@ -589,3 +589,94 @@ def exterior_on_layers(h_ext: np.ndarray, T_ext: np.ndarray, h: np.ndarray, mask
     scale = np.where(wet, tot / np.where(wet, tot_e, 1.0), 1.0)
     out = rm.remap_columns(h_ext * scale[None], T_ext, h, scheme, wet)
     return np.where(wet[None], out, T_ext)
+
+
+# ---------------------------------------------------------------- Numba kernels (ALE performance task 5.4)
+@numba.njit(parallel=True, cache=True)
+def _fractions_kernel(hf, w):  # pragma: no cover
+    """face_fractions_numpy with the same arithmetic (sequential sum over the layers)."""
+    n, a, b = hf.shape
+    for p in numba.prange(a * b):
+        j, i = p // b, p % b
+        tot = 0.0
+        for k in range(n):
+            tot += hf[k, j, i]
+        for k in range(n):
+            w[k, j, i] = hf[k, j, i] / tot if tot > 0.0 else 1.0 / n
+
+
+def face_fractions(hf: np.ndarray) -> np.ndarray:
+    """w_k = h_k,f / Σ_k h_k,f (uniform 1/N on faces with no water, so ū stays defined).  Numba kernel;
+    face_fractions_numpy is the reference."""
+    if np.ndim(hf) != 3:
+        return face_fractions_numpy(hf)
+    w = np.empty(np.shape(hf))
+    _fractions_kernel(np.ascontiguousarray(hf, dtype=float), w)
+    return w
+
+
+@numba.njit(parallel=True, cache=True)
+def _split_kernel(vel, w, mean, prime):  # pragma: no cover
+    """baroclinic_split_numpy with the same arithmetic."""
+    n, a, b = vel.shape
+    for p in numba.prange(a * b):
+        j, i = p // b, p % b
+        m = 0.0
+        for k in range(n):
+            m += w[k, j, i] * vel[k, j, i]
+        mean[j, i] = m
+        for k in range(n):
+            prime[k, j, i] = vel[k, j, i] - m
+
+
+def baroclinic_split(vel: np.ndarray, w: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Depth mean and baroclinic part of a face velocity with layer weights w (Σ_k w_k = 1):
+    ū = Σ_k w_k u_k, u′_k = u_k − ū (spec 2026-10-12-ale-open-boundaries §3.1).  Numba kernel for full
+    (N, a, b) arrays; baroclinic_split_numpy is the reference (and handles broadcast weights).
+    """
+    if np.ndim(vel) != 3 or np.shape(w) != np.shape(vel):
+        return baroclinic_split_numpy(vel, w)
+    mean, prime = np.empty(np.shape(vel)[1:]), np.empty(np.shape(vel))
+    _split_kernel(np.ascontiguousarray(vel, dtype=float), np.ascontiguousarray(w, dtype=float), mean, prime)
+    return mean, prime
+
+
+@numba.njit(parallel=True, cache=True)
+def _thin_bed_kernel(u, hf, w, h_thin, out):  # pragma: no cover
+    """zero_thin_bed_velocity_numpy with the same arithmetic (thin run from the bed, sequential sums)."""
+    n, a, b = u.shape
+    for p in numba.prange(a * b):
+        j, i = p // b, p % b
+        m = 0
+        while m < n and hf[m, j, i] < h_thin:
+            m += 1
+        w_keep = 0.0
+        removed = 0.0
+        for k in range(n):
+            if k >= m:
+                w_keep += w[k, j, i]
+            else:
+                removed += w[k, j, i] * u[k, j, i]
+        ok = w_keep > 0.0
+        shift = removed / w_keep if ok else 0.0
+        for k in range(n):
+            if k < m:
+                out[k, j, i] = 0.0 if ok else u[k, j, i] + 0.0
+            else:
+                out[k, j, i] = u[k, j, i] + shift
+
+
+def zero_thin_bed_velocity(u: np.ndarray, hf: np.ndarray, w: np.ndarray, h_thin: float = H_THIN_BED) -> np.ndarray:
+    """
+    Zero velocity in the run of face layers thinner than ``h_thin`` that starts at the bed
+    (HYCOM hybgen.F90:1757-1764: "thin near-bottom layer, zero total current"); the removed part
+    Σ_thin w u is spread over the other layers in proportion to w, so Σ w u is unchanged.  Faces whose
+    layers are all thin are left alone.  Numba kernel; zero_thin_bed_velocity_numpy is the reference.
+    """
+    if np.ndim(u) != 3 or np.shape(hf) != np.shape(u) or np.shape(w) != np.shape(u):
+        return zero_thin_bed_velocity_numpy(u, hf, w, h_thin)
+    out = np.empty(np.shape(u))
+    _thin_bed_kernel(np.ascontiguousarray(u, dtype=float), np.ascontiguousarray(hf, dtype=float),
+                     np.ascontiguousarray(w, dtype=float), float(h_thin), out)
+    return out

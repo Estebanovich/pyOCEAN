@@ -406,3 +406,33 @@ def test_ppm_edges_kernel_matches_numpy():
     rw, re = ale.ppm_edges_x(hc, active)
     np.testing.assert_allclose(hw, rw, rtol=1e-14, atol=1e-14)
     np.testing.assert_allclose(he, re, rtol=1e-14, atol=1e-14)
+
+
+# ---------------------------------------------------------------- performance kernels (ALE performance task 5.4)
+def _faces_random(seed=9, n=6, ny=5, nf=8):
+    rng = np.random.default_rng(seed)
+    hf = rng.uniform(0.0, 5.0, (n, ny, nf))
+    hf[:3, 0, :] = 0.005                                                 # thin bed run
+    hf[:, 1, 2] = 0.0                                                    # dry face
+    hf[:, 2, 3] = 0.004                                                  # all thin
+    hf[2, 3, :] = 0.0                                                    # vanished interior layer
+    u = rng.normal(0.0, 0.3, (n, ny, nf))
+    return hf, u
+
+
+def test_face_fractions_kernel_matches_numpy():
+    hf, _ = _faces_random()
+    assert np.array_equal(ale.face_fractions(hf), ale.face_fractions_numpy(hf))
+
+
+def test_baroclinic_split_kernel_matches_numpy():
+    hf, u = _faces_random(10)
+    w = ale.face_fractions_numpy(hf)
+    a, b = ale.baroclinic_split(u, w), ale.baroclinic_split_numpy(u, w)
+    assert np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1])
+
+
+def test_zero_thin_bed_kernel_matches_numpy():
+    hf, u = _faces_random(11)
+    w = ale.face_fractions_numpy(hf)
+    assert np.array_equal(ale.zero_thin_bed_velocity(u, hf, w, 0.01), ale.zero_thin_bed_velocity_numpy(u, hf, w, 0.01))
