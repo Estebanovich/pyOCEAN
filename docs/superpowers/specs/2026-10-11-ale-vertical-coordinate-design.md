@@ -41,10 +41,14 @@ Es la base para la tesis (ondas internas, mezcla) y para comparar con HYCOM-IOA.
 
 1. **Paso lagrangiano**, sin flujo a través de las interfaces (ω ≡ 0):
    - advección horizontal WENO5 de momento y trazadores, Coriolis, gradiente de presión, viento y fronteras;
-   - transporte por capa Q_k = (h_k,cara / D_cara)·Q_bt + L·h_k,cara·(u_k − ū);
-   - Q_bt es el transporte barotrópico de la superficie libre implícita, y la parte baroclínica suma cero;
+   - transporte por capa aguas arriba (Plan B2, 2026-10-12; sustituye a min(h_L, h_R), que impedía a una capa isopicna entrar donde se había desvanecido): Q_k = L·u_k·q_k, con q_k el grosor de la celda de la que viene el agua;
+   - en z\* e híbrida, q_k se recorta a la parte de la capa que está sobre el fondo más somero (HYCOM `cnuity.F90:252-256`); en σ no, porque las capas siguen el terreno. Sin recorte, una capa z\* frente a roca se acelera sin freno (seamount: 0.02 → 35 cm/s en un día);
+   - Q_bt es el flujo de la superficie libre implícita; el residuo Q_bt − Σ_k Q_k se reparte en proporción a los q_k de la celda aguas arriba del residuo (HYCOM `cnuity.F90:585-620`), así que Σ_k Q_k = Q_bt;
+   - el grosor de cara independiente de la dirección, (q_E + q_W)/2, define ū = Σ w_k u_k, la viscosidad y la regla de capas de fondo delgadas;
+   - **Plan B2b (opcional, §9):** q_k con PPM y limitador de positividad integrado sobre el volumen barrido, y ajuste de velocidad uniforme por Newton para cerrar Σ_k Q_k = Q_bt (MOM6 `MOM_continuity_PPM.F90:1113-1250, 1368-1546`; Adcroft et al. 2019, §A). Se adopta solo si afila el frente del lock exchange híbrido (§7);
    - continuidad de capa: h_k† = h_k − Δt ∇·Q_k;
-   - como η usa el mismo Q_bt, Σh† = H + η^{n+1} por construcción. Es la misma consistencia que imponen MOM6 (`zonal_flux_adjust`, `MOM_continuity_PPM.F90:1368-1546`) y CROCO (`step3d_uv2.F:924-1018`).
+   - como η usa el mismo Q_bt, Σh† = H + η^{n+1} por construcción. Es la misma consistencia que imponen MOM6 (`zonal_flux_adjust`, `MOM_continuity_PPM.F90:1368-1546`) y CROCO (`step3d_uv2.F:924-1018`);
+   - advección de momento en forma de flujo con limitador en celdas desvanecidas: V_u ≥ 2Δt·Q_entrada, estable con AB3 (λΔt < 6/11); mismo propósito que el truncamiento CFL de MOM6 (`MOM_vert_friction.F90:2555`). Sin él, una capa de 1 cm inundada por la corriente llegaba a −84 m/s.
 2. **Física vertical** sobre la malla lagrangiana: viscosidad y difusión implícitas, viento como flujo en el tope y GLS. Va antes de regenerar la malla, como en MOM6 (`MOM.F90:1774` → `:1033`) y HYCOM (`mod_hycom.F90:2584-2650`).
 3. **Regenerar la malla** con la regla elegida (§3):
    - no cambia Σh (`MOM_regridding.F90:1384`);
@@ -74,6 +78,7 @@ Cada regla es una función pura por columna: recibe (h†, T, S, H, η) y devuel
 2. **σ** (fracciones fijas: uniformes, Song & Haidvogel o `delR`; `coord_sigma.F90:68-83`). Reproduce el modelo actual.
 3. **Híbrida z\*–isopicna**, tipo HYCOM1 de MOM6 (`coord_hycom.F90:161-280`; OM4, Adcroft et al. 2019):
    - densidad de las interfaces con el truco de compresibilidad, p = p_ref + f_c (ρ₀ g z − p_ref) (`MOM_regridding.F90:2062-2063`);
+   - las capas sin masa (h < 2 h_min) toman, solo para la regla, la densidad de la capa con masa de arriba (de abajo si no hay ninguna), como el relleno de HYCOM (`hybgen.F90:904-925`). Sin esto, una capa de fondo de 1 mm con el agua ligera inicial aligera toda la columna al forzarla monótona y disuelve una corriente de gravedad (Plan B2, 2026-10-12);
    - perfil de ρ forzado a ser monótono (`coord_hycom.F90:218`);
    - reconstrucción P1M y búsqueda de Newton de cada densidad objetivo dentro de su celda (`regrid_interp.F90:378-511`);
    - **piso z\*:** una interfaz no queda por encima de su posición z\* (`coord_hycom.F90:255-267`);
@@ -87,6 +92,14 @@ Cada regla es una función pura por columna: recibe (h†, T, S, H, η) y devuel
    - el paso a σ también define dónde se permite el mojado-secado;
    - función auxiliar para elegir las densidades objetivo desde el perfil inicial, con la opción de objetivos más ligeros que el agua superficial en las capas de arriba (estilo OM4) para que la capa de mezcla quede resuelta en z;
    - filtro temporal de la malla opcional y apagado por defecto (`MOM_regridding.F90:1461-1608`).
+
+**Conservación de las capas isopicnas** (Plan B2c, aprobado el 2026-10-12). En flujo adiabático, la regla anterior movía las interfaces en cada paso hacia donde la reconstrucción P1M cruza las densidades objetivo. Ante un salto brusco de densidad las repartía entre las capas intermedias, y el remapeo mezclaba (lock exchange híbrido, 6 h: el 92 % de la mezcla espuria viene del remapeo; ganancia de RPE 3.1e8 J, igual a ALE-σ).
+- **Regla:** la capa j (contada desde arriba, entre los objetivos t_j y t_{j+1}) es *consistente* si no tiene masa (h < 2 h_min) o si su densidad está en su rango, t_j ≤ ρ_j ≤ t_{j+1}. Una interfaz entre dos capas consistentes se queda donde la dejó el paso lagrangiano; las demás se colocan con P1M como antes.
+- **Orden:** una interfaz que se recoloca se acota entre las conservadas más cercanas de arriba y de abajo, así que nunca empuja a una conservada. El piso z\*, el grosor máximo, la ventana σ y el grosor mínimo se aplican después, igual que ahora, y sí pueden mover cualquier interfaz.
+- **Parámetro:** `keep_isopycnal` (True por defecto en la regla híbrida). False reproduce la regla anterior, que es la que se compara con MOM6.
+- **Fundamento:** las capas isopicnas puras no tienen difusión espuria y la coordenada continua sí (White et al. 2009, figs. 11–12). `hybgen` solo mueve las interfaces de capas que se alejan de su objetivo (Bleck 2002). Aquí se toma ese principio sin portar `hybgen`: las capas inconsistentes se siguen recolocando por interpolación, no por arrastre de primer orden.
+- **Medido en un prototipo:** ganancia de RPE 2.5e7 J (12× menos). Una reconstrucción discontinua (PLM o PPM_H4, la otra vía de White 2009) empeoró la mezcla (4.3–5.2e8 J), porque las capas desvanecidas con valores viejos deforman las pendientes.
+- **Lo que queda:** una película densa delgada se adelanta a la corriente (frente medido a 1 m: 1.75 U). Viene del transporte de grosor de primer orden, no de la regla, y es lo que debe resolver B2b.
 
 **`hybgen` no se porta** (decisión del 2026-10-11, tras la comparación de `validation/mom6_column/`). Con objetivos ligeros arriba, la regla híbrida coincide con `hybgen` en el interior (diferencia media de 4.0 m en BayIW y 0.8 m en la columna estratificada, ≤ 0.4 grosores de capa locales). Las diferencias mayores vienen de dos rasgos de `hybgen`: capas z superiores fijas (`fixlay`) y capas vacías alternadas, el "thin-thick-thin null mode" que reconoce el propio MOM6 (`MOM_hybgen_regrid.F90:806-813`). En su lugar se mejora la regla propia: objetivos ligeros arriba, grosor máximo por capa y la transición por ventana.
 
@@ -111,7 +124,7 @@ Cada regla es una función pura por columna: recibe (h†, T, S, H, η) y devuel
   - fuerza final según `MOM_PressureForce_FV.F90:1796-1800`;
   - se mantiene la resta del perfil de referencia ρ_ref(z), validada en el seamount.
 - **Capas delgadas junto a topografía abrupta:** ponderación por masa (`MASS_WEIGHT_IN_PRESSURE_GRADIENT`, `MOM_PressureForce_FV.F90:2124-2149`; `MOM_density_integrals.F90:652-681`). Si una capa se extiende bajo el fondo de su vecina, T y S de las esquinas se toman de la celda más gruesa. Es el caso de la boca de BayIW con z\*.
-- **Advección horizontal:** flujos L·h_cara·u, que toleran h → 0.
+- **Advección horizontal:** flujos L·q·u con q aguas arriba (§2), que toleran h → 0.
 - **Viscosidad y difusión implícitas:** Thomas con dz muy pequeño, sin cambios.
 
 ## 6. Integración con el resto del modelo
@@ -173,6 +186,9 @@ Revisión de código de MOM6, HYCOM y CROCO, y de literatura. Ningún modelo res
   - σ = sus fracciones;
   - híbrida: interfaces en sus densidades objetivo (columna con estratificación lineal), piso z\*, paso a σ somero, grosor máximo;
   - ventana somera: σ pura con D ≤ d_σ, híbrida sin cambios con D ≥ d_hyb, interfaces en su isopicna dentro de la ventana con q intermedia, continuidad en D y orden de las interfaces.
+  - capas sin masa: su densidad vieja no aligera la columna (una corriente densa de 0.7 m sobre una capa de fondo de 1 mm con agua ligera conserva más del 90 % de su agua);
+  - conservación de capas isopicnas: con todas las capas consistentes las interfaces no se mueven (exacto); una capa inconsistente se recoloca como con P1M; una interfaz recolocada no cruza a una conservada; el piso z\* y el grosor mínimo siguen valiendo; `keep_isopycnal=False` reproduce la regla anterior bit a bit.
+- **Transporte por cara:** grosor aguas arriba; recorte al fondo somero en z\* (capa frente a roca: 0; capa parcial: la parte sobre el fondo, como hFacW de MITgcm); suma igual al flujo de la superficie libre; ninguna capa vacía recibe el residuo.
 - **Gradiente de presión:**
   - fuerza cero en reposo estratificado con capas inclinadas arbitrarias (EOS lineal);
   - error del seamount ≤ al actual.
@@ -189,6 +205,11 @@ Revisión de código de MOM6, HYCOM y CROCO, y de literatura. Ningún modelo res
 3. Fronteras: los canales actuales (reflexión 0.82 cerrado / 0.157 Orlanski / 0.015 esponja) con z\* e híbrida.
 4. Restart bit a bit con ALE.
 5. Mojado-secado con zona σ somera.
+6. **Lock exchange híbrido** (cada masa de agua en una capa desvanecida al otro lado de la compuerta, 10 capas, 6 h):
+   - el cuerpo de la corriente (5 m de los 10 m de Benjamin) avanza a la velocidad de Benjamin ±10 %;
+   - con la conservación de capas isopicnas, la ganancia de RPE es < 0.2 veces la de ALE-σ;
+   - con B2b, el frente medido a 1 m queda dentro de ±10 %; si no, B2b no se adopta y queda el xfail con los números medidos;
+   - sin regresión: escalón z\* ≤ 1e-10 m/s, seamount z\* + volumen finito ≈ 0.1 cm/s a 10 días, tests σ sin cambios; volver a correr la comparación con `hybgen`.
 
 ## 8. Matriz de validación contra los modelos de referencia
 
@@ -223,6 +244,7 @@ Cada fase se cierra con sus tests y su validación de nivel 1 o 2:
 2. Reglas de malla (+ validación contra MOM6 y comparación con `hybgen`).
 3. h pronóstico y paso lagrangiano; regresión ALE-σ.
 4. Gradiente de presión de volumen finito; test del escalón; seamount.
+4b. Plan B2 (2026-10-12): transporte aguas arriba con recorte (B2a, hecho), conservación de capas isopicnas (B2c), luego PPM en el transporte de grosor (B2b) si el lock exchange híbrido lo justifica.
 5. Fronteras: datos en z, reservorio, nudging, esponja, estado auxiliar.
 6. BayIW con z\* contra MITgcm.
 7. Regla híbrida; casos idealizados de nivel 2; BayIW con la híbrida.
@@ -245,6 +267,7 @@ Las locales están en `/Users/estebancruz/Documents/TESIS_InternalWaves-2/Litera
 - Bleck 2002; Griffies et al. 2020.
 - White & Adcroft 2008; White, Adcroft & Hallberg 2009.
 - Chang et al. 2026; Bruciaferri et al. 2024; Petersen et al. 2015.
+- Transporte de capas: Hallberg & Adcroft 2009 [verificar]; Higdon 2005 (por descargar).
 
 **Fronteras abiertas:** Marchesiello et al. 2001; Marsaleix et al. 2006, 2009b; Siyanbola et al. 2023.
 
