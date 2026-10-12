@@ -839,3 +839,32 @@ def test_mixing_diagnostic_off_leaves_T_unchanged():
     for k in ("T", "h", "u", "v", "eta"):
         assert np.array_equal(getattr(a, k), getattr(b, k)), k
     assert a.mix_num is not None and b.mix_num is None
+
+
+def test_diffusion_kernel_matches_numpy():
+    # ALE performance task 5.6: random ALE state with land, a reference profile and vanished layers
+    rng = np.random.default_rng(12)
+    ny, nx, nz = 8, 11, 6
+    hg = create_cartesian_grid(nx=nx, ny=ny, dx=1000.0, dy=1000.0, f0=0.0)
+    H = np.full((ny, nx), 50.0)
+    H[2:4, 5] = np.nan
+    m = SigmaBaroclinic(hg, H, dt=60.0, n_layers=nz, rho0=RHO0, t_coef=TCOEF, z0=None, closure="constant",
+                        kh=25.0, vertical_coordinate="ale", regrid="zstar", regrid_params=dict(dz_top=np.full(nz, 50.0 / nz)),
+                        pgf="fv")
+    m.rho_ref = reference_profile(np.linspace(-50.0, 0.0, 20), RHO0 - TCOEF * (10.0 + 0.05 * np.linspace(-50.0, 0.0, 20)))
+    h = rng.uniform(0.0, 15.0, (nz, ny, nx))
+    h[1] = 0.0
+    T = rng.uniform(5.0, 15.0, h.shape)
+    V = m.layer_volumes(np.zeros((ny, nx)), h)
+    a = m._diffuse_h(T, V, np.zeros((ny, nx)), h)
+    b = m._diffuse_h_numpy(T, V, np.zeros((ny, nx)), h)
+    assert np.array_equal(a, b)
+
+
+def test_layer_heights_cache_is_keyed_on_identity():
+    m, st = _ale_open_box("zstar")
+    a = m.layer_heights(st.eta, st.h)
+    assert m.layer_heights(st.eta, st.h) is a
+    h2 = st.h.copy()
+    h2[-1] *= 0.5
+    assert m.layer_heights(st.eta, h2) is not a

@@ -320,6 +320,37 @@ def _advect_div(c, Qx, Qy, Fz, ok, ext, open_w, open_e, open_s, open_n, z_varian
     return out
 
 
+@njit(cache=True, parallel=True)
+def _diffuse_ale_kernel(T, Tw, h, act, cx, cy, okx, oky, V, kh, dt, out):  # pragma: no cover
+    """
+    ALE horizontal diffusion (SigmaBaroclinic._diffuse_h_numpy with h given) with the same per-element
+    arithmetic: F_x = ((−K_h·L_u/Δx_u)·min(h_L, h_R))·(Tw_i − Tw_{i−1}) on interior faces between active
+    cells and with okx, then T − Δt·div/V where V > 0.
+    """
+    n, ny, nx = T.shape
+    for p in prange(n * ny):
+        k, j = p // ny, p % ny
+        for i in range(nx):
+            fw = 0.0
+            fe = 0.0
+            fs_ = 0.0
+            fn = 0.0
+            if 0 < i and okx[j, i]:
+                hu = min(h[k, j, i - 1], h[k, j, i]) if act[j, i - 1] and act[j, i] else 0.0
+                fw = -kh * cx[j, i] * hu * (Tw[k, j, i] - Tw[k, j, i - 1])
+            if i < nx - 1 and okx[j, i + 1]:
+                hu = min(h[k, j, i], h[k, j, i + 1]) if act[j, i] and act[j, i + 1] else 0.0
+                fe = -kh * cx[j, i + 1] * hu * (Tw[k, j, i + 1] - Tw[k, j, i])
+            if 0 < j and oky[j, i]:
+                hv = min(h[k, j - 1, i], h[k, j, i]) if act[j - 1, i] and act[j, i] else 0.0
+                fs_ = -kh * cy[j, i] * hv * (Tw[k, j, i] - Tw[k, j - 1, i])
+            if j < ny - 1 and oky[j + 1, i]:
+                hv = min(h[k, j, i], h[k, j + 1, i]) if act[j, i] and act[j + 1, i] else 0.0
+                fn = -kh * cy[j + 1, i] * hv * (Tw[k, j + 1, i] - Tw[k, j, i])
+            div = fe - fw + fn - fs_
+            out[k, j, i] = T[k, j, i] - dt * div / V[k, j, i] if V[k, j, i] > 0.0 else T[k, j, i]
+
+
 def _weno5_faces(c: np.ndarray, flux: np.ndarray, ok: np.ndarray, axis: int, variant: str = "z") -> np.ndarray:
     """WENO5 face values (see ``_weno5_faces_numpy`` for the scheme), compiled with Numba."""
     if variant not in ("z", "js"):
@@ -821,8 +852,13 @@ class SigmaBaroclinic:
         if h is None:
             D = np.maximum(np.nan_to_num(self.H + eta, nan=self.fs.d_min), self.fs.d_min)
             return -np.nan_to_num(self.H)[None] + D[None] * self.sigma_c[:, None, None]
+        for ref, val in getattr(self, "_zc_cache", ()):          # cached by identity of h (performance task 5.6)
+            if ref is h:
+                return val
         zw = -np.nan_to_num(self.H)[None] + np.concatenate([np.zeros((1,) + h.shape[1:]), np.cumsum(h, axis=0)])
-        return 0.5 * (zw[1:] + zw[:-1])
+        val = 0.5 * (zw[1:] + zw[:-1])
+        self._zc_cache = ((h, val),) + tuple(getattr(self, "_zc_cache", ()))[:1]
+        return val
 
     def density(self, T: np.ndarray) -> np.ndarray:
         """Linear EOS ρ = ρ₀ − α (T − T₀) [kg m⁻³]."""
@@ -1110,6 +1146,29 @@ class SigmaBaroclinic:
 
     def _diffuse_h(self, T: np.ndarray, V: np.ndarray, eta: np.ndarray, h: np.ndarray | None = None) -> np.ndarray:
         """
+        Explicit Laplacian diffusion along the layers (see _diffuse_h_numpy).  ALE: the Numba kernel
+        _diffuse_ale_kernel with the same per-element arithmetic (performance task 5.6); σ: the NumPy version.
+        """
+        if h is None:
+            return self._diffuse_h_numpy(T, V, eta, h)
+        Tw = T
+        if self.rho_ref is not None and not isinstance(self.rho_ref, str) and self.t_coef != 0:
+            Tw = T - (self.t_ref + (self.rho0 - self.rho_ref(self.layer_heights(eta, h))) / self.t_coef)
+        Du, Dv = self.core.face_depths(eta)
+        okx = np.isfinite(self.fs.H_u) & np.isfinite(Du) & (Du > self.fs.d_min)
+        oky = np.isfinite(self.fs.H_v) & np.isfinite(Dv) & (Dv > self.fs.d_min)
+        act = self.fs.active
+        c = np.ascontiguousarray
+        out = np.empty(np.shape(T))
+        numba.set_num_threads(_THREADS[0])
+        _diffuse_ale_kernel(c(T, dtype=float), c(Tw, dtype=float), c(np.where(act[None], np.nan_to_num(h), 0.0)),
+                            c(act), c(self.fs.Lu / self.fs.du), c(self.fs.Lv / self.fs.dv), c(okx), c(oky),
+                            c(V, dtype=float), float(self.kh), float(self.dt), out)
+        return out
+
+    def _diffuse_h_numpy(self, T: np.ndarray, V: np.ndarray, eta: np.ndarray, h: np.ndarray | None = None) -> np.ndarray:
+        """
+        NumPy reference of _diffuse_h (test oracle; used for σ).
         Explicit Laplacian diffusion along σ-surfaces in flux form (MITgcm diffKhT):
             V_k ∂T/∂t = −Σ_faces F,   F_x = −K_h L_u h_{u,k} (T_i − T_{i−1}) / Δx_u
         with h_{u,k} = D_u Δσ_k (σ) or the face layer thickness min(h_L, h_R) (ALE); conservative, and a uniform
