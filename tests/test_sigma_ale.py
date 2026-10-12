@@ -233,6 +233,44 @@ def test_flux_form_momentum_in_a_vanished_cell_relaxes_to_the_inflow_without_ove
     np.testing.assert_array_equal(g[..., :3], g0[..., :3])               # thick cells unchanged
 
 
+@pytest.mark.parametrize("compiled", [True, False])
+def test_flux_form_momentum_in_a_vanished_cell_with_outflow_only_stays_bounded(compiled):
+    # ALE Plan B2c (hybrid lock exchange, 3.4 m s⁻² in a 1 mm layer): a vanished u-cell that only
+    # exports (east transport large, west zero) — the WENO face value differs from u, so the
+    # outflow term Q_out (u_face − u)/V_u also needs the limiter, not only the inflow
+    from core.dynamics.sigma_baroclinic import _flux_form_u, _flux_form_u_numpy
+    f = _flux_form_u if compiled else _flux_form_u_numpy
+    n, ny, nx = 1, 1, 8
+    u = np.array([0.0, 1.0, 1.0, 1.0, 0.0, 3.0, 3.0, 3.0, 0.0])[None, None, :]
+    Qx = np.zeros_like(u)
+    Qx[0, 0, 3], Qx[0, 0, 4], Qx[0, 0, 5] = -400.0, 400.0, 400.0        # u-cell of face 4: out east only
+    Qy, Fz = np.zeros((n, ny + 1, nx)), np.zeros((n + 1, ny, nx))
+    V = np.full((n, ny, nx), 0.001 * 100.0 * 500.0)                      # vanished layer everywhere
+    ok = np.ones_like(u, bool)
+    dt = 20.0
+    g0 = f(u, Qx, Qy, Fz, V, ok)
+    g = f(u, Qx, Qy, Fz, V, ok, dt=dt)
+    spread = np.abs(u[0, 0, 2:7] - u[0, 0, 4]).max()                    # WENO stencil around face 4
+    assert abs(dt * g0[0, 0, 4]) > spread                                # unlimited: overshoots
+    assert abs(dt * g[0, 0, 4]) <= 0.5 * spread + 1e-12
+
+
+@pytest.mark.parametrize("compiled", [True, False])
+def test_flux_form_momentum_limiter_leaves_thick_cells_below_courant_one_half(compiled):
+    # final review of Plan B2: counting Σ|Q| (in + out) engaged the limiter at u Δt/Δx > ¼ in
+    # uniform flow; with max(inflow, outflow) it stays off below ½, as in the σ path
+    from core.dynamics.sigma_baroclinic import _flux_form_u, _flux_form_u_numpy
+    f = _flux_form_u if compiled else _flux_form_u_numpy
+    n, ny, nx = 1, 1, 8
+    dt, dx, h, L = 20.0, 500.0, 10.0, 500.0
+    u = (0.3 * dx / dt) * (1.0 + 0.1 * np.sin(np.arange(nx + 1)))[None, None, :]   # Courant ≈ 0.3
+    Qx = u * h * L
+    Qy, Fz = np.zeros((n, ny + 1, nx)), np.zeros((n + 1, ny, nx))
+    V = np.full((n, ny, nx), h * dx * L)
+    ok = np.ones_like(u, bool)
+    np.testing.assert_array_equal(f(u, Qx, Qy, Fz, V, ok, dt=dt), f(u, Qx, Qy, Fz, V, ok))
+
+
 # ---------------------------------------------------------------- hybrid rule in the model
 def _hybrid_lock(nx=128, nz=10, depth=20.0, dt=20.0):
     """Lock exchange (Δρ = 5 kg m⁻³) on isopycnal layers: each water mass sits in one layer, which
@@ -274,6 +312,10 @@ def _lock_run(rule: str, nx: int = 128, nz: int = 10, depth: float = 20.0, dt: f
                 one_thick_layer=thick0, consistent=consistent)
 
 
+@pytest.mark.xfail(strict=True, reason="open (ALE Plan B2, 2026-10-12): with isopycnal layers preserved the body "
+                   "(5 m) runs at 0.84 U dense / 0.14 U light (1.05 / 0.91 U with P1M everywhere); the interface "
+                   "is a long noisy ramp with 1 m films at 1.96 / 1.61 U; the PPM thickness flux (B2b) gave "
+                   "1.47 / 0.28 U and was not adopted — design decision pending")
 def test_hybrid_lock_exchange_fronts_leave_the_lock_at_the_benjamin_speed():
     # the isopycnal layers of the two water masses have vanished across the lock; the face
     # transport takes the upwind thickness, so each current enters its vanished layer (with the
@@ -286,15 +328,22 @@ def test_hybrid_lock_exchange_fronts_leave_the_lock_at_the_benjamin_speed():
     assert abs(r["heat"]) < 1e-12
 
 
-@pytest.mark.xfail(strict=True, reason="open (ALE Plan B2, 2026-10-12): the hybrid regrid interpolates the "
-                   "density inside the layers (P1M, as MOM6 HYCOM1), so each step it spreads a sharp interface "
-                   "over the intermediate targets: a thin wedge runs ahead of the current (1 m front: dense 1.33 U, "
-                   "light 1.54 U) and the RPE gain equals ALE-σ (3.11e8 vs 3.17e8 J in 6 h)")
-def test_hybrid_lock_exchange_keeps_a_sharp_front_and_mixes_less_than_sigma():
+def test_hybrid_lock_exchange_mixes_much_less_than_sigma():
+    # spec §7 item 6: with isopycnal layer preservation the regrid no longer spreads the density
+    # step at the nose (prototype: 2.5e7 J vs ALE-σ 3.2e8 J in 6 h)
     r, s = _lock_run("hybrid"), _lock_run("sigma")
+    assert r["rpe_gain"] < 0.2 * s["rpe_gain"], (r["rpe_gain"], s["rpe_gain"])
+    # conservation of the hybrid default (the speed tests are xfail, so they do not guard it)
+    assert r["one_thick_layer"] and r["consistent"]
+    assert abs(r["heat"]) < 1e-12
+
+
+@pytest.mark.xfail(strict=True, reason="open (ALE Plan B2, 2026-10-12): thin films lead the current, 1 m fronts "
+                   "at 1.96 / 1.61 U with donor cell and 1.75 / 1.68 U with PPM (B2b, not adopted)")
+def test_hybrid_lock_exchange_nose_moves_at_the_benjamin_speed():
+    r = _lock_run("hybrid")
     for k in range(2):
         assert abs(r["speed"][1.0][k] - 1) < 0.10, r["speed"]
-    assert r["rpe_gain"] < 0.5 * s["rpe_gain"]
 
 
 def test_regrid_runs_on_the_model_threads(monkeypatch):

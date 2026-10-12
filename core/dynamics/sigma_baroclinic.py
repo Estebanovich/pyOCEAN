@@ -469,9 +469,11 @@ def _flux_form_u_kernel(u, Qx, Qy, Fz, V, ok, dt):  # pragma: no cover
                 w_lo = 0.5 * (Fz[k, j, i - 1] + Fz[k, j, i])
                 mass = uc_hi - uc_lo + vq_hi - vq_lo + w_hi - w_lo
                 if dt > 0.0:                                         # vanished-cell limiter (ALE)
-                    inflow = max(uc_lo, 0.0) + max(-uc_hi, 0.0) + max(vq_lo, 0.0) + max(-vq_hi, 0.0) \
+                    q_in = max(uc_lo, 0.0) + max(-uc_hi, 0.0) + max(vq_lo, 0.0) + max(-vq_hi, 0.0) \
                         + max(w_lo, 0.0) + max(-w_hi, 0.0)
-                    vu = max(vu, 2.0 * dt * inflow)
+                    q_out = max(-uc_lo, 0.0) + max(uc_hi, 0.0) + max(-vq_lo, 0.0) + max(vq_hi, 0.0) \
+                        + max(-w_lo, 0.0) + max(w_hi, 0.0)
+                    vu = max(vu, 2.0 * dt * max(q_in, q_out))
                 out[k, j, i] = -(div - u[k, j, i] * mass) / vu
     return out
 
@@ -497,10 +499,14 @@ def _flux_form_u_numpy(u: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, Fz: np.nda
     WENO5 values upwind of each transport.  Subtracting u × (mass divergence)
     gives the velocity tendency while the momentum flux stays conservative, which
     sets the speed of fronts and jumps (Borden & Meiburg 2013; Ungarish et al. 2018).
-    With dt > 0 (ALE: layers that vanish) V_u is replaced by max(V_u, 2 Δt Q_in), Q_in the
-    transport into the u-cell: a vanished cell flooded by a current relaxes to the current's
-    velocity at the rate 1/(2Δt) at most, inside the AB3 stability limit (λΔt < 6/11), instead
-    of Q_in Δt/V_u ≫ 1.  Cells with inflow Courant number ≤ ½ are unchanged.  Same purpose as the
+    With dt > 0 (ALE: layers that vanish) V_u is replaced by max(V_u, 2 Δt max(Q_in, Q_out)),
+    Q_in and Q_out the transports into and out of the u-cell: a vanished cell flooded by (or
+    draining) a current relaxes to the current's velocity at a rate ~1/(2Δt) at most (exactly ½
+    max|ũ − u| per step when the flow only enters or only leaves), instead of Q Δt/V_u ≫ 1, inside
+    the AB3 stability limit (λΔt < 6/11).  Counting only the inflow left the outflow term
+    Q_out (ũ − u)/V_u unbounded (hybrid lock exchange, 3.4 m s⁻² in a 1 mm layer); counting
+    Σ|Q| = Q_in + Q_out engaged it in thick cells from u Δt/Δx > ¼.  Cells with u Δt/Δx ≤ ½
+    are unchanged.  Same purpose as the
     CFL truncation of MOM6 (MOM_vert_friction.F90:2555, vertvisc_limit_vel), but continuous.
     Returns the tendency on interior u-faces [m s⁻²].
     """
@@ -535,10 +541,12 @@ def _flux_form_u_numpy(u: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, Fz: np.nda
     Vu = np.zeros_like(u)
     Vu[..., 1:-1] = 0.5 * (V[..., :-1] + V[..., 1:])
     if dt > 0:
-        inflow = np.zeros_like(u)
-        inflow[..., 1:-1] = np.maximum(Uc[..., :-1], 0) + np.maximum(-Uc[..., 1:], 0)
-        inflow += np.maximum(Vq[:, :-1], 0) + np.maximum(-Vq[:, 1:], 0) + np.maximum(Wz[:-1], 0) + np.maximum(-Wz[1:], 0)
-        Vu = np.where(Vu > 0, np.maximum(Vu, 2.0 * dt * inflow), Vu)
+        q_in, q_out = np.zeros_like(u), np.zeros_like(u)
+        q_in[..., 1:-1] = np.maximum(Uc[..., :-1], 0) + np.maximum(-Uc[..., 1:], 0)
+        q_out[..., 1:-1] = np.maximum(-Uc[..., :-1], 0) + np.maximum(Uc[..., 1:], 0)
+        q_in += np.maximum(Vq[:, :-1], 0) + np.maximum(-Vq[:, 1:], 0) + np.maximum(Wz[:-1], 0) + np.maximum(-Wz[1:], 0)
+        q_out += np.maximum(-Vq[:, :-1], 0) + np.maximum(Vq[:, 1:], 0) + np.maximum(-Wz[:-1], 0) + np.maximum(Wz[1:], 0)
+        Vu = np.where(Vu > 0, np.maximum(Vu, 2.0 * dt * np.maximum(q_in, q_out)), Vu)
     out = np.where(Vu > 0, -(div - u * mass) / np.where(Vu > 0, Vu, 1.0), 0.0)
     out[..., [0, -1]] = 0.0
     return np.where(okx, out, 0.0)
@@ -619,7 +627,8 @@ class SigmaBaroclinic:
           (Lagrangian step + regrid + remap each step; spec docs/superpowers/specs/2026-10-11-ale-...)
     regrid : ALE grid rule 'sigma' | 'zstar' | 'hybrid' (core.vertical.regrid)
     regrid_params : rule parameters (dz_top, rho_target, max_h_top, d_sigma, d_hybrid, h_min; dsigma
-          defaults to the model's)
+          defaults to the model's); hybrid: ``keep_isopycnal`` (default True) keeps interfaces between
+          isopycnally consistent layers (spec §3, B2c)
     remap_scheme : 'pcm' | 'plm' | 'ppm_h4' (default)
     h_thin_bed : bed face layers thinner than this [m] carry no velocity (HYCOM)
     init_iterations : regrid–remap passes of the initial state with the hybrid rule

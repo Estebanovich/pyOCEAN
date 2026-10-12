@@ -20,11 +20,14 @@ each target is located by inverting the linear cell polynomial
 (regrid_interp.F90:378-511).  Then: z* floor (an interface is never above its
 z* position, coord_hycom.F90:255-267), maximum layer thickness (:270-279),
 optional shallow-water σ transition by a window (window_shallow_sigma; spec §3)
-and the minimum thickness.
+and the minimum thickness.  With keep_isopycnal (default) an interface between two
+layers whose densities lie in their target brackets (or that have no mass) is not
+moved (Plan B2c; White et al. 2009 — pure isopycnal layers have no spurious diffusion).
 
 References: Adcroft, A. & Campin, J.-M. (2004). Ocean Modell. 7, 269–284.
 Adcroft, A. et al. (2019). JAMES 11, 3167–3211. doi:10.1029/2019MS001726
 Bleck, R. (2002). Ocean Modell. 4, 55–88.
+White, L., Adcroft, A. & Hallberg, R. (2009). J. Comput. Phys. 228, 8665–8692.
 MOM6 source ~/pyOCEAN_refs/MOM6/src/ALE (commit 0e9a561).
 """
 
@@ -150,12 +153,54 @@ def _p1m_h2_positions(h_top, rho_top, targets, x_new):  # pragma: no cover
 # Not disk-cached: calls remap._bound_edges, and Numba's cache only checks this file
 # (a cached copy would go stale when remap.py changes).
 @njit
-def hycom1_column(H, eta, h_bed, rho_bed, rho_target, dz_top, max_h_top, h_min, zw):  # pragma: no cover
+def _keep_consistent(h_top, rho_top, targets, h_mass, x):  # pragma: no cover
+    """
+    Isopycnal layer preservation (spec §3, Plan B2c).  Layer j (surface first, between the
+    targets t_j and t_j+1) is consistent if it has no mass (h < h_mass) or t_j ≤ ρ_j ≤ t_j+1
+    with its own density.  An interface between two consistent layers stays where the
+    Lagrangian step left it; the others keep their P1M position, clipped between the nearest
+    kept interfaces above and below so they never push a kept one.  x: depths from the surface
+    (0 … D, surface first), overwritten in place.  Pure isopycnal layers have no spurious
+    diffusion (White et al. 2009, figs. 11-12); hybgen moves only layers that left their target
+    (Bleck 2002) — the principle, without porting hybgen.
+    """
+    n = h_top.size
+    ok = np.empty(n, np.bool_)
+    for j in range(n):
+        ok[j] = h_top[j] < h_mass or (targets[j] <= rho_top[j] <= targets[j + 1])
+    xg = np.empty(n + 1)
+    xg[0] = 0.0
+    for j in range(n):
+        xg[j + 1] = xg[j] + h_top[j]
+    kept = np.zeros(n + 1, np.bool_)
+    kept[0] = True
+    kept[n] = True
+    for j in range(1, n):
+        if ok[j - 1] and ok[j]:
+            x[j] = xg[j]
+            kept[j] = True
+    lo = xg[0]
+    for j in range(1, n):
+        if kept[j]:
+            lo = x[j]
+        elif x[j] < lo:
+            x[j] = lo
+    hi = xg[n]
+    for j in range(n - 1, 0, -1):
+        if kept[j]:
+            hi = x[j]
+        elif x[j] > hi:
+            x[j] = hi
+
+
+@njit
+def hycom1_column(H, eta, h_bed, rho_bed, rho_target, dz_top, max_h_top, h_min, keep, zw):  # pragma: no cover
     """Hybrid z*–isopycnal interfaces (bed first) — see the module docstring."""
     n = h_bed.size
     D = H + eta
     h_top = h_bed[::-1].copy()
-    rho = rho_bed[::-1].copy()
+    rho_own = rho_bed[::-1].copy()                           # each layer's own density (B2c test)
+    rho = rho_own.copy()
     # massless layers (h < 2 h_min) keep a stale density, e.g. the light water of a bed layer that
     # a gravity current has covered; they take the density of the nearest layer with mass above
     # (below if there is none), as HYCOM fills them (hybgen.F90:904-925), so the monotonising
@@ -177,6 +222,8 @@ def hycom1_column(H, eta, h_bed, rho_bed, rho_target, dz_top, max_h_top, h_min, 
         rho[k] = min(rho[k], rho[k + 1])
     x = np.empty(n + 1)
     _p1m_h2_positions(h_top, rho, rho_target, x)
+    if keep:
+        _keep_consistent(h_top, rho_own, rho_target, 2.0 * h_min, x)
     s = D / H                                                # z* floor (coord_hycom.F90:255-267)
     nominal = 0.0
     for k in range(1, n + 1):
@@ -184,6 +231,8 @@ def hycom1_column(H, eta, h_bed, rho_bed, rho_target, dz_top, max_h_top, h_min, 
         x[k] = min(max(x[k], nominal), D)
     for k in range(1, n):                                    # maximum layer thickness (:270-279)
         x[k] = min(x[k], x[k - 1] + max_h_top[k - 1])
+    for k in range(1, n + 1):                                # the floor may push a kept interface past
+        x[k] = max(x[k], x[k - 1])                           # a regridded one: restore the order
     x[n] = D
     for j in range(n + 1):
         zw[j] = eta - x[n - j]
@@ -249,7 +298,7 @@ def target_densities(rho_top: np.ndarray, n_layers: int, n_light: int = 0, d_rho
 # (a cached copy would go stale when remap.py changes).
 @njit(parallel=True)
 def _regrid_columns(code, H, eta, h, rho, dz_top, dsigma, rho_target, max_h_top,
-                    d_sigma, d_hybrid, h_min, wet, zw):  # pragma: no cover
+                    d_sigma, d_hybrid, h_min, keep, wet, zw):  # pragma: no cover
     n, ny, nx = h.shape
     for c in prange(ny * nx):
         j = c // nx
@@ -269,7 +318,7 @@ def _regrid_columns(code, H, eta, h, rho, dz_top, dsigma, rho_target, max_h_top,
                 sigma_column(H[j, i], eta[j, i], dsigma, h_min, col)
             else:
                 hycom1_column(H[j, i], eta[j, i], np.ascontiguousarray(h[:, j, i]),
-                              np.ascontiguousarray(rho[:, j, i]), rho_target, dz_top, max_h_top, h_min, col)
+                              np.ascontiguousarray(rho[:, j, i]), rho_target, dz_top, max_h_top, h_min, keep, col)
                 if q < 1.0:
                     sig = np.empty(n + 1)
                     zs = np.empty(n + 1)
@@ -287,7 +336,9 @@ def regrid_columns(rule: str, H: np.ndarray, eta: np.ndarray, h: np.ndarray, rho
     """
     Target interface heights zw (N+1, ny, nx) [m], bed first, for rule "zstar", "sigma" or "hybrid".
     params: dz_top (z* and hybrid floor), dsigma (σ and the shallow transition), rho_target,
-    max_h_top, d_sigma, d_hybrid [m] (0 = no transition), h_min [m].  Dry columns: NaN.
+    max_h_top, d_sigma, d_hybrid [m] (0 = no transition), h_min [m], keep_isopycnal (hybrid,
+    default True): interfaces between isopycnally consistent layers stay put (spec §3, B2c);
+    False = HYCOM1 of MOM6 (P1M everywhere).  Dry columns: NaN.
     Raises ValueError for a missing required input, a wet column with non-finite H or η, D ≤ 0,
     H ≤ 0 with z* (or with the hybrid rule without a σ zone, d_hybrid ≤ 0), or non-finite ρ (hybrid).
     """
@@ -325,5 +376,5 @@ def regrid_columns(rule: str, H: np.ndarray, eta: np.ndarray, h: np.ndarray, rho
                     f("dsigma", np.full(n, 1.0 / n)), f("rho_target", np.zeros(n + 1)),
                     f("max_h_top", np.full(n, np.inf)), float(params.get("d_sigma", 0.0)),
                     float(params.get("d_hybrid", 0.0)), float(params.get("h_min", H_MIN)),
-                    np.asarray(wet, np.bool_), zw)
+                    bool(params.get("keep_isopycnal", True)), np.asarray(wet, np.bool_), zw)
     return zw

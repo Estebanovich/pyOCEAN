@@ -149,29 +149,29 @@ Columnas:
 Configuración A (dz = delR)
 columna                  | 1 paso: max|Δz| m   medio   k     /h | 10 ciclos: max|Δz|   medio   k     /h | capas>2h_min hybgen/pyOCEAN
 -------------------------------------------------------------------------------------------------------------------------------------
-estratificada 600 m      |           163.996  62.754  46   4.51 |            163.996  62.634  46   4.51 |  50 /  46
+estratificada 600 m      |           163.996  62.754  46   4.51 |            163.996  62.754  46   4.51 |  50 /  46
 mezclada 600 m           |           517.976 169.545  26  68.15 |            517.976 169.545  26  68.15 |  50 /  26
 somera 30 m              |            20.366   9.525  16   8.99 |             20.366   9.525  16   8.99 |  16 /  50
-164 m, fondo ligero      |           136.265  55.916  15  42.58 |            138.133  55.842  14  46.04 |  35 /  15
-BayIW frontera 600 m     |            88.466  61.588  16  25.28 |             88.400  61.283  16  25.26 |  50 /  50
+164 m, fondo ligero      |           136.265  55.916  15  42.58 |            125.768  51.578  18  30.68 |  35 /  18
+BayIW frontera 600 m     |            88.466  61.465  16  25.28 |             88.466  61.465  16  25.28 |  50 /  50
 
 Configuración B (z en 31 m superiores)
 columna                  | 1 paso: max|Δz| m   medio   k     /h | 10 ciclos: max|Δz|   medio   k     /h | capas>2h_min hybgen/pyOCEAN
 -------------------------------------------------------------------------------------------------------------------------------------
-estratificada 600 m      |           127.597  51.142  46   3.25 |             46.379  12.411  15   0.86 |  43 /  46
+estratificada 600 m      |           127.597  51.142  46   3.25 |             46.398  12.426  15   0.86 |  43 /  46
 mezclada 600 m           |           510.377 162.820  26  34.72 |            406.890  73.540  26   3.44 |  32 /  16
 somera 30 m              |            20.366   9.525  16   8.99 |             20.366   9.525  16   8.99 |  17 /  50
-164 m, fondo ligero      |           136.265  53.201  15  20.34 |            138.133  32.957  14  46.04 |  26 /  15
-BayIW frontera 600 m     |            88.186  56.227  15  13.16 |             88.209  30.238  15   1.63 |  47 /  50
+164 m, fondo ligero      |           136.265  53.201  15  20.34 |             84.886  28.693  12  32.65 |  26 /  18
+BayIW frontera 600 m     |            88.186  56.390  15  13.16 |             88.186  30.188  15   1.63 |  47 /  50
 
 Configuración C (B + objetivos ligeros arriba)
 columna                  | 1 paso: max|Δz| m   medio   k     /h | 10 ciclos: max|Δz|   medio   k     /h | capas>2h_min hybgen/pyOCEAN
 -------------------------------------------------------------------------------------------------------------------------------------
-estratificada 600 m      |            82.522   4.342  47   1.94 |             14.854   0.842  47   0.16 |  44 /  44
+estratificada 600 m      |            82.522   4.772  47   1.94 |             17.770   1.461  47   0.19 |  44 /  44
 mezclada 600 m           |           449.783 104.278  33  16.36 |            449.783  28.751  33   2.04 |  31 /  16
 somera 30 m              |            20.366   9.525  16   8.99 |             20.366   9.525  16   8.99 |  17 /  50
-164 m, fondo ligero      |            75.548  13.685  25   9.94 |             57.271   6.169  25   5.98 |  33 /  26
-BayIW frontera 600 m     |            41.186  11.424  48   0.54 |             41.321   4.002  48   0.38 |  48 /  50
+164 m, fondo ligero      |            75.548  13.685  25   9.94 |             37.337   3.507  28   3.60 |  33 /  28
+BayIW frontera 600 m     |            41.186  11.418  48   0.54 |             41.182   4.076  48   0.38 |  48 /  50
 ```
 
 **Interpretación**
@@ -189,8 +189,9 @@ BayIW frontera 600 m     |            41.186  11.424  48   0.54 |             41
     150.1…). Es el "thin-thick-thin null mode" que el propio código de MOM6 reconoce
     (`MOM_hybgen_regrid.F90:806-813`).
 - **C: coinciden en el interior.** Con objetivos ligeros arriba, como en OM4, HYCOM1 mantiene
-  z en las capas superiores. Tras 10 ciclos, la diferencia media es de 4.0 m en BayIW y 0.8 m
-  en la columna estratificada, con un máximo de 0.4 y 0.2 grosores de capa locales. Los máximos
+  z en las capas superiores. Tras 10 ciclos, la diferencia media es de 4.1 m en BayIW y 1.5 m
+  en la columna estratificada, con un máximo de 0.4 y 0.2 grosores de capa locales (antes del
+  Plan B2c: 4.0 y 0.8 m). Los máximos
   absolutos (41 y 15 m) están en las capas 47–48, junto al fondo, donde hybgen aplica
   `dp_far_from_bot` y deja capas vacías.
 - **Mezclada y fondo ligero.** En una columna homogénea no hay respuesta única: las capas son
@@ -202,6 +203,17 @@ BayIW frontera 600 m     |            41.186  11.424  48   0.54 |             41
 un defecto de HYCOM1. Vienen de dos rasgos de hybgen:
 - capas z superiores fijas;
 - capas vacías alternadas, que son un defecto conocido.
+
+**Plan B2 (2026-10-12).** La tabla de arriba ya incluye dos cambios de la regla:
+- las capas sin masa toman la densidad de la capa con masa de arriba, como el relleno de hybgen
+  (`hybgen.F90:904-925`); la columna «164 m, fondo ligero» quedó más cerca de hybgen (Δz medio a
+  10 ciclos 55.8 → 51.6 m en A, 33.0 → 28.7 m en B, 6.2 → 3.5 m en C);
+- `keep_isopycnal` (B2c, por defecto): con `keep_isopycnal` las capas que ya están en su rango
+  de densidad no se mueven; las diferencias con hybgen que quedan son las de las capas
+  inconsistentes. En la columna estratificada de C la diferencia media a 10 ciclos sube de 0.8 a
+  1.5 m, porque las capas que ya están en su rango dejan de acercarse a la densidad objetivo
+  exacta; es el precio de no mezclar en flujo adiabático (lock exchange híbrido: ganancia de RPE
+  35 veces menor que ALE-σ).
 
 No hace falta portar hybgen. Para el Plan B, la regla híbrida necesita objetivos más ligeros
 que el agua superficial en las capas de arriba (estilo OM4), o grosores máximos

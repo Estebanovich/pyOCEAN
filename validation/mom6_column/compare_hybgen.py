@@ -94,12 +94,12 @@ def hybgen(cases: list[dict], dz: np.ndarray, tgt_layer: np.ndarray) -> list[np.
     return [np.array(lines[1 + i].split(), float) for i in range(len(cases))]
 
 
-def hycom1(c: dict, dz: np.ndarray, tgt_iface: np.ndarray, blend: bool) -> np.ndarray:
+def hycom1(c: dict, dz: np.ndarray, tgt_iface: np.ndarray, blend: bool, keep: bool = True) -> np.ndarray:
     """New interface depths (surface first, positive down) from regrid.hycom1_column."""
     n = c["h"].size
     zw = np.empty(n + 1)
     rg.hycom1_column(c["H"], 0.0, c["h"][::-1].copy(), c["r"][::-1].copy(), tgt_iface, dz,
-                     np.full(n, np.inf), H_MIN, zw)
+                     np.full(n, np.inf), H_MIN, keep, zw)
     if blend:
         sig, zs, out = np.empty(n + 1), np.empty(n + 1), np.empty(n + 1)
         rg.sigma_column(c["H"], 0.0, np.full(n, 1.0 / n), H_MIN, sig)

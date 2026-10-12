@@ -57,11 +57,11 @@ def test_sigma_reproduces_fractions():
     assert zw[0] == -100.0 and zw[-1] == 2.0
 
 
-def _hybrid(H, eta, h, rho, targets, dz=DELR, max_h=None, h_min=rg.H_MIN):
+def _hybrid(H, eta, h, rho, targets, dz=DELR, max_h=None, h_min=rg.H_MIN, keep=False):
     n = h.size
     zw = np.empty(n + 1)
     mh = np.full(n, np.inf) if max_h is None else max_h
-    rg.hycom1_column(H, eta, h, rho, targets, dz, mh, h_min, zw)
+    rg.hycom1_column(H, eta, h, rho, targets, dz, mh, h_min, keep, zw)
     return zw
 
 
@@ -155,7 +155,7 @@ def _window_case(H, d_sigma=50.0, d_hybrid=100.0, n=10):
     dz = np.full(n, 2.0)                                                  # z* floor: top 20 m
     targets = _window_targets(H, n)
     hyb, sig, zs = np.empty(n + 1), np.empty(n + 1), np.empty(n + 1)
-    rg.hycom1_column(H, 0.0, h, rho, targets, dz, np.full(n, np.inf), rg.H_MIN, hyb)
+    rg.hycom1_column(H, 0.0, h, rho, targets, dz, np.full(n, np.inf), rg.H_MIN, False, hyb)
     rg.sigma_column(H, 0.0, np.full(n, 1.0 / n), rg.H_MIN, sig)
     rg.zstar_column(H, 0.0, dz, rg.H_MIN, zs)
     out = np.empty(n + 1)
@@ -205,7 +205,7 @@ def test_regrid_columns_hybrid_with_transition_matches_the_window():
     h3 = np.diff(zw_t)[:, None, None].repeat(2, 1)
     r3 = (1024.0 - 0.02 * zc)[:, None, None].repeat(2, 1)
     params = dict(dz_top=np.full(n, 2.0), rho_target=_window_targets(75.0, n),
-                  dsigma=np.full(n, 1.0 / n), d_sigma=50.0, d_hybrid=100.0)
+                  dsigma=np.full(n, 1.0 / n), d_sigma=50.0, d_hybrid=100.0, keep_isopycnal=False)
     zw3 = rg.regrid_columns("hybrid", np.full((2, 1), 75.0), np.zeros((2, 1)), h3, r3, params, np.ones((2, 1), bool))
     np.testing.assert_allclose(zw3[:, 0, 0], out, atol=1e-12)
 
@@ -261,7 +261,7 @@ def test_regrid_columns_hybrid_matches_single_column():
     r3 = np.repeat(rho[:, None, None], ny * nx, 1).reshape(10, ny, nx)
     targets = np.linspace(1024.0, 1028.0, 11)
     params = dict(dz_top=DELR, rho_target=targets, max_h_top=np.full(10, np.inf),
-                  dsigma=np.full(10, 0.1), d_sigma=0.0, d_hybrid=0.0, h_min=rg.H_MIN)
+                  dsigma=np.full(10, 0.1), d_sigma=0.0, d_hybrid=0.0, h_min=rg.H_MIN, keep_isopycnal=False)
     zw3 = rg.regrid_columns("hybrid", H, eta, h3, r3, params, np.ones((ny, nx), bool))
     np.testing.assert_allclose(zw3[:, 1, 2], _hybrid(201.0, 0.0, h, rho, targets), rtol=0, atol=1e-12)
 
@@ -348,3 +348,86 @@ def test_hybrid_flooded_land_deeper_than_d_sigma_stays_sigma():
     zw = rg.regrid_columns("hybrid", H, eta, h3, r3, params, np.ones((1, 2), bool))
     np.testing.assert_allclose(np.diff(zw[:, 0, 0]), 0.25, rtol=1e-12)
 
+
+# ---------------------------------------------------------------- B2c: isopycnal layer preservation
+def _consistent_column(n=10, H=200.0, seed=0):
+    """Bed-first layers whose densities lie inside their own target brackets (surface-first targets)."""
+    rng = np.random.default_rng(seed)
+    targets = np.linspace(1020.0, 1030.0, n + 1)                        # surface first
+    mid_top = 0.5 * (targets[:-1] + targets[1:])                        # layer j (surface first)
+    h = rng.uniform(0.5, 1.5, n)
+    h *= H / h.sum()
+    return h, mid_top[::-1].copy(), targets                              # h, ρ bed first
+
+
+def test_keep_isopycnal_leaves_consistent_layers_exactly_in_place():
+    h, rho, targets = _consistent_column()
+    zw = _hybrid(200.0, 0.0, h, rho, targets, dz=np.full(10, 1e-6), keep=True)
+    np.testing.assert_allclose(zw, -200.0 + np.concatenate([[0.0], np.cumsum(h)]), rtol=0, atol=1e-11)
+    moved = _hybrid(200.0, 0.0, h, rho, targets, dz=np.full(10, 1e-6), keep=False)
+    assert np.abs(moved - zw).max() > 1.0                                # P1M would move them
+
+
+def test_keep_isopycnal_regrids_only_the_interfaces_of_an_inconsistent_layer():
+    h, rho, targets = _consistent_column()
+    rho[4] = 1021.2                                                      # bed-first layer 4 out of its bracket
+    zin = -200.0 + np.concatenate([[0.0], np.cumsum(h)])
+    p1m = _hybrid(200.0, 0.0, h, rho, targets, dz=np.full(10, 1e-6), keep=False)
+    zw = _hybrid(200.0, 0.0, h, rho, targets, dz=np.full(10, 1e-6), keep=True)
+    other = [k for k in range(11) if k not in (4, 5)]
+    np.testing.assert_allclose(zw[other], zin[other], rtol=0, atol=1e-11)
+    for k in (4, 5):                                                     # P1M position, between the kept 3 and 6
+        np.testing.assert_allclose(zw[k], np.clip(p1m[k], zin[3], zin[6]), rtol=0, atol=1e-11)
+    assert (np.diff(zw) > 0).all()
+
+
+def test_keep_isopycnal_counts_massless_layers_as_consistent():
+    # a vanished layer with a stale density between two consistent thick ones does not unpin them
+    h, rho, targets = _consistent_column()
+    h[3] = rg.H_MIN
+    rho[3] = 1029.9                                                      # far outside its bracket
+    h *= 200.0 / h.sum()
+    zw = _hybrid(200.0, 0.0, h, rho, targets, dz=np.full(10, 1e-6), keep=True)
+    np.testing.assert_allclose(zw, -200.0 + np.concatenate([[0.0], np.cumsum(h)]), rtol=0, atol=1e-11)
+
+
+def test_keep_isopycnal_still_applies_the_zstar_floor_and_keeps_order():
+    # consistent layers squeezed against the surface: the z* floor pushes the kept interfaces
+    # down; the column stays ordered and adds up to D
+    h, rho, targets = _consistent_column()
+    h[-3:] = [0.2, 0.2, 0.2]                                             # three thin top layers
+    h *= 200.0 / h.sum()
+    dz = np.full(10, 5.0)                                                # floor: 5 m per layer from the top
+    zw = _hybrid(200.0, 0.0, h, rho, targets, dz=dz, keep=True)
+    assert (np.diff(zw) > 0).all() and zw[0] == -200.0 and zw[-1] == 0.0
+    np.testing.assert_allclose(zw[::-1][1:4], -np.cumsum(dz)[:3], atol=1e-11)
+
+
+def test_regrid_columns_defaults_to_keep_isopycnal():
+    h, rho, targets = _consistent_column()
+    h3, r3 = h[:, None, None].repeat(2, 2), rho[:, None, None].repeat(2, 2)
+    base = dict(dz_top=np.full(10, 1e-6), rho_target=targets)
+    zw = rg.regrid_columns("hybrid", np.full((1, 2), 200.0), np.zeros((1, 2)), h3, r3, base, np.ones((1, 2), bool))
+    np.testing.assert_allclose(zw[:, 0, 0], _hybrid(200.0, 0.0, h, rho, targets, dz=base["dz_top"], keep=True),
+                               rtol=0, atol=1e-12)
+    zw0 = rg.regrid_columns("hybrid", np.full((1, 2), 200.0), np.zeros((1, 2)), h3, r3,
+                            dict(base, keep_isopycnal=False), np.ones((1, 2), bool))
+    np.testing.assert_allclose(zw0[:, 0, 1], _hybrid(200.0, 0.0, h, rho, targets, dz=base["dz_top"], keep=False),
+                               rtol=0, atol=1e-12)
+
+
+def test_keep_isopycnal_interfaces_stay_inside_the_shallow_window():
+    # review focus 2 (guard: passes before Task 1 and must still pass after): with q = 0.5 every
+    # interface, kept or not, lies between L_k = q(−H) + (1−q)σ_k and U_k = q z*_k + (1−q)σ_k
+    H = 7.5
+    h, rho, targets = _consistent_column(H=H)
+    params = dict(dz_top=np.full(10, 0.2), rho_target=targets, dsigma=np.full(10, 0.1), d_sigma=5.0, d_hybrid=10.0)
+    zw = rg.regrid_columns("hybrid", np.full((1, 1), H), np.zeros((1, 1)), h[:, None, None], rho[:, None, None],
+                           params, np.ones((1, 1), bool))[:, 0, 0]
+    sig, zs = np.empty(11), np.empty(11)
+    rg.sigma_column(H, 0.0, params["dsigma"], rg.H_MIN, sig)
+    rg.zstar_column(H, 0.0, params["dz_top"], rg.H_MIN, zs)
+    q = 0.5
+    lo, hi = q * (-H) + (1 - q) * sig, q * zs + (1 - q) * sig
+    assert ((zw >= lo - 1e-9) & (zw <= hi + 1e-9)).all()
+    assert (np.diff(zw) > 0).all()
