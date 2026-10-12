@@ -151,3 +151,106 @@ def test_upwind_transport_is_zero_next_to_land():
     ut = np.full((2, 1, 4), 0.1)
     Q = ale.upwind_transport_x(qe, qw, ut, np.full((1, 4), 10.0), np.full((1, 4), 8.0))
     assert (Q[:, 0, 1:3] == 0).all()
+
+
+# ---------------------------------------------------------------- B2b: PPM thickness flux (MOM6 continuity_PPM)
+def _ppm_case(h, u, dt=10.0, dx=100.0, L=10.0, clip=False, H=None, active=None):
+    n, ny, nx = h.shape
+    active = np.ones((ny, nx), bool) if active is None else active
+    H = h.sum(axis=0) if H is None else H
+    qe, qw = ale.face_transport_thickness(h, H, active, clip)
+    dx_t = np.full((ny, nx), dx)
+    Lf = np.full((ny, nx + 1), L)
+    return qe, qw, dx_t, Lf, active
+
+
+def test_ppm_edges_are_exact_for_a_linear_thickness_and_positive_for_vanished_cells():
+    x = np.arange(8) + 0.5
+    h = (2.0 + 0.5 * x)[None, None, :]
+    hw, he = ale.ppm_edges_x(h, np.ones((1, 8), bool))
+    # cells whose neighbours have exact slopes (the edge cells have zero slope, MOM6 2899-2913)
+    np.testing.assert_allclose(he[0, 0, 2:-2], 2.0 + 0.5 * (x[2:-2] + 0.5), rtol=1e-13)
+    np.testing.assert_allclose(hw[0, 0, 2:-2], 2.0 + 0.5 * (x[2:-2] - 0.5), rtol=1e-13)
+    rng = np.random.default_rng(1)
+    h = rng.uniform(0.0, 5.0, (6, 3, 10))
+    h[rng.uniform(size=h.shape) < 0.3] = 0.0                              # vanished cells
+    hw, he = ale.ppm_edges_x(h, np.ones((3, 10), bool))
+    assert hw.min() >= -1e-14 and he.min() >= -1e-14
+    np.testing.assert_array_equal(hw[h == 0], 0.0)                       # flattened, nothing to export
+    np.testing.assert_array_equal(he[h == 0], 0.0)
+
+
+def test_ppm_transport_is_the_swept_mean_of_the_parabola():
+    # linear thickness, u > 0: the swept volume is the last fraction C of the donor cell,
+    # mean thickness = h_E − b·C·dx/2 (MOM6 flux_elem 1182)
+    x = np.arange(8) + 0.5
+    b = 0.5                                                              # per cell
+    h = (2.0 + b * x)[None, None, :]
+    u = np.zeros((1, 1, 9))
+    u[0, 0, 4] = 3.0                                                     # C = 3·10/100 = 0.3
+    qe, qw, dx_t, Lf, act = _ppm_case(h, u)
+    Qbt = np.zeros((1, 9))
+    Qbt[0, 4] = Lf[0, 4] * 3.0 * (2.0 + b * 4.0 - b * 0.3 / 2)           # what the swept mean gives
+    Q = ale.ppm_transport_x(h, u, Lf, Qbt, qe, qw, act, 10.0, dx_t)
+    np.testing.assert_allclose(Q[0, 0, 4], Qbt[0, 4], rtol=1e-12)
+    assert (Q[0, 0, [0, 8]] == 0).all()
+
+
+def test_ppm_transport_adds_up_to_the_free_surface_flux_with_a_uniform_correction():
+    rng = np.random.default_rng(4)
+    h = rng.uniform(0.2, 5.0, (6, 2, 7))
+    h[2, :, 3] = 0.0
+    u = rng.normal(0.0, 0.5, (6, 2, 8))
+    u[..., [0, -1]] = 0.0
+    qe, qw, dx_t, Lf, act = _ppm_case(h, u)
+    F0, _ = ale.ppm_fluxes_x(h, u, Lf, qe, qw, act, 10.0, dx_t)
+    Qbt = F0.sum(axis=0) + rng.normal(0.0, 5.0, (2, 8))                  # needs a correction du ≠ 0
+    Qbt[:, [0, -1]] = 0.0
+    Q = ale.ppm_transport_x(h, u, Lf, Qbt, qe, qw, act, 10.0, dx_t)
+    np.testing.assert_allclose(Q.sum(axis=0), Qbt, rtol=1e-12, atol=1e-12)
+    assert np.isfinite(Q).all()
+
+
+def test_ppm_transport_without_residual_keeps_the_uncorrected_fluxes():
+    rng = np.random.default_rng(5)
+    h = rng.uniform(0.2, 5.0, (4, 1, 6))
+    u = rng.normal(0.0, 0.5, (4, 1, 7))
+    u[..., [0, -1]] = 0.0
+    qe, qw, dx_t, Lf, act = _ppm_case(h, u)
+    F0, _ = ale.ppm_fluxes_x(h, u, Lf, qe, qw, act, 10.0, dx_t)
+    Q = ale.ppm_transport_x(h, u, Lf, F0.sum(axis=0), qe, qw, act, 10.0, dx_t)
+    np.testing.assert_allclose(Q, F0, rtol=1e-12, atol=1e-12)
+
+
+def test_ppm_transport_next_to_land_and_on_the_edge_is_zero_and_finite():
+    # review focus 4
+    h = np.full((3, 1, 5), 4.0)
+    act = np.array([[True, True, False, True, True]])
+    u = np.full((3, 1, 6), 0.2)
+    qe, qw, dx_t, Lf, _ = _ppm_case(h, u, active=act)
+    Q = ale.ppm_transport_x(h, u, Lf, np.zeros((1, 6)), qe, qw, act, 10.0, dx_t)
+    assert np.isfinite(Q).all()
+    assert (Q[:, 0, 2:4] == 0).all()
+
+
+def test_ppm_transport_does_not_empty_a_vanished_donor_at_high_courant_number():
+    # review focus 5: a 1 mm layer with C = 0.9 exports at most its own volume
+    h = np.array([[[1e-3, 1e-3, 5.0, 5.0]], [[5.0, 5.0, 1e-3, 1e-3]]])
+    u = np.zeros((2, 1, 5))
+    u[0, 0, 2] = 9.0                                                     # C = 9·10/100 = 0.9
+    qe, qw, dx_t, Lf, act = _ppm_case(h, u)
+    Q, _ = ale.ppm_fluxes_x(h, u, Lf, qe, qw, act, 10.0, dx_t)
+    assert Q[0, 0, 2] * 10.0 <= 1e-3 * 100.0 * 10.0 + 1e-12              # Q dt ≤ h A of the donor
+
+
+def test_ppm_transport_respects_the_clip_at_the_shallower_bed():
+    # z* layer facing rock: zero flux whatever the parabola says
+    deep = np.full(6, 100.0)
+    shallow = np.array([1e-3, 1e-3, 1e-3, 1e-3, 63.996, 100.0])
+    h = np.stack([deep, deep, shallow, shallow], axis=1)[:, None, :]
+    H = np.array([[600.0, 600.0, 164.0, 164.0]])
+    u = np.zeros((6, 1, 5))
+    u[:, 0, 2] = 0.1
+    qe, qw, dx_t, Lf, act = _ppm_case(h, u, clip=True, H=H)
+    Q, _ = ale.ppm_fluxes_x(h, u, Lf, qe, qw, act, 10.0, dx_t)
+    np.testing.assert_allclose(Q[:4, 0, 2], 0.0, atol=1e-12)

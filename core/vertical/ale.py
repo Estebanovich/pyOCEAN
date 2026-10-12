@@ -24,6 +24,9 @@ Three face thicknesses, each for its job (ALE Plan B2, 2026-10-12):
   terrain, and layer k of the deep column continues as layer k of the shallow one.  Without the
   clip in z*, the residual pressure-gradient error of a layer facing rock accelerates it with
   nothing to oppose it (seamount: 0.02 → 35 cm/s in one day).
+* PPM (Plan B2b, ``ppm_transport_x``): MOM6 continuity_PPM — positive-definite PPM edge
+  thicknesses, the mean thickness of the volume swept in Δt, and a uniform velocity correction per
+  column so the layer fluxes add up to the free-surface flux (Adcroft et al. 2019, §A).
 * Mean (q_E + q_W)/2, direction independent, for the depth mean of the free surface
   ū = Σ w_k u_k, the vertical viscosity and the thin-bed rule.  A layer that has vanished on one
   side keeps half the other side's thickness; a z* layer facing rock is thin and carries no
@@ -155,3 +158,141 @@ def lagrangian_thickness(h: np.ndarray, divq: np.ndarray, dt: float, area: np.nd
         raise RuntimeError(f"layer {k} of cell (j={j}, i={i}) emptied in the Lagrangian step: "
                            f"h† = {out[k, j, i]:.3e} m (reduce dt)")
     return np.maximum(out, 0.0)
+
+
+H_PPM_MIN = 2e-10      # [m] positive-definite floor of the PPM thickness (2 Angstrom, MOM_continuity_PPM.F90:534)
+
+
+def ppm_edges_x(h: np.ndarray, active: np.ndarray, h_min: float = H_PPM_MIN) -> tuple[np.ndarray, np.ndarray]:
+    """
+    West and east edge values of the layer thickness in each cell [m] (MOM6 PPM_reconstruction_x,
+    MOM_continuity_PPM.F90:2827-2942): limited slope (Lin 1994, eq. B2; 0 next to land),
+    h_W = (h_i−1 + h_i)/2 + (s_i−1 − s_i)/6, a land or outside neighbour replaced by the cell
+    itself, then the positive-definite limiter PPM_limit_pos (:3184-3226): a parabola whose
+    minimum falls inside the cell is scaled so it stays ≥ h_min; cells with h ≤ h_min are flat.
+    """
+    h = np.where(active[None], np.nan_to_num(h), 0.0)
+    m = active.astype(float)[None]
+    z = np.zeros_like(m[..., :1])
+    mW = np.concatenate([z, m[..., :-1]], axis=-1)
+    mE = np.concatenate([m[..., 1:], z], axis=-1)
+    hm1 = mW * np.concatenate([h[..., :1], h[..., :-1]], axis=-1) + (1 - mW) * h
+    hp1 = mE * np.concatenate([h[..., 1:], h[..., -1:]], axis=-1) + (1 - mE) * h
+    slp = 0.5 * (hp1 - hm1)
+    dmx = np.maximum(np.maximum(hp1, hm1), h) - h
+    dmn = h - np.minimum(np.minimum(hp1, hm1), h)
+    slp = np.sign(slp) * np.minimum(np.abs(slp), 2.0 * np.minimum(dmx, dmn))
+    slp = np.where(mW * mE * m > 0, slp, 0.0)
+    zs = np.zeros_like(slp[..., :1])
+    slp_w = np.concatenate([zs, slp[..., :-1]], axis=-1)
+    slp_e = np.concatenate([slp[..., 1:], zs], axis=-1)
+    h_w = 0.5 * (hm1 + h) + (slp_w - slp) / 6.0
+    h_e = 0.5 * (hp1 + h) + (slp - slp_e) / 6.0
+    curv = 3.0 * ((h_w + h_e) - 2.0 * h)                             # PPM_limit_pos: only minima
+    dh = h_e - h_w
+    inside = (curv > 0) & (np.abs(dh) < curv)
+    flat = inside & (h <= h_min)
+    num = 12.0 * curv * (h - h_min)
+    den = curv**2 + 3.0 * dh**2
+    scale_ = inside & ~flat & (num < den)
+    s = np.where(scale_, num / np.where(den > 0, den, 1.0), 1.0)
+    h_w = np.where(flat, h, h + s * (h_w - h))
+    h_e = np.where(flat, h, h + s * (h_e - h))
+    return h_w, h_e
+
+
+def _swept_thickness(h, h_w, h_e, u, dt, dx_t, q_e, q_w):
+    """
+    Mean thickness of the volume swept through each u-face in dt and its derivative factor
+    (MOM6 flux_elem, MOM_continuity_PPM.F90:1182-1183, 1193-1194), with C = |u| dt/dx of the
+    donor capped at 1 and, where the bed clip is active (q < h_donor), capped by q.
+    Returns (mean, marginal) on the faces (N, ny, nx+1).
+    """
+    pad = lambda a: np.concatenate([a[..., :1], a, a[..., -1:]], axis=-1)   # noqa: E731
+    hp, wp, ep = pad(h), pad(h_w), pad(h_e)
+    dxp = np.concatenate([dx_t[:, :1], dx_t, dx_t[:, -1:]], axis=-1)[None]
+    # face f: west cell = padded index f, east cell = padded index f+1
+    hW, wW, eW, dW = hp[..., :-1], wp[..., :-1], ep[..., :-1], dxp[..., :-1]
+    hE, wE, eE, dE = hp[..., 1:], wp[..., 1:], ep[..., 1:], dxp[..., 1:]
+    pos = u >= 0
+    C = np.minimum(np.abs(u) * dt / np.where(pos, dW, dE), 1.0)
+    curv3 = np.where(pos, (wW + eW) - 2.0 * hW, (wE + eE) - 2.0 * hE)
+    dh = np.where(pos, wW - eW, eE - wE)
+    edge = np.where(pos, eW, wE)
+    mean = edge + C * (0.5 * dh + curv3 * (C - 1.5))
+    marg = edge + C * (dh + 3.0 * curv3 * (C - 1.0))
+    q = np.where(pos, q_e, q_w)
+    h_up = np.where(pos, hW, hE)
+    cap = np.where(q < h_up, q, np.inf)                              # bed clip (z*, hybrid)
+    return np.maximum(np.minimum(mean, cap), 0.0), np.maximum(np.minimum(marg, cap), 0.0)
+
+
+def _open_faces(active: np.ndarray) -> np.ndarray:
+    """u-faces with water on both sides (domain-edge faces: the inner cell), (1, ny, nx+1)."""
+    aW = np.concatenate([active[:, :1], active], axis=-1)
+    aE = np.concatenate([active, active[:, -1:]], axis=-1)
+    return (aW & aE)[None]
+
+
+def _ppm_fluxes(h, h_w, h_e, u, L, q_e, q_w, open_, dt, dx_t):
+    mean, marg = _swept_thickness(h, h_w, h_e, u, dt, dx_t, q_e, q_w)
+    return np.where(open_, L[None] * u * mean, 0.0), np.where(open_, L[None] * marg, 0.0)
+
+
+def ppm_fluxes_x(h: np.ndarray, ut: np.ndarray, L: np.ndarray, q_e: np.ndarray, q_w: np.ndarray,
+                 active: np.ndarray, dt: float, dx_t: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Uncorrected PPM layer fluxes F = L u h̄ [m³ s⁻¹] and dF/du = L h_marg [m²] at the u-faces
+    (MOM6 flux_elem, MOM_continuity_PPM.F90:1111-1202), zero on faces without water on both sides.
+    """
+    h = np.where(active[None], np.nan_to_num(h), 0.0)
+    h_w, h_e = ppm_edges_x(h, active)
+    return _ppm_fluxes(h, h_w, h_e, ut, L, q_e, q_w, _open_faces(active), dt, dx_t)
+
+
+def ppm_transport_x(h: np.ndarray, ut: np.ndarray, L: np.ndarray, Q_bt: np.ndarray, q_e: np.ndarray,
+                    q_w: np.ndarray, active: np.ndarray, dt: float, dx_t: np.ndarray,
+                    max_iter: int = 20) -> np.ndarray:
+    """
+    Layer volume fluxes through the u-faces [m³ s⁻¹] with PPM thickness (MOM6 continuity_PPM,
+    OM4 defaults) and a uniform velocity correction du per face column so that
+    Σ_k L (u_k + du) h̄_k(u_k + du) = Q_bt (zonal_flux_adjust, MOM_continuity_PPM.F90:1368-1546:
+    Newton with bracketing bisection; du keeps every layer under CFL ½, :773-874).  The
+    remaining residual is shared like HYCOM (cnuity.F90:585-620) so Σ_k Q_k = Q_bt to
+    round-off.  Only the fluxes change, not u (as MOM6).  For the v-faces call it on swapped axes.
+    """
+    h = np.where(active[None], np.nan_to_num(h), 0.0)
+    h_w, h_e = ppm_edges_x(h, active)
+    open_ = _open_faces(active)
+    dxW = np.concatenate([dx_t[:, :1], dx_t], axis=-1)[None]
+    dxE = np.concatenate([dx_t, dx_t[:, -1:]], axis=-1)[None]
+
+    def fluxes(uu):
+        return _ppm_fluxes(h, h_w, h_e, uu, L, q_e, q_w, open_, dt, dx_t)
+
+    lim_w, lim_e = 0.5 * dxW / dt, 0.5 * dxE / dt                    # CFL ½ (CONTINUITY_CFL_LIMIT)
+    du_max = np.maximum(np.minimum(lim_w[0], (lim_w - ut).min(axis=0)), 0.0)
+    du_min = np.minimum(np.maximum(-lim_e[0], (-(lim_e + ut)).max(axis=0)), 0.0)
+    du = np.zeros_like(Q_bt)
+    F, dF = fluxes(ut)
+    err = F.sum(axis=0) - Q_bt
+    lo, hi = du_min.copy(), du_max.copy()
+    for _ in range(max_iter):
+        hi = np.where(err > 0, du, hi)
+        lo = np.where(err < 0, du, lo)
+        dsum = dF.sum(axis=0)
+        step = np.where(dsum > 0, -err / np.where(dsum > 0, dsum, 1.0), 0.0)
+        new = du + step
+        new = np.where((step > 0) & (new >= hi), 0.5 * (du + hi), new)
+        new = np.where((step < 0) & (new <= lo), 0.5 * (du + lo), new)
+        du = new
+        F, dF = fluxes(ut + du[None])
+        err = F.sum(axis=0) - Q_bt
+        if np.all(np.abs(err) <= 1e-12 * np.maximum(np.abs(Q_bt), 1.0)):
+            break
+    R = Q_bt - F.sum(axis=0)                                         # exact closure (HYCOM)
+    qR = np.where((R >= 0)[None], q_e, q_w)
+    alt = np.where((R >= 0)[None], q_w, q_e)
+    qR = np.where((qR.sum(axis=0) > 0)[None], qR, alt)
+    tot = qR.sum(axis=0)
+    return np.where(open_, F + R[None] * qR / np.where(tot > 0, tot, 1.0)[None], 0.0)

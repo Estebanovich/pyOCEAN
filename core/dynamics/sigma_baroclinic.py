@@ -91,7 +91,7 @@ from diagnostics.mixing import reference_potential_energy
 from core.vertical import regrid as rg
 from core.vertical import remap as rm
 from core.vertical.ale import (DZ_FLOOR, face_fractions, face_thickness, face_transport_thickness, lagrangian_thickness,
-                               upwind_transport_x, zero_thin_bed_velocity)
+                               ppm_transport_x, upwind_transport_x, zero_thin_bed_velocity)
 from core.vertical.pgf import fv_pgf
 
 G = 9.81
@@ -640,6 +640,8 @@ class SigmaBaroclinic:
           entering a cell; MOM6 lock_exchange — gravity-current fronts and bores lose energy, ALE-σ lock
           exchange 0.98 U vs 0.91/0.84 U with 'arakawa') or 'arakawa' (energy conserving, MOM6 production)
     max_truncations : ALE: stop after this many CFL velocity truncations at faces thicker than h_thin_bed
+    thickness_flux : ALE layer thickness at the faces: 'upwind' (default) = donor cell (B2a), 'ppm' = MOM6
+          continuity_PPM with the barotropic adjustment (B2b; core.vertical.ale.ppm_transport_x)
     pgf : 'jacobian' (default), 'twoterm', or 'fv', finite volume (Adcroft et al. 2008; core.vertical.pgf)
     """
 
@@ -654,7 +656,7 @@ class SigmaBaroclinic:
                  kv: float = 0.0, solver: str = "direct", vertical_coordinate: str = "sigma_eulerian",
                  regrid: str = "sigma", regrid_params: dict | None = None, remap_scheme: str = "ppm_h4",
                  h_thin_bed: float = 0.01, init_iterations: int = 10, momentum: str | None = None,
-                 ke_scheme: str = "gudonov", max_truncations: int = 1000) -> None:
+                 ke_scheme: str = "gudonov", max_truncations: int = 1000, thickness_flux: str = "upwind") -> None:
         if pgf not in ("twoterm", "jacobian", "fv"):
             raise ValueError(f"unknown pressure-gradient scheme {pgf!r}")
         self.pgf, self.rho_ref = pgf, rho_ref
@@ -698,10 +700,11 @@ class SigmaBaroclinic:
         self.sigma_c = 0.5 * (self.core.sigma_w[1:, 0] + self.core.sigma_w[:-1, 0])   # layer centres (bed = 0)
         self.area = self.fs.area
         self._setup_ale(vertical_coordinate, regrid, regrid_params, remap_scheme, z0, closure, h_thin_bed,
-                        init_iterations, act, momentum, ke_scheme, max_truncations)
+                        init_iterations, act, momentum, ke_scheme, max_truncations, thickness_flux)
 
     def _setup_ale(self, vertical_coordinate, regrid, regrid_params, remap_scheme, z0, closure, h_thin_bed,
-                   init_iterations, act, momentum=None, ke_scheme="gudonov", max_truncations=1000) -> None:
+                   init_iterations, act, momentum=None, ke_scheme="gudonov", max_truncations=1000,
+                   thickness_flux="upwind") -> None:
         """Check and store the ALE configuration (spec §2, §6.2); scope limits of ALE Plan B raise."""
         if vertical_coordinate not in ("sigma_eulerian", "ale"):
             raise ValueError(f"unknown vertical_coordinate {vertical_coordinate!r}; use 'sigma_eulerian' or 'ale'")
@@ -715,6 +718,9 @@ class SigmaBaroclinic:
         if ke_scheme not in ("arakawa", "gudonov"):
             raise ValueError(f"unknown ke_scheme {ke_scheme!r}; use 'arakawa' or 'gudonov'")
         self.momentum, self.ke_scheme, self.max_truncations = momentum, ke_scheme, int(max_truncations)
+        if thickness_flux not in ("upwind", "ppm"):
+            raise ValueError(f"unknown thickness_flux {thickness_flux!r}; use 'upwind' or 'ppm'")
+        self.thickness_flux = thickness_flux
         if not self.ale:
             return
         if regrid not in ("sigma", "zstar", "hybrid"):
@@ -751,7 +757,7 @@ class SigmaBaroclinic:
     def initial_state(self, eta: np.ndarray, T: np.ndarray) -> SigmaState:
         """
         Resting state; T on the layers of ``layer_heights(eta)``.  With ``rho_ref="auto"`` the reference
-        profile is taken from this T.  ALE: h is the rule's grid (z* for 'hybrid', followed by
+        profile is taken from this T.  ALE: h is the rule's grid (σ-layers for 'hybrid', followed by
         ``init_iterations`` regrid–remap passes towards the isopycnal grid).
         """
         ny, nx = self.H.shape
@@ -804,11 +810,17 @@ class SigmaBaroclinic:
 
     # ------------------------------------------------------------------ ALE helpers
     def _initial_h(self, eta: np.ndarray) -> np.ndarray:
-        """ALE layer thicknesses of the rule's grid at η [m] (z* for 'hybrid', σ where H ≤ 0); 0 on dry/land."""
+        """
+        ALE layer thicknesses of the initial grid at η [m]; 0 on dry/land.  'sigma' and 'zstar': the rule's
+        grid (σ where H ≤ 0).  'hybrid': σ-layers, on which T is sampled before ``init_iterations``
+        regrid–remap passes build the isopycnal grid, as MOM6 (THICKNESS_CONFIG = "uniform",
+        MOM_state_initialization.F90:271; REGRID_ACCELERATE_INIT, :488-507).  The z* floor of dz_top
+        (e.g. 19 × 0.5 m + one 190 m bed layer) would lose a continuous stratification.
+        """
         H = np.nan_to_num(np.asarray(self.H, float))
         wet = self.fs.active & (H + eta > 0)
         h0 = np.zeros((self.n,) + H.shape)
-        rule = "zstar" if self.regrid_rule == "hybrid" else self.regrid_rule
+        rule = "sigma" if self.regrid_rule == "hybrid" else self.regrid_rule
         sig = wet & (H <= 0) if rule == "zstar" else np.zeros_like(wet)
         numba.set_num_threads(_THREADS[0])                                 # parallel regrid kernel
         for r, mask in ((rule, wet & ~sig), ("sigma", sig)):
@@ -1191,8 +1203,14 @@ class SigmaBaroclinic:
         utx, uty = th * u_new + (1 - th) * un, th * v_new + (1 - th) * vn
         Qbx = self.fs.Lu * self.fs.last_Du * (wu * utx).sum(axis=0)        # free-surface volume fluxes
         Qby = self.fs.Lv * self.fs.last_Dv * (wv * uty).sum(axis=0)
-        Qx = upwind_transport_x(qe, qw, utx, self.fs.Lu, Qbx)
-        Qy = upwind_transport_x(qn, qs, uty.swapaxes(1, 2), self.fs.Lv.T, Qby.T).swapaxes(1, 2)
+        if self.thickness_flux == "ppm":
+            dx_t, dy_t = self._vi["dx_t"], self._vi["dy_t"]
+            Qx = ppm_transport_x(st.h, utx, self.fs.Lu, Qbx, qe, qw, act, dt, dx_t)
+            Qy = ppm_transport_x(st.h.swapaxes(1, 2), uty.swapaxes(1, 2), self.fs.Lv.T, Qby.T, qn, qs, act.T,
+                                 dt, dy_t.T).swapaxes(1, 2)
+        else:
+            Qx = upwind_transport_x(qe, qw, utx, self.fs.Lu, Qbx)
+            Qy = upwind_transport_x(qn, qs, uty.swapaxes(1, 2), self.fs.Lv.T, Qby.T).swapaxes(1, 2)
         divh = Qx[..., 1:] - Qx[..., :-1] + Qy[:, 1:, :] - Qy[:, :-1, :]
         h_lag = lagrangian_thickness(st.h, divh, dt, self.area)
         V0, V1 = self.layer_volumes(st.eta, st.h), self.layer_volumes(eta_new, h_lag)

@@ -41,14 +41,18 @@ Las salidas de MOM6 van a `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/mom6_ke/`. Cada cas
 | ALE z\* | 26.18 / 26.18 h | 0.9971 / 0.9951 |
 | ALE híbrido | 26.22 / 26.21 h | 0.9950 / 0.9931 |
 
-**Lock exchange, 6 h:**
+**Lock exchange, 6 h** (híbrido con estado inicial en capas σ, 2026-10-12; con 21 capas, objetivos de densidad con cada masa de agua en el centro de su intervalo, ver abajo; transporte de grosor `upwind` = celda donante, `ppm` = MOM6 continuity_PPM):
 
 | Caso | Frente 1 m (denso, ligero) | Cuerpo 5 m (denso, ligero) | Ganancia de RPE [J] | max\|u\| [m/s] |
 |---|---|---|---|---|
-| híbrido 10 capas, Arakawa | 1.12, 1.12 U | 1.12, 1.12 U | 4.0e6 | 1.46 |
-| híbrido 10 capas, Godunov | 1.12, 1.05 U | 1.05, 1.05 U | 4.9e6 | 0.94 |
-| híbrido 21 capas, Arakawa | 1.19, 1.05 U | 1.19, 1.05 U | 1.2e6 | 0.88 |
-| híbrido 21 capas, Godunov | 1.19, 0.98 U | 1.12, 1.05 U | 8.3e5 | 0.73 |
+| híbrido 10, Arakawa, upwind | 1.12, 1.12 U | 1.12, 1.12 U | 4.0e6 | 1.55 |
+| híbrido 10, Godunov, upwind | 1.12, 1.05 U | 1.05, 1.05 U | 3.0e6 | 0.94 |
+| híbrido 10, Arakawa, ppm | 0.98, 0.98 U | 1.05, 0.98 U | 4.1e6 | 1.93 |
+| híbrido 10, Godunov, ppm | 1.19, 1.05 U | 1.26, 1.05 U | 8.9e6 | 0.99 |
+| híbrido 21, Arakawa, upwind | 1.19, 1.12 U | 1.40, 1.12 U | 7.8e6 | 1.17 |
+| híbrido 21, Godunov, upwind | 1.19, 1.05 U | 1.26, 1.05 U | 4.2e6 | 0.92 |
+| híbrido 21, Arakawa, ppm | 0.98, 0.98 U | 0.98, 0.98 U | 4.9e6 | 1.62 |
+| **híbrido 21, Godunov, ppm (= MOM6)** | **1.05, 0.98 U** | **1.05, 0.98 U** | **8.8e5** | **0.74** |
 | ALE-σ 10 capas, Arakawa | 0.84, 0.77 U | 0.77, 0.77 U | 5.8e8 | 0.88 |
 | ALE-σ 10 capas, Godunov | 0.91, 0.91 U | 0.91, 0.84 U | 2.1e8 | 0.67 |
 | ALE-σ 20 capas, Arakawa | 0.91, 0.84 U | 0.84, 0.84 U | 5.7e8 | 0.96 |
@@ -65,13 +69,15 @@ Las salidas de MOM6 van a `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/mom6_ke/`. Cada cas
   - frentes más cerca de Benjamin;
   - menos velocidad máxima;
   - en σ, tres veces menos mezcla espuria (2e8 contra 6e8 J). Con Arakawa la energía que llega a la escala de malla termina como mezcla.
-- **Más capas (21, como MOM6):** max|u| baja de 0.94 a 0.73 m/s y la mezcla cae de 4.9e6 a 8.3e5 J. Pero la punta densa empeora (1.19 U). La punta rápida no es un problema de resolución: es numérico, y MOM6 con 21 capas no lo tiene.
-- **Defecto encontrado:** `initial_state` del modo híbrido muestrea T en la rejilla z\* construida con `dz_top`, que en la híbrida es solo el piso z\* (por ejemplo 19 × 0.5 m + una capa de 190 m). Con estratificación continua pierde la estructura del fondo, y el seiche explotó, con una capa vacía. `seiche_pyocean.py` lo evita muestreando en capas uniformes. Hay que corregirlo en el modelo.
+- **Las primeras filas de 21 capas no valían.** Con `linspace(ρ_l − 1, ρ_d + 1, 22)` (paso 1/3) las densidades del agua, 990 y 995, caen exactamente sobre interfaces objetivo, así que cada masa de agua tiene dos capas válidas. El arranque z\* viejo la dejaba en una por desempate; el arranque σ la reparte en dos (2.9 + 17.0 m) y `keep_isopycnal` las conserva. Ahora el margen es 0.78125, con el agua en el centro de su intervalo.
+- **21 capas con PPM y Godunov reproduce MOM6:** punta y cuerpo 1.05 / 0.98 U (MOM6 1.05), max|u| 0.74 m/s (MOM6 0.56; criterio ≤ 0.84), RPE 8.8e5 J, sin truncamientos. Es la configuración de MOM6 (21 capas, continuity_PPM, KE Godunov). PPM cuesta 28 % más por paso (5.1 contra 4.0 ms con 21 capas).
+- **Con 10 capas PPM no ayuda con Godunov** (punta 1.19, cuerpo 1.26 U, RPE 8.9e6). Con Arakawa da los frentes exactos (0.98 U), pero max|u| 1.6–1.9 m/s, por la energía que no se disipa.
+- **Upwind con 21 capas empeora** (cuerpo denso 1.26–1.40 U): la celda donante necesita más resolución horizontal que PPM.
+- **Defecto corregido:** `initial_state` híbrido muestreaba T en el piso z\* de `dz_top` (por ejemplo 19 × 0.5 m + una capa de 190 m) y perdía la estratificación del fondo; el seiche explotó. Ahora arranca en capas σ y deja que `init_iterations` construya las isopicnas, como MOM6 (`THICKNESS_CONFIG = "uniform"`, `MOM_state_initialization.F90:271`; `REGRID_ACCELERATE_INIT`, `:488-507`). El seiche híbrido da lo mismo que con el parche anterior.
 
 ## Qué debe mejorar pyOCEAN
 
-1. **`initial_state` híbrido:** muestrear la condición inicial en capas uniformes (o en σ) y regenerar desde ahí.
-2. **Punta densa rápida** (1.12–1.19 U contra 1.05 en MOM6), con 10 y con 21 capas. Candidatos ahora que la forma de flujo ya no domina:
-   - grosor PPM en el transporte (B2b, cuyo diff quedó guardado);
-   - viscosidad con grosor aguas arriba en la capa de fondo (`hvel`).
+1. ~~`initial_state` híbrido~~ ✅ (capas σ + `init_iterations`).
+2. **Transporte de grosor por defecto:** `thickness_flux='ppm'` con 21 capas cumple el criterio de la punta; con 10 capas no. Decisión pendiente de Esteban: PPM por defecto en ALE (como MOM6) o upwind.
 3. **Energía cinética por defecto:** Godunov (decisión de Esteban, 2026-10-12): pyOCEAN es costero/regional, donde dominan frentes, plumas y corrientes de densidad. Arakawa (`ke_scheme='arakawa'`) queda como opción para estudios de ondas internas, donde amortigua la mitad.
+4. **Regla híbrida con densidades sobre un objetivo:** agua de densidad exactamente igual a un objetivo puede quedar en dos capas. En el océano real es un caso de medida cero, pero vale un test o un desempate explícito.

@@ -1,8 +1,9 @@
 """
 Hybrid and ALE-σ lock exchange in pyOCEAN with the two kinetic-energy schemes and 10 or 21 layers
-(MOM6 lock_exchange uses 21), MOM6 viscosity for the hybrid runs (KV 1e-4, KH 0.01).
+(MOM6 lock_exchange uses 21), MOM6 viscosity for the hybrid runs (KV 1e-4, KH 0.01), and the two
+ALE layer thickness fluxes ('upwind' donor cell, 'ppm' MOM6 continuity_PPM).
 
-Usage: NUMBA_NUM_THREADS=5 python validation/mom6_ke_schemes/lock_pyocean.py
+Usage: NUMBA_NUM_THREADS=5 python validation/mom6_ke_schemes/lock_pyocean.py [filter, e.g. hybrid]
 """
 from __future__ import annotations
 
@@ -18,9 +19,15 @@ from core.dynamics.sigma_baroclinic import set_threads  # noqa: E402
 from tests.test_sigma_ale import RHO0, TCOEF  # noqa: E402
 
 
-def run(rule: str, nz: int, ke: str, nx: int = 128, depth: float = 20.0, dt: float = 20.0) -> dict:
+# target margin [kg m⁻³] that puts both water masses at the centre of a density bracket: with 21 layers
+# the default margin 1 puts them exactly on targets and each may split between two layers
+MARGIN = {10: 1.0, 21: 0.78125}
+
+
+def run(rule: str, nz: int, ke: str, flux: str = "upwind", nx: int = 128, depth: float = 20.0,
+        dt: float = 20.0) -> dict:
     if rule == "hybrid":
-        m, st = t._hybrid_lock(nx, nz, depth, dt)
+        m, st = t._hybrid_lock(nx, nz, depth, dt, margin=MARGIN[nz], thickness_flux=flux)
     else:
         m = t._ale_box("sigma", nx=nx, nz=nz, depth=depth, dx=500.0, dt=dt, params={})
         st = m.initial_state(np.zeros((1, nx)), np.where(np.arange(nx) < nx // 2, 5.0, 10.0)[None, None, :]
@@ -42,16 +49,22 @@ def run(rule: str, nz: int, ke: str, nx: int = 128, depth: float = 20.0, dt: flo
     return dict(speed=sp, rpe=m.rpe(st) - r0, umax=umax, trunc=st.n_trunc)
 
 
-def main() -> None:
+def main(only: str | None = None) -> None:
+    """All cases, or only those whose label contains ``only`` (e.g. 'hybrid', 'ppm')."""
     set_threads(5)
-    print(f"{'caso':22s} | frente 1 m (d, l) | cuerpo 5 m (d, l) | RPE 6 h [J] | max|u| | trunc")
-    for rule, nz in (("hybrid", 10), ("hybrid", 21), ("sigma", 10), ("sigma", 20)):
-        for ke in ("arakawa", "gudonov"):
-            r = run(rule, nz, ke)
-            s1, s5 = r["speed"][1.0], r["speed"][5.0]
-            print(f"{rule + ' ' + str(nz) + ' ' + ke:22s} | {s1[0]:5.2f} {s1[1]:5.2f} U     | {s5[0]:5.2f} {s5[1]:5.2f} U     "
-                  f"| {r['rpe']:9.2e}   | {r['umax']:.2f}   | {r['trunc']}")
+    cases = [(r, nz, ke, fl) for r, nz in (("hybrid", 10), ("hybrid", 21)) for fl in ("upwind", "ppm")
+             for ke in ("arakawa", "gudonov")]
+    cases += [("sigma", nz, ke, "upwind") for nz in (10, 20) for ke in ("arakawa", "gudonov")]
+    print(f"{'caso':28s} | frente 1 m (d, l) | cuerpo 5 m (d, l) | RPE 6 h [J] | max|u| | trunc")
+    for rule, nz, ke, fl in cases:
+        label = f"{rule} {nz} {ke} {fl}"
+        if only and only not in label:
+            continue
+        r = run(rule, nz, ke, fl)
+        s1, s5 = r["speed"][1.0], r["speed"][5.0]
+        print(f"{label:28s} | {s1[0]:5.2f} {s1[1]:5.2f} U     | {s5[0]:5.2f} {s5[1]:5.2f} U     "
+              f"| {r['rpe']:9.2e}   | {r['umax']:.2f}   | {r['trunc']}", flush=True)
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1] if len(sys.argv) > 1 else None)

@@ -61,7 +61,8 @@ Plan `docs/superpowers/plans/2026-10-12-ale-vector-invariant-momentum.md`. En AL
 |---|---|---|---|---|
 | MOM6, capas (21) | 1.05, 1.05 U | 1.05, 1.05 U | 0.04 | 0.56 |
 | MOM6, RHO (21) | 1.05, 0.98 U | 0.98, 0.98 U | 4.5e7 | 0.56 |
-| pyOCEAN híbrida, `keep_isopycnal` (10) | 1.12, 1.05 U | 1.05, 1.05 U | 4.9e6 | 0.94 |
+| pyOCEAN híbrida, `keep_isopycnal` (10) | 1.12, 1.05 U | 1.05, 1.05 U | 3.0e6 | 0.94 |
+| pyOCEAN híbrida, `thickness_flux='ppm'` (21, `validation/mom6_ke_schemes/`) | 1.05, 0.98 U | 1.05, 0.98 U | 8.8e5 | 0.74 |
 | pyOCEAN híbrida, P1M en todas las capas (10) | 0.77, 1.05 U | 0.84, 1.05 U | 8.4e7 | 0.56 |
 | pyOCEAN ALE-σ (10) | 0.91, 0.91 U | 0.91, 0.84 U | 2.1e8 | 0.67 |
 

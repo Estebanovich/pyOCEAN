@@ -49,15 +49,8 @@ def build(label: str):
         rho = m0.density(temp(z))
         kw["regrid_params"] = dict(dz_top=np.full(NZ, 0.5), rho_target=target_densities(rho.ravel(), NZ))
         m = SigmaBaroclinic(hg, np.full((1, NX), H), **kw)
-        # initial_state samples T on the z* floor grid of dz_top (19 × 0.5 m + one 190 m layer), which loses
-        # the stratification (open defect of the hybrid initial state); sample on uniform layers instead and
-        # let the rule build the isopycnal grid
-        st = m.initial_state(np.zeros((1, NX)), temp(m.layer_heights(np.zeros((1, NX)))))
-        st.h = np.full((NZ, 1, NX), H / NZ)
-        st.T = temp(m.layer_heights(np.zeros((1, NX)), st.h))
-        for _ in range(10):
-            st.h, (st.T,) = m._regrid_remap(st.eta, st.h, [st.T], st.T)
-        return m, st
+        # the hybrid initial grid is σ (uniform) layers; init_iterations regrid–remap passes build the isopycnals
+        return m, m.initial_state(np.zeros((1, NX)), temp(m.layer_heights(np.zeros((1, NX)))))
     m = m0 if label == "sigma_eulerian" else SigmaBaroclinic(hg, np.full((1, NX), H), **kw)
     zz = m.layer_heights(np.zeros((1, NX)))
     return m, m.initial_state(np.zeros((1, NX)), temp(zz))

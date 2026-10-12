@@ -39,6 +39,7 @@ def _ale_box(rule="zstar", nx=32, nz=10, depth=20.0, dx=2000.0, dt=30.0, bathy=N
     (dict(params={}), "dz_top"),
     (dict(momentum="weno"), "momentum"),
     (dict(ke_scheme="weno"), "ke_scheme"),
+    (dict(thickness_flux="weno"), "thickness_flux"),
 ])
 def test_ale_configuration_errors(kw, match):
     base = dict(rule="zstar")
@@ -75,6 +76,33 @@ def test_ale_initial_state_has_the_rule_grid_and_sigma_mode_has_no_h():
     sig = SigmaBaroclinic(create_cartesian_grid(nx=4, ny=1, dx=1e3, dy=1e3, f0=0.0), np.full((1, 4), 20.0),
                           dt=10.0, n_layers=4)
     assert sig.initial_state(np.zeros((1, 4)), np.full((4, 1, 4), 10.0)).h is None and not sig.ale
+
+
+def test_hybrid_initial_state_resolves_a_continuous_stratification():
+    # The hybrid start used the z* floor of dz_top (19 × 0.5 m + one 190 m bed layer), so T sampled on it
+    # lost the deep structure and the seiche blew up; MOM6 starts from uniform layers
+    # (THICKNESS_CONFIG = "uniform", MOM_state_initialization.F90:271) and regrids (REGRID_ACCELERATE_INIT, :488)
+    H, nz = 200.0, 20
+    dTdz = 0.02**2 * RHO0 / (9.81 * TCOEF)
+
+    def temp(z):                                                      # linear + mode-1 displacement of 5 m
+        return 10.0 + dTdz * (z + 5.0 * np.sin(-np.pi * z / H))
+
+    def heat(z0, z1):                                                 # ∫ T dz between heights z0 < z1
+        def F(z):
+            return 10.0 * z + dTdz * (0.5 * z**2 + 5.0 * H / np.pi * np.cos(-np.pi * z / H))
+        return F(z1) - F(z0)
+
+    rho = RHO0 - TCOEF * temp(np.linspace(-H, 0.0, 401))
+    params = dict(dz_top=np.full(nz, 0.5), rho_target=rg.target_densities(rho, nz))
+    m = _ale_box("hybrid", nx=4, nz=nz, depth=H, params=params)
+    T0 = temp(m.layer_heights(np.zeros((1, 4))))
+    st = m.initial_state(np.zeros((1, 4)), T0)
+    assert st.h.max() < 2.0 * H / nz, st.h[:, 0, 0]                  # isopycnal layers ≈ 10 m, no thick bed layer
+    np.testing.assert_allclose((st.h * st.T).sum(0), (H / nz * T0).sum(0), rtol=1e-13)
+    # every layer keeps its mean T up to the midpoint-sampling error dTdz·5(π/H)²h³/24 = 0.051 dTdz [m²]
+    zw = -H + np.concatenate([np.zeros((1, 1, 4)), np.cumsum(st.h, 0)])
+    np.testing.assert_allclose(st.h * st.T, heat(zw[:-1], zw[1:]), atol=0.1 * dTdz)
 
 
 def test_fv_pgf_is_exact_for_linear_stratification_over_a_seamount():
@@ -274,13 +302,15 @@ def test_flux_form_momentum_limiter_leaves_thick_cells_below_courant_one_half(co
 
 
 # ---------------------------------------------------------------- hybrid rule in the model
-def _hybrid_lock(nx=128, nz=10, depth=20.0, dt=20.0):
+def _hybrid_lock(nx=128, nz=10, depth=20.0, dt=20.0, margin=1.0, **kw):
     """Lock exchange (Δρ = 5 kg m⁻³) on isopycnal layers: each water mass sits in one layer, which
-    has vanished on the other side of the lock."""
+    has vanished on the other side of the lock.  Targets span [ρ_l − margin, ρ_d + margin]; a water
+    density that falls exactly on a target (nz = 21 with margin 1) may split between two layers."""
     m0 = _ale_box("sigma", nx=nx, nz=nz, depth=depth, dx=500.0, dt=dt, params={})
     rho_l, rho_d = m0.density(10.0 / TCOEF), m0.density(5.0 / TCOEF)
-    params = dict(dz_top=np.full(nz, 0.01), rho_target=np.linspace(rho_l - 1.0, rho_d + 1.0, nz + 1))
-    m = _ale_box("hybrid", nx=nx, nz=nz, depth=depth, dx=500.0, dt=dt, params=params, nu=1e-4, ah=0.01)  # MOM6 KV, KH
+    params = dict(dz_top=np.full(nz, 0.01), rho_target=np.linspace(rho_l - margin, rho_d + margin, nz + 1))
+    m = _ale_box("hybrid", nx=nx, nz=nz, depth=depth, dx=500.0, dt=dt, params=params, nu=1e-4, ah=0.01,  # MOM6 KV, KH
+                 **kw)
     T = np.where(np.arange(nx) < nx // 2, 5.0, 10.0)[None, None, :].repeat(nz, 0) / TCOEF
     return m, m.initial_state(np.zeros((1, nx)), T)
 
@@ -331,9 +361,10 @@ def test_hybrid_lock_exchange_mixes_much_less_than_sigma():
     assert abs(r["heat"]) < 1e-12
 
 
-@pytest.mark.xfail(strict=True, reason="open (vector-invariant plan, 2026-10-12): body 1.05 / 1.05 U and RPE 4.9e6 J "
+@pytest.mark.xfail(strict=True, reason="open (vector-invariant plan, 2026-10-12): body 1.05 / 1.05 U and RPE 3.0e6 J "
                    "meet the criteria, but the dense 1 m nose runs at 1.12 U (light 1.05 U) and max|u| reaches 0.94 m/s "
-                   "inside the dense current (MOM6, 21 layers: 0.56 m/s) — plan B needs Esteban's decision")
+                   "inside the dense current (MOM6, 21 layers: 0.56 m/s); with 21 layers and thickness_flux='ppm' (MOM6's "
+                   "configuration) 1.05 / 0.98 U and 0.74 m/s pass — default flux pending Esteban's decision")
 def test_hybrid_lock_exchange_nose_moves_at_the_benjamin_speed_without_runaway_velocities():
     # spec §6: 1 m fronts within ±10 %, max|u| ≤ 1.5 × MOM6 (0.56 m/s), no truncation
     r = _lock_run("hybrid")
@@ -369,7 +400,7 @@ def test_regrid_runs_on_the_model_threads(monkeypatch):
 
 
 # ---------------------------------------------------------------- bay-mouth step (spec §7, integration 2)
-def _step_section(coord, nz=30):
+def _step_section(coord, nz=30, **extra):
     """2-D section across a 600 → 164 m step (BayIW bay mouth), at rest with a tanh pycnocline at 80 m."""
     nx, dx = 40, 1000.0
     hg = create_cartesian_grid(nx=nx, ny=1, dx=dx, dy=dx, f0=0.0)
@@ -377,6 +408,7 @@ def _step_section(coord, nz=30):
     kw = dict(pgf="jacobian")
     if coord == "zstar":
         kw = dict(pgf="fv", vertical_coordinate="ale", regrid="zstar", regrid_params=dict(dz_top=np.full(nz, 600.0 / nz)))
+        kw.update(extra)
     m = SigmaBaroclinic(hg, H, dt=60.0, n_layers=nz, rho0=RHO0, t_coef=TCOEF, z0=None, closure="constant",
                         nu_const=1e-4, rho_ref="auto", **kw)
     z = m.layer_heights(np.zeros((1, nx)))
@@ -480,3 +512,24 @@ def test_vector_invariant_coriolis_in_a_rotating_ale_basin_keeps_rest_and_stays_
     for _ in range(100):
         st = m.step(st)
     assert np.isfinite(st.u).all() and np.isfinite(st.v).all() and np.abs(st.v).max() > 0
+
+
+@pytest.mark.parametrize("rule", ["sigma", "zstar"])
+def test_ppm_thickness_flux_keeps_uniform_tracer_and_column_consistency(rule):
+    m = _ale_box(rule, thickness_flux="ppm")
+    x = (np.arange(32) + 0.5) * 2000.0
+    st = m.initial_state(0.5 * np.cos(np.pi * x / 64e3)[None, :], np.full((10, 1, 32), 7.0))
+    c0 = m.tracer_content(st)
+    for _ in range(200):
+        st = m.step(st)
+        np.testing.assert_allclose(st.h.sum(0), 20.0 + st.eta, rtol=1e-12)
+        assert (st.h >= 0).all()
+    np.testing.assert_allclose(st.T, 7.0, atol=1e-11)
+    assert abs(m.tracer_content(st) / c0 - 1) < 1e-13
+
+
+def test_ppm_thickness_flux_keeps_the_zstar_step_at_rest():
+    m, st = _step_section("zstar", thickness_flux="ppm")
+    for _ in range(720):
+        st = m.step(st)
+    assert np.abs(st.u).max() < 1e-10
