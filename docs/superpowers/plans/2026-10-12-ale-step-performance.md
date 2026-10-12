@@ -825,3 +825,68 @@ Expected: everything passes, plus the existing xfails.
 git add CLAUDE.md validation/bayiw_baroclinic/README.md docs/superpowers/plans/2026-10-12-ale-step-performance.md
 git commit -m "ALE performance: results (BayIW s/step before/after) and docs (task 6)"
 ```
+
+---
+
+## Wave 2 (written after the Task 5 profile, 2026-10-12)
+
+Profile after Task 4 (BayIW z\*, cProfile 4.84 s/step):
+
+| Piece | s/step | % |
+|---|---|---|
+| tracer advection (`_advect` + `_rhs`, WENO kernel) | 1.00 | 21 |
+| Coriolis PV + KE (`coriolis_pv`, `kinetic_energy`, vorticity) | ≈0.45 | 9 |
+| `remap_columns` | 0.35 | 7 |
+| `zero_thin_bed_velocity` | 0.34 | 7 |
+| `fv_pgf` | 0.29 | 6 |
+| `_diffuse_h` | 0.29 | 6 |
+| `face_fractions` + `baroclinic_split` | 0.28 | 6 |
+| Laplacian (100 per-layer calls rebuilding the spacings from xarray) | 0.22 | 5 |
+
+Only the advection is above 10 %, but each of the others would still save more than 5 % of the step (spec §2), so wave 2 takes them in this order.
+
+### Task 5.1: Advection — skip faces with zero flux
+
+In ALE every vertical flux is zero (Lagrangian step), and land and closed faces have Q = 0. The fused kernel `_advect_div` (`core/dynamics/sigma_baroclinic.py`) still computes WENO there. Change it as follows; the result is the same bit for bit, since q·v = 0 for finite v and the flux arrays start at 0.
+- In the x loop, after `q = Qx[k, j, i]`, add `if q == 0.0: continue`.
+- In the y loop, after `q = Qy[k, j, i]`, add `if q == 0.0: continue`.
+- In the z loop, after `q = Fz[k, j, i]`, add `if q == 0.0: continue`.
+
+**Test:** the existing kernel-vs-NumPy tests (`tests/test_sigma_baroclinic.py`), the σ bit-identity check (save σ channel u, T before the change and `np.array_equal` after, as in the Plan C task 2 script) and the ALE regression. It is a performance-only change, so there is no new behaviour to make fail. Record that as a ruling.
+
+**Measure** BayIW. **Commit:** "ALE performance: skip zero-flux faces in the fused advection kernel (task 5.1)".
+
+### Task 5.2: Laplacian — spacings cached, one 3-D call
+
+`laplacian_u` and `laplacian_v` rebuild the spacings from xarray on each of the 2N calls per step.
+1. Add `laplacian_3d(f, wet, hw, he, hs, hn)` to `core/dynamics/nonlinear.py`: a `numba.njit(parallel=True, cache=True)` kernel over (k, j) with the same per-element arithmetic, in the same order, as `_laplacian`:
+   - x pair first, then y;
+   - neighbour replaced by f where not wet or beyond the edge;
+   - NaN spacings replaced by 1.0;
+   - `out += 2.0 * ((hi − f)/h_hi − (f − lo)/h_lo)/(h_lo + h_hi)`;
+   - 0 where not wet.
+2. In `SigmaBaroclinic`, cache `self._lap_u = _spacings_u(self.hg)` and `self._lap_v = _spacings_v(self.hg)` once (lazily).
+3. Replace the per-layer `laplacian_u/v` calls with `gu += self.ah * laplacian_3d(st.u, wet_u, *self._lap_u)` (same for v), outside the `for k` loop. The loop keeps the `advection_u/v` branch.
+
+**Test (fails first):** `test_laplacian_3d_matches_the_per_layer_laplacian` in `tests/test_nonlinear.py`, with random u on a stretched grid with land, comparing `np.array_equal` against `np.stack([laplacian_u(u[k], hg, wet) for k])`. Then the σ bit-identity check (σ uses `ah` too) and the ALE regression.
+
+**Measure. Commit.**
+
+### Task 5.3: Vector-invariant terms in kernels
+
+`coriolis_pv` (with `bound`), `kinetic_energy` and `pv_q`/`vorticity_q` become `numba.njit(parallel=True, cache=True)` kernels over (k, j) with the same arithmetic. The NumPy versions are renamed `*_numpy` and kept as oracles. Wrappers keep the public names and signatures.
+
+**Tests (fail first):** in `tests/test_vector_invariant.py`, for random fields with a masked corner and both KE schemes, kernel == `*_numpy` at rtol 1e-14.
+
+**Measure. Commit.**
+
+### Task 5.4: Face fractions, baroclinic split, thin-bed rule in kernels
+
+`face_fractions`, `baroclinic_split` and `zero_thin_bed_velocity` (`core/vertical/ale.py`) become one-pass column kernels; the NumPy versions are kept as `*_numpy` oracles.
+- **Thin-bed rule:** keep the `cumprod(hf < h_thin)` run from the bed and the same sums.
+
+**Tests (fail first):** kernel == `*_numpy` at rtol 1e-14 on random faces with all-thin, no-thin and dry columns. Then the ALE regression.
+
+**Measure. Commit.**
+
+After 5.4: profile again. If a piece still saves more than 5 % of the step (candidates: `fv_pgf`, `_diffuse_h`, `remap_columns` call count, NumPy arithmetic inside `_step_ale`), add Task 5.5+ in the same format; otherwise go to Task 6.

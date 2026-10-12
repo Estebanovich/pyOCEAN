@@ -246,6 +246,8 @@ def _advect_div(c, Qx, Qy, Fz, ok, ext, open_w, open_e, open_s, open_n, z_varian
         for j in range(ny):
             for i in range(1, nx):
                 q = Qx[k, j, i]
+                if q == 0.0:                                     # no flux (land, closed): fx stays 0
+                    continue
                 if q >= 0.0:
                     i1, i2, i3, i4, i5 = i - 3, i - 2, i - 1, i, i + 1
                 else:
@@ -266,6 +268,8 @@ def _advect_div(c, Qx, Qy, Fz, ok, ext, open_w, open_e, open_s, open_n, z_varian
         for j in range(1, ny):
             for i in range(nx):
                 q = Qy[k, j, i]
+                if q == 0.0:
+                    continue
                 if q >= 0.0:
                     j1, j2, j3, j4, j5 = j - 3, j - 2, j - 1, j, j + 1
                 else:
@@ -289,6 +293,8 @@ def _advect_div(c, Qx, Qy, Fz, ok, ext, open_w, open_e, open_s, open_n, z_varian
         for k in range(1, n):
             for i in range(nx):
                 q = Fz[k, j, i]
+                if q == 0.0:                                     # ALE: no flux through the interfaces
+                    continue
                 if q >= 0.0:
                     k1, k2, k3, k4, k5 = k - 3, k - 2, k - 1, k, k + 1
                 else:
