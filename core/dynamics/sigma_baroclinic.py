@@ -865,13 +865,20 @@ class SigmaBaroclinic:
     def _transport_thickness(self, h: np.ndarray):
         """
         Upwind face thicknesses ((q_E, q_W) at u-faces, (q_N, q_S) at v-faces swapped to (N, nx, ny+1)):
-        clipped at the shallower bed for z* and hybrid, not for σ (core.vertical.ale).
+        clipped at the shallower bed for z* and hybrid, not for σ (core.vertical.ale).  Cached by array
+        identity for the last two thickness arrays (hⁿ is used by the tendencies and the step; h_new of one
+        step is hⁿ of the next); thickness arrays are never written in place after creation.
         """
+        for ref, val in getattr(self, "_tt_cache", ()):
+            if ref is h:
+                return val
         clip = self.regrid_rule != "sigma"
         H, act = np.nan_to_num(np.asarray(self.H, float)), self.fs.active
         x = face_transport_thickness(h, H, act, clip)
         y = face_transport_thickness(h.swapaxes(1, 2), H.T, act.T, clip)
-        return x, y
+        val = (x, y)
+        self._tt_cache = ((h, val),) + tuple(getattr(self, "_tt_cache", ()))[:1]
+        return val
 
     def _mean_face_thickness(self, h: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Direction-independent face thickness (q_E + q_W)/2 at u- and v-faces [m]."""
@@ -1285,6 +1292,7 @@ class SigmaBaroclinic:
         sponge from the exterior z profile remapped to hⁿ and h†.
         """
         dt, th, n = self.dt, self.fs.theta, self.n
+        numba.set_num_threads(_THREADS[0])                                 # parallel ALE kernels (≤ 5 P-cores)
         act = self.fs.active
         (qe, qw), (qn, qs) = self._transport_thickness(st.h)
         hu, hv = 0.5 * (qe + qw), (0.5 * (qn + qs)).swapaxes(1, 2)

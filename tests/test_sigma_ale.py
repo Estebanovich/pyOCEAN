@@ -813,3 +813,14 @@ def test_cg_free_surface_matches_the_direct_solve(build):
         s1, s2 = m1.step(s1), m2.step(s2)
     assert np.abs(s1.eta - s2.eta).max() <= 1e-9
     assert np.abs(s1.u - s2.u).max() <= 1e-9 * max(np.abs(s1.u).max(), 1e-3)
+
+
+def test_transport_thickness_cache_is_keyed_on_identity_and_recomputes_new_arrays():
+    # review focus 4: the cache returns the stored result only for the same array object
+    m, st = _ale_open_box("zstar")
+    a = m._transport_thickness(st.h)
+    assert m._transport_thickness(st.h) is a
+    h2 = st.h.copy()
+    h2[0] *= 0.5
+    b = m._transport_thickness(h2)
+    assert b is not a and not np.allclose(b[0][0], a[0][0])

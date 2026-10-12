@@ -43,6 +43,7 @@ near-bottom layers).
 
 from __future__ import annotations
 
+import numba
 import numpy as np
 
 from core.vertical import remap as rm
@@ -67,9 +68,11 @@ def face_thickness(h: np.ndarray, active: np.ndarray) -> tuple[np.ndarray, np.nd
     return hu, hv
 
 
-def face_transport_thickness(h: np.ndarray, H: np.ndarray, active: np.ndarray,
-                             clip: bool) -> tuple[np.ndarray, np.ndarray]:
+def face_transport_thickness_numpy(h: np.ndarray, H: np.ndarray, active: np.ndarray,
+                                   clip: bool) -> tuple[np.ndarray, np.ndarray]:
     """
+    NumPy reference of face_transport_thickness (test oracle).
+
     Layer thickness available for transport through the u-faces [m]: q_E (eastward, from the
     west cell) and q_W (westward, from the east cell), each (N, ny, nx+1).  h (N, ny, nx) bed
     first, H (ny, nx) rest depth [m], active (ny, nx).  With ``clip`` (z*, hybrid) only the part of
@@ -96,6 +99,56 @@ def face_transport_thickness(h: np.ndarray, H: np.ndarray, active: np.ndarray,
         hW = np.minimum(hW, np.maximum(0.0, topW - z_bed))
         hE = np.minimum(hE, np.maximum(0.0, topE - z_bed))
     return np.where(open_, hW, 0.0), np.where(open_, hE, 0.0)
+
+
+@numba.njit(parallel=True, cache=True)
+def _ftt_kernel(h, H, active, clip, q_e, q_w):  # pragma: no cover
+    """Kernel of face_transport_thickness: one face column per (j, f), same operations as the NumPy version."""
+    n, ny, nx = h.shape
+    for j in numba.prange(ny):
+        for f in range(nx + 1):
+            iw = f - 1 if f > 0 else 0
+            ie = f if f < nx else nx - 1
+            if not (active[j, iw] and active[j, ie]):
+                for k in range(n):
+                    q_e[k, j, f] = 0.0
+                    q_w[k, j, f] = 0.0
+                continue
+            if clip:
+                z_bed = max(-H[j, iw], -H[j, ie])
+                cw = 0.0
+                ce = 0.0
+                for k in range(n):
+                    cw += h[k, j, iw]
+                    ce += h[k, j, ie]
+                    q_e[k, j, f] = min(h[k, j, iw], max(0.0, (-H[j, iw] + cw) - z_bed))
+                    q_w[k, j, f] = min(h[k, j, ie], max(0.0, (-H[j, ie] + ce) - z_bed))
+            else:
+                for k in range(n):
+                    q_e[k, j, f] = h[k, j, iw]
+                    q_w[k, j, f] = h[k, j, ie]
+
+
+def face_transport_thickness(h: np.ndarray, H: np.ndarray, active: np.ndarray,
+                             clip: bool) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Layer thickness available for transport through the u-faces [m]: q_E (eastward, from the
+    west cell) and q_W (westward, from the east cell), each (N, ny, nx+1).  h (N, ny, nx) bed
+    first, H (ny, nx) rest depth [m], active (ny, nx).  With ``clip`` (z*, hybrid) only the part of
+    the upwind layer above the shallower bed passes (HYCOM cnuity.F90:252-256):
+
+        q = min(h_k,up, max(0, z_top,k,up − max(−H_W, −H_E)))
+
+    Without it (σ: the layers follow the terrain) q = h_k,up.  Domain-edge faces use the inner
+    cell; faces next to land are 0.  For the v-faces call it on swapped axes.  Numba kernel
+    (_ftt_kernel); face_transport_thickness_numpy is the reference.
+    """
+    hc = np.ascontiguousarray(np.where(active[None], np.nan_to_num(h), 0.0))
+    n, ny, nx = hc.shape
+    q_e, q_w = np.empty((n, ny, nx + 1)), np.empty((n, ny, nx + 1))
+    _ftt_kernel(hc, np.ascontiguousarray(np.nan_to_num(np.asarray(H, float))), np.ascontiguousarray(active),
+                bool(clip), q_e, q_w)
+    return q_e, q_w
 
 
 def upwind_transport_x(q_e: np.ndarray, q_w: np.ndarray, ut: np.ndarray, L: np.ndarray,

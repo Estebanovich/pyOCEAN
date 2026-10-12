@@ -341,3 +341,20 @@ def test_exterior_on_layers_gives_the_layer_means_of_a_linear_profile():
     h[:5] = np.diff(zt)[:, None, None]                                   # 5 thick layers + 15 vanished at the top
     out = ale.exterior_on_layers(h_ext, T, h, np.ones((1, 2), bool), 3)
     np.testing.assert_allclose(out[:5, 0, 0], 10.0 + 0.05 * 0.5 * (zt[1:] + zt[:-1]), rtol=1e-10)
+
+
+@pytest.mark.parametrize("clip", [True, False])
+def test_transport_thickness_kernel_matches_numpy(clip):
+    # review focus 1: domain-edge faces, land columns, vanished layers, a step in the bed
+    rng = np.random.default_rng(31)
+    n, ny, nx = 7, 5, 11
+    H = rng.uniform(20.0, 600.0, (ny, nx))
+    H[:, 4] = 150.0
+    active = rng.uniform(size=(ny, nx)) > 0.15
+    frac = rng.uniform(0.0, 1.0, (n, ny, nx))
+    frac[:2] *= rng.uniform(size=(2, ny, nx)) > 0.5                        # vanished bed layers
+    h = frac / frac.sum(0) * H[None]
+    a = ale.face_transport_thickness(h, H, active, clip)
+    b = ale.face_transport_thickness_numpy(h, H, active, clip)
+    for x, y in zip(a, b):
+        np.testing.assert_allclose(x, y, rtol=1e-14, atol=1e-14)
