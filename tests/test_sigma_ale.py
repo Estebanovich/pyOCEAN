@@ -869,3 +869,48 @@ def test_layer_heights_cache_is_keyed_on_identity():
     h2 = st.h.copy()
     h2[-1] *= 0.5
     assert m.layer_heights(st.eta, h2) is not a
+
+
+# ---------------------------------------------------------------- initial state from a fine source grid
+def _hybrid_step_model(nz=25, n_light=10):
+    """Channel with a 600 → 164 m step (BayIW bay mouth) on hybrid layers: n_light z* layers of 1.5 m over
+    isopycnal layers; linear stratification T = 20 + 0.02 z (ρ linear in z)."""
+    H = np.where(np.arange(8) < 4, 600.0, 164.0)[None, :]
+    m0 = _ale_box("sigma", nx=8, nz=nz, depth=600.0, dx=5000.0, bathy=H, params={})
+    rho_top, rho_bot = m0.density(20.0), m0.density(20.0 - 0.02 * 600.0)
+    tgt = np.concatenate([rho_top - 0.01 * np.arange(n_light, 0, -1), np.linspace(rho_top, rho_bot, nz + 1 - n_light)])
+    m = _ale_box("hybrid", nx=8, nz=nz, depth=600.0, dx=5000.0, bathy=H, nu=1e-5, ah=100.0, kh=100.0, pgf="fv",
+                 rho_ref="auto", params=dict(dz_top=np.full(nz, 1.5), rho_target=tgt))
+    dz = 1.5                                                       # source z-levels (= top layers), bed first, clipped
+    zf = -np.arange(0.0, 600.0 + dz, dz)[::-1]                     # interfaces −600 … 0
+    h_src = np.clip(zf[1:, None, None], -H[None], None) - np.clip(zf[:-1, None, None], -H[None], None)
+    zc = -H[None] + np.cumsum(h_src, axis=0) - 0.5 * h_src
+    return m, h_src, 20.0 + 0.02 * zc
+
+
+def test_hybrid_initial_state_from_a_fine_source_is_horizontally_uniform():
+    # Hybrid init on σ-layers then remapped lost the surface structure of deep columns (24 m top σ layer
+    # → uniform T over the top 20 m), a 0.5 °C step across the bay mouth (BayIW 2-D section).  From a fine
+    # source grid (MOM6 Z_INIT_ALE_REMAPPING, MOM_state_initialization.F90:2928-2935) the top z* layers
+    # get the exact layer means in deep and shallow columns alike.
+    m, h_src, T_src = _hybrid_step_model()
+    st = m.initial_state(np.zeros((1, 8)), T_src, h_src=h_src)
+    np.testing.assert_allclose(st.h.sum(axis=0), m.H, rtol=1e-12)
+    zc = m.layer_heights(st.eta, st.h)
+    top = slice(-10, None)
+    np.testing.assert_allclose(st.T[top], 20.0 + 0.02 * zc[top], atol=1e-9)
+    np.testing.assert_allclose(st.T[top, 0, 0], st.T[top, 0, 7], atol=1e-9)
+
+
+def test_hybrid_step_stays_at_rest_from_a_fine_source():
+    m, h_src, T_src = _hybrid_step_model()
+    st = m.initial_state(np.zeros((1, 8)), T_src, h_src=h_src)
+    for _ in range(120):
+        st = m.step(st)
+    assert np.abs(st.u).max() < 1e-6
+
+
+def test_initial_state_source_grid_must_fill_the_column():
+    m, h_src, T_src = _hybrid_step_model()
+    with pytest.raises(ValueError, match="h_src"):
+        m.initial_state(np.zeros((1, 8)), T_src, h_src=0.5 * h_src)

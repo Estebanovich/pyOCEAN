@@ -820,13 +820,22 @@ class SigmaBaroclinic:
         self._vi = g                                                    # geometry of the vector-invariant terms
 
     # ------------------------------------------------------------------ helpers
-    def initial_state(self, eta: np.ndarray, T: np.ndarray) -> SigmaState:
+    def initial_state(self, eta: np.ndarray, T: np.ndarray, h_src: np.ndarray | None = None) -> SigmaState:
         """
         Resting state; T on the layers of ``layer_heights(eta)``.  With ``rho_ref="auto"`` the reference
         profile is taken from this T.  ALE: h is the rule's grid (σ-layers for 'hybrid', followed by
         ``init_iterations`` regrid–remap passes towards the isopycnal grid).
+
+        ALE with ``h_src`` (N_src, ny, nx) [m], bed first, Σ h_src = H + η in wet columns: T (N_src, ny, nx)
+        holds the layer means on that source grid (e.g. the z-levels of the data) and every pass remaps from
+        the source, as MOM6 Z_INIT_ALE_REMAPPING (MOM_state_initialization.F90:2928-2935).  Without it the
+        hybrid grid starts from T on σ-layers, which are ~H/N thick in deep water and lose the structure
+        of the top metres (BayIW bay mouth: 0.5 °C spurious step across the 600 → 164 m shelf edge).
         """
         ny, nx = self.H.shape
+        eta = np.asarray(eta, float)
+        if h_src is not None:
+            return self._initial_state_from_source(eta, np.asarray(T, float), np.asarray(h_src, float))
         if isinstance(self.rho_ref, str) and self.rho_ref == "auto":
             z = self.layer_heights(eta)
             act = np.broadcast_to(self.fs.active[None], z.shape)
@@ -834,12 +843,50 @@ class SigmaBaroclinic:
         self.T_ext = np.array(T, float)                                # inflow / sponge target at open boundaries
         st = SigmaState(eta=np.array(eta, float), u=np.zeros((self.n, ny, nx + 1)),
                         v=np.zeros((self.n, ny + 1, nx)), T=np.array(T, float),
-                        h=self._initial_h(np.asarray(eta, float)) if self.ale else None)
+                        h=self._initial_h(eta) if self.ale else None)
         if self.ale and self.regrid_rule == "hybrid":
             for _ in range(self.init_iterations):
                 st.h, (st.T,) = self._regrid_remap(st.eta, st.h, [st.T], st.T)
         if self.ale:                                                    # exterior profile in z (spec §3.5)
             self.T_ext, self.h_ext = st.T.copy(), st.h.copy()
+        return st
+
+    def _initial_state_from_source(self, eta: np.ndarray, T_src: np.ndarray, h_src: np.ndarray) -> SigmaState:
+        """
+        ALE resting state from layer means T_src on a source grid h_src (both (N_src, ny, nx), bed first):
+        the rule's initial grid, then for 'hybrid' ``init_iterations`` regrid passes, each followed by a
+        conservative remap of T from the source grid (never from the previous model grid, so no source
+        structure is lost; MOM6 MOM_state_initialization.F90:2928-2935).  Dry columns get T = t_ref.
+        """
+        if not self.ale:
+            raise ValueError("initial_state(h_src=...) needs vertical_coordinate='ale'")
+        ny, nx = self.H.shape
+        if h_src.ndim != 3 or h_src.shape != T_src.shape or h_src.shape[1:] != (ny, nx):
+            raise ValueError(f"h_src and T must both be (N_src, {ny}, {nx}); got {h_src.shape} and {T_src.shape}")
+        H = np.nan_to_num(np.asarray(self.H, float))
+        D = H + eta
+        wet = self.fs.active & (D > 0)
+        if (h_src < 0).any() or not np.allclose(h_src.sum(axis=0)[wet], D[wet], rtol=1e-10, atol=1e-9):
+            raise ValueError("h_src must be ≥ 0 and fill every wet column: Σ h_src = H + η")
+        if isinstance(self.rho_ref, str) and self.rho_ref == "auto":
+            zc = -H[None] + np.cumsum(h_src, axis=0) - 0.5 * h_src
+            act = wet[None] & (h_src > 0)
+            self.rho_ref = reference_profile(zc[act], self.density(T_src)[act])
+        numba.set_num_threads(_THREADS[0])
+
+        def from_source(h_tgt: np.ndarray) -> np.ndarray:
+            T = rm.remap_columns(h_src, T_src, h_tgt, self.remap_code, wet)
+            return np.where(wet[None], T, self.t_ref)
+
+        h = self._initial_h(eta)
+        T = from_source(h)
+        if self.regrid_rule == "hybrid":
+            for _ in range(self.init_iterations):
+                h = self._regrid(eta, h, T)
+                T = from_source(h)
+        st = SigmaState(eta=np.array(eta, float), u=np.zeros((self.n, ny, nx + 1)),
+                        v=np.zeros((self.n, ny + 1, nx)), T=T, h=h)
+        self.T_ext, self.h_ext = T.copy(), h.copy()                    # exterior profile in z (spec §3.5)
         return st
 
     def layer_heights(self, eta: np.ndarray, h: np.ndarray | None = None) -> np.ndarray:
@@ -906,11 +953,18 @@ class SigmaBaroclinic:
         """Regrid with the rule (spec §3) at surface η and remap ``fields`` (spec §4): (h_new, remapped)."""
         H = np.nan_to_num(np.asarray(self.H, float))
         wet = self.fs.active & (H + eta > 0) & (h_src.sum(axis=0) > 0)
+        h_new = self._regrid(eta, h_src, T, wet)
+        return h_new, [rm.remap_columns(h_src, f, h_new, self.remap_code, wet) for f in fields]
+
+    def _regrid(self, eta: np.ndarray, h: np.ndarray, T: np.ndarray, wet: np.ndarray | None = None) -> np.ndarray:
+        """New layer thicknesses of the rule (spec §3) from layers h with temperatures T; h kept where dry."""
+        H = np.nan_to_num(np.asarray(self.H, float))
+        if wet is None:
+            wet = self.fs.active & (H + eta > 0) & (h.sum(axis=0) > 0)
         rho = self.density(T) if self.regrid_rule == "hybrid" else None
         numba.set_num_threads(_THREADS[0])                                 # parallel regrid kernel
-        zw = rg.regrid_columns(self.regrid_rule, H, eta, h_src, rho, self.regrid_params, wet)
-        h_new = np.where(wet[None], np.diff(zw, axis=0), h_src)
-        return h_new, [rm.remap_columns(h_src, f, h_new, self.remap_code, wet) for f in fields]
+        zw = rg.regrid_columns(self.regrid_rule, H, eta, h, rho, self.regrid_params, wet)
+        return np.where(wet[None], np.diff(zw, axis=0), h)
 
     def _transport_thickness(self, h: np.ndarray):
         """
