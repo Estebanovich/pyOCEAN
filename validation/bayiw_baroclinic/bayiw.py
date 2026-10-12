@@ -49,10 +49,27 @@ def cell_centres(d: np.ndarray, origin: float) -> np.ndarray:
     return origin + np.cumsum(d) - 0.5 * d
 
 
+def mitgcm_depth(H: np.ndarray) -> np.ndarray:
+    """
+    MITgcm's effective depth [m] of bed depths H [m] (NaN = land) on the delR levels: clipped at
+    Σ delR = 599.9 m and, with hFacMin = 1 (set_defaults.F:180; not set in Esteban's data), the bottom cell
+    dropped when its fraction hFac < ½ and made full otherwise (ini_masks_etc.F:108-120), i.e. rounded to
+    the nearest level interface.  Depth 0 → land (NaN).
+    """
+    d = -Z_F                                                             # interface depths, increasing
+    Hc = np.minimum(np.asarray(H, float), d[-1])
+    ok = np.isfinite(Hc) & (Hc > 0)
+    l = np.clip(np.searchsorted(d, np.where(ok, Hc, 0.0), side="left") - 1, 0, DELR.size - 1)
+    frac = (Hc - d[l]) / DELR[l]
+    D = np.where(frac < 0.5, d[l], d[l + 1])
+    return np.where(ok & (D > 0), D, np.nan)
+
+
 def load_inputs(case: str, bay: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    MITgcm inputs: dx (NX,), dy (NY,) [m]; rest depth H (NY, NX) [m], NaN on land, clipped at Σ delR = 599.9 m
-    as MITgcm does (intentional, confirmed by Esteban); initial T (50, NY, NX) on the delR levels [°C];
+    MITgcm inputs: dx (NX,), dy (NY,) [m]; rest depth H (NY, NX) [m], NaN on land: MITgcm's effective depth,
+    clipped at Σ delR = 599.9 m (intentional, confirmed by Esteban) and rounded to a level interface
+    (mitgcm_depth); initial T (50, NY, NX) on the delR levels [°C];
     meridional wind stress records (nrec, NY, NX) at the v-faces [N m⁻²].
     """
     inp = CASES[case]["dir"] / "input"
@@ -60,7 +77,7 @@ def load_inputs(case: str, bay: str) -> tuple[np.ndarray, np.ndarray, np.ndarray
     dx = np.fromfile(inp / f"{stem}_dx.bin", ">f8")
     dy = np.fromfile(inp / f"{stem}_dy.bin", ">f8")
     B = read_bin(inp / f"{stem}_bat.bin", (NY, NX))
-    H = np.where(B < 0, np.minimum(-B, -Z_F[-1]), np.nan)
+    H = mitgcm_depth(np.where(B < 0, -B, np.nan))
     T = read_bin(inp / CASES[case]["temp"], (50, NY, NX))
     wind = read_bin(inp / "merid_local_bay_560x352.bin", (-1, NY, NX))
     return dx, dy, H, T, wind
@@ -70,6 +87,19 @@ def mitgcm_profile_at(z: np.ndarray, T_mit: np.ndarray) -> np.ndarray:
     """T of the MITgcm level containing each height z (N, NY, NX) [m]: piecewise constant, so a two-layer step stays sharp."""
     k = np.clip(np.searchsorted(-Z_F, -z, side="right") - 1, 0, DELR.size - 1)
     return np.take_along_axis(T_mit, k, axis=0)
+
+
+def mitgcm_source(H: np.ndarray, T_mit: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """
+    The MITgcm z-levels as the source grid of the ALE initial state (SigmaBaroclinic.initial_state h_src):
+    thicknesses (50, …) [m] of delR clipped at the bed H (NaN = land → 0), bed first, and T_mit flipped to
+    bed first.  Every model layer then gets the exact level means, also where hybrid layers do not line
+    up with the levels.
+    """
+    Hc = np.nan_to_num(np.asarray(H, float))[None]
+    zf = Z_F.reshape((-1,) + (1,) * (Hc.ndim - 1))                         # interfaces, surface first
+    top, bot = np.minimum(-zf[:-1], Hc), np.minimum(-zf[1:], Hc)          # depths of each level's top and bottom
+    return (bot - top)[::-1].copy(), np.asarray(T_mit, float)[::-1].copy()
 
 
 def sample_at_depth(zc: np.ndarray, f: np.ndarray, h: np.ndarray, z0: float, bed: np.ndarray) -> np.ndarray:
@@ -140,6 +170,6 @@ def build_model(case: str, bay: str, coord: str = "zstar", dt: float = 120.0):
                         vertical_coordinate="ale", regrid=coord, regrid_params=params,
                         open_boundaries=("south", "west", "east"), orlanski_cmax=0.45, sponge_cells=30,
                         sponge_tau=(1200.0, 60.0), sponge_tracer=False)
-    z = m.layer_heights(np.zeros(H.shape))
-    st = m.initial_state(np.zeros(H.shape), mitgcm_profile_at(z, T_mit))
+    h_src, T_src = mitgcm_source(H, T_mit)                               # remap from the MITgcm levels
+    st = m.initial_state(np.zeros(H.shape), T_src, h_src=h_src)
     return m, st, wind

@@ -151,3 +151,31 @@ def test_mitgcm_zoom_stations_are_ocean_values():
     for name, (bay, nobay) in d.items():
         assert np.isfinite(bay).all(), name
     np.testing.assert_allclose(d["Seiche"][0][0], 22.767, atol=1e-3)
+
+
+def test_mitgcm_source_levels_fill_the_column_bed_first():
+    # MITgcm z-levels as the ALE initial source grid: delR clipped at the bed, bed first, T flipped with them
+    H = np.array([[599.9, 120.0, np.nan]])
+    T = np.broadcast_to(np.arange(50.0)[:, None, None], (50, 1, 3))           # surface level = 0
+    h, Ts = bayiw.mitgcm_source(H, T)
+    np.testing.assert_allclose(h.sum(axis=0), [[599.9, 120.0, 0.0]], rtol=1e-12)
+    assert h[-1, 0, 0] == bayiw.DELR[0] and Ts[-1, 0, 0] == 0.0 and Ts[0, 0, 0] == 49.0
+    k = np.flatnonzero(h[:, 0, 1] > 0)[0]                                       # deepest wet level of the 120 m column
+    assert Ts[k, 0, 1] == 49 - k and np.isclose(h[k, 0, 1], 120.0 + bayiw.Z_F[49 - k])  # partial level, top at Z_F[49 − k]
+
+
+def test_mitgcm_depth_rounds_to_the_nearest_level_interface():
+    # MITgcm hFacMin = 1 (set_defaults.F:180): a bottom cell with hFac < ½ is dropped, else made full
+    # (ini_masks_etc.F:108-120), so the effective depth is a level interface: 164 → 163.3, 129.02 → 126.6 m
+    H = np.array([164.0, 129.0212746016822, 599.9, 700.0, np.nan, 0.3, 0.6])
+    D = bayiw.mitgcm_depth(H)
+    np.testing.assert_allclose(D[:4], [163.3, 126.6, 599.9, 599.9], rtol=1e-12)
+    assert np.isnan(D[4]) and np.isnan(D[5]) and D[6] == 1.0          # < ½ of the 1 m top level: land
+
+
+@pytest.mark.skipif(not HAVE_2LAYER, reason="BayIW MITgcm inputs not mounted")
+def test_load_inputs_uses_the_mitgcm_effective_depth():
+    H = bayiw.load_inputs("2layer", "bay")[2]
+    wet = np.isfinite(H)
+    assert np.abs(H[wet][:, None] + bayiw.Z_F[None, :]).min(axis=1).max() < 1e-9
+    assert abs(H[345, 280] - 163.3) < 1e-9

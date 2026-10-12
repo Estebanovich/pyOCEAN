@@ -114,3 +114,19 @@ def test_section_hybrid_layer_count_is_a_parameter():
     from validation.bayiw_2d import section
     m, st, _ = section.build_model("linear", "bay", "hybrid", n_layers=50)
     assert st.h.shape[0] == 50
+
+
+def test_to_mitgcm_levels_is_a_thickness_weighted_mean():
+    # pyOCEAN layers (bed first) onto the MITgcm levels: layers equal to the levels come back unchanged;
+    # a 1 cm layer inside a 10 m level only contributes its thickness share (no point interpolation)
+    from validation.bayiw_2d import section
+    H = np.array([163.3])
+    h_lev, _ = bayiw.mitgcm_source(H[None], np.zeros((50, 1, 1)))
+    f = np.arange(50.0)[:, None, None] * np.ones((1, 1, 1))
+    np.testing.assert_allclose(section.to_mitgcm_levels(h_lev, f, H[None]), np.where(h_lev > 0, f, np.nan))
+    k = np.flatnonzero(h_lev[:, 0, 0] > 0)[0] + 5                                  # some wet level
+    hl = h_lev.copy()
+    split = np.concatenate([hl[:k], [[[hl[k, 0, 0] - 0.01]], [[0.01]]], hl[k + 1:]])  # level k = thick + 1 cm
+    g = np.concatenate([f[:k], [[[1.0]], [[1001.0]]], f[k + 1:]])
+    out = section.to_mitgcm_levels(split, g, H[None])
+    np.testing.assert_allclose(out[k, 0, 0], 1.0 + 1000.0 * 0.01 / hl[k, 0, 0], rtol=1e-10)

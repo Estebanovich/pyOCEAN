@@ -140,6 +140,24 @@ def build_model(case: str, bay: str, coord: str = "zstar", dt: float = 30.0, n_l
                         vertical_coordinate="ale", regrid=coord, regrid_params=params, open_boundaries=("south",),
                         orlanski_cmax=0.45, sponge_cells=30, sponge_tau=(1200.0, 60.0), sponge_tracer=False,
                         mix_diagnostic=False)
-    z = m.layer_heights(np.zeros(d["H"].shape))
-    st = m.initial_state(np.zeros(d["H"].shape), bayiw.mitgcm_profile_at(z, d["T"]))
+    h_src, T_src = bayiw.mitgcm_source(d["H"], d["T"])                    # remap from the MITgcm levels
+    st = m.initial_state(np.zeros(d["H"].shape), T_src, h_src=h_src)
     return m, st, d["wind"]
+
+
+def to_mitgcm_levels(h: np.ndarray, f: np.ndarray, H: np.ndarray) -> np.ndarray:
+    """
+    Layer means f on pyOCEAN layers h (N, ny, nx), bed first, as thickness-weighted means on the 50 MITgcm
+    levels (bed first) of a bed at depth H (ny, nx) [m] (a level interface, bayiw.mitgcm_depth): conservative
+    PCM remap onto the levels stretched by (Σh)/H (z*-like; η is millimetres).  NaN on levels below the bed
+    and in dry columns.  Both models are then sampled the same way: a 1 cm interface layer counts for its
+    1 cm, not as a point value between two thick layer centres.
+    """
+    from core.vertical import remap as rm
+    h = np.asarray(h, float)
+    h_lev, _ = bayiw.mitgcm_source(H, np.zeros((50,) + np.shape(H)))
+    tot, lev = h.sum(axis=0), h_lev.sum(axis=0)
+    wet = (tot > 0) & (lev > 0)
+    h_tgt = h_lev * np.where(wet, tot / np.where(lev > 0, lev, 1.0), 0.0)[None]
+    out = rm.remap_columns(h, np.asarray(f, float), h_tgt, rm.PCM, wet)
+    return np.where(wet[None] & (h_lev > 0), out, np.nan)

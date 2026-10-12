@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 """
 BayIW 2-D section in pyOCEAN (spec docs/superpowers/specs/2026-10-12-bayiw-2d-section-design.md §4): every
-900 s η, T at 110/250 m and V at 110 m along the section, and the T section on the MITgcm level centres.
+900 s η, the T and V sections on the MITgcm levels (thickness-weighted means) and T at 110/250 m and V at
+110 m sampled from them exactly as the MITgcm output (compare.mit_at_depth).
 
 Usage: NUMBA_NUM_THREADS=5 python validation/bayiw_2d/run_pyocean.py 2layer bay --coord zstar [--dt 30] [--hours 60] [--layers 25]
 """
@@ -18,23 +19,30 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from core.dynamics.sigma_baroclinic import set_threads  # noqa: E402
-from validation.bayiw_2d import section  # noqa: E402
+from validation.bayiw_2d import compare, section  # noqa: E402
 from validation.bayiw_baroclinic import bayiw  # noqa: E402
 from validation.bayiw_seiche.run_pyocean import wind_at  # noqa: E402
 
 
 def record(m, st, buf: dict) -> None:
-    """Append η, T110, T250, V110 (v-faces), the T section on Z_C, truncations and heat content."""
-    zc = m.layer_heights(st.eta, st.h)[:, :, 0]
-    h, T, bed = st.h[:, :, 0], st.T[:, :, 0], -np.asarray(m.H, float)[:, 0]
+    """
+    Append η, the T and V sections on the MITgcm levels (thickness-weighted PCM means, surface first,
+    section.to_mitgcm_levels), T110, T250, V110 sampled from them exactly as MITgcm (compare.mit_at_depth),
+    truncations and heat content.
+    """
+    H = np.asarray(m.H, float)[:, 0]
+    Hc = np.nan_to_num(H)
+    Tl = section.to_mitgcm_levels(st.h, st.T, m.H)[::-1, :, 0]                  # (50, ny), surface first
+    hv = m._mean_face_thickness(st.h)[1]                                          # v-face layers (N, ny+1, 1)
+    Hf = np.concatenate([Hc[:1], np.minimum(Hc[1:], Hc[:-1]), Hc[-1:]])           # face bed: shallower side
+    Vl = section.to_mitgcm_levels(hv, st.v, Hf[:, None])[::-1, :, 0]             # (50, ny+1)
+    lev = dict(T=np.nan_to_num(Tl)[None], V=np.nan_to_num(Vl)[None], zc=bayiw.Z_C)
     buf["eta"].append(st.eta[:, 0].copy())
-    buf["T110"].append(bayiw.sample_at_depth(zc, T, h, bayiw.Z110, bed))
-    buf["T250"].append(bayiw.sample_at_depth(zc, T, h, bayiw.Z250, bed))
-    zf = np.concatenate([zc[:, :1], 0.5 * (zc[:, 1:] + zc[:, :-1]), zc[:, -1:]], axis=1)      # v-faces
-    hf = np.concatenate([h[:, :1], 0.5 * (h[:, 1:] + h[:, :-1]), h[:, -1:]], axis=1)
-    bedf = np.concatenate([bed[:1], np.maximum(bed[1:], bed[:-1]), bed[-1:]])
-    buf["V110"].append(bayiw.sample_at_depth(zf, st.v[:, :, 0], hf, bayiw.Z110, bedf))
-    buf["T_sec"].append(np.array([bayiw.sample_at_depth(zc, T, h, z0, bed) for z0 in bayiw.Z_C]))
+    buf["T110"].append(compare.mit_at_depth(lev, H, "T", bayiw.Z110)[0])
+    buf["T250"].append(compare.mit_at_depth(lev, H, "T", bayiw.Z250)[0])
+    buf["V110"].append(compare.mit_at_depth(lev, H, "V", bayiw.Z110)[0])
+    buf["T_sec"].append(Tl)
+    buf["V_sec"].append(Vl)
     buf["n_trunc"].append(st.n_trunc)
     buf["heat"].append(m.tracer_content(st))
 
@@ -53,7 +61,7 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     set_threads(5)
     m, st, wind = section.build_model(a.case, a.bay, a.coord, a.dt, a.layers)
-    buf = {k: [] for k in ("t_h", "eta", "T110", "T250", "V110", "T_sec", "n_trunc", "heat")}
+    buf = {k: [] for k in ("t_h", "eta", "T110", "T250", "V110", "T_sec", "V_sec", "n_trunc", "heat")}
     buf["t_h"].append(0.0)
     record(m, st, buf)
     rpe = [m.rpe(st)]
