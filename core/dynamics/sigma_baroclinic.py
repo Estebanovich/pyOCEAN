@@ -84,6 +84,7 @@ import numpy as np
 import xarray as xr
 from numba import njit, prange
 
+from core.dynamics import vector_invariant as vi
 from core.dynamics.nonlinear import advection_u, advection_v, laplacian_u, laplacian_v
 from core.dynamics.sigma_wd import SigmaWetDry, vertical_implicit
 from diagnostics.mixing import reference_potential_energy
@@ -113,6 +114,7 @@ class SigmaState:
     Qy: np.ndarray | None = None
     Fz: np.ndarray | None = None
     time: float = 0.0
+    n_trunc: int = 0                                         # CFL velocity truncations so far (ALE, counted faces)
 
 
 def _up3_faces(c: np.ndarray, flux: np.ndarray, ok: np.ndarray, axis: int, order: int = 3) -> np.ndarray:
@@ -632,6 +634,12 @@ class SigmaBaroclinic:
     remap_scheme : 'pcm' | 'plm' | 'ppm_h4' (default)
     h_thin_bed : bed face layers thinner than this [m] carry no velocity (HYCOM)
     init_iterations : regrid–remap passes of the initial state with the hybrid rule
+    momentum : 'vector_invariant' (default in ALE: PV flux + KE gradient, MOM6) or 'flux' (default in
+          σ: flux-form WENO5 + energy-conserving Coriolis); 'vector_invariant' needs vertical_coordinate='ale'
+    ke_scheme : kinetic energy of the vector-invariant form: 'gudonov' (default, upwind: only the velocities
+          entering a cell; MOM6 lock_exchange — gravity-current fronts and bores lose energy, ALE-σ lock
+          exchange 0.98 U vs 0.91/0.84 U with 'arakawa') or 'arakawa' (energy conserving, MOM6 production)
+    max_truncations : ALE: stop after this many CFL velocity truncations at faces thicker than h_thin_bed
     pgf : 'jacobian' (default), 'twoterm', or 'fv', finite volume (Adcroft et al. 2008; core.vertical.pgf)
     """
 
@@ -645,7 +653,8 @@ class SigmaBaroclinic:
                  sponge_tracer: bool = True, dsigma: np.ndarray | None = None, kh: float = 0.0,
                  kv: float = 0.0, solver: str = "direct", vertical_coordinate: str = "sigma_eulerian",
                  regrid: str = "sigma", regrid_params: dict | None = None, remap_scheme: str = "ppm_h4",
-                 h_thin_bed: float = 0.01, init_iterations: int = 10) -> None:
+                 h_thin_bed: float = 0.01, init_iterations: int = 10, momentum: str | None = None,
+                 ke_scheme: str = "gudonov", max_truncations: int = 1000) -> None:
         if pgf not in ("twoterm", "jacobian", "fv"):
             raise ValueError(f"unknown pressure-gradient scheme {pgf!r}")
         self.pgf, self.rho_ref = pgf, rho_ref
@@ -689,14 +698,23 @@ class SigmaBaroclinic:
         self.sigma_c = 0.5 * (self.core.sigma_w[1:, 0] + self.core.sigma_w[:-1, 0])   # layer centres (bed = 0)
         self.area = self.fs.area
         self._setup_ale(vertical_coordinate, regrid, regrid_params, remap_scheme, z0, closure, h_thin_bed,
-                        init_iterations, act)
+                        init_iterations, act, momentum, ke_scheme, max_truncations)
 
     def _setup_ale(self, vertical_coordinate, regrid, regrid_params, remap_scheme, z0, closure, h_thin_bed,
-                   init_iterations, act) -> None:
+                   init_iterations, act, momentum=None, ke_scheme="gudonov", max_truncations=1000) -> None:
         """Check and store the ALE configuration (spec §2, §6.2); scope limits of ALE Plan B raise."""
         if vertical_coordinate not in ("sigma_eulerian", "ale"):
             raise ValueError(f"unknown vertical_coordinate {vertical_coordinate!r}; use 'sigma_eulerian' or 'ale'")
         self.ale = vertical_coordinate == "ale"
+        momentum = momentum or ("vector_invariant" if self.ale else "flux")
+        if momentum not in ("flux", "vector_invariant"):
+            raise ValueError(f"unknown momentum {momentum!r}; use 'vector_invariant' or 'flux'")
+        if momentum == "vector_invariant" and not self.ale:
+            raise ValueError("momentum='vector_invariant' needs vertical_coordinate='ale' (the σ model keeps the "
+                             "flux form, which matches CROCO)")
+        if ke_scheme not in ("arakawa", "gudonov"):
+            raise ValueError(f"unknown ke_scheme {ke_scheme!r}; use 'arakawa' or 'gudonov'")
+        self.momentum, self.ke_scheme, self.max_truncations = momentum, ke_scheme, int(max_truncations)
         if not self.ale:
             return
         if regrid not in ("sigma", "zstar", "hybrid"):
@@ -723,6 +741,11 @@ class SigmaBaroclinic:
         self.regrid_rule, self.regrid_params = regrid, params
         self.remap_code = REMAP_SCHEMES[remap_scheme]
         self.h_thin_bed, self.init_iterations = float(h_thin_bed), int(init_iterations)
+        g = {k: np.asarray(self.hg[k].values, float) for k in ("dx_u", "dy_v", "area_t", "area_u", "area_v",
+                                                               "dx_t", "dy_t")}
+        g["area_q"] = vi.corner_area(g["dx_u"], g["dy_v"])
+        g["mask_q"] = vi.corner_mask(act)
+        self._vi = g                                                    # geometry of the vector-invariant terms
 
     # ------------------------------------------------------------------ helpers
     def initial_state(self, eta: np.ndarray, T: np.ndarray) -> SigmaState:
@@ -934,6 +957,25 @@ class SigmaBaroclinic:
                                   + fq[1:-1, 1:] * (u[:, :-1, 1:] + u[:, 1:, 1:]))
         return cu, cv
 
+    def _vector_invariant(self, st: SigmaState) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Vector-invariant momentum terms of the ALE step (spec 2026-10-12 §3): Sadourny (1975) energy
+        PV flux q·(vh, −uh) with BOUND_CORIOLIS, minus ∇K (core.dynamics.vector_invariant).  The
+        transports are those of the last Lagrangian step (as MOM6 uses the uh of its last continuity);
+        the first step uses L u h̄.
+        """
+        g = self._vi
+        zeta = vi.vorticity_q(st.u, st.v, g["dx_u"], g["dy_v"], g["area_q"], g["mask_q"])
+        q = vi.pv_q(zeta, self._fq, st.h, g["area_t"], self.fs.active)
+        Qx, Qy = st.Qx, st.Qy
+        if Qx is None or Qy is None:
+            hu, hv = self._mean_face_thickness(st.h)
+            Qx, Qy = self.fs.Lu[None] * st.u * hu, self.fs.Lv[None] * st.v * hv
+        cu, cv = vi.coriolis_pv(q, self._fq[None] + zeta, Qx, Qy, st.u, st.v, g["dx_u"], g["dy_v"], bound=True)
+        K = vi.kinetic_energy(st.u, st.v, g["area_u"], g["area_v"], g["area_t"], self.ke_scheme)
+        kx, ky = vi.ke_gradient(K, g["dx_u"], g["dy_v"])
+        return cu + kx, cv + ky
+
     def _vertical_advection(self, vel: np.ndarray, omega_f: np.ndarray, h_f: np.ndarray) -> np.ndarray:
         """(ω/h) ∂u/∂k, centred: [ω_{k+½}(u_{k+1}−u_k) + ω_{k−½}(u_k−u_{k−1})] / (2h)."""
         out = np.zeros_like(vel)
@@ -948,10 +990,11 @@ class SigmaBaroclinic:
         wet_u = np.isfinite(self.fs.H_u) & np.isfinite(Du) & (Du > self.fs.d_min)
         wet_v = np.isfinite(self.fs.H_v) & np.isfinite(Dv) & (Dv > self.fs.d_min)
         gu, gv = self._baroclinic_pgf(st.eta, st.T, st.h)
-        cu, cv = self._coriolis(st.u, st.v)
+        vinv = self.ale and self.momentum == "vector_invariant"
+        cu, cv = self._vector_invariant(st) if vinv else self._coriolis(st.u, st.v)
         gu += cu
         gv += cv
-        if self.adv == "flux":
+        if self.adv == "flux" and not vinv:
             if st.Qx is not None:
                 V = self.layer_volumes(st.eta, st.h)
                 lim = self.dt if self.ale else 0.0                                      # vanished-cell limiter
@@ -960,7 +1003,7 @@ class SigmaBaroclinic:
                 gv += swap(_flux_form_u(swap(st.v), swap(st.Qy), swap(st.Qx), swap(st.Fz), swap(V),
                                         swap(wet_v[None]), lim))
         for k in range(n):
-            if self.adv != "flux":
+            if self.adv != "flux" and not vinv:
                 gu[k] -= advection_u(st.u[k], st.v[k], self.hg, wet_u, scheme=self.adv)
                 gv[k] -= advection_v(st.u[k], st.v[k], self.hg, wet_v, scheme=self.adv)
             if self.ah > 0:
@@ -1170,8 +1213,25 @@ class SigmaBaroclinic:
         hu1, hv1 = self._mean_face_thickness(h_new)
         u_new = zero_thin_bed_velocity(self._remap_faces(u_new, hu_lag, hu1), hu1, face_fractions(hu1), self.h_thin_bed)
         v_new = zero_thin_bed_velocity(self._remap_faces(v_new, hv_lag, hv1), hv1, face_fractions(hv1), self.h_thin_bed)
+        g = self._vi                                                    # CFL truncation backstop (MOM6 vertvisc_limit_vel)
+        u_before, v_before = u_new, v_new
+        u_new, nu_, fu = vi.truncate_cfl(u_new, dt, g["dx_t"], hu1, self.h_thin_bed)
+        v_sw, nv_, fv = vi.truncate_cfl(v_new.swapaxes(1, 2), dt, g["dy_t"].T, hv1.swapaxes(1, 2), self.h_thin_bed)
+        v_new = v_sw.swapaxes(1, 2)
+        n_trunc = st.n_trunc + nu_ + nv_
+        if n_trunc > self.max_truncations:
+            if fu is not None:
+                k, j, i = fu
+                where = (f"layer {k} at u-face (j={j}, i={i}): u = {u_before[k, j, i]:.3g} m/s, "
+                         f"face thickness {hu1[k, j, i]:.3g} m")
+            else:
+                k, i, j = fv
+                where = (f"layer {k} at v-face (j={j}, i={i}): v = {v_before[k, j, i]:.3g} m/s, "
+                         f"face thickness {hv1[k, j, i]:.3g} m")
+            raise RuntimeError(f"{n_trunc} CFL velocity truncations exceed max_truncations={self.max_truncations}; "
+                               f"first this step: {where}")
         return SigmaState(eta=eta_new, u=u_new, v=v_new, T=T_new, h=h_new, g_hist=hist, omega=None, mix_num=mix,
-                          Qx=Qx, Qy=Qy, Fz=Fz, time=st.time + dt)
+                          Qx=Qx, Qy=Qy, Fz=Fz, time=st.time + dt, n_trunc=n_trunc)
 
     # ------------------------------------------------------------------ step
     def step(self, st: SigmaState, tau_x: np.ndarray | None = None, tau_y: np.ndarray | None = None) -> SigmaState:

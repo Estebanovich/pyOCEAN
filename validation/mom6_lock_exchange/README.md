@@ -53,8 +53,33 @@ Velocidad de los frentes entre 2 y 6 h, medida donde la columna de agua densa (o
   La ganancia de RPE queda en 7.3e6 J. Así que la causa principal es la advección de momento en forma de flujo con capas que se adelgazan. Es el problema que Bleck & Smith (1990, apéndice B) y Higdon (2005) describen para capas de grosor muy variable, y la razón por la que MOM6 y HYCOM usan la forma vectorial invariante.
 - **Queda una capa intermedia de 8.8 cm a 3.15 m/s.** Las capas delgadas necesitan además el acoplamiento viscoso o el truncamiento de MOM6.
 
+## Resultado con momento vectorial invariante (2026-10-12)
+
+Plan `docs/superpowers/plans/2026-10-12-ale-vector-invariant-momentum.md`. En ALE, el momento pasa a la forma de MOM6: flujo de vorticidad potencial de Sadourny con `BOUND_CORIOLIS`, más el gradiente de energía cinética Godunov (aguas arriba), y truncamiento CFL como red de seguridad. La corrida híbrida usa la viscosidad de MOM6 (KV = 1e-4, KH = 0.01).
+
+| Caso | Frente 1 m (denso, ligero) | Cuerpo 5 m (denso, ligero) | Ganancia de RPE en 6 h [J por 500 m] | max\|u\| [m/s] |
+|---|---|---|---|---|
+| MOM6, capas (21) | 1.05, 1.05 U | 1.05, 1.05 U | 0.04 | 0.56 |
+| MOM6, RHO (21) | 1.05, 0.98 U | 0.98, 0.98 U | 4.5e7 | 0.56 |
+| pyOCEAN híbrida, `keep_isopycnal` (10) | 1.12, 1.05 U | 1.05, 1.05 U | 4.9e6 | 0.94 |
+| pyOCEAN híbrida, P1M en todas las capas (10) | 0.77, 1.05 U | 0.84, 1.05 U | 8.4e7 | 0.56 |
+| pyOCEAN ALE-σ (10) | 0.91, 0.91 U | 0.91, 0.84 U | 2.1e8 | 0.67 |
+
+- **Con `keep_isopycnal` el cuerpo de la corriente coincide con MOM6** (1.05 U), y antes iba a 0.84 / 0.14 U. La mezcla es 9 veces menor que la de MOM6 RHO.
+- **Queda abierto:**
+  - la punta densa medida a 1 m va a 1.12 U (criterio ±10 %);
+  - max|u| llega a 0.94 m/s dentro de la corriente densa (MOM6: 0.56 m/s). Se observa en capas de 0.6 a 1.2 m.
+- **Energía cinética:** con la de Arakawa, el lock exchange ALE-σ (20 capas) da 0.91 / 0.84 U; con Godunov, 0.98 / 0.98 U. Por eso Godunov es el valor por defecto, como en el `lock_exchange` de MOM6.
+- **Sin regresiones:** escalón z\* 3.5e-12 m/s; monte submarino z\* + volumen finito + ρ_ref 0.07 cm/s el día 10 (antes 0.11).
+- **Costo:** 0.362 s/paso contra 0.356 con la forma de flujo (160 × 100 × 30, 5 hilos).
+
 ## Qué debe mejorar pyOCEAN
 
-1. **Momento en forma vectorial invariante para el modo ALE**, como MOM6 y HYCOM. Es el gradiente de energía cinética más el flujo de vorticidad potencial ponderada por grosor. Está en la etapa B del roadmap.
-2. **Velocidades en capas delgadas:** acoplamiento viscoso con un grosor despreciable (MOM6 `MOM_vert_friction`) o truncamiento CFL (`vertvisc_limit_vel`, `:2555`).
-3. **Repetir la tabla** cuando se corrija, y pasar a ✅ los xfail de `tests/test_sigma_ale.py`.
+1. ~~**Momento en forma vectorial invariante para el modo ALE**~~ ✅ (2026-10-12): el cuerpo ya coincide con MOM6.
+2. **Velocidad interna de la corriente densa** (0.94 contra 0.56 m/s) **y punta a 1.12 U.**
+   - Este caso no tiene rotación (f = 0, como el de MOM6) y es una sola fila (ny = 1), así que ζ = 0 y q = 0. El flujo de vorticidad potencial no actúa, y `CORIOLIS_EN_DIS` (primer paso del plan B del spec) no cambiaría nada aquí.
+   - Lo que sí puede actuar:
+     - el esquema de energía cinética;
+     - la viscosidad vertical con grosor aguas arriba/armónico en la capa límite de fondo (`hvel` de MOM6);
+     - la resolución: 21 capas como MOM6, en lugar de 10.
+3. **Pasar a ✅ el xfail** de `tests/test_sigma_ale.py` cuando se resuelva.
