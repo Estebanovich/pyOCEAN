@@ -134,11 +134,12 @@ def report(case: str, coord: str, ref: str = "") -> list[str]:
         per = {b: section.read_mitgcm(case, b, "periodic") for b in bays}
     except FileNotFoundError:
         per = None
-    if per is not None:
-        L.append("\n# Rotation effect: MITgcm periodic in x (u free, f active) vs MITgcm walls")
-        _seiche(L, tm, mit, per, per["bay"]["t_h"], "per")
+    if per is not None:                    # both with Esteban's balanced boundary, so only rotation differs
+        walls = {b: section.read_mitgcm(case, b) for b in bays}
+        L.append("\n# Rotation effect: MITgcm periodic in x (u free, f active) vs MITgcm walls (both balanced OBCS)")
+        _seiche(L, tm, walls, per, per["bay"]["t_h"], "per")
         L.append("\n## T110 anomaly (bay): period walls/periodic [h], rms per/walls, corr")
-        Xw, Xp = mit_at_depth(mit["bay"], H["bay"], "T", bayiw.Z110), mit_at_depth(per["bay"], H["bay"], "T", bayiw.Z110)
+        Xw, Xp = mit_at_depth(walls["bay"], H["bay"], "T", bayiw.Z110), mit_at_depth(per["bay"], H["bay"], "T", bayiw.Z110)
         for s, j in st.items():
             xw, xr = Xw[:, j] - Xw[0, j], Xp[:, j] - Xp[0, j]
             if not np.isfinite(xw).all() or rms(xw) == 0:

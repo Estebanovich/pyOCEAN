@@ -26,7 +26,7 @@ from validation.bayiw_seiche.run_pyocean import wind_at  # noqa: E402
 
 def record(m, st, buf: dict) -> None:
     """
-    Append η, the T and V sections on the MITgcm levels (thickness-weighted PCM means, surface first,
+    Append η, the T and V sections on the MITgcm levels (conservative PPM_H4 remap, surface first,
     section.to_mitgcm_levels), T110, T250, V110 sampled from them exactly as MITgcm (compare.mit_at_depth),
     truncations and heat content.
     """

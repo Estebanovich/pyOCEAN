@@ -149,9 +149,10 @@ def to_mitgcm_levels(h: np.ndarray, f: np.ndarray, H: np.ndarray) -> np.ndarray:
     """
     Layer means f on pyOCEAN layers h (N, ny, nx), bed first, as thickness-weighted means on the 50 MITgcm
     levels (bed first) of a bed at depth H (ny, nx) [m] (a level interface, bayiw.mitgcm_depth): conservative
-    PCM remap onto the levels stretched by (Σh)/H (z*-like; η is millimetres).  NaN on levels below the bed
-    and in dry columns.  Both models are then sampled the same way: a 1 cm interface layer counts for its
-    1 cm, not as a point value between two thick layer centres.
+    remap with the model's PPM_H4 reconstruction (exact for a linear profile inside thick layers, limited at a
+    sharp interface) onto the levels stretched by (Σh)/H (z*-like; η is millimetres).  NaN on levels below
+    the bed and in dry columns.  Both models are then sampled the same way: a 1 cm interface layer counts
+    for its 1 cm, not as a point value between two thick layer centres.
     """
     from core.vertical import remap as rm
     h = np.asarray(h, float)
@@ -159,5 +160,5 @@ def to_mitgcm_levels(h: np.ndarray, f: np.ndarray, H: np.ndarray) -> np.ndarray:
     tot, lev = h.sum(axis=0), h_lev.sum(axis=0)
     wet = (tot > 0) & (lev > 0)
     h_tgt = h_lev * np.where(wet, tot / np.where(lev > 0, lev, 1.0), 0.0)[None]
-    out = rm.remap_columns(h, np.asarray(f, float), h_tgt, rm.PCM, wet)
+    out = rm.remap_columns(h, np.asarray(f, float), h_tgt, rm.PPM_H4, wet)
     return np.where(wet[None] & (h_lev > 0), out, np.nan)

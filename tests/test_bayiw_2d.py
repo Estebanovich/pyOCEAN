@@ -130,3 +130,18 @@ def test_to_mitgcm_levels_is_a_thickness_weighted_mean():
     g = np.concatenate([f[:k], [[[1.0]], [[1001.0]]], f[k + 1:]])
     out = section.to_mitgcm_levels(split, g, H[None])
     np.testing.assert_allclose(out[k, 0, 0], 1.0 + 1000.0 * 0.01 / hl[k, 0, 0], rtol=1e-10)
+
+
+def test_to_mitgcm_levels_keeps_a_linear_profile_in_thick_layers():
+    # 40 m isopycnal-like layers of T = 20 + 0.02 z: the 10 m levels inside them get their own means
+    # (PCM would give every level the layer mean and quantise the fixed-depth series)
+    from validation.bayiw_2d import section
+    H = np.array([[599.9]])
+    e = np.concatenate([[-599.9], np.linspace(-560.0, -40.0, 14), [-20.0, 0.0]])        # bed first
+    h = np.diff(e)[:, None, None]
+    zc = 0.5 * (e[1:] + e[:-1])[:, None, None]
+    h_lev, _ = bayiw.mitgcm_source(H, np.zeros((50, 1, 1)))
+    z_lev = -599.9 + np.cumsum(h_lev[:, 0, 0]) - 0.5 * h_lev[:, 0, 0]
+    out = section.to_mitgcm_levels(h, 20.0 + 0.02 * zc, H)[:, 0, 0]
+    inner = (z_lev < -45.0) & (z_lev > -555.0)                                          # away from the end cells
+    np.testing.assert_allclose(out[inner], 20.0 + 0.02 * z_lev[inner], atol=1e-9)
