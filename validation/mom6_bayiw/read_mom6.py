@@ -63,3 +63,20 @@ def save_series(series: dict, case: str, bay: str, coord: str) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     np.savez(out / "series.npz", **series)
     return out
+
+
+_CLOCK = re.compile(r"^(.+?)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$")
+
+
+def clock_table(stdout: Path) -> dict[str, float]:
+    """FMS clock table of a MOM6 stdout ('Tabulating mpp_clock statistics', mpp_comm_mpi.inc:212): name → tavg [s]
+    (mean over the processes)."""
+    out, inside = {}, False
+    for line in Path(stdout).read_text().splitlines():
+        if "Tabulating mpp_clock statistics" in line:
+            inside = True
+            continue
+        m = _CLOCK.match(line) if inside else None
+        if m:
+            out[m.group(1).strip()] = float(m.group(5))
+    return out

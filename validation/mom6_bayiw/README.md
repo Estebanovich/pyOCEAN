@@ -92,3 +92,25 @@ pyOCEAN híbrida     6.71
 MOM6 z*             0.27
 MOM6 HYCOM1        14.50
 ```
+
+## Costo en el corte BayIW (198 × 159, dos capas con bahía, viento, fronteras radiantes; 5 procesos o hilos)
+
+`run_mom6.sh cost <coord> <dt> <horas>` para MOM6 (tiempo del bucle principal según los relojes de FMS); pyOCEAN con 30 pasos cronometrados tras 5 de calentamiento.
+
+| s por hora simulada | Δt = 120 s | Δt = 240 s | Δt = 360 s | Δt = 600 s |
+|---|---|---|---|---|
+| MOM6 z\* (50 capas) | 8.92 | 4.51 | 3.06 | 1.89 |
+| pyOCEAN z\* (50 capas) | 9.13 | — | — | 1.82 |
+| MOM6 HYCOM1 (25 capas) | 4.67 | 2.37 | 1.62 | 1.00 |
+| pyOCEAN híbrida (25 capas) | 4.95 | — | — | 0.99 |
+| MITgcm z (50 niveles, Δt 30 s de Esteban) | 4.4 | | | |
+
+- **A igual Δt, pyOCEAN cuesta lo mismo que MOM6** (±5 %). La diferencia que veíamos con MITgcm venía del remapeo en cada paso, que MOM6 también paga, y de que MITgcm no remapea.
+- **Los dos modelos son estables 1–6 h con Δt = 600 s** (pyOCEAN sin truncamientos). MOM6 lo debe a su barotrópico *split-explicit*; pyOCEAN, a su superficie libre implícita.
+- **No se ha evaluado la precisión con Δt > 120 s** en ninguno de los dos. Con 600 s, el corte de 60 h de pyOCEAN tardaría ~2 min.
+- **Reparto de MOM6** (z\*, Δt = 120 s, sección 2-D):
+  - dinámica 75 %; dentro de ella, la corrección de la continuidad 18 % y los precálculos barotrópicos 12 %;
+  - trazadores 12 %;
+  - regrid y remapeo (ALE) 3.4 %;
+  - diagnósticos 6 %.
+- **El ALE de MOM6 cuesta poco** (3.4 %) frente a nuestro remapeo (~13 % del paso de z\* en el corte). Es la pieza donde pyOCEAN pierde más, aunque en total cueste lo mismo.

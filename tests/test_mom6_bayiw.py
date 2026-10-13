@@ -126,3 +126,19 @@ def test_hybgen_layers_come_from_the_linear_coordinate(tmp_path):
     assert f"LIGHTEST_DENSITY = {t[0]:.10g}" in txt and f"DENSITY_RANGE = {t[-1] - t[0]:.10g}" in txt
     with pytest.raises(ValueError, match="evenly"):
         config.write_case("section", "real", "bay", "hybgen", tmp_path / "r", hours=1.0)
+
+
+def test_clock_table_reads_the_fms_timing_block(tmp_path):
+    from validation.mom6_bayiw import read_mom6
+    txt = """noise before
+Tabulating mpp_clock statistics across      5 PEs...
+                               Memuse(MB) at Memory HiWaterMark=  1.231E+02  1.352E+02  4.565E+00  1.261E+02
+
+                                      hits          tmin          tmax          tavg          tstd  tfrac grain pemin pemax
+Total runtime                            1     43.615381     43.615383     43.615381      0.000001  1.000     0     0     4
+Ocean dynamics                        3600     32.654754     32.782386     32.731857      0.047394  0.750    11     0     4
+(Ocean continuity correction)        10802      7.612030      8.024170      7.717807      0.154651  0.177    41     0     4
+"""
+    (tmp_path / "stdout.txt").write_text(txt)
+    c = read_mom6.clock_table(tmp_path / "stdout.txt")
+    assert c == {"Total runtime": 43.615381, "Ocean dynamics": 32.731857, "(Ocean continuity correction)": 7.717807}
