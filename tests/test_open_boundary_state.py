@@ -38,3 +38,84 @@ def test_interpolated_boundary_rejects_inconsistent_states():
         interpolated_boundary([10.0, 0.0], [{"west": _ob(1.0)}, {"west": _ob(2.0)}])
     with pytest.raises(ValueError, match="edges"):
         interpolated_boundary([0.0, 1.0], [{"west": _ob(1.0)}, {"east": _ob(2.0)}])
+
+
+from core.dynamics import open_boundary as obc
+from core.vertical import remap as rm
+
+
+def _west(ny: int = 2, nz: int = 40, depth: float = 100.0, T=None, u=None) -> OBData:
+    zw = np.linspace(0.0, -depth, nz + 1)[:, None].repeat(ny, 1)
+    zc = 0.5 * (zw[1:] + zw[:-1])
+    T = 10.0 + 0.1 * zc if T is None else T
+    u = np.cos(np.pi * zc / depth) if u is None else u
+    return OBData(side="west", T=T, u_normal=u, zw=zw)
+
+
+def test_validate_state_errors():
+    with pytest.raises(ValueError, match="not in open_boundaries"):
+        obc.validate_state({"west": _west()}, ("east",), (2, 5))
+    with pytest.raises(ValueError, match="shape"):
+        obc.validate_state({"west": _west(ny=3)}, ("west",), (2, 5))           # edge length 2, data 3
+    bad = _west()
+    bad.zw = bad.zw[::-1]
+    with pytest.raises(ValueError, match="decrease"):
+        obc.validate_state({"west": bad}, ("west",), (2, 5))
+
+
+def test_source_must_reach_the_edge_bed():
+    H = np.full((2, 5), 150.0)                                          # deeper than the 100 m data
+    h = np.full((5, 2, 5), 30.0)
+    mask = np.zeros((2, 5), bool)
+    mask[:, 0] = True
+    with pytest.raises(ValueError, match="west.*bed"):
+        obc.exterior_tracer({"west": _west()}, H, h, mask, rm.PPM_H4)
+
+
+def test_exterior_tracer_on_layers_and_sponge_band():
+    # linear T(z) on the data grid → exact layer means on any model layers; the sponge band takes the edge
+    # profile, extended or clipped to each column's own bed (review focus 2)
+    H = np.array([[100.0, 120.0, 75.0, 100.0, 100.0]] * 2)              # 75 m: a data interface
+    nz = 7
+    h = (H / nz)[None].repeat(nz, 0)
+    mask = np.zeros((2, 5), bool)
+    mask[:, :3] = True
+    T = obc.exterior_tracer({"west": _west()}, H, h, mask, rm.PPM_H4)
+    zc = -H[None] + np.cumsum(h, 0) - 0.5 * h
+    inner = slice(1, -1)                                                # end cells are PCM (remap.py)
+    np.testing.assert_allclose(T[inner, :, 0], (10.0 + 0.1 * zc)[inner, :, 0], atol=1e-10)
+    np.testing.assert_allclose(T[inner, :, 2], (10.0 + 0.1 * zc)[inner, :, 2], atol=1e-10)   # clipped at 75 m
+    assert np.isfinite(T[:, :, 1]).all() and (T[:, :, 3:] == 0).all()
+
+
+def test_nearest_edge_wins_in_corners():
+    H = np.full((4, 4), 100.0)
+    h = np.full((2, 4, 4), 50.0)
+    mask = np.ones((4, 4), bool)
+    south = OBData(side="south", T=np.full((4, 4), 5.0), u_normal=np.zeros((4, 4)),
+                   zw=np.linspace(0, -100, 5)[:, None].repeat(4, 1))
+    west = _west(ny=4, nz=4, T=np.full((4, 4), 1.0), u=np.zeros((4, 4)))
+    T = obc.exterior_tracer({"west": west, "south": south}, H, h, mask, rm.PPM_H4)
+    assert (T[:, 3, 0] == 1.0).all() and (T[:, 0, 3] == 5.0).all()          # nearest edge
+    assert (T[:, 0, 0] == 1.0).all()                                          # tie: first in EDGES order
+
+
+def test_exterior_velocity_has_zero_weighted_mean():
+    ny, nx, N = 2, 4, 6
+    Hf = np.full((ny, nx + 1), 100.0)
+    hf = (Hf / N)[None].repeat(N, 0)
+    w = hf / hf.sum(0)
+    mask = np.zeros((ny, nx + 1), bool)
+    mask[:, :2] = True
+    up = obc.exterior_velocity({"west": _west(u=_west().u_normal + 0.3)}, "u", Hf, hf, mask, w, rm.PPM_H4)
+    np.testing.assert_allclose((w * up).sum(0)[:, :2], 0.0, atol=1e-14)        # the 0.3 depth mean is removed
+    assert np.abs(up[:, :, 0]).max() > 0.5 and (up[:, :, 2:] == 0).all()
+
+
+def test_flather_targets_at_the_open_faces():
+    ob = _west()
+    ob.eta, ob.ubar = np.array([0.1, 0.2]), np.array([0.01, 0.02])
+    t = obc.flather_targets({"west": ob}, (2, 6), (3, 5))
+    np.testing.assert_allclose(t["flather_eta"][0][:, 0], [0.1, 0.2])
+    np.testing.assert_allclose(t["flather_ubar"][:, 0], [0.01, 0.02])
+    assert (t["flather_eta"][0][:, 1:] == 0).all() and (t["flather_vbar"] == 0).all()
