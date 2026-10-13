@@ -100,3 +100,95 @@ def read_mitgcm(run: Path | None = None) -> dict:
             depth.append((float(ds["X"][0]), np.asarray(ds["Depth"][0, :], float)))
     depth = np.concatenate([d for _, d in sorted(depth, key=lambda a: a[0])])
     return dict(t=cat(t), x=x, U=cat(U), T=cat(T), eta=cat(eta), depth=depth)
+
+
+RHO0 = 999.8                            # MITgcm default rhoNil (not set in data)
+
+
+def harmonic(t: np.ndarray, x: np.ndarray, omega: float) -> tuple[np.ndarray, np.ndarray]:
+    """Least-squares fit x ≈ a0 + A sin(ωt − φ) along axis 0: amplitude A and phase φ [deg] per point."""
+    G_ = np.stack([np.ones_like(t), np.sin(omega * t), np.cos(omega * t)], 1)
+    c = np.linalg.lstsq(G_, x.reshape(t.size, -1), rcond=None)[0]
+    amp = np.hypot(c[1], c[2]).reshape(x.shape[1:])
+    ph = np.degrees(np.arctan2(-c[2], c[1])).reshape(x.shape[1:])
+    return amp, ph
+
+
+def energy_flux(u, T, eta, H, dz, tref) -> np.ndarray:
+    """
+    Vertically integrated baroclinic energy flux Σ (u − ū)(p′ − p̄′) Δz [W m⁻¹] at each time and column, from
+    level values u, T (n, nz, ncol) surface first, η (n, ncol) and the depth H (ncol,) (levels below the bed
+    have NaN): ρ′ = −ρ0 α (T − Tref), p′ = ρ0 g η + g Σ_above ρ′ Δz + g ρ′ Δz/2 (linear EOS, hydrostatic).
+    """
+    dzz = np.where(np.isfinite(T), dz[None, :, None], 0.0)
+    rho = np.nan_to_num(-RHO0 * ALPHA * (T - tref[None, :, None]))
+    above = np.cumsum(rho * dzz, axis=1) - rho * dzz
+    p = RHO0 * G * eta[:, None, :] + G * (above + 0.5 * rho * dzz)
+    D = dzz.sum(axis=1)
+    ub = np.nansum(np.nan_to_num(u) * dzz, axis=1) / np.where(D > 0, D, 1.0)
+    pb = (p * dzz).sum(axis=1) / np.where(D > 0, D, 1.0)
+    return ((np.nan_to_num(u) - ub[:, None]) * (p - pb[:, None]) * dzz).sum(axis=1)
+
+
+def to_levels(h: np.ndarray, f: np.ndarray, H: np.ndarray, dz: np.ndarray = np.full(NZ, DZ)) -> np.ndarray:
+    """pyOCEAN layers (N, …) bed first → the fixed MITgcm levels (20, …) surface first, η in the top level
+    (PPM_H4, as validation/bayiw_2d/section.to_mitgcm_levels); NaN below the (partial-cell) bed."""
+    from core.vertical import remap as rm
+    Hc = np.nan_to_num(np.asarray(H, float))
+    zf = np.concatenate([[0.0], np.cumsum(dz)]).reshape((-1,) + (1,) * Hc.ndim)
+    top, bot = np.minimum(zf[:-1], Hc), np.minimum(zf[1:], Hc)
+    h_lev = (bot - top)[::-1]
+    tot, lev = h.sum(axis=0), h_lev.sum(axis=0)
+    wet = (tot > 0) & (lev > 0)
+    h_tgt = np.where(wet[None], h_lev, 0.0)
+    h_tgt[-1] += np.where(wet, tot - lev, 0.0)
+    out = rm.remap_columns(np.ascontiguousarray(h, float), np.ascontiguousarray(f, float),
+                           np.ascontiguousarray(h_tgt), rm.PPM_H4, wet)
+    return np.where(wet[None] & (h_lev > 0), out, np.nan)[::-1]
+
+
+def boundary_state(dz: np.ndarray):
+    """t → {'west': OBData}: the obcs_calc.F profiles on the 20 MITgcm levels at MITgcm's boundary face."""
+    from boundaries.obcs import OBData
+    zw = -np.concatenate([[0.0], np.cumsum(dz)])[:, None]
+
+    def at(t: float):
+        u, T = obcs_west(t, dz)
+        return {"west": OBData(side="west", T=T[:, None], u_normal=u[:, None], zw=zw)}
+    return at
+
+
+def build_model(coord: str, dt: float = 500.0):
+    """
+    pyOCEAN on MITgcm's columns 2 … 60 (west face = MITgcm's prescribed u point), MITgcm's partial-cell
+    depth, its viscosities and diffusivities, free slip, f = 0; west 'clamped' with the obcs_calc.F profiles,
+    east a wall (MITgcm's eastern open boundary sits on land).  coord: zstar | hybrid | sigma (20 layers).
+    """
+    from core.dynamics.sigma_baroclinic import SigmaBaroclinic
+    from core.grid.horizontal import create_cartesian_grid_stretched
+    from validation.bayiw_baroclinic import bayiw
+    d = load_inputs()
+    dx = d["dx"][1:]
+    H = mitgcm_depth(d["H"][1:], d["dz"])[None, :]
+    hg = create_cartesian_grid_stretched(dx, np.array([5e3]), x0=float(d["dx"][0]), y0=0.0, f0=0.0)
+    tc = RHO0 * ALPHA
+    if coord == "zstar":
+        params = dict(dz_top=d["dz"].copy())
+    elif coord == "hybrid":
+        rho = RHO0 - tc * d["tref"]
+        params = dict(dz_top=np.full(NZ, 1.0), rho_target=bayiw.profile_targets(rho, NZ, 0))
+    elif coord == "sigma":
+        params = {}
+    else:
+        raise ValueError(f"unknown coord {coord!r}")
+    m = SigmaBaroclinic(hg, H, dt=dt, n_layers=NZ, rho0=RHO0, t_coef=tc, t_ref=0.0, z0=None,
+                        closure="constant", nu_const=1e-3, ah=1e-2, kh=1e-2, kv=1e-3, pgf="fv", rho_ref="auto",
+                        vertical_coordinate="ale", regrid=coord, regrid_params=params,
+                        open_boundaries=("west",), open_boundary_state=boundary_state(d["dz"]),
+                        open_boundary_mode={"west": "clamped"}, mix_diagnostic=False)
+    Hc = np.nan_to_num(H)
+    zf = np.concatenate([[0.0], np.cumsum(d["dz"])])[:, None, None]
+    h_src = (np.minimum(zf[1:], Hc[None]) - np.minimum(zf[:-1], Hc[None]))[::-1]
+    T_src = np.broadcast_to(d["T"][:, None, 1:], h_src.shape)[::-1].copy()
+    st = m.initial_state(np.zeros(H.shape), T_src, h_src=h_src)
+    return m, st

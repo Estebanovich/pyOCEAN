@@ -53,3 +53,35 @@ def test_read_mitgcm_shapes():
     np.testing.assert_allclose(d["x"], np.cumsum(case.load_inputs()["dx"]) - 0.5 * case.load_inputs()["dx"])
     inp = case.load_inputs()
     np.testing.assert_allclose(np.nan_to_num(case.mitgcm_depth(inp["H"], inp["dz"])), d["depth"], atol=1e-9)
+
+
+def test_harmonic_recovers_amplitude_and_phase():
+    omega = 2 * np.pi / case.PERIOD
+    t = np.arange(0, 4 * case.PERIOD, 1800.0)
+    x = 0.3 * np.sin(omega * t - np.radians(40.0))[:, None] * np.ones((1, 3)) + 0.01
+    amp, ph = case.harmonic(t, x, omega)
+    np.testing.assert_allclose(amp, 0.3, rtol=1e-6)
+    np.testing.assert_allclose(ph, 40.0, atol=1e-4)
+
+
+def test_energy_flux_of_a_mode1_wave():
+    # mode-1 wave: u = U cos(πz/H) cos θ, p′ = ρ0 (ω/k) U cos(πz/H) cos θ (f = 0, hydrostatic) →
+    # mean flux ∫⟨p′u′⟩dz = ρ0 (ω/k) U² H/4.  p′ is computed from T and η as for the models.
+    H, dz, N = 200.0, np.full(20, 10.0), 1e-3
+    omega = 2 * np.pi / case.PERIOD
+    k = np.pi * omega / (N * H)
+    zc = -(np.arange(20) + 0.5) * 10.0
+    t = np.arange(0, case.PERIOD, case.PERIOD / 200)
+    th = omega * t[:, None]
+    U = 0.02
+    u = U * np.cos(np.pi * zc / H)[None] * np.cos(th)
+    Tz = N**2 / (9.81 * 2e-4)
+    zeta = (U * k * H / (np.pi * omega)) * np.sin(np.pi * zc / H)[None] * np.cos(th)    # ζ_t = w, w_z = −u_x
+    T = Tz * zc[None] - Tz * zeta
+    F = case.energy_flux(u[..., None], T[..., None], np.zeros((t.size, 1)), np.array([H]), dz, Tz * zc)
+    np.testing.assert_allclose(F.mean(0), case.RHO0 * omega / k * U**2 * H / 4, rtol=0.03)
+
+
+def test_build_model_domain_starts_at_mitgcm_column_2():
+    m, st = case.build_model("zstar")
+    assert st.h.shape == (20, 1, 59) and np.isnan(m.H[0, -1]) and m.H[0, 0] == 200.0
