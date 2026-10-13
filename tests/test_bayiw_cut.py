@@ -72,3 +72,22 @@ def test_cut_model_steps_radiating():
         for _ in range(3):
             st = m.step(st)
         assert np.isfinite(st.u).all() and np.isfinite(st.v).all() and st.n_trunc == 0
+
+
+def test_to_py_grid_drops_the_ob_ring():
+    from validation.bayiw_cut import compare
+    n = 2
+    mit = dict(t=np.zeros(n), eta=np.zeros((n, 160, 200)), T=np.zeros((n, 21, 160, 200)),
+               U=np.zeros((n, 2, 160, 201)), V=np.zeros((n, 2, 161, 200)))
+    mit["U"][..., 1, 1] = 7.0                       # face west of global column 181 = pyOCEAN's west face
+    g = compare.to_py_grid(mit)
+    assert g["eta"].shape == (n, 159, 198) and g["U"].shape == (n, 2, 159, 199) and g["V"].shape == (n, 2, 160, 198)
+    assert (g["U"][..., 0, 0] == 7.0).all()
+
+
+def test_isotherm_height_interpolates_between_levels():
+    from validation.bayiw_cut import compare
+    zc = bayiw.Z_C[19:40]
+    T = (20.0 + 0.1 * zc)[None, :, None, None] * np.ones((1, 1, 2, 2))
+    z = compare.isotherm_height(T, zc, 20.0 + 0.1 * -116.0)
+    np.testing.assert_allclose(z, -116.0, atol=1e-9)
