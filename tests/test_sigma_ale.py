@@ -204,7 +204,7 @@ def test_sigma_ale_on_a_drying_beach_stays_positive_and_uniform():
 # ---------------------------------------------------------------- regression ALE-σ vs σ (spec §7, integration 1)
 def test_ale_sigma_lock_exchange_matches_benjamin_and_conserves_heat():
     nx, nz, depth, dt = 128, 20, 20.0, 20.0
-    m = _ale_box("sigma", nx=nx, nz=nz, depth=depth, dx=500.0, dt=dt, params={})
+    m = _ale_box("sigma", nx=nx, nz=nz, depth=depth, dx=500.0, dt=dt, params={}, ke_scheme="gudonov")
     T = np.where(np.arange(nx) < nx // 2, 5.0, 10.0)[None, None, :].repeat(nz, 0) / TCOEF
     st = m.initial_state(np.zeros((1, nx)), T)
     c0, r0 = m.tracer_content(st), m.rpe(st)
@@ -316,7 +316,7 @@ def _hybrid_lock(nx=128, nz=21, depth=20.0, dt=20.0, margin=None, **kw):
     rho_l, rho_d = m0.density(10.0 / TCOEF), m0.density(5.0 / TCOEF)
     params = dict(dz_top=np.full(nz, 0.01), rho_target=np.linspace(rho_l - margin, rho_d + margin, nz + 1))
     m = _ale_box("hybrid", nx=nx, nz=nz, depth=depth, dx=500.0, dt=dt, params=params, nu=1e-4, ah=0.01,  # MOM6 KV, KH
-                 **kw)
+                 **{"ke_scheme": "gudonov", **kw})                                 # density current: Godunov
     T = np.where(np.arange(nx) < nx // 2, 5.0, 10.0)[None, None, :].repeat(nz, 0) / TCOEF
     return m, m.initial_state(np.zeros((1, nx)), T)
 
@@ -327,7 +327,7 @@ def _lock_run(rule: str, nx: int = 128, nz: int = 21, depth: float = 20.0, dt: f
     if rule == "hybrid":
         m, st = _hybrid_lock(nx, nz, depth, dt)
     else:
-        m = _ale_box(rule, nx=nx, nz=nz, depth=depth, dx=500.0, dt=dt, params={})
+        m = _ale_box(rule, nx=nx, nz=nz, depth=depth, dx=500.0, dt=dt, params={}, ke_scheme="gudonov")
         st = m.initial_state(np.zeros((1, nx)), np.where(np.arange(nx) < nx // 2, 5.0, 10.0)[None, None, :]
                              .repeat(nz, 0) / TCOEF)
     thick0 = bool((st.h.max(axis=0) > 0.9 * depth).all())
@@ -765,13 +765,14 @@ def test_rotating_open_boundaries_keep_a_resting_stratification_at_rest():
 
 # ---------------------------------------------------------------- performance regression (spec 2026-10-12-ale-step-performance §4)
 def _perf_cases():
+    # fingerprints of tests/data/ale_perf_reference.json were generated with the Godunov KE (then the default)
     return {
         "lock": lambda: _hybrid_lock(128, 21, 20.0, 20.0, solver="direct"),
         "channel": lambda: _ale_channel("hybrid", 60, 30e3, open_boundaries=("west", "east"), sponge_cells=10,
-                                        sponge_tau=(1200.0, 120.0), solver="direct"),
+                                        sponge_tau=(1200.0, 120.0), solver="direct", ke_scheme="gudonov"),
         "step": lambda: _step_section("zstar", solver="direct"),
         "openbox": lambda: _ale_open_box("hybrid", nx=14, ny=12, open_=("west", "east", "south"), f0=1e-4,
-                                         sponge_cells=3, solver="direct"),
+                                         sponge_cells=3, solver="direct", ke_scheme="gudonov"),
     }
 
 
@@ -1101,3 +1102,9 @@ def test_clamped_mode_needs_an_exterior_state():
     # a Dirichlet edge without exterior data would silently radiate with no sponge
     with pytest.raises(ValueError, match="clamped.*open_boundary_state"):
         _ale_box("zstar", open_boundaries=("west",), open_boundary_mode={"west": "clamped"})
+
+
+def test_default_kinetic_energy_scheme_is_arakawa():
+    # Esteban 2026-10-12: Arakawa by default — Godunov damps progressive internal waves ~9 % per 5 km at
+    # dx = 100 m (validation/internal_wave/README.md); Godunov stays an option for density currents
+    assert _ale_box("zstar").ke_scheme == "arakawa"

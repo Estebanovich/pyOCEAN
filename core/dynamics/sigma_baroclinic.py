@@ -679,9 +679,11 @@ class SigmaBaroclinic:
     init_iterations : regrid–remap passes of the initial state with the hybrid rule
     momentum : 'vector_invariant' (default in ALE: PV flux + KE gradient, MOM6) or 'flux' (default in
           σ: flux-form WENO5 + energy-conserving Coriolis); 'vector_invariant' needs vertical_coordinate='ale'
-    ke_scheme : kinetic energy of the vector-invariant form: 'gudonov' (default, upwind: only the velocities
-          entering a cell; MOM6 lock_exchange — gravity-current fronts and bores lose energy, ALE-σ lock
-          exchange 0.98 U vs 0.91/0.84 U with 'arakawa') or 'arakawa' (energy conserving, MOM6 production)
+    ke_scheme : kinetic energy of the vector-invariant form: 'arakawa' (default, energy conserving, MOM6
+          production; Esteban 2026-10-12: 'gudonov' damps progressive internal waves ~9 % per 5 km at dx = 100 m,
+          validation/internal_wave/README.md) or 'gudonov' (upwind: only the velocities entering a cell; MOM6
+          lock_exchange — gravity-current fronts and bores lose energy, ALE-σ lock exchange 0.98 U vs 0.91/0.84 U
+          with 'arakawa'; use it for density currents)
     max_truncations : ALE: stop after this many CFL velocity truncations at faces thicker than h_thin_bed
     thickness_flux : ALE layer thickness at the faces: 'ppm' (default) = MOM6 continuity_PPM with the
           barotropic adjustment (B2b; core.vertical.ale.ppm_transport_x; hybrid lock exchange with 21
@@ -713,7 +715,7 @@ class SigmaBaroclinic:
                  kv: float = 0.0, solver: str | None = None, vertical_coordinate: str = "sigma_eulerian",
                  regrid: str = "sigma", regrid_params: dict | None = None, remap_scheme: str = "ppm_h4",
                  h_thin_bed: float = 0.01, init_iterations: int = 10, momentum: str | None = None,
-                 ke_scheme: str = "gudonov", max_truncations: int = 1000, thickness_flux: str = "ppm",
+                 ke_scheme: str = "arakawa", max_truncations: int = 1000, thickness_flux: str = "ppm",
                  mix_diagnostic: bool = True, open_boundary_state=None, open_boundary_mode: dict | None = None,
                  obc_tau_in: float = 86400.0, obc_tau_out: float = 864000.0) -> None:
         if pgf not in ("twoterm", "jacobian", "fv"):
@@ -791,7 +793,7 @@ class SigmaBaroclinic:
                         init_iterations, act, momentum, ke_scheme, max_truncations, thickness_flux)
 
     def _setup_ale(self, vertical_coordinate, regrid, regrid_params, remap_scheme, z0, closure, h_thin_bed,
-                   init_iterations, act, momentum=None, ke_scheme="gudonov", max_truncations=1000,
+                   init_iterations, act, momentum=None, ke_scheme="arakawa", max_truncations=1000,
                    thickness_flux="ppm") -> None:
         """Check and store the ALE configuration (spec §2, §6.2); scope limits of ALE Plan B raise."""
         if vertical_coordinate not in ("sigma_eulerian", "ale"):
