@@ -236,3 +236,15 @@ En la estratificación realista, que es la de la tesis de Esteban, **z\* y la h�
 ## Restart ALE (Plan D)
 
 `restart_check.py hybrid`: el corte de dos capas con bahía, viento y fronteras abiertas, 60 h seguidas frente a 30 h + `write_restart` + modelo nuevo + `read_restart` + 30 h. η, u, v, T y h son idénticos bit a bit, con cero truncamientos (11.5 min; archivo de 98 MB).
+
+## Rendimiento (plan `2026-10-13-ale-serial-glue-performance`)
+
+`profile_step.py`: 30 pasos tras 5 de calentamiento, s/paso con 1 y 5 hilos y las piezas con más tiempo propio. Las salidas están en `profile_baseline.txt` y `profile_final.txt`.
+
+**Línea base (main c8e929c):**
+
+| Caso | 1 hilo | 5 hilos | Aceleración | Piezas serie más grandes (ms/paso con 5 hilos) |
+|---|---|---|---|---|
+| z\* radiando | 0.745 | 0.385 | 1.93 | copias `ascontiguousarray` 29, `_step_ale` 23, `truncate_cfl` 13.5, `step` 12, `_advect` 9 |
+| híbrida radiando | 0.371 | 0.200 | 1.86 | copias 13, `_step_ale` 11, `step` 6, `truncate_cfl` 6 |
+| z\* anidado | 0.965 | 0.535 | 1.80 | copias 53, `_source_columns` 41, `_remap_stretched` 21, `_step_ale` 23, `truncate_cfl` 15 |
