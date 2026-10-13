@@ -35,7 +35,7 @@ Salidas en `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/bayiw_2d/` (`mitgcm/`, `pyocean/`,
    | 0.57 | 0.41 | 0.02 | 0.02 |
 
    El pulso reflejado vuelve a la bahía a las 16 h con +3.4 mm. Por eso la comparación se hace contra `orl`. La configuración de Esteban se clasifica **(d)**, un error de configuración del modelo de referencia; puede afectar también sus corridas 3-D.
-3. **Muestreo idéntico.** pyOCEAN se remapea de forma conservativa (PPM_H4) a los niveles de MITgcm y se muestrea a 110/250 m igual que la salida de MITgcm (`section.to_mitgcm_levels`, `compare.mit_at_depth`). Interpolar entre centros de capas daba pesos de un punto a capas de 1 cm en la interfaz híbrida y convertía la interfaz en una rampa de 200 m. PCM, por su parte, cuantizaba las series dentro de capas gruesas.
+3. **Muestreo idéntico.** pyOCEAN se remapea de forma conservativa (PPM_H4) a los niveles *fijos* de MITgcm, con η en el nivel superior como su superficie libre lineal, y se muestrea a 110/250 m igual que la salida de MITgcm (`section.to_mitgcm_levels`, `compare.mit_at_depth`). Estirar los niveles con η (como z\*) borraba el desplazamiento barotrópico que MITgcm ve a profundidad fija (efecto de la bahía en Gamma, 1.7e-5 °C). Interpolar entre centros de capas daba pesos de un punto a capas de 1 cm en la interfaz híbrida y convertía la interfaz en una rampa de 200 m. PCM, por su parte, cuantizaba las series dentro de capas gruesas.
 
 ## Errores de pyOCEAN encontrados y corregidos (clase a)
 
@@ -77,6 +77,14 @@ El "período" espectral falla el criterio (3.79 contra 3.66 h en Seiche; 9.0 con
 | híbrida 25 | 0.01–0.68 (3.5 en Seiche2) / 0.92–1.00 | 0.95/0.92 · 0.61/0.63 · 0.27/0.46 · 0.90/0.99 · 0.93/0.96 | 8.4 / 9.9 m |
 | híbrida 50 | 3.2–7.9 / 0.77–0.97 | 11.8/0.00 · 10.7/0.55 · 3.7/0.73 · 1.1/0.52 · 2.3/0.81 | 8.4 / 10.3 m |
 
+**Efecto de la bahía ΔT110 = (T110 − T110₀)_bahía − (T110 − T110₀)_sinbahía**, amplitud py/MIT y correlación en Gamma · C · Omega (criterio del spec: mismo signo y orden de magnitud):
+
+| | Lineal | Dos capas |
+|---|---|---|
+| z\* | 1.02/0.99 · 0.99/1.00 · 0.99/1.00 | 1.72/0.90 · 1.69/0.91 · 2.21/0.78 |
+| híbrida 25 | 1.02/0.99 · 1.03/1.00 · 1.03/0.95 | 0.97/0.99 · 1.87/0.97 · 0.02/−0.02 |
+| híbrida 50 | 1.02/0.99 · 1.00/1.00 · 1.00/1.00 | 985/−0.02 · 740/0.02 · 16/−0.22 |
+
 Las señales a 110 m en dos capas son muy pequeñas: el rms de V110 en MITgcm va de 0.06 a 0.67 mm/s y el de T110, de 0.03 °C. La corriente superficial del viento (máx. 0.43 m/s) coincide en todos los casos.
 
 **Salud:** cero truncamientos en las 24 corridas. El contenido de calor cambia menos de 2e-8 en 60 h, con fronteras abiertas.
@@ -97,7 +105,8 @@ Las señales a 110 m en dos capas son muy pequeñas: el rms de V110 en MITgcm va
 | Híbrida dos capas: T110 casi constante | (c) | la híbrida mantiene la interfaz marcada; en dos capas T110 mide la mezcla numérica, no las ondas |
 | Híbrida 25, lineal: T110 en Seiche/Seiche2 y error de la sección | (c) resolución | unas 5 capas isopicnas en 163 m de bahía; con 50 capas todo coincide con MITgcm |
 | Híbrida 25, dos capas: V110 en C y Omega (0.27–0.61) | (c)/(b) abierta | boca del talud con pocas capas isopicnas; no diagnosticado |
-| Híbrida 50, dos capas: ruido de ~1 mm/s a 110 m | abierta, posible (a) | velocidad en ~38 capas casi desvanecidas (0–0.1 m) de una interfaz de dos masas de agua; configuración degenerada (50 objetivos para 2 densidades) |
+| Híbrida 25, dos capas: efecto de la bahía en Omega 0.02 | (c)/(b) abierta | misma boca del talud que V110 |
+| Híbrida 50, dos capas: ruido de ~1 mm/s a 110 m y efecto de la bahía 16–985× | abierta, posible (a) | velocidad en ~38 capas casi desvanecidas (0–0.1 m) de una interfaz de dos masas de agua; configuración degenerada (50 objetivos para 2 densidades) |
 | Rotación (sección periódica) | (b) | pyOCEAN no tiene frontera periódica en x |
 
 ## Qué debe mejorar pyOCEAN

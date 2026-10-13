@@ -145,3 +145,16 @@ def test_to_mitgcm_levels_keeps_a_linear_profile_in_thick_layers():
     out = section.to_mitgcm_levels(h, 20.0 + 0.02 * zc, H)[:, 0, 0]
     inner = (z_lev < -45.0) & (z_lev > -555.0)                                          # away from the end cells
     np.testing.assert_allclose(out[inner], 20.0 + 0.02 * z_lev[inner], atol=1e-9)
+
+
+def test_to_mitgcm_levels_keeps_fixed_levels_with_eta_in_the_top_one():
+    # MITgcm has a linear free surface: fixed levels, η only in the top cell.  Layers equal to that geometry
+    # must come back unchanged (a z*-stretch of the levels would remove the barotropic heave at fixed depth)
+    from validation.bayiw_2d import section
+    H = np.array([[599.9]])
+    h, _ = bayiw.mitgcm_source(H, np.zeros((50, 1, 1)))
+    h = h.copy()
+    h[-1] += 0.05                                                               # η = 5 cm in the top level
+    zc = -599.9 + np.cumsum(h[:, 0, 0]) - 0.5 * h[:, 0, 0]
+    T = (20.0 + 0.02 * zc + 1e-4 * zc ** 2)[:, None, None]
+    np.testing.assert_allclose(section.to_mitgcm_levels(h, T, H), T, rtol=0, atol=1e-12)

@@ -914,3 +914,39 @@ def test_initial_state_source_grid_must_fill_the_column():
     m, h_src, T_src = _hybrid_step_model()
     with pytest.raises(ValueError, match="h_src"):
         m.initial_state(np.zeros((1, 8)), T_src, h_src=0.5 * h_src)
+
+
+@pytest.mark.parametrize("rule", ["zstar", "sigma", "hybrid"])
+def test_initial_state_from_source_all_rules_with_eta_and_land(rule):
+    # h_src path for every rule: Σh = H + η with η ≠ 0, layer T = source means, land column T = t_ref
+    H = np.array([[600.0, 600.0, 164.0, np.nan]])
+    nz = 12
+    m0 = _ale_box("sigma", nx=4, nz=nz, depth=600.0, bathy=H, params={})
+    rho_top, rho_bot = m0.density(20.0), m0.density(20.0 - 0.02 * 600.0)
+    params = {"zstar": dict(dz_top=np.full(nz, 50.0)), "sigma": {},
+              "hybrid": dict(dz_top=np.full(nz, 1.5), rho_target=np.linspace(rho_top - 0.05, rho_bot, nz + 1))}[rule]
+    m = _ale_box(rule, nx=4, nz=nz, depth=600.0, bathy=H, params=params)
+    eta = np.array([[0.03, -0.02, 0.01, 0.0]])
+    D = np.nan_to_num(H) + eta
+    n_src = 200
+    h_src = np.where(np.isfinite(H), D / n_src, 0.0)[None].repeat(n_src, 0)
+    zc = -np.nan_to_num(H)[None] + np.cumsum(h_src, 0) - 0.5 * h_src
+    T_src = 20.0 + 0.02 * zc
+    st = m.initial_state(eta, T_src, h_src=h_src)
+    wet = np.isfinite(H)[0]
+    np.testing.assert_allclose(st.h.sum(0)[0, wet], D[0, wet], rtol=1e-12)
+    z = m.layer_heights(st.eta, st.h)
+    ok = (st.h > 1.0) & wet[None, None, :]                             # end cells are PCM (remap.py): skip films
+    np.testing.assert_allclose(st.T[ok], (20.0 + 0.02 * z)[ok], atol=1e-5)          # PCM bed cell: ~5e-6
+    assert (st.T[:, 0, ~wet] == m.t_ref).all()
+
+
+def test_initial_state_source_errors():
+    m, h_src, T_src = _hybrid_step_model()
+    with pytest.raises(ValueError, match="N_src"):
+        m.initial_state(np.zeros((1, 8)), T_src[:-1], h_src=h_src)
+    hg = create_cartesian_grid(nx=8, ny=1, dx=5000.0, dy=5000.0, f0=0.0)
+    sig = SigmaBaroclinic(hg, m.H, dt=30.0, n_layers=10, rho0=RHO0, t_coef=TCOEF, z0=None, closure="constant",
+                          nu_const=1e-5, theta=0.6, d_min=0.05)
+    with pytest.raises(ValueError, match="ale"):
+        sig.initial_state(np.zeros((1, 8)), T_src, h_src=h_src)
