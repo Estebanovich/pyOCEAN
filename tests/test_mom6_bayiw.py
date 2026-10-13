@@ -23,11 +23,11 @@ def test_mom6_inputs_match_bayiw_at_corners_and_stations(tmp_path):
     with netCDF4.Dataset(tmp_path / "INPUT" / "topog.nc") as ds:
         depth = ds["depth"][:]
     s = section.section_inputs("2layer", "bay")
-    assert depth.shape == (352, 3) and (depth[:, 0] == 0).all() and (depth[:, 2] == 0).all()
+    assert depth.shape == (352, inputs.NX_SECTION) and (depth[:, 0] == 0).all() and (depth[:, 2:] == 0).all()
     np.testing.assert_allclose(depth[:, 1], np.nan_to_num(s["H"][:, 0]))
     with netCDF4.Dataset(tmp_path / "INPUT" / "ocean_hgrid.nc") as ds:
         dxs = ds["dx"][:]
-        assert ds.dimensions["nxp"].size == 7 and ds.dimensions["nyp"].size == 705
+        assert ds.dimensions["nxp"].size == 2 * inputs.NX_SECTION + 1 and ds.dimensions["nyp"].size == 705
     np.testing.assert_allclose(dxs[0, 2] + dxs[0, 3], s["dx"][0])  # two half-cell lengths = the cell width
     with netCDF4.Dataset(tmp_path / "INPUT" / "ts_z.nc") as ds:
         T = ds["ptemp"][0]
@@ -45,7 +45,7 @@ def test_mom6_wind_file_is_on_north_faces_and_records(tmp_path):
         assert ds["STRESS_X"][:].max() == 0.0
     # bayiw wind row j = south face of cell j (MITgcm); MOM6 row j = north face of cell j = bayiw row j + 1; the
     # northern coast face is 0 and the open southern edge cannot be given (MOM6 fills it with 0)
-    assert ty.shape == (d["wind"].shape[0], 352, 3)
+    assert ty.shape == (d["wind"].shape[0], 352, inputs.NX_SECTION)
     np.testing.assert_allclose(ty[7, :-1, 1], d["wind"][7, 1:, 1])
     assert (ty[:, -1] == 0).all()
 
@@ -61,3 +61,28 @@ def test_coordinate_files_hold_the_bayiw_targets(tmp_path):
     with netCDF4.Dataset(tmp_path / "INPUT" / "layers.nc") as ds:
         lay = ds["Layer"][:]
     np.testing.assert_allclose(lay, 0.5 * (sig[1:] + sig[:-1]))
+
+
+def test_mom_input_section_has_walls_and_south_obc(tmp_path):
+    from validation.mom6_bayiw import config
+    d = config.write_case("section", "2layer", "bay", "hycom1", tmp_path, hours=60.0)
+    txt = (d / "MOM_input").read_text()
+    for s in ('REENTRANT_X = False', 'GRID_CONFIG = "mosaic"', 'ROTATION = "betaplane"', 'BETA = 0.0',
+              'EQN_OF_STATE = "LINEAR"', 'DRHO_DS = 0.0', 'KE_SCHEME = "KE_ARAKAWA"', 'KH = 100.0',
+              'KHTR = 100.0', 'KV = 1.0E-05', 'KD = 1.0E-05', 'BOTTOMDRAGLAW = False', 'NOSLIP = False',
+              'REGRIDDING_COORDINATE_MODE = "HYCOM1"', 'ALE_COORDINATE_CONFIG = "HYBRID:hyb.nc,sigma2,dz"',
+              'REMAPPING_SCHEME = "PPM_H4"', 'Z_INIT_ALE_REMAPPING = True', 'WIND_FILE_DAYS_PER_RECORD = -72',
+              'OBC_NUMBER_OF_SEGMENTS = 1', 'OBC_SEGMENT_001 = "J=0,I=0:N,FLATHER,ORLANSKI"', 'DT = 120.0',
+              'LAYOUT = 1, 5', 'NIGLOBAL = 10', 'NJGLOBAL = 352', 'NK = 25'):
+        assert s in txt, s
+    assert "clock_grain = 'ROUTINE'" in (d / "input.nml").read_text()
+
+
+def test_mom_input_cut_has_three_open_edges_and_zstar_levels(tmp_path):
+    from validation.bayiw_baroclinic import bayiw
+    from validation.mom6_bayiw import config
+    d = config.write_case("cut", "2layer", "bay", "zstar", tmp_path, hours=3.0)
+    txt = (d / "MOM_input").read_text()
+    assert 'OBC_NUMBER_OF_SEGMENTS = 3' in txt and 'NK = 50' in txt and 'NIGLOBAL = 198' in txt
+    assert 'REGRIDDING_COORDINATE_MODE = "ZSTAR"' in txt
+    assert "ALE_RESOLUTION = " + ", ".join(f"{x:.6g}" for x in bayiw.DELR) in txt

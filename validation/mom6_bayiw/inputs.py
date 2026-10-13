@@ -23,6 +23,7 @@ from validation.bayiw_cut import cut
 
 FILL = -1.0e20
 S0 = 35.0                                               # constant salinity (DRHO_DS = 0)
+NX_SECTION = 10                                         # land | section column | 8 land (FMS halos)
 
 
 def source_centres() -> np.ndarray:
@@ -38,11 +39,14 @@ def source_centres() -> np.ndarray:
 def domain(kind: str, case: str, bay: str) -> dict:
     """dx (nx,), dy (ny,) [m], H (ny, nx) NaN land, T (50, ny, nx), wind (nrec, ny, nx) on the south faces, x0, y0."""
     if kind == "section":
+        # MITgcm's wall | column i=280 | wall, padded with land to NX_SECTION columns: FMS checks every halo
+        # (also the south/north ones and the wider supergrid and barotropic halos) against the x size
+        # (mpp_domains_define.inc:899-906), so three columns cannot run; land columns change nothing
         s = section.section_inputs(case, bay)
-        rep = lambda a: np.repeat(a, section.NX_MIT, axis=-1)                      # noqa: E731
+        rep = lambda a: np.repeat(a, NX_SECTION, axis=-1)                          # noqa: E731
         H = rep(s["H"]).astype(float)
-        H[:, [0, 2]] = np.nan                                                      # land walls, as MITgcm
-        return dict(dx=np.repeat(s["dx"], section.NX_MIT), dy=s["dy"], H=H, T=rep(s["T"]), wind=rep(s["wind"]),
+        H[:, [0] + list(range(2, NX_SECTION))] = np.nan
+        return dict(dx=np.repeat(s["dx"], NX_SECTION), dy=s["dy"], H=H, T=rep(s["T"]), wind=rep(s["wind"]),
                     x0=s["x0"] - float(s["dx"][0]), y0=bayiw.Y0)
     if kind == "cut":
         d = cut.cut_inputs(case, bay, "py")
@@ -93,7 +97,9 @@ def _write_topog(path: Path, H: np.ndarray) -> None:
         v.units = "m"
 
 
-def _write_ts(path: Path, T: np.ndarray, H: np.ndarray) -> None:
+def _write_ts(path: Path, T: np.ndarray, H: np.ndarray, xc: np.ndarray, yc: np.ndarray) -> None:
+    """T on the source levels; lon/lat = the model cell-centre labels [km] (TEMP_SALT_INIT_VERTICAL_REMAP_ONLY:
+    the data are already on the model grid, only the vertical remap is done)."""
     nz, ny, nx = T.shape
     c = source_centres()
     Tf = np.where(np.isfinite(T) & np.isfinite(H)[None], T, FILL)
@@ -104,8 +110,8 @@ def _write_ts(path: Path, T: np.ndarray, H: np.ndarray) -> None:
         ds.createVariable("depth", "f8", ("depth",))[:] = c
         ds["depth"].units = "m"
         ds["depth"].positive = "down"
-        ds.createVariable("lat", "f8", ("lat",))[:] = np.arange(ny)
-        ds.createVariable("lon", "f8", ("lon",))[:] = np.arange(nx)
+        ds.createVariable("lat", "f8", ("lat",))[:] = yc
+        ds.createVariable("lon", "f8", ("lon",))[:] = xc
         for name, val in (("ptemp", Tf), ("salt", np.where(Tf == FILL, FILL, S0))):
             v = ds.createVariable(name, "f8", ("Time", "depth", "lat", "lon"), fill_value=FILL)
             v[0] = val
@@ -146,6 +152,8 @@ def write_inputs(kind: str, case: str, bay: str, out_dir: Path) -> None:
     inp.mkdir(parents=True, exist_ok=True)
     _write_hgrid(inp / "ocean_hgrid.nc", d["dx"], d["dy"], d["x0"], d["y0"])
     _write_topog(inp / "topog.nc", d["H"])
-    _write_ts(inp / "ts_z.nc", d["T"], d["H"])
+    xc = (d["x0"] + np.cumsum(d["dx"]) - 0.5 * d["dx"]) / 1e3
+    yc = (d["y0"] + np.cumsum(d["dy"]) - 0.5 * d["dy"]) / 1e3
+    _write_ts(inp / "ts_z.nc", d["T"], d["H"], xc, yc)
     _write_wind(inp / "wind.nc", d["wind"])
     _write_coords(inp / "hyb.nc", inp / "layers.nc", case, d["T"], d["H"])
