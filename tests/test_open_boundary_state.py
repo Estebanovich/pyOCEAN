@@ -119,3 +119,20 @@ def test_flather_targets_at_the_open_faces():
     np.testing.assert_allclose(t["flather_eta"][0][:, 0], [0.1, 0.2])
     np.testing.assert_allclose(t["flather_ubar"][:, 0], [0.01, 0.02])
     assert (t["flather_eta"][0][:, 1:] == 0).all() and (t["flather_vbar"] == 0).all()
+
+
+def test_points_nearer_an_open_edge_without_data_keep_the_resting_exterior():
+    # open west and east, data for west only: the east half (nearer east) must not take the west profile
+    H = np.full((1, 6), 100.0)
+    h = np.full((5, 1, 6), 20.0)
+    mask = np.ones((1, 6), bool)
+    state = {"west": _west(ny=1)}
+    T = obc.exterior_tracer(state, H, h, mask, rm.PPM_H4, open_edges=("west", "east"))
+    own = obc.owned_by_state(state, ("west", "east"), (1, 6))
+    assert own[0, :3].all() and not own[0, 3:].any()
+    assert np.abs(T[:, 0, :3]).min() > 0 and (T[:, 0, 3:] == 0).all()
+    Hf = np.full((1, 7), 100.0)
+    hf = np.full((5, 1, 7), 20.0)
+    up = obc.exterior_velocity(state, "u", Hf, hf, np.ones((1, 7), bool), hf / 100.0, rm.PPM_H4,
+                               open_edges=("west", "east"))
+    assert np.abs(up[:, 0, 0]).max() > 0 and (up[:, 0, 4:] == 0).all()

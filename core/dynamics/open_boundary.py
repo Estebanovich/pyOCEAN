@@ -44,11 +44,21 @@ def _along(edge: str, shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
     return {"west": (j, i), "east": (j, nx - 1 - i), "south": (i, j), "north": (i, ny - 1 - j)}[edge]
 
 
-def _nearest(state: dict[str, OBData], shape: tuple[int, int]) -> np.ndarray:
-    """Index into EDGES of the nearest edge of ``state`` at every point (ties: first in EDGES order)."""
-    present = [e for e in EDGES if e in state]
+def _nearest(edges, shape: tuple[int, int]) -> np.ndarray:
+    """Index into EDGES of the nearest of ``edges`` at every point (ties: first in EDGES order)."""
+    present = [e for e in EDGES if e in edges]
     d = np.stack([_along(e, shape)[1] for e in present])
     return np.array([EDGES.index(e) for e in present])[np.argmin(d, axis=0)]
+
+
+def owned_by_state(state: dict[str, OBData], open_edges, shape: tuple[int, int]) -> np.ndarray:
+    """
+    Points whose nearest open edge (among ``open_edges``, all of them, not only those with data) has exterior
+    data: the others keep the resting exterior.  Without this a sponge band at an edge without data would take
+    the profile of another edge.
+    """
+    near = _nearest(open_edges, shape)
+    return np.isin(near, [EDGES.index(e) for e in state])
 
 
 def _source_columns(ob: OBData, edge: str, depth: np.ndarray, check: np.ndarray) -> tuple[np.ndarray, ...]:
@@ -78,10 +88,13 @@ def _remap_stretched(h_src: np.ndarray, f_src: np.ndarray, h: np.ndarray, wet: n
 
 
 def exterior_tracer(state: dict[str, OBData], H: np.ndarray, h: np.ndarray, mask: np.ndarray,
-                    scheme: int) -> np.ndarray:
-    """Tₑₓₜ on the layers h (N, ny, nx) in the ``mask`` columns (boundary + sponge), 0 elsewhere."""
+                    scheme: int, open_edges=None) -> np.ndarray:
+    """
+    Tₑₓₜ on the layers h (N, ny, nx) in the ``mask`` columns (boundary + sponge) whose nearest open edge
+    (``open_edges``, default the edges of ``state``) has data; 0 elsewhere.
+    """
     H = np.nan_to_num(np.asarray(H, float))
-    near = _nearest(state, H.shape)
+    near = _nearest(state if open_edges is None else open_edges, H.shape)
     out = np.zeros(h.shape)
     for e, ob in state.items():
         sel = mask & (near == EDGES.index(e))
@@ -93,18 +106,21 @@ def exterior_tracer(state: dict[str, OBData], H: np.ndarray, h: np.ndarray, mask
 
 
 def exterior_velocity(state: dict[str, OBData], kind: str, Hf: np.ndarray, hf: np.ndarray, mask: np.ndarray,
-                      w: np.ndarray, scheme: int) -> np.ndarray:
+                      w: np.ndarray, scheme: int, open_edges=None) -> np.ndarray:
     """
     u′ₑₓₜ on the face layers hf in the ``mask`` faces of the edges normal to ``kind`` ('u': west/east,
     'v': south/north): the data's normal velocity remapped to the face layers, minus its mean with the model
-    face weights w (Σ w u′ₑₓₜ = 0, so the free-surface flux stays Flather's).  0 elsewhere.
+    face weights w (Σ w u′ₑₓₜ = 0, so the free-surface flux stays Flather's).  Faces nearer an open edge
+    (``open_edges``) without data, and all others, get 0 (the resting exterior).
     """
     Hf = np.nan_to_num(np.asarray(Hf, float))
-    sub = {e: ob for e, ob in state.items() if (e in ("west", "east")) == (kind == "u")}
+    normal = ("west", "east") if kind == "u" else ("south", "north")
+    sub = {e: ob for e, ob in state.items() if e in normal}
     out = np.zeros(hf.shape)
     if not sub:
         return out
-    near = _nearest(sub, Hf.shape)
+    cand = sub if open_edges is None else [e for e in open_edges if e in normal]
+    near = _nearest(cand, Hf.shape)
     for e, ob in sub.items():
         sel = mask & (near == EDGES.index(e)) & (Hf > 0)
         if not sel.any():

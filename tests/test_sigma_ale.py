@@ -1008,3 +1008,89 @@ def test_flather_follows_the_exterior_surface():
     for _ in range(400):
         st = m.step(st)
     np.testing.assert_allclose(st.eta, 0.01, atol=1e-3)
+
+
+def _mode1_state(u0, omega, N, H, nz=80):
+    """Mode-1 internal wave entering at x = 0: u = u0 cos(πz/H) sin(ωt), T′ from w = −∂ζ/∂t (linear, f = 0)."""
+    zw = np.linspace(0.0, -H, nz + 1)[:, None]
+    zc = 0.5 * (zw[1:] + zw[:-1])
+    alpha_g = 9.81 * 2e-4
+    Tz = N**2 / alpha_g                                         # background dT/dz [°C/m]
+    k = np.pi * omega / (N * H)
+
+    def at(t):
+        u = u0 * np.cos(np.pi * zc / H) * np.sin(omega * t)
+        # u_x = −u0 k cos(πz/H) cos(ωt − kx); w = −∫u_x dz = u0 k (H/π) sin(πz/H) cos(ωt − kx) (w = 0 at z = 0, −H);
+        # ζ = ∫w dt = (u0 k H/(π ω)) sin(πz/H) sin(ωt) at x = 0; T = T0(z − ζ) = 20 + Tz z − Tz ζ
+        zeta = (u0 * k * H / (np.pi * omega)) * np.sin(np.pi * zc / H) * np.sin(omega * t)
+        return {"west": OBData(side="west", T=20.0 + Tz * zc - Tz * zeta, u_normal=u, zw=zw)}
+    return at
+
+
+@pytest.mark.parametrize("rule", ["zstar", "hybrid"])
+def test_clamped_west_radiating_east_carries_the_analytic_mode1_wave(rule):
+    # flat 200 m channel, N² = 1e-6, period 44 567 s (MITgcm internal_wave): a progressive mode-1 wave
+    # u = u0 cos(πz/H) sin(ωt − kx), k = πω/(NH) (λ ≈ 2.8 km) leaves through a radiating + sponge east edge.
+    # Interior amplitude ±5 % of the viscously decaying wave, phase ±10° after 3 periods (spec §3.2).
+    # Arakawa KE: the default Godunov KE damps this wave by a further ~9 % over 5 km at dx = 100 m (first order
+    # in dx; Task 4 diagnosis, reported as a numerical-choice finding), which is not what this test is about.
+    H, N, P, u0, nz, nx, dx = 200.0, 1e-3, 44567.0, 0.024, 20, 100, 100.0
+    omega = 2 * np.pi / P
+    k = np.pi * omega / (N * H)
+    Tz = N**2 / (9.81 * 2e-4)
+    hg = create_cartesian_grid(nx=nx, ny=1, dx=dx, dy=dx, f0=0.0)
+    Hb = np.full((1, nx), H)
+    T0 = lambda z: 20.0 + Tz * z                                     # noqa: E731
+    if rule == "zstar":
+        params = dict(dz_top=np.full(nz, H / nz))
+    else:
+        m0 = SigmaBaroclinic(hg, Hb, dt=250.0, n_layers=nz, rho0=RHO0, t_coef=RHO0 * 2e-4, t_ref=20.0, z0=None,
+                             closure="constant", nu_const=1e-3, vertical_coordinate="ale", regrid="sigma",
+                             regrid_params={})
+        rho = m0.density(T0(np.linspace(0, -H, 50)))
+        sp = (rho.max() - rho.min()) / nz                               # half an interval beyond each extreme
+        params = dict(dz_top=np.full(nz, 1.0), rho_target=np.linspace(rho.min() - 0.5 * sp, rho.max() + 0.5 * sp, nz + 1))
+    m = SigmaBaroclinic(hg, Hb, dt=250.0, n_layers=nz, rho0=RHO0, t_coef=RHO0 * 2e-4, t_ref=20.0, z0=None,
+                        closure="constant", nu_const=1e-3, ah=1e-2, kh=1e-2, kv=1e-3, pgf="fv", rho_ref="auto",
+                        vertical_coordinate="ale", regrid=rule, regrid_params=params,
+                        open_boundaries=("west", "east"), sponge_cells=20, sponge_tau=(3000.0, 250.0),
+                        open_boundary_state=_mode1_state(u0, omega, N, H),
+                        open_boundary_mode={"west": "clamped", "east": "radiating"}, ke_scheme="arakawa")
+    zf = np.linspace(-H, 0.0, 401)
+    h_src = np.full((400, 1, nx), H / 400)
+    zc_src = (zf[1:] + zf[:-1])[:, None, None] * 0.5 * np.ones((1, 1, nx))
+    st = m.initial_state(np.zeros((1, nx)), T0(zc_src), h_src=h_src)
+    steps = int(round(3 * P / 250.0))
+    x = (np.arange(nx + 1) * dx)[None, :]
+    probe = np.arange(5, 60)                                         # interior u-faces, away from the sponge
+    rec = []
+    for n in range(steps + int(round(P / 250.0))):                   # 3 periods spin-up, then one period recorded
+        st = m.step(st)
+        if n >= steps:
+            hf = m._mean_face_thickness(st.h)[0][:, 0, :]
+            w = hf / np.maximum(hf.sum(0), 1e-12)
+            u_bot_mode = (w * st.u[:, 0, :] * np.cos(np.pi * (np.cumsum(hf, 0) - 0.5 * hf - H) / H)).sum(0)
+            rec.append((st.time, u_bot_mode[probe]))
+    t = np.array([r[0] for r in rec])
+    a = np.array([r[1] for r in rec])                                # mode-1 projection ≈ (u0/2) sin(ωt − kx)
+    c, s = np.cos(omega * t), np.sin(omega * t)
+    A = np.linalg.lstsq(np.stack([s, c], 1), a, rcond=None)[0]       # a ≈ A0 sin ωt + A1 cos ωt
+    amp = np.hypot(A[0], A[1]) / (0.5 * u0)
+    phase = np.degrees(np.arctan2(-A[1], A[0]))                      # sin(ωt − φ) → φ = kx
+    expected = np.degrees(k * x[0, probe])
+    # linear viscous decay of mode 1 (ω ≪ N): amplitude rate ½[(ν + κ) m² + (A_h + K_h) k²], m = π/H, at the
+    # group speed c_g = NH/π
+    rate = 0.5 * ((1e-3 + 1e-3) * (np.pi / H) ** 2 + (1e-2 + 1e-2) * k**2)
+    decay = np.exp(-rate * x[0, probe] / (N * H / np.pi))
+    assert np.all(np.abs(amp / decay - 1.0) < 0.05)
+    dphi = (phase - expected + 180.0) % 360.0 - 180.0
+    assert np.all(np.abs(dphi - np.median(dphi)) < 10.0) and abs(np.median(dphi)) < 10.0
+
+
+def test_clamped_edges_have_no_sponge():
+    # a Dirichlet edge needs no relaxation band: a sponge toward the edge profile copied along the normal
+    # forces the whole band in phase and distorts an incoming wave (Task 4 diagnosis)
+    m = _ale_box("zstar", open_boundaries=("west", "east"), sponge_cells=4,
+                 open_boundary_mode={"west": "clamped", "east": "radiating"})
+    assert (m._sp_c[0, :4] == 0).all() and m._sp_c[0, -1] > 0
+    assert (m._sp_u[0, :4] == 0).all() and m._sp_u[0, -1] > 0

@@ -761,7 +761,9 @@ class SigmaBaroclinic:
         self.core = SigmaWetDry(h_grid, bathy, dt=dt, n_layers=n_layers, z0=z0, closure=closure,
                                 nu_const=nu_const, theta=theta, g=g, d_min=d_min, dsigma=dsigma, solver=solver,
                                 flather_u=fl_u if self.open else None, flather_v=fl_v if self.open else None)
-        self._sp_c, self._sp_u, self._sp_v = _sponge_rates(act.shape, self.open, sponge_cells, *sponge_tau)
+        sponged = tuple(e for e in self.open if self.obc_mode[e] != "clamped")  # a Dirichlet edge needs no sponge
+        self._sp_c, self._sp_u, self._sp_v = _sponge_rates(act.shape, sponged, sponge_cells if sponged else 0,
+                                                           *sponge_tau)
         self.T_ext = None
         bc = np.zeros(act.shape, bool)                                   # columns that need the exterior profile
         for edge, sl in (("west", np.s_[:, 0]), ("east", np.s_[:, -1]), ("south", np.s_[0, :]), ("north", np.s_[-1, :])):
@@ -1373,8 +1375,9 @@ class SigmaBaroclinic:
         wv_ = self.ds[:, None, None] * np.ones(hv.shape) if wv is None else wv
         code = getattr(self, "remap_code", rm.PPM_H4)
         self._ext = dict(t=t, state=state, flather=obc.flather_targets(state, Hu.shape, Hv.shape),
-                         up_u=obc.exterior_velocity(state, "u", Hu, hu, self._bc_u, wu_, code),
-                         up_v=obc.exterior_velocity(state, "v", Hv, hv, self._bc_v, wv_, code))
+                         up_u=obc.exterior_velocity(state, "u", Hu, hu, self._bc_u, wu_, code, self.open),
+                         up_v=obc.exterior_velocity(state, "v", Hv, hv, self._bc_v, wv_, code, self.open),
+                         own=obc.owned_by_state(state, self.open, self.H.shape) & self._bc_mask)
 
     def _edge_face_depths(self) -> tuple[np.ndarray, np.ndarray]:
         """Rest depth at u- and v-faces [m], 0 on land; the open edge faces (NaN in H_u/H_v, outside the
@@ -1389,10 +1392,12 @@ class SigmaBaroclinic:
 
     def _exterior_T(self, h: np.ndarray) -> np.ndarray:
         """Tₑₓₜ on layers h in the boundary/sponge columns: from the provider when set, else the z profile."""
-        if self._ext is not None:
-            T = obc.exterior_tracer(self._ext["state"], self.H, h, self._bc_mask, getattr(self, "remap_code", rm.PPM_H4))
-            return np.where(self._bc_mask[None], T, 0.0)
-        return self._exterior(h) if self.ale else self.T_ext
+        rest = self._exterior(h) if self.ale else self.T_ext
+        if self._ext is None:
+            return rest
+        T = obc.exterior_tracer(self._ext["state"], self.H, h, self._bc_mask, getattr(self, "remap_code", rm.PPM_H4),
+                                self.open)
+        return np.where(self._ext["own"][None], T, rest)              # edges without data: resting exterior
 
     def _inflow_T(self) -> np.ndarray:
         """Exterior T on the layers of this step: σ, ``T_ext``; ALE, the z profile remapped to hⁿ (spec §3.5)."""
