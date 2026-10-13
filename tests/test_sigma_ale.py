@@ -1152,3 +1152,12 @@ def test_advect_kernel_matches_numpy():
     a = m._advect(C, V0, V1, st.Qx, st.Qy, Fz, ok)
     b = m._advect_numpy(C, V0, V1, st.Qx, st.Qy, Fz, ok)
     assert np.array_equal(a, b) and np.isfinite(a).all()
+
+
+def test_ab3_kernel_matches_numpy():
+    # perf part 2, task 7 round 2: the AB3 combination of the explicit tendencies, fused
+    from core.dynamics.sigma_baroclinic import AB3, ab3_combine
+    rng = np.random.default_rng(9)
+    g0, g1, g2 = (rng.normal(size=(5, 6, 7)) for _ in range(3))
+    assert np.array_equal(ab3_combine(g0, g1, g2), AB3[0] * g0 + AB3[1] * g1 + AB3[2] * g2)
+    assert np.array_equal(ab3_combine(g0, g1, None), 1.5 * g0 - 0.5 * g1)

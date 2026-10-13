@@ -658,21 +658,43 @@ def _rk_stage(qa, qb, r, dt, V, C, stage, q_out, c_out):  # pragma: no cover
     One SSP-RK3 stage of SigmaBaroclinic._advect_numpy with its exact expressions: stage 1 q = q0 + dt r,
     2: 0.75 q0 + 0.25 (q1 + dt r), 3: q0/3 + 2/3 (q2 + dt r) (qa = q0, qb the previous stage); then the
     ``safe`` rule c = q / V where V > 0, else the step's initial C.  Arrays (ntr, N, ny, nx) C-contiguous;
-    V (N, ny, nx) broadcast over the tracers.
+    V (N, ny, nx) broadcast over the tracers.  1-D arrays, flattened by the caller (ravel inside a parallel
+    kernel may copy, losing the writes).
     """
-    qa1, qb1, r1, c01 = qa.ravel(), qb.ravel(), r.ravel(), C.ravel()
-    qo, co, v1 = q_out.ravel(), c_out.ravel(), V.ravel()
-    nv = v1.size
-    for p in numba.prange(qo.size):
+    nv = V.size
+    for p in numba.prange(q_out.size):
         if stage == 1:
-            q = qa1[p] + dt * r1[p]
+            q = qa[p] + dt * r[p]
         elif stage == 2:
-            q = 0.75 * qa1[p] + 0.25 * (qb1[p] + dt * r1[p])
+            q = 0.75 * qa[p] + 0.25 * (qb[p] + dt * r[p])
         else:
-            q = qa1[p] / 3.0 + 2.0 / 3.0 * (qb1[p] + dt * r1[p])
-        qo[p] = q
-        v = v1[p % nv]
-        co[p] = q / v if v > 0 else c01[p]
+            q = qa[p] / 3.0 + 2.0 / 3.0 * (qb[p] + dt * r[p])
+        q_out[p] = q
+        v = V[p % nv]
+        c_out[p] = q / v if v > 0 else C[p]
+
+
+@numba.njit(parallel=True, cache=True)
+def _ab3_kernel(g0, g1, g2, three, out):  # pragma: no cover
+    """AB3[0] g0 + AB3[1] g1 + AB3[2] g2 (three) or 1.5 g0 − 0.5 g1 (AB2 start-up), NumPy's evaluation order.
+    1-D arrays (flattened by the caller: ravel inside a parallel kernel may copy, losing the writes)."""
+    a0, a1, a2 = 23.0 / 12.0, -16.0 / 12.0, 5.0 / 12.0
+    for p in numba.prange(out.size):
+        if three:
+            out[p] = a0 * g0[p] + a1 * g1[p] + a2 * g2[p]
+        else:
+            out[p] = 1.5 * g0[p] - 0.5 * g1[p]
+
+
+def ab3_combine(g0: np.ndarray, g1: np.ndarray, g2: np.ndarray | None) -> np.ndarray:
+    """Adams–Bashforth extrapolation of the explicit tendencies (newest g0): AB3 with g2, AB2 without
+    (step's start-up).  Fused kernel with the same arithmetic as the NumPy expressions."""
+    out = np.empty(np.shape(g0))
+    g0, g1 = np.ascontiguousarray(g0, float), np.ascontiguousarray(g1, float)
+    numba.set_num_threads(_THREADS[0])
+    g2 = g0 if g2 is None else np.ascontiguousarray(g2, float)
+    _ab3_kernel(g0.ravel(), g1.ravel(), g2.ravel(), g2 is not g0, out.ravel())
+    return out
 
 
 class ReferenceProfile:
@@ -1602,12 +1624,13 @@ class SigmaBaroclinic:
         Va, Vb = np.ascontiguousarray(V0 + dV), np.ascontiguousarray(V0 + 0.5 * dV)
         q0 = V0 * C
         numba.set_num_threads(_THREADS[0])
+        f = lambda a: np.ascontiguousarray(a, dtype=float).ravel()            # noqa: E731  1-D views
         q1, c1 = np.empty_like(C), np.empty_like(C)
-        _rk_stage(q0, q0, self._rhs(C, Qx, Qy, Fz, ok), dt, Va, C, 1, q1, c1)
+        _rk_stage(f(q0), f(q0), f(self._rhs(C, Qx, Qy, Fz, ok)), dt, f(Va), f(C), 1, q1.ravel(), c1.ravel())
         q2, c2 = np.empty_like(C), np.empty_like(C)
-        _rk_stage(q0, q1, self._rhs(c1, Qx, Qy, Fz, ok), dt, Vb, C, 2, q2, c2)
+        _rk_stage(f(q0), f(q1), f(self._rhs(c1, Qx, Qy, Fz, ok)), dt, f(Vb), f(C), 2, q2.ravel(), c2.ravel())
         q3, c3 = np.empty_like(C), np.empty_like(C)
-        _rk_stage(q0, q2, self._rhs(c2, Qx, Qy, Fz, ok), dt, np.ascontiguousarray(V1, dtype=float), C, 3, q3, c3)
+        _rk_stage(f(q0), f(q2), f(self._rhs(c2, Qx, Qy, Fz, ok)), dt, f(V1), f(C), 3, q3.ravel(), c3.ravel())
         return c3
 
     def _step_ale(self, st: SigmaState, gu_ab: np.ndarray, gv_ab: np.ndarray, tu, tv, hist: list) -> SigmaState:
@@ -1710,10 +1733,10 @@ class SigmaBaroclinic:
         if len(hist) == 1:
             gu_ab, gv_ab = gu, gv
         elif len(hist) == 2:
-            gu_ab, gv_ab = 1.5 * gu - 0.5 * hist[1][0], 1.5 * gv - 0.5 * hist[1][1]
+            gu_ab, gv_ab = ab3_combine(gu, hist[1][0], None), ab3_combine(gv, hist[1][1], None)
         else:
-            gu_ab = AB3[0] * gu + AB3[1] * hist[1][0] + AB3[2] * hist[2][0]
-            gv_ab = AB3[0] * gv + AB3[1] * hist[1][1] + AB3[2] * hist[2][1]
+            gu_ab = ab3_combine(gu, hist[1][0], hist[2][0])
+            gv_ab = ab3_combine(gv, hist[1][1], hist[2][1])
         tu = None if tau_x is None else np.asarray(tau_x, float) / self.rho0
         tv = None if tau_y is None else np.asarray(tau_y, float) / self.rho0
         if self.ale:
