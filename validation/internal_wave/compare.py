@@ -5,7 +5,7 @@ design.md §3.3-3.4): harmonic fits at ω (and 2ω) over the last 4 forcing peri
 times; MITgcm's boundary cell (column 1) and the u face west of it are dropped, so both share the faces
 2 … 61 and the columns 2 … 60 of MITgcm.
 
-Usage: python validation/internal_wave/compare.py zstar|hybrid|sigma
+Usage: python validation/internal_wave/compare.py zstar|hybrid|sigma[_arakawa]
 """
 from __future__ import annotations
 
@@ -110,6 +110,13 @@ def report(coord: str) -> list[str]:
         small = abs(Fs["MIT"][c]) < 0.01 * abs(Fs["MIT"][c2])
         L.append(f"x={xx / 1e3:4.0f} km  {Fs['MIT'][c]:8.4f} {Fs['py'][c]:8.4f}  {r:5.2f} "
                  + ("(negligible flux)" if small else _flag(abs(r - 1) <= 0.15)))
+    x50 = {}
+    for name in ("MIT", "py"):
+        F = Fs[name] / Fs[name][int(np.argmin(np.abs(mit["x_c"] - X_FLUX[0])))]
+        i = int(np.flatnonzero((mit["x_c"] > X_FLUX[0]) & (F < 0.5))[0])
+        x50[name] = np.interp(0.5, [F[i], F[i - 1]], [mit["x_c"][i], mit["x_c"][i - 1]])
+    L.append(f"flux down to 50 % of its 2-km value at x = {x50['MIT'] / 1e3:.2f} km (MIT), {x50['py'] / 1e3:.2f} km "
+             f"(py): {_flag(abs(x50['py'] - x50['MIT']) <= 500.0)} (±0.5 km, ¼ of the local wavelength)")
     L.append("\n## 2ω amplitude of u near the bed, shallow part (x > 9 km): MIT, py [mm/s]")
     a2m, _ = fits["MIT"]["u2"]
     a2p, _ = fits["py"]["u2"]

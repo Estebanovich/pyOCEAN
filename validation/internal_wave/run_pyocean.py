@@ -3,7 +3,7 @@
 MITgcm internal_wave in pyOCEAN (spec docs/superpowers/specs/2026-10-12-baroclinic-obc-internal-wave-design.md
 §3): u, T and η on MITgcm's fixed levels at the first step past every 1800-s mark (MITgcm's dump times).
 
-Usage: NUMBA_NUM_THREADS=5 python validation/internal_wave/run_pyocean.py zstar|hybrid|sigma [--periods 10] [--dt 500]
+Usage: NUMBA_NUM_THREADS=5 python validation/internal_wave/run_pyocean.py zstar|hybrid|sigma [--periods 10] [--dt 500] [--ke gudonov|arakawa]
 """
 from __future__ import annotations
 
@@ -39,11 +39,12 @@ def main() -> None:
     ap.add_argument("coord", choices=("zstar", "hybrid", "sigma"))
     ap.add_argument("--periods", type=float, default=10.0)
     ap.add_argument("--dt", type=float, default=500.0)
+    ap.add_argument("--ke", default="gudonov", choices=("gudonov", "arakawa"))
     a = ap.parse_args()
-    out = case.RUNS / "pyocean" / a.coord
+    out = case.RUNS / "pyocean" / (a.coord if a.ke == "gudonov" else f"{a.coord}_{a.ke}")
     out.mkdir(parents=True, exist_ok=True)
     set_threads(5)
-    m, st = case.build_model(a.coord, a.dt)
+    m, st = case.build_model(a.coord, a.dt, a.ke)
     buf = {k: [] for k in ("t", "U", "T", "eta", "n_trunc", "heat", "sumh")}
     buf["t"].append(0.0)
     record(m, st, buf)

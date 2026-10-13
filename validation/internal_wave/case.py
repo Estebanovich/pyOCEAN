@@ -158,7 +158,7 @@ def boundary_state(dz: np.ndarray):
     return at
 
 
-def build_model(coord: str, dt: float = 500.0):
+def build_model(coord: str, dt: float = 500.0, ke_scheme: str = "gudonov"):
     """
     pyOCEAN on MITgcm's columns 2 … 60 (west face = MITgcm's prescribed u point), MITgcm's partial-cell
     depth, its viscosities and diffusivities, free slip, f = 0; west 'clamped' with the obcs_calc.F profiles,
@@ -185,7 +185,7 @@ def build_model(coord: str, dt: float = 500.0):
                         closure="constant", nu_const=1e-3, ah=1e-2, kh=1e-2, kv=1e-3, pgf="fv", rho_ref="auto",
                         vertical_coordinate="ale", regrid=coord, regrid_params=params,
                         open_boundaries=("west",), open_boundary_state=boundary_state(d["dz"]),
-                        open_boundary_mode={"west": "clamped"}, mix_diagnostic=False)
+                        open_boundary_mode={"west": "clamped"}, mix_diagnostic=False, ke_scheme=ke_scheme)
     Hc = np.nan_to_num(H)
     zf = np.concatenate([[0.0], np.cumsum(d["dz"])])[:, None, None]
     h_src = (np.minimum(zf[1:], Hc[None]) - np.minimum(zf[:-1], Hc[None]))[::-1]
