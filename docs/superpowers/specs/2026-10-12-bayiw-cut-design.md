@@ -32,7 +32,7 @@
 - **MITgcm:**
   - el código de Esteban (`BayIW_Rectan_2layer/code`), con `SIZE.h` para 200 × 160 y 5 procesos MPI (por ejemplo sNx = 40, nPx = 5, sNy = 160);
   - su `data.stage1` con los archivos del corte, en `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/bayiw_cut/`.
-- **Costo estimado:** pyOCEAN ~18 min por corrida; MITgcm ~40 min con 5 procesos. Si una corrida de MITgcm pasa de 2 h, se reporta antes de seguir.
+- **Costo estimado:** pyOCEAN z\* ~15 min y la híbrida ~8 min por corrida; MITgcm ~10–15 min con 5 procesos (el dominio completo tardaba 0.29 s/paso con 8; el corte tiene 1/6 de las celdas). Total de las dos fases: ~6 h, una corrida tras otra. Si una corrida de MITgcm pasa de 2 h, se reporta antes de seguir.
 
 ### 1.3 Fase 1: el mismo corte con radiación
 
