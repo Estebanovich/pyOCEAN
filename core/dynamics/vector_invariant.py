@@ -260,7 +260,7 @@ def vorticity_and_pv(u: np.ndarray, v: np.ndarray, dx_u: np.ndarray, dy_v: np.nd
     """(ζ, q) at the corners in one pass: vorticity_q and pv_q fused (Numba kernel, same arithmetic)."""
     n, ny, nx1 = u.shape
     zeta, q = np.empty((n, ny + 1, nx1)), np.empty((n, ny + 1, nx1))
-    c = np.ascontiguousarray
+    c = np.asarray                                                     # views pass as they are (perf part 2)
     _vort_pv_kernel(c(u, dtype=float), c(v, dtype=float), c(dx_u, dtype=float), c(dy_v, dtype=float),
                     c(area_q, dtype=float), c(mask_q, dtype=np.bool_), c(f_q, dtype=float), c(h, dtype=float),
                     c(area_t, dtype=float), c(active, dtype=np.bool_), zeta, q)
@@ -296,7 +296,7 @@ def pv_q(zeta: np.ndarray, f_q: np.ndarray, h: np.ndarray, area_t: np.ndarray, a
     pv_q_numpy is the reference.
     """
     q = np.empty(np.shape(zeta))
-    c = np.ascontiguousarray
+    c = np.asarray                                                     # views pass as they are (perf part 2)
     _pv_kernel(c(zeta, dtype=float), c(f_q, dtype=float), c(h, dtype=float), c(area_t, dtype=float),
                c(active, dtype=np.bool_), q)
     return q
@@ -343,7 +343,7 @@ def coriolis_pv(q: np.ndarray, abs_vort: np.ndarray, Qx: np.ndarray, Qy: np.ndar
     Numba kernel; coriolis_pv_numpy is the reference.
     """
     cu, cv = np.empty(np.shape(Qx)), np.empty(np.shape(Qy))
-    c = np.ascontiguousarray
+    c = np.asarray                                                     # views pass as they are (perf part 2)
     _coriolis_kernel(c(q, dtype=float), c(abs_vort, dtype=float), c(Qx, dtype=float), c(Qy, dtype=float),
                      c(u, dtype=float), c(v, dtype=float), c(dx_u, dtype=float), c(dy_v, dtype=float), bool(bound),
                      cu, cv)
@@ -378,7 +378,7 @@ def kinetic_energy(u: np.ndarray, v: np.ndarray, area_u: np.ndarray, area_v: np.
         raise ValueError(f"unknown ke_scheme {scheme!r}; use 'arakawa' or 'gudonov'")
     n, ny, nx1 = u.shape
     K = np.empty((n, ny, nx1 - 1))
-    c = np.ascontiguousarray
+    c = np.asarray                                                     # views pass as they are (perf part 2)
     _ke_kernel(c(u, dtype=float), c(v, dtype=float), c(area_u, dtype=float), c(area_v, dtype=float),
                c(area_t, dtype=float), scheme == "gudonov", K)
     return K

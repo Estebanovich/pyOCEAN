@@ -192,7 +192,7 @@ def fv_pgf(h: np.ndarray, H: np.ndarray, eta: np.ndarray, T: np.ndarray, du: np.
     pa0 = g * eta * (np.asarray(ref(0.5 * eta), float) - rho0)
     gx = np.zeros((n, ny, nx + 1))
     _fv_pgf_x(e, hs, Tt, Tb, np.ascontiguousarray(du, float), pa0, rho0, alpha, g, mass_weight, h_vanished, gx)
-    sw = lambda a: np.ascontiguousarray(np.swapaxes(a, -1, -2))                     # noqa: E731
+    sw = lambda a: np.swapaxes(a, -1, -2)                     # noqa: E731  strided view, no copy (perf part 2)
     gyT = np.zeros((n, nx, ny + 1))
     _fv_pgf_x(sw(e), sw(hs), sw(Tt), sw(Tb), sw(dv), sw(pa0), rho0, alpha, g, mass_weight, h_vanished, gyT)
     return gx[::-1].copy(), np.swapaxes(gyT, -1, -2)[::-1].copy()

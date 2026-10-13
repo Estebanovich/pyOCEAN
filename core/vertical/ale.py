@@ -539,7 +539,7 @@ def ppm_transport_x(h: np.ndarray, ut: np.ndarray, L: np.ndarray, Q_bt: np.ndarr
     h_w, h_e = np.empty_like(hc), np.empty_like(hc)
     _ppm_edges_kernel(hc, act, H_PPM_MIN, h_w, h_e)
     out = np.empty(np.shape(ut))
-    c = np.ascontiguousarray
+    c = np.asarray                                                     # views pass as they are (perf part 2)
     _ppm_transport_kernel(hc, h_w, h_e, c(ut, dtype=float), c(L, dtype=float), c(Q_bt, dtype=float),
                           c(q_e, dtype=float), c(q_w, dtype=float), act, float(dt), c(dx_t, dtype=float),
                           int(max_iter), out)
@@ -655,7 +655,7 @@ def face_fractions(hf: np.ndarray) -> np.ndarray:
     if np.ndim(hf) != 3:
         return face_fractions_numpy(hf)
     w = np.empty(np.shape(hf))
-    _fractions_kernel(np.ascontiguousarray(hf, dtype=float), w)
+    _fractions_kernel(np.asarray(hf, dtype=float), w)
     return w
 
 
@@ -682,7 +682,7 @@ def baroclinic_split(vel: np.ndarray, w: np.ndarray) -> tuple[np.ndarray, np.nda
     if np.ndim(vel) != 3 or np.shape(w) != np.shape(vel):
         return baroclinic_split_numpy(vel, w)
     mean, prime = np.empty(np.shape(vel)[1:]), np.empty(np.shape(vel))
-    _split_kernel(np.ascontiguousarray(vel, dtype=float), np.ascontiguousarray(w, dtype=float), mean, prime)
+    _split_kernel(np.asarray(vel, dtype=float), np.asarray(w, dtype=float), mean, prime)
     return mean, prime
 
 
@@ -721,6 +721,6 @@ def zero_thin_bed_velocity(u: np.ndarray, hf: np.ndarray, w: np.ndarray, h_thin:
     if np.ndim(u) != 3 or np.shape(hf) != np.shape(u) or np.shape(w) != np.shape(u):
         return zero_thin_bed_velocity_numpy(u, hf, w, h_thin)
     out = np.empty(np.shape(u))
-    _thin_bed_kernel(np.ascontiguousarray(u, dtype=float), np.ascontiguousarray(hf, dtype=float),
-                     np.ascontiguousarray(w, dtype=float), float(h_thin), out)
+    _thin_bed_kernel(np.asarray(u, dtype=float), np.asarray(hf, dtype=float),
+                     np.asarray(w, dtype=float), float(h_thin), out)
     return out
