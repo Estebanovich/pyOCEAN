@@ -39,3 +39,26 @@ def test_mitgcm_inputs_and_radiating_namelists(tmp_path):
     assert "dumpFreq=21600." in data and "endTime=216000." in data and "../input" not in data
     diag = (tmp_path / "data.diagnostics").read_text()
     assert "'ETAN'" in diag and "'THETA'" in diag and "frequency(2) = 900." in diag
+
+
+def test_tile_join_reproduces_the_input_bathymetry():
+    # review focus 1: 5 tiles of the cut and 8 of the full run, joined by X/Y, give the grid Depth = mitgcm_depth
+    from validation.bayiw_cut import cut
+    run = cut.RUNS / "mitgcm" / "2layer_bay_radiate"
+    if not run.exists():
+        pytest.skip("cut run not done")
+    _, depth = cut.read_mnc(run, "grid", "Depth")
+    np.testing.assert_allclose(depth[0], np.nan_to_num(cut.cut_inputs("2layer", "bay", "mit")["H"]), atol=1e-9)
+    _, dfull = cut.read_mnc(bayiw.CASES["2layer"]["dir"] / "run_expand", "grid", "Depth")
+    np.testing.assert_allclose(dfull[0], np.nan_to_num(bayiw.load_inputs("2layer", "bay")[2]), atol=1e-9)
+
+
+def test_read_cut_shapes_and_times():
+    from validation.bayiw_cut import cut
+    if not (cut.RUNS / "mitgcm" / "2layer_bay_radiate").exists():
+        pytest.skip("cut run not done")
+    d = cut.read_cut("2layer", "bay", "radiate")
+    n = d["t"].size
+    assert n == 240 and abs(d["t"][-1] - 216000.0) < 1.0 and abs(d["t"][0] - 900.0) < 1.0   # 900-s averages
+    assert d["eta"].shape == (n, 160, 200) and d["T"].shape == (n, 21, 160, 200)
+    assert d["U"].shape == (n, 2, 160, 201) and d["V"].shape == (n, 2, 161, 200)

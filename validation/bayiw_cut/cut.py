@@ -104,3 +104,64 @@ def write_mitgcm_inputs(case: str, bay: str, run_dir: Path, mode: str = "radiate
                                       " pickup_read_mnc=.FALSE.,\n pickup_write_mnc=.FALSE.,\n &\n")
     (run_dir / "data.diagnostics").write_text(DIAGNOSTICS.format(levels=", ".join(f"{k}." for k in range(20, 41))))
     (run_dir / "eedata").write_text(" &EEPARMS\n nTx=1,\n nTy=1,\n &\n")
+
+
+def read_mnc(run_dir: Path, prefix: str, var: str, k=None, t_slice=slice(None)) -> tuple[np.ndarray, np.ndarray]:
+    """
+    One MNC variable of a run, tiles joined: time (n,) [s] (absent for grid files: zeros) and the field (n, …,
+    Y|Yp1, X|Xp1).  Tiles are placed by their first X/Xp1 and Y/Yp1 coordinate; on face dimensions (Xp1, Yp1)
+    a tile's first face equals its neighbour's last and is dropped.  ``k``: level indices to keep (axis −3).
+    """
+    import glob
+
+    import netCDF4
+    files = sorted(glob.glob(str(Path(run_dir) / "mnc_*" / f"{prefix}.*t*.nc")))
+    blocks: dict[str, list] = {}
+    for f in files:
+        blocks.setdefault(Path(f).name.rsplit(".t", 1)[0], []).append(f)      # one time block = all its tiles
+    times, fields = [], []
+    for b, fs in sorted(blocks.items()):
+        tiles = []
+        for f in fs:
+            with netCDF4.Dataset(f) as ds:
+                v = ds[var]
+                dims = v.dimensions
+                xd, yd = dims[-1], dims[-2]
+                a = v[t_slice] if "T" in dims else v[:]
+                a = np.asarray(a, float)
+                if k is not None:
+                    a = np.take(a, k, axis=-3)
+                tiles.append((float(ds[xd][0]), float(ds[yd][0]), xd.endswith("p1"), yd.endswith("p1"), a,
+                              np.asarray(ds["T"][t_slice], float) if "T" in ds.variables else np.zeros(1)))
+        tiles = list({(t[0], t[1]): t for t in reversed(tiles)}.values())     # same tile in several mnc dirs
+        xs, ys = sorted({t[0] for t in tiles}), sorted({t[1] for t in tiles})   # (two-stage runs): keep one
+        rows = []
+        for y in ys:
+            row = [t for t in tiles if t[1] == y]
+            row.sort(key=lambda t: t[0])
+            rows.append(np.concatenate([r[4][..., 1:] if (r[2] and n > 0) else r[4] for n, r in enumerate(row)], -1))
+        yface = tiles[0][3]
+        field = np.concatenate([r[..., 1:, :] if (yface and n > 0) else r for n, r in enumerate(rows)], -2)
+        times.append(tiles[0][5])
+        fields.append(field)
+    t = np.concatenate(times)
+    f = np.concatenate(fields) if fields[0].ndim and "grid" not in prefix else fields[0][None]
+    o = np.argsort(t) if prefix != "grid" else slice(None)
+    return t[o], f[o]
+
+
+def read_cut(case: str, bay: str, mode: str) -> dict:
+    """The cut run's diagnostics: t, η (n, 160, 200), T (n, 21, 160, 200) on levels 20–40, U (n, 2, 160, 201)
+    and V (n, 2, 161, 200) on levels 30 and 40 (1-based), and the grid depth."""
+    run = RUNS / "mitgcm" / f"{case}_{bay}_{mode}"
+    t, eta = read_mnc(run, "diag_eta", "ETAN")
+    _, T = read_mnc(run, "diag_theta", "THETA")
+    _, U = read_mnc(run, "diag_uv", "UVEL")
+    _, V = read_mnc(run, "diag_uv", "VVEL")
+    _, depth = read_mnc(run, "grid", "Depth")
+    return dict(t=t, eta=eta[:, 0] if eta.ndim == 4 else eta, T=T, U=U, V=V, depth=depth[0])
+
+
+def full_run_dir(case: str, bay: str) -> Path:
+    """Esteban's full run: run_expand (bay) or run_expand_nobay."""
+    return bayiw.CASES[case]["dir"] / ("run_expand" if bay == "bay" else "run_expand_nobay")
