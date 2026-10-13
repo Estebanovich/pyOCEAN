@@ -154,10 +154,13 @@ def profile_targets(rho: np.ndarray, n: int, n_light: int = 0) -> np.ndarray:
     return np.concatenate([core[0] - s * np.arange(n_light, 0, -1), core])
 
 
-# Hybrid z* floor (interface depths [m] below the N_LIGHT z* layers): one floor above the two-layer jump (116.2 m)
-# and the rest spread to the bed, with one at the bay-mouth step (163.3 m, a MITgcm level interface).
-HYBRID_DEEP_FLOORS_25 = (30.0, 125.0, 140.0, 163.3, 190.0, 220.0, 255.0, 295.0, 340.0, 390.0, 445.0, 500.0,
-                         550.0, 580.0, float(np.sum(DELR)))
+# Hybrid z* floor (interface depths [m] below the N_LIGHT z* layers).  Interfaces 11–13 get floors above the
+# two-layer jump (116.2 m): with the centred targets 12 targets are lighter than the warm water, so the jump is
+# carried by interface 13, and a floor under it would push the jump into the cold water (max(jump, floor); test
+# test_hybrid_two_layer_start_keeps_the_jump_sharp).  The rest spread to the bed, with one at the bay-mouth step
+# (163.3 m, a MITgcm level interface).
+HYBRID_DEEP_FLOORS_25 = (30.0, 60.0, 90.0, 125.0, 140.0, 163.3, 190.0, 225.0, 265.0, 310.0, 360.0, 415.0, 475.0,
+                         540.0, float(np.sum(DELR)))
 
 
 def hybrid_dz_top(n: int) -> np.ndarray:

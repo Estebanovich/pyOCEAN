@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from core.dynamics.sigma_baroclinic import set_threads  # noqa: E402
 from validation.bayiw_2d.section import to_mitgcm_levels  # noqa: E402
+from validation.bayiw_baroclinic import bayiw  # noqa: E402
 from validation.bayiw_cut import cut  # noqa: E402
 from validation.bayiw_seiche.run_pyocean import wind_at  # noqa: E402
 
@@ -43,7 +44,7 @@ def record(m, st, buf: dict) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("case", choices=("2layer", "linear"))
+    ap.add_argument("case", choices=tuple(bayiw.CASES))
     ap.add_argument("bay", choices=("bay", "nobay"))
     ap.add_argument("--coord", default="zstar", choices=("zstar", "hybrid"))
     ap.add_argument("--dt", type=float, default=120.0)

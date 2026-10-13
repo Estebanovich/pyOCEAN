@@ -202,6 +202,6 @@ def test_hybrid_floor_reaches_the_bed():
     z = np.cumsum(dz)
     assert dz.size == 25 and abs(z[-1] - bayiw.DELR.sum()) < 1e-9
     np.testing.assert_allclose(dz[:bayiw.N_LIGHT], bayiw.DELR[:bayiw.N_LIGHT])
-    assert z[bayiw.N_LIGHT] < 116.0 < z[bayiw.N_LIGHT + 1]          # one interface floor above the two-layer jump
+    assert z[bayiw.N_LIGHT + 2] < 116.0 < z[bayiw.N_LIGHT + 3]      # floors above the jump down to its interface (13)
     assert np.isclose(z, 163.3).any()                               # an interface floor at the bay-mouth step
     np.testing.assert_allclose(bayiw.hybrid_dz_top(50), bayiw.DELR)

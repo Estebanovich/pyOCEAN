@@ -103,9 +103,11 @@ def _p1m_h2_positions(h_top, rho_top, targets, x_new):  # pragma: no cover
     """
     Depths (positive down from the surface, 0 … D) of target interface densities, MOM6
     build_and_interpolate_grid with INTERPOLATION_SCHEME = P1M_H2 and no boundary
-    extrapolation.  h_top, rho_top surface first; targets surface first (n+1).
+    extrapolation.  h_top, rho_top surface first (n source layers); targets surface first (m+1, any m:
+    the target grid may differ from the source, as MOM6 regridding_main on the data levels).
     """
     n = h_top.size
+    m = targets.size - 1
     e = np.empty((n, 2))
     e[0, 0] = rho_top[0]
     e[n - 1, 1] = rho_top[n - 1]
@@ -125,9 +127,9 @@ def _p1m_h2_positions(h_top, rho_top, targets, x_new):  # pragma: no cover
     xg[0] = 0.0
     for k in range(n):
         xg[k + 1] = xg[k] + h_top[k]
-    for k in range(n + 1):                                   # fallback when no cell matches (NaN ρ):
-        x_new[k] = xg[k]                                     # keep the input grid (MOM6 stops FATAL)
-    for kk in range(1, n):
+    for k in range(m + 1):                                   # fallback when no cell matches (NaN ρ): the
+        x_new[k] = xg[k] if m == n else xg[n] * k / m        # input grid, or uniform (MOM6 stops FATAL)
+    for kk in range(1, m):
         t = targets[kk]
         if t <= e[0, 0]:
             x_new[kk] = xg[0]
@@ -195,8 +197,11 @@ def _keep_consistent(h_top, rho_top, targets, h_mass, x):  # pragma: no cover
 
 @njit
 def hycom1_column(H, eta, h_bed, rho_bed, rho_target, dz_top, max_h_top, h_min, keep, zw):  # pragma: no cover
-    """Hybrid z*–isopycnal interfaces (bed first) — see the module docstring."""
+    """Hybrid z*–isopycnal interfaces (bed first) — see the module docstring.  The source column (h_bed, rho_bed:
+    n layers) may differ from the target grid (rho_target: m+1 interfaces; zw, dz_top, max_h_top sized for m),
+    e.g. the data levels of an initial state (MOM6 MOM_state_initialization.F90:2928); keep needs n == m."""
     n = h_bed.size
+    m = rho_target.size - 1
     D = H + eta
     h_top = h_bed[::-1].copy()
     rho_own = rho_bed[::-1].copy()                           # each layer's own density (B2c test)
@@ -220,24 +225,24 @@ def hycom1_column(H, eta, h_bed, rho_bed, rho_target, dz_top, max_h_top, h_min, 
             rho[kk] = rho[k]
     for k in range(n - 2, -1, -1):                           # monotonic (coord_hycom.F90:218)
         rho[k] = min(rho[k], rho[k + 1])
-    x = np.empty(n + 1)
+    x = np.empty(m + 1)
     _p1m_h2_positions(h_top, rho, rho_target, x)
-    if keep:
+    if keep and n == m:
         _keep_consistent(h_top, rho_own, rho_target, 2.0 * h_min, x)
     s = D / H                                                # z* floor (coord_hycom.F90:255-267)
     nominal = 0.0
-    for k in range(1, n + 1):
+    for k in range(1, m + 1):
         nominal += dz_top[k - 1] * s
         x[k] = min(max(x[k], nominal), D)
-    for k in range(1, n):                                    # maximum layer thickness (:270-279)
+    for k in range(1, m):                                    # maximum layer thickness (:270-279)
         x[k] = min(x[k], x[k - 1] + max_h_top[k - 1])
-    for k in range(1, n + 1):                                # the floor may push a kept interface past
+    for k in range(1, m + 1):                                # the floor may push a kept interface past
         x[k] = max(x[k], x[k - 1])                           # a regridded one: restore the order
-    x[n] = D
-    for j in range(n + 1):
-        zw[j] = eta - x[n - j]
+    x[m] = D
+    for j in range(m + 1):
+        zw[j] = eta - x[m - j]
     zw[0] = -H
-    zw[n] = eta
+    zw[m] = eta
     enforce_min_thickness(zw, h_min)
 
 
@@ -299,7 +304,8 @@ def target_densities(rho_top: np.ndarray, n_layers: int, n_light: int = 0, d_rho
 @njit(parallel=True)
 def _regrid_columns(code, H, eta, h, rho, dz_top, dsigma, rho_target, max_h_top,
                     d_sigma, d_hybrid, h_min, keep, wet, zw):  # pragma: no cover
-    n, ny, nx = h.shape
+    _, ny, nx = h.shape
+    n = zw.shape[0] - 1                                      # target layers (may differ from the source h)
     for c in prange(ny * nx):
         j = c // nx
         i = c % nx
@@ -332,9 +338,10 @@ def _regrid_columns(code, H, eta, h, rho, dz_top, dsigma, rho_target, max_h_top,
 
 
 def regrid_columns(rule: str, H: np.ndarray, eta: np.ndarray, h: np.ndarray, rho: np.ndarray | None,
-                   params: dict, wet: np.ndarray) -> np.ndarray:
+                   params: dict, wet: np.ndarray, n_out: int | None = None) -> np.ndarray:
     """
-    Target interface heights zw (N+1, ny, nx) [m], bed first, for rule "zstar", "sigma" or "hybrid".
+    Target interface heights zw (N+1, ny, nx) [m], bed first, for rule "zstar", "sigma" or "hybrid"; N = n_out
+    (default: the source layer count; 'hybrid' may regrid a finer source, e.g. the data levels of an initial state).
     params: dz_top (z* and hybrid floor), dsigma (σ and the shallow transition), rho_target,
     max_h_top, d_sigma, d_hybrid [m] (0 = no transition), h_min [m], keep_isopycnal (hybrid,
     default True): interfaces between isopycnally consistent layers stay put (spec §3, B2c);
@@ -368,7 +375,9 @@ def regrid_columns(rule: str, H: np.ndarray, eta: np.ndarray, h: np.ndarray, rho
     if rule == "hybrid" and not np.isfinite(np.asarray(rho, float)[:, wet]).all():
         raise ValueError("non-finite density in a wet column")
     code = {"zstar": 0, "sigma": 1, "hybrid": 2}[rule]
-    n = h.shape[0]
+    n = h.shape[0] if n_out is None else int(n_out)        # target layers; the source h may be finer (initial
+    if n != h.shape[0] and rule != "hybrid":                 # state on the data levels, MOM6) — hybrid only
+        raise ValueError("n_out ≠ the source layer count is only for rule 'hybrid'")
     zw = np.full((n + 1,) + h.shape[1:], np.nan)
     f = lambda key, default: np.ascontiguousarray(params.get(key, default), float)  # noqa: E731
     _regrid_columns(code, np.nan_to_num(np.asarray(H, float)), np.asarray(eta, float), np.ascontiguousarray(h, float),
@@ -377,4 +386,46 @@ def regrid_columns(rule: str, H: np.ndarray, eta: np.ndarray, h: np.ndarray, rho
                     f("max_h_top", np.full(n, np.inf)), float(params.get("d_sigma", 0.0)),
                     float(params.get("d_hybrid", 0.0)), float(params.get("h_min", H_MIN)),
                     bool(params.get("keep_isopycnal", True)), np.asarray(wet, np.bool_), zw)
+    return zw
+
+
+@njit(cache=True)
+def _snap_column(zw, zw_src, rho_src, drho):  # pragma: no cover
+    m = zw.size - 1
+    for s in range(1, zw_src.size - 1):
+        if abs(rho_src[s] - rho_src[s - 1]) <= drho:
+            continue
+        z = zw_src[s]
+        for j in range(m):
+            if zw[j] < z < zw[j + 1]:
+                lo_free, hi_free = j > 0, j + 1 < m          # the bed and the surface do not move
+                if lo_free and (not hi_free or z - zw[j] <= zw[j + 1] - z):
+                    zw[j] = z
+                elif hi_free:
+                    zw[j + 1] = z
+                break
+
+
+@njit(parallel=True, cache=True)
+def _snap_columns(zw, zw_src, rho_src, drho):  # pragma: no cover
+    _, ny, nx = zw.shape
+    for c in prange(ny * nx):
+        j = c // nx
+        i = c % nx
+        if np.isfinite(zw[0, j, i]):
+            _snap_column(zw[:, j, i], np.ascontiguousarray(zw_src[:, j, i]), np.ascontiguousarray(rho_src[:, j, i]),
+                         drho)
+
+
+def snap_to_jumps(zw: np.ndarray, zw_src: np.ndarray, rho_src: np.ndarray, drho: float) -> np.ndarray:
+    """
+    Initial-state companion of regrid_columns(..., n_out) on a source grid: the P1M interpolation (MOM6
+    P1M_functions.F90:48 averages discontinuous edge values) puts the interface of a density jump of the data
+    inside a neighbouring source cell, so one model layer would start with both water masses (BayIW two-layer:
+    a 13.8-m layer at 20 °C between 22.77 and 18.52 °C).  Every source interface whose density jump exceeds drho
+    [kg m⁻³] (e.g. the target spacing) and lies strictly inside a model layer gets the nearer movable interface of
+    that layer (not the bed or the surface).  zw (N+1, ny, nx) model interfaces and zw_src (N_src+1, ny, nx)
+    source interfaces [m], bed first; rho_src (N_src, ny, nx).  Returns zw, modified in place.  Beyond MOM6.
+    """
+    _snap_columns(zw, np.asarray(zw_src, float), np.asarray(rho_src, float), float(drho))
     return zw

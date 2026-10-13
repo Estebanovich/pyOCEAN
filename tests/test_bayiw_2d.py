@@ -158,3 +158,13 @@ def test_to_mitgcm_levels_keeps_fixed_levels_with_eta_in_the_top_one():
     zc = -599.9 + np.cumsum(h[:, 0, 0]) - 0.5 * h[:, 0, 0]
     T = (20.0 + 0.02 * zc + 1e-4 * zc ** 2)[:, None, None]
     np.testing.assert_allclose(section.to_mitgcm_levels(h, T, H), T, rtol=0, atol=1e-12)
+
+
+def test_hybrid_two_layer_start_keeps_the_jump_sharp():
+    # the first full-depth floor design put a floor (125 m) under the interface that carries the 116-m jump, so
+    # max(jump, floor) pushed it into the cold water and the warm layer started at 22.37 °C (heat-based ζ hid it)
+    from validation.bayiw_2d import section
+    m, st, _ = section.build_model("2layer", "bay", "hybrid", 30.0, 25)
+    h, T = st.h[:, :, 0], st.T[:, :, 0]
+    mixed = (h > 1.0) & (T > 18.52 + 0.01) & (T < 22.77 - 0.01)
+    assert not mixed.any(), f"{int(mixed.sum())} layers > 1 m with mixed water"

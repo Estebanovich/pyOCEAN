@@ -838,7 +838,7 @@ class SigmaBaroclinic:
                 warnings.warn(f"hybrid z* floor (Σ dz_top = {floor:.1f} m) stops above the deepest bed ({h_max:.1f} m): "
                               "below it, layers whose target density is absent stay massless and a homogeneous water "
                               "mass is one slab layer; give dz_top the full depth (as OM4's hycom1_75_800m)",
-                              UserWarning, stacklevel=2)
+                              UserWarning, stacklevel=3)
         floodable = act & (np.nan_to_num(np.asarray(self.H, float), nan=1.0) <= 0)
         if floodable.any() and (regrid == "zstar" or (regrid == "hybrid" and float(params.get("d_hybrid", 0.0)) <= 0)):
             raise ValueError("cells with H ≤ 0 can dry: use regrid='sigma', or 'hybrid' with a shallow σ zone "
@@ -867,8 +867,9 @@ class SigmaBaroclinic:
         ``init_iterations`` regrid–remap passes towards the isopycnal grid).
 
         ALE with ``h_src`` (N_src, ny, nx) [m], bed first, Σ h_src = H + η in wet columns: T (N_src, ny, nx)
-        holds the layer means on that source grid (e.g. the z-levels of the data) and every pass remaps from
-        the source, as MOM6 Z_INIT_ALE_REMAPPING (MOM_state_initialization.F90:2928-2935).  Without it the
+        holds the layer means on that source grid (e.g. the z-levels of the data); the hybrid grid is regridded
+        on the source levels and T remapped from them, as MOM6 Z_INIT_ALE_REMAPPING
+        (MOM_state_initialization.F90:2928-2935).  Without it the
         hybrid grid starts from T on σ-layers, which are ~H/N thick in deep water and lose the structure
         of the top metres (BayIW bay mouth: 0.5 °C spurious step across the 600 → 164 m shelf edge).
         """
@@ -894,9 +895,10 @@ class SigmaBaroclinic:
     def _initial_state_from_source(self, eta: np.ndarray, T_src: np.ndarray, h_src: np.ndarray) -> SigmaState:
         """
         ALE resting state from layer means T_src on a source grid h_src (both (N_src, ny, nx), bed first):
-        the rule's initial grid, then for 'hybrid' ``init_iterations`` regrid passes, each followed by a
-        conservative remap of T from the source grid (never from the previous model grid, so no source
-        structure is lost; MOM6 MOM_state_initialization.F90:2928-2935).  Dry columns get T = t_ref.
+        the rule's grid regridded once on the source levels themselves (MOM6 MOM_state_initialization.F90:2928),
+        for 'hybrid' with the model interfaces moved onto the density jumps of the source that would otherwise
+        fall inside a model layer (core.vertical.regrid.snap_to_jumps, beyond MOM6), then a conservative remap
+        of T from the source grid (:2933-2935).  Dry columns get T = t_ref.
         """
         if not self.ale:
             raise ValueError("initial_state(h_src=...) needs vertical_coordinate='ale'")
@@ -919,11 +921,17 @@ class SigmaBaroclinic:
             return np.where(wet[None], T, self.t_ref)
 
         h = self._initial_h(eta)
-        T = from_source(h)
         if self.regrid_rule == "hybrid":
-            for _ in range(self.init_iterations):
-                h = self._regrid(eta, h, T)
-                T = from_source(h)
+            # one regrid on the source levels themselves, as MOM6 (regridding_main on the data, :2928); iterating
+            # on the model grid (regrid there, remap from the source) oscillates around a sharp jump (BayIW
+            # two-layer with a full-depth z* floor: 24–348 mixed layers depending on the pass count)
+            rho_src = self.density(np.where(wet[None], T_src, self.t_ref))
+            zw = rg.regrid_columns("hybrid", H, eta, h_src, rho_src, self.regrid_params, wet, n_out=self.n)
+            zw_src = -H[None] + np.concatenate([np.zeros((1,) + H.shape), np.cumsum(h_src, axis=0)])
+            tgt = np.asarray(self.regrid_params["rho_target"], float)
+            rg.snap_to_jumps(zw, zw_src, rho_src, float(np.min(np.abs(np.diff(tgt)))))
+            h = np.where(wet[None], np.diff(zw, axis=0), h)
+        T = from_source(h)
         st = SigmaState(eta=np.array(eta, float), u=np.zeros((self.n, ny, nx + 1)),
                         v=np.zeros((self.n, ny + 1, nx)), T=T, h=h)
         self.T_ext, self.h_ext = T.copy(), h.copy()                    # exterior profile in z (spec §3.5)

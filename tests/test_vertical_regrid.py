@@ -431,3 +431,32 @@ def test_keep_isopycnal_interfaces_stay_inside_the_shallow_window():
     lo, hi = q * (-H) + (1 - q) * sig, q * zs + (1 - q) * sig
     assert ((zw >= lo - 1e-9) & (zw <= hi + 1e-9)).all()
     assert (np.diff(zw) > 0).all()
+
+
+# ---------------------------------------------------------------- regrid on a source grid (initial state, MOM6)
+def test_hybrid_regrids_a_finer_source_column_onto_fewer_layers():
+    # MOM6 Z_INIT_ALE_REMAPPING regrids on the data's own levels (MOM_state_initialization.F90:2928):
+    # 40 source layers of a linear profile, 10 target interfaces → the same isopycnal depths as a 10-layer source
+    hs, rhos = _linear_column(n=40)
+    z_t = -np.array([0.0, 30, 60, 80, 100, 120, 140, 160, 170, 178, 201.0])
+    targets = 1024.0 - 0.02 * z_t
+    zw = np.empty(11)
+    rg.hycom1_column(201.0, 0.0, hs, rhos, targets, DELR, np.full(10, np.inf), rg.H_MIN, False, zw)
+    np.testing.assert_allclose(zw[::-1][1:-1], z_t[1:-1], atol=1e-9)
+    zw3 = rg.regrid_columns("hybrid", np.full((1, 1), 201.0), np.zeros((1, 1)), hs[:, None, None],
+                            rhos[:, None, None], dict(dz_top=DELR, rho_target=targets, keep_isopycnal=False),
+                            np.ones((1, 1), bool), n_out=10)
+    assert zw3.shape == (11, 1, 1)
+    np.testing.assert_allclose(zw3[:, 0, 0], zw, atol=1e-12)
+
+
+def test_snap_to_jumps_splits_the_layer_that_straddles_a_density_jump():
+    # a two-layer source (jump at −116 m) and a model grid whose layer 2 spans −120 … −100 m: the nearer
+    # interface (−120) moves onto the jump, so no model layer holds both water masses; small jumps are left
+    zw_src = np.array([-200.0, -150.0, -116.0, -80.0, 0.0])
+    rho_src = np.array([1028.0, 1028.0, 1026.0, 1026.0])                    # bed first
+    zw = np.array([-200.0, -120.0, -100.0, -50.0, 0.0])
+    out = rg.snap_to_jumps(zw[:, None, None].copy(), zw_src[:, None, None], rho_src[:, None, None], 0.5)
+    np.testing.assert_allclose(out[:, 0, 0], [-200.0, -116.0, -100.0, -50.0, 0.0])
+    keep = rg.snap_to_jumps(zw[:, None, None].copy(), zw_src[:, None, None], rho_src[:, None, None], 5.0)
+    np.testing.assert_allclose(keep[:, 0, 0], zw)
