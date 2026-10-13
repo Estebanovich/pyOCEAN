@@ -1121,3 +1121,17 @@ def test_hybrid_warns_when_the_z_floor_stops_above_the_bed():
     with warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)
         _ale_box("hybrid", nx=4, nz=10, depth=100.0, params=dict(dz_top=np.full(10, 10.0), rho_target=tgt))
+
+
+def test_reference_profile_kernel_matches_np_interp():
+    # perf part 2, task 4: the parallel interpolation must reproduce np.interp exactly, constant beyond the ends
+    from core.dynamics.sigma_baroclinic import ReferenceProfile
+    assert hasattr(ReferenceProfile, "_interp_kernel")
+    rng = np.random.default_rng(5)
+    z = np.sort(rng.uniform(-600, 0, 50))
+    prof = ReferenceProfile(z, 1020 + 0.01 * -z)
+    zz = rng.uniform(-700, 50, (6, 70, 80))                     # beyond both ends too; ≥ 1000 elements: kernel path
+    assert np.array_equal(prof(zz), np.interp(zz, prof.z, prof.rho))
+    assert prof(zz).shape == zz.shape
+    small = rng.uniform(-700, 50, (3, 4))
+    assert np.array_equal(prof(small), np.interp(small, prof.z, prof.rho))

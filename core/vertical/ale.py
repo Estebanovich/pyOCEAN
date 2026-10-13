@@ -103,7 +103,8 @@ def face_transport_thickness_numpy(h: np.ndarray, H: np.ndarray, active: np.ndar
 
 @numba.njit(parallel=True, cache=True)
 def _ftt_kernel(h, H, active, clip, q_e, q_w):  # pragma: no cover
-    """Kernel of face_transport_thickness: one face column per (j, f), same operations as the NumPy version."""
+    """Kernel of face_transport_thickness: one face column per (j, f), same operations as the NumPy version
+    (NaN thickness or depth read as 0 here, as nan_to_num did; h and H may be strided views)."""
     n, ny, nx = h.shape
     for j in numba.prange(ny):
         for f in range(nx + 1):
@@ -115,18 +116,24 @@ def _ftt_kernel(h, H, active, clip, q_e, q_w):  # pragma: no cover
                     q_w[k, j, f] = 0.0
                 continue
             if clip:
-                z_bed = max(-H[j, iw], -H[j, ie])
+                Hw = H[j, iw] if H[j, iw] == H[j, iw] else 0.0
+                He = H[j, ie] if H[j, ie] == H[j, ie] else 0.0
+                z_bed = max(-Hw, -He)
                 cw = 0.0
                 ce = 0.0
                 for k in range(n):
-                    cw += h[k, j, iw]
-                    ce += h[k, j, ie]
-                    q_e[k, j, f] = min(h[k, j, iw], max(0.0, (-H[j, iw] + cw) - z_bed))
-                    q_w[k, j, f] = min(h[k, j, ie], max(0.0, (-H[j, ie] + ce) - z_bed))
+                    hw = h[k, j, iw] if h[k, j, iw] == h[k, j, iw] else 0.0
+                    he = h[k, j, ie] if h[k, j, ie] == h[k, j, ie] else 0.0
+                    cw += hw
+                    ce += he
+                    q_e[k, j, f] = min(hw, max(0.0, (-Hw + cw) - z_bed))
+                    q_w[k, j, f] = min(he, max(0.0, (-He + ce) - z_bed))
             else:
                 for k in range(n):
-                    q_e[k, j, f] = h[k, j, iw]
-                    q_w[k, j, f] = h[k, j, ie]
+                    hw = h[k, j, iw]
+                    he = h[k, j, ie]
+                    q_e[k, j, f] = hw if hw == hw else 0.0
+                    q_w[k, j, f] = he if he == he else 0.0
 
 
 def face_transport_thickness(h: np.ndarray, H: np.ndarray, active: np.ndarray,
@@ -143,11 +150,10 @@ def face_transport_thickness(h: np.ndarray, H: np.ndarray, active: np.ndarray,
     cell; faces next to land are 0.  For the v-faces call it on swapped axes.  Numba kernel
     (_ftt_kernel); face_transport_thickness_numpy is the reference.
     """
-    hc = np.ascontiguousarray(np.where(active[None], np.nan_to_num(h), 0.0))
-    n, ny, nx = hc.shape
+    h = np.asarray(h, float)
+    n, ny, nx = h.shape
     q_e, q_w = np.empty((n, ny, nx + 1)), np.empty((n, ny, nx + 1))
-    _ftt_kernel(hc, np.ascontiguousarray(np.nan_to_num(np.asarray(H, float))), np.ascontiguousarray(active),
-                bool(clip), q_e, q_w)
+    _ftt_kernel(h, np.asarray(H, float), np.asarray(active, np.bool_), bool(clip), q_e, q_w)
     return q_e, q_w
 
 

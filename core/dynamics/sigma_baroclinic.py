@@ -618,14 +618,57 @@ def reference_profile(z: np.ndarray, rho: np.ndarray, n_bins: int = 400):
     return ReferenceProfile(zc[keep], mean[keep])
 
 
+@numba.njit(parallel=True, cache=True, fastmath={"contract"})
+def _interp_kernel(x, xp, fp, out):  # pragma: no cover
+    """np.interp element by element with NumPy's arithmetic (numpy/core/src/multiarray/compiled_base.c,
+    arr_interp): constant beyond the ends, the node value on a node, else slope·(x − xp_j) + fp_j.  Only FMA
+    contraction is allowed (no other fastmath flag): NumPy's arm64 build fuses slope·(x − xp_j) + fp_j, and
+    without it 1 value in ~3e4 differed by one ulp."""
+    n = xp.size
+    for p in numba.prange(x.size):
+        v = x[p]
+        if v > xp[n - 1]:
+            out[p] = fp[n - 1]
+        elif v < xp[0]:
+            out[p] = fp[0]
+        else:
+            lo, hi = 0, n                                     # largest j with xp[j] <= v
+            while hi - lo > 1:
+                mid = (lo + hi) // 2
+                if xp[mid] <= v:
+                    lo = mid
+                else:
+                    hi = mid
+            j = lo
+            if j == n - 1 or xp[j] == v:
+                out[p] = fp[j]
+            else:
+                slope = (fp[j + 1] - fp[j]) / (xp[j + 1] - xp[j])
+                r = slope * (v - xp[j]) + fp[j]
+                if np.isnan(r):
+                    r = slope * (v - xp[j + 1]) + fp[j + 1]
+                    if np.isnan(r) and fp[j] == fp[j + 1]:
+                        r = fp[j]
+                out[p] = r
+
+
 class ReferenceProfile:
     """ρ_ref(z) tabulated at heights z [m] (increasing) with values rho [kg m⁻³]; linear in between."""
+
+    _interp_kernel = staticmethod(_interp_kernel)
 
     def __init__(self, z: np.ndarray, rho: np.ndarray) -> None:
         self.z, self.rho = np.asarray(z, float), np.asarray(rho, float)
 
     def __call__(self, zz: np.ndarray) -> np.ndarray:
-        return np.interp(zz, self.z, self.rho)
+        """np.interp(zz, z, rho); a parallel kernel with the same arithmetic for ≥ 1000 heights."""
+        zz = np.asarray(zz, float)
+        if zz.size < 1000:
+            return np.interp(zz, self.z, self.rho)
+        out = np.empty(zz.shape)
+        numba.set_num_threads(_THREADS[0])
+        _interp_kernel(np.ascontiguousarray(zz).ravel(), self.z, self.rho, out.ravel())
+        return out
 
 
 EDGES = ("west", "east", "south", "north")

@@ -436,3 +436,21 @@ def test_zero_thin_bed_kernel_matches_numpy():
     hf, u = _faces_random(11)
     w = ale.face_fractions_numpy(hf)
     assert np.array_equal(ale.zero_thin_bed_velocity(u, hf, w, 0.01), ale.zero_thin_bed_velocity_numpy(u, hf, w, 0.01))
+
+
+@pytest.mark.parametrize("clip", [True, False])
+def test_transport_thickness_kernel_reads_nan_land_and_swapped_views_as_numpy(clip):
+    # perf part 2, task 4: NaN thickness/depth on land is read as 0 inside the kernel (no nan_to_num copies),
+    # and the v-face call passes a swapped (strided) view
+    rng = np.random.default_rng(32)
+    n, ny, nx = 6, 7, 9
+    H = rng.uniform(20.0, 300.0, (ny, nx))
+    active = rng.uniform(size=(ny, nx)) > 0.2
+    H[~active] = np.nan
+    h = rng.uniform(0.0, 1.0, (n, ny, nx)) * np.nan_to_num(H)[None] / n
+    h[:, ~active] = np.nan
+    for args in ((h, H, active), (h.swapaxes(1, 2), H.T, active.T)):
+        a = ale.face_transport_thickness(*args, clip)
+        b = ale.face_transport_thickness_numpy(*args, clip)
+        for x, y in zip(a, b):
+            assert np.array_equal(x, y)
