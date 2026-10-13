@@ -241,31 +241,21 @@ En la estratificación realista, que es la de la tesis de Esteban, **z\* y la h�
 
 `profile_step.py`: 30 pasos tras 5 de calentamiento, s/paso con 1 y 5 hilos y las piezas con más tiempo propio. Las salidas están en `profile_baseline.txt` y `profile_final.txt`.
 
-**Línea base (main c8e929c):**
+**Medición:** s/paso cronometrado *sin* perfilador (30 pasos tras 5 de calentamiento); el reparto por pieza sale de otros 30 pasos con cProfile. Las dos versiones se midieron con el mismo script; la línea base se corrió en un worktree de `main` (c8e929c). Entre repeticiones hay una variación de ~±3 %.
 
-| Caso | 1 hilo | 5 hilos | Aceleración | Piezas serie más grandes (ms/paso con 5 hilos) |
-|---|---|---|---|---|
-| z\* radiando | 0.745 | 0.385 | 1.93 | copias `ascontiguousarray` 29, `_step_ale` 23, `truncate_cfl` 13.5, `step` 12, `_advect` 9 |
-| híbrida radiando | 0.371 | 0.200 | 1.86 | copias 13, `_step_ale` 11, `step` 6, `truncate_cfl` 6 |
-| z\* anidado | 0.965 | 0.535 | 1.80 | copias 53, `_source_columns` 41, `_remap_stretched` 21, `_step_ale` 23, `truncate_cfl` 15 |
-
-**Final (rama `ale-perf-2`, `profile_final.txt`):**
-
-| Caso | 1 hilo | 5 hilos | Aceleración | Antes (5 hilos) | Meta |
+| Caso | Línea base, 1 / 5 hilos | Final, 1 / 5 hilos | Aceleración final | Cambio con 5 hilos | Meta |
 |---|---|---|---|---|---|
-| z\* radiando | 0.731 | 0.307 | 2.39 | 0.385 (−20 %) | ≤ 0.25 ❌ |
-| híbrida radiando | 0.368 | 0.165 | 2.23 | 0.200 (−18 %) | ≤ 0.13 ❌ |
-| z\* anidado | 0.789 | 0.329–0.348 | 2.27 | 0.535 (−35 %) | ≤ radiando + 5 % 🔶 (+7 %) |
-
-Las mediciones varían ~±6 % entre corridas.
+| z\* radiando | 0.749 / 0.385 | 0.740 / 0.303–0.305 | 2.42 | −21 % | ≤ 0.25 ❌ |
+| híbrida radiando | 0.379 / 0.197 | 0.368 / 0.160 | 2.30 | −19 % | ≤ 0.13 ❌ |
+| z\* anidado | 0.958 / 0.539 | 0.784 / 0.328–0.338 | 2.32 | −38 % | ≤ radiando + 5 % ❌ (+8–11 %) |
 
 **Por qué no se alcanzan las metas:** ninguna pieza serie pasa ya del 5 % del paso (la mayor es el cuerpo de `_step_ale`, 14 ms), que era el criterio de parada del spec. Lo que queda son los núcleos paralelos:
-- remapeo vertical 41 ms, advección de T 26 ms, PGF FV 26 ms y flujo de grosor PPM 21 ms;
+- remapeo vertical ~41 ms, advección de T ~26 ms, PGF FV ~26 ms y flujo de grosor PPM ~21 ms;
 - con 5 hilos escalan solo 3.1–3.9 veces, limitados por el ancho de banda de memoria;
 - con estos núcleos el piso está cerca de 0.2 s/paso en z\*.
 
 Bajar de ahí exige que los propios núcleos hagan menos pasadas por memoria (fusionar remapeo y advección, o un solo remapeo para T, u y v). Eso es otro plan.
 
-**Sobrecosto restante del anidado:** ~21 ms. Es casi todo `exterior_velocity`, que remapea u′ exterior en la banda de esponja de 30 celdas en cada paso (la esponja sobre u′ la necesita).
+**Sobrecosto restante del anidado:** 25–33 ms por paso. Según el tiempo acumulado de cProfile, `_evaluate_exterior` (sobre todo `exterior_velocity`, el u′ exterior remapeado en la banda de esponja de 30 celdas para la esponja sobre u′) suma ~17 ms, `_exterior_T` ~3 ms y `_open_velocity` ~3 ms.
 
-**Por hora simulada, z\*:** 9.2 s, frente a 4.4 s de MITgcm con 5 procesos (antes 11.7 s). **Híbrida:** 5.0 s.
+**Por hora simulada, z\*:** 9.1 s (0.304 × 30), frente a 11.6 s antes (0.385 × 30, mismo método) y 4.4 s de MITgcm con 5 procesos. **Híbrida:** 4.8 s.

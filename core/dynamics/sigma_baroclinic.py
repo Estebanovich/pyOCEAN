@@ -627,7 +627,9 @@ def _interp_kernel(x, xp, fp, out):  # pragma: no cover
     n = xp.size
     for p in numba.prange(x.size):
         v = x[p]
-        if v > xp[n - 1]:
+        if v != v:                                            # NaN height: NaN, as NumPy (before any search)
+            out[p] = v
+        elif v > xp[n - 1]:
             out[p] = fp[n - 1]
         elif v < xp[0]:
             out[p] = fp[0]
@@ -689,6 +691,9 @@ def _ab3_kernel(g0, g1, g2, three, out):  # pragma: no cover
 def ab3_combine(g0: np.ndarray, g1: np.ndarray, g2: np.ndarray | None) -> np.ndarray:
     """Adams–Bashforth extrapolation of the explicit tendencies (newest g0): AB3 with g2, AB2 without
     (step's start-up).  Fused kernel with the same arithmetic as the NumPy expressions."""
+    if np.shape(g1) != np.shape(g0) or (g2 is not None and np.shape(g2) != np.shape(g0)):
+        raise ValueError(f"ab3_combine: tendency shapes differ {np.shape(g0)}, {np.shape(g1)}, "
+                         f"{None if g2 is None else np.shape(g2)}")       # the kernel does not check bounds
     out = np.empty(np.shape(g0))
     g0, g1 = np.ascontiguousarray(g0, float), np.ascontiguousarray(g1, float)
     numba.set_num_threads(_THREADS[0])
@@ -1620,6 +1625,8 @@ class SigmaBaroclinic:
             return self._advect_numpy(C, V0, V1, Qx, Qy, Fz, ok)
         dt = self.dt
         C = np.ascontiguousarray(C, dtype=float)
+        if np.shape(V0) != C.shape[1:] or np.shape(V1) != C.shape[1:]:     # the kernel does not check bounds
+            raise ValueError(f"_advect: volume shape {np.shape(V0)}/{np.shape(V1)} vs tracer layers {C.shape[1:]}")
         dV = V1 - V0
         Va, Vb = np.ascontiguousarray(V0 + dV), np.ascontiguousarray(V0 + 0.5 * dV)
         q0 = V0 * C

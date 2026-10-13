@@ -1161,3 +1161,25 @@ def test_ab3_kernel_matches_numpy():
     g0, g1, g2 = (rng.normal(size=(5, 6, 7)) for _ in range(3))
     assert np.array_equal(ab3_combine(g0, g1, g2), AB3[0] * g0 + AB3[1] * g1 + AB3[2] * g2)
     assert np.array_equal(ab3_combine(g0, g1, None), 1.5 * g0 - 0.5 * g1)
+
+
+def test_reference_profile_kernel_keeps_nan_heights():
+    # final review: NumPy returns NaN for a NaN height; the kernel returned the bottom value when fp[0] == fp[1]
+    from core.dynamics.sigma_baroclinic import ReferenceProfile
+    prof = ReferenceProfile(np.array([-600.0, -500.0, -100.0, 0.0]), np.array([1027.0, 1027.0, 1025.0, 1024.0]))
+    zz = np.full(2000, -300.0)
+    zz[::7] = np.nan
+    assert np.array_equal(prof(zz), np.interp(zz, prof.z, prof.rho), equal_nan=True)
+
+
+def test_new_kernel_wrappers_reject_mismatched_shapes():
+    # final review: Numba does not check bounds, so a shape mistake would read past the arrays silently
+    from core.dynamics.sigma_baroclinic import ab3_combine
+    from core.vertical import ale
+    a, b = np.zeros((3, 4, 5)), np.zeros((3, 4, 6))
+    with pytest.raises(ValueError, match="shape"):
+        ab3_combine(a, b, None)
+    with pytest.raises(ValueError, match="shape"):
+        ale.transport_velocity(a, b, np.ones((4, 5), bool), a, np.ones((4, 5)), np.ones((4, 5)), 0.5)
+    with pytest.raises(ValueError, match="shape"):
+        ale.transport_velocity(a, a, np.ones((4, 6), bool), a, np.ones((4, 5)), np.ones((4, 5)), 0.5)

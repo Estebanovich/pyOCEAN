@@ -578,6 +578,10 @@ def transport_velocity(u_new: np.ndarray, u_old: np.ndarray, last_wet: np.ndarra
                        L: np.ndarray, D: np.ndarray, theta: float) -> tuple[np.ndarray, np.ndarray]:
     """(u^θ, Q_bt) of the ALE step (see transport_velocity_numpy, the reference).  Numba kernel."""
     n, a, b = np.shape(u_new)
+    if np.shape(u_old) != (n, a, b) or np.shape(w) != (n, a, b) or any(
+            np.shape(x) != (a, b) for x in (last_wet, L, D)):         # the kernel does not check bounds
+        raise ValueError(f"transport_velocity: shapes u_new {np.shape(u_new)}, u_old {np.shape(u_old)}, "
+                         f"w {np.shape(w)}, last_wet/L/D {np.shape(last_wet)}/{np.shape(L)}/{np.shape(D)}")
     ut, Qb = np.empty((n, a, b)), np.empty((a, b))
     _transport_velocity_kernel(np.asarray(u_new, float), np.asarray(u_old, float), np.asarray(last_wet, np.bool_),
                                np.asarray(w, float), np.asarray(L, float), np.asarray(D, float), float(theta), ut, Qb)

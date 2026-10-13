@@ -2,7 +2,8 @@
 """
 Step cost of the BayIW cut (spec 2026-10-13-ale-serial-glue-performance §5): s/step with 1 and 5 threads, the
 1→5 speed-up (Amdahl: serial share) and the functions with the most self time, for z* and hybrid radiating and
-z* nested.  30 steps after 5 warm-up steps (Numba compilation).
+z* nested.  s/step: 30 steps after 5 warm-up steps (Numba compilation), without the profiler; the breakdown comes
+from 30 further steps under cProfile.
 
 Usage: NUMBA_NUM_THREADS=5 python validation/bayiw_cut/profile_step.py [zstar_radiate hybrid_radiate zstar_nest]
 """
@@ -33,16 +34,20 @@ def measure(coord: str, mode: str, threads: int, profile: bool = False):
     for n in range(5):
         tau[:-1] = wind_at(n * m.dt, wind)
         st = m.step(st, tau_y=tau)
-    pr = cProfile.Profile() if profile else None
-    t0 = time.perf_counter()
-    if pr:
-        pr.enable()
+    t0 = time.perf_counter()                                     # timed without the profiler
     for n in range(5, 35):
         tau[:-1] = wind_at(n * m.dt, wind)
         st = m.step(st, tau_y=tau)
-    if pr:
+    elapsed = (time.perf_counter() - t0) / 30
+    pr = None
+    if profile:                                                  # breakdown: 30 more steps under cProfile
+        pr = cProfile.Profile()
+        pr.enable()
+        for n in range(35, 65):
+            tau[:-1] = wind_at(n * m.dt, wind)
+            st = m.step(st, tau_y=tau)
         pr.disable()
-    return (time.perf_counter() - t0) / 30, pr
+    return elapsed, pr
 
 
 def self_times(pr) -> dict:
