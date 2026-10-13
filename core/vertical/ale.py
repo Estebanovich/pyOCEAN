@@ -546,6 +546,44 @@ def ppm_transport_x(h: np.ndarray, ut: np.ndarray, L: np.ndarray, Q_bt: np.ndarr
     return out
 
 
+def transport_velocity_numpy(u_new: np.ndarray, u_old: np.ndarray, last_wet: np.ndarray, w: np.ndarray,
+                             L: np.ndarray, D: np.ndarray, theta: float) -> tuple[np.ndarray, np.ndarray]:
+    """
+    NumPy reference of transport_velocity (test oracle).  Transport velocity of the ALE step
+    u^θ = θ u^{n+1} + (1 − θ) u^n, with u^n = 0 on faces that carried no flow in the free-surface step
+    (``last_wet`` False), and the free-surface volume flux Q_bt = L D Σ_k w_k u^θ_k [m³ s⁻¹].
+    u (N, a, b), last_wet, L, D (a, b), w (N, a, b) layer fractions.
+    """
+    un = np.where(last_wet[None], u_old, 0.0)
+    ut = theta * u_new + (1 - theta) * un
+    return ut, L * D * (w * ut).sum(axis=0)
+
+
+@numba.njit(parallel=True, cache=True)
+def _transport_velocity_kernel(u_new, u_old, last_wet, w, L, D, theta, ut, Qb):  # pragma: no cover
+    """transport_velocity_numpy with the same arithmetic, one face column per thread item."""
+    n, a, b = u_new.shape
+    for p in numba.prange(a * b):
+        j, i = p // b, p % b
+        s = 0.0
+        for k in range(n):
+            un = u_old[k, j, i] if last_wet[j, i] else 0.0
+            x = theta * u_new[k, j, i] + (1 - theta) * un
+            ut[k, j, i] = x
+            s += w[k, j, i] * x
+        Qb[j, i] = L[j, i] * D[j, i] * s
+
+
+def transport_velocity(u_new: np.ndarray, u_old: np.ndarray, last_wet: np.ndarray, w: np.ndarray,
+                       L: np.ndarray, D: np.ndarray, theta: float) -> tuple[np.ndarray, np.ndarray]:
+    """(u^θ, Q_bt) of the ALE step (see transport_velocity_numpy, the reference).  Numba kernel."""
+    n, a, b = np.shape(u_new)
+    ut, Qb = np.empty((n, a, b)), np.empty((a, b))
+    _transport_velocity_kernel(np.asarray(u_new, float), np.asarray(u_old, float), np.asarray(last_wet, np.bool_),
+                               np.asarray(w, float), np.asarray(L, float), np.asarray(D, float), float(theta), ut, Qb)
+    return ut, Qb
+
+
 # ---------------------------------------------------------------- open boundaries (Plan C, scope A)
 def baroclinic_split_numpy(vel: np.ndarray, w: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """NumPy reference of baroclinic_split (test oracle).  

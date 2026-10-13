@@ -94,7 +94,7 @@ from core.vertical import remap as rm
 from core.dynamics import open_boundary as obc
 from core.vertical.ale import (DZ_FLOOR, baroclinic_split, exterior_on_layers, face_fractions, face_thickness,
                                face_transport_thickness, lagrangian_thickness, open_face_transport, ppm_transport_x,
-                               upwind_transport_x, zero_thin_bed_velocity)
+                               transport_velocity, upwind_transport_x, zero_thin_bed_velocity)
 from core.vertical.pgf import fv_pgf
 
 G = 9.81
@@ -1108,16 +1108,18 @@ class SigmaBaroclinic:
         (qe, qw), (qn, qs) = self._transport_thickness(h)
         return 0.5 * (qe + qw), (0.5 * (qn + qs)).swapaxes(1, 2)
 
-    def _remap_faces(self, vel: np.ndarray, hf_src: np.ndarray, hf_tgt: np.ndarray) -> np.ndarray:
+    def _remap_faces(self, vel: np.ndarray, hf_src: np.ndarray, hf_tgt: np.ndarray,
+                     w_tgt: np.ndarray | None = None) -> np.ndarray:
         """
         Remap face velocities between two face-layer geometries in fraction space: thicknesses
         w_src S → w_tgt S with the same column total S, so Σ w u (the depth mean of the free
-        surface) is conserved exactly (spec §2 step 4).
+        surface) is conserved exactly (spec §2 step 4).  ``w_tgt``: face_fractions(hf_tgt) if already known.
         """
         tot = hf_src.sum(axis=0)
         wet = tot > 0
         S = np.where(wet, tot, 1.0)[None]
-        return rm.remap_columns(face_fractions(hf_src) * S, vel, face_fractions(hf_tgt) * S, self.remap_code, wet)
+        w_tgt = face_fractions(hf_tgt) if w_tgt is None else w_tgt
+        return rm.remap_columns(face_fractions(hf_src) * S, vel, w_tgt * S, self.remap_code, wet)
 
     # ------------------------------------------------------------------ explicit tendencies
     def _baroclinic_pgf(self, eta: np.ndarray, T: np.ndarray, h: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
@@ -1634,11 +1636,9 @@ class SigmaBaroclinic:
         self._open_velocity(st, u_new, v_new, wu, wv)                   # sponge on u′, Orlanski (spec §3.2-3.3)
         u_new = zero_thin_bed_velocity(u_new, hu, wu, self.h_thin_bed)
         v_new = zero_thin_bed_velocity(v_new, hv, wv, self.h_thin_bed)
-        un = np.where(self.fs.last_wet_u[None], st.u, 0.0)
-        vn = np.where(self.fs.last_wet_v[None], st.v, 0.0)
-        utx, uty = th * u_new + (1 - th) * un, th * v_new + (1 - th) * vn
-        Qbx = self.fs.Lu * self.fs.last_Du * (wu * utx).sum(axis=0)        # free-surface volume fluxes
-        Qby = self.fs.Lv * self.fs.last_Dv * (wv * uty).sum(axis=0)
+        # transport velocities and free-surface volume fluxes (core.vertical.ale.transport_velocity)
+        utx, Qbx = transport_velocity(u_new, st.u, self.fs.last_wet_u, wu, self.fs.Lu, self.fs.last_Du, th)
+        uty, Qby = transport_velocity(v_new, st.v, self.fs.last_wet_v, wv, self.fs.Lv, self.fs.last_Dv, th)
         if self.thickness_flux == "ppm":
             dx_t, dy_t = self._vi["dx_t"], self._vi["dy_t"]
             Qx = ppm_transport_x(st.h, utx, self.fs.Lu, Qbx, qe, qw, act, dt, dx_t)
@@ -1674,8 +1674,9 @@ class SigmaBaroclinic:
             mix = mix + self.layer_volumes(eta_new, h_new) * (rem[1] - T_new**2) / dt   # remap part
         hu_lag, hv_lag = self._mean_face_thickness(h_lag)
         hu1, hv1 = self._mean_face_thickness(h_new)
-        u_new = zero_thin_bed_velocity(self._remap_faces(u_new, hu_lag, hu1), hu1, face_fractions(hu1), self.h_thin_bed)
-        v_new = zero_thin_bed_velocity(self._remap_faces(v_new, hv_lag, hv1), hv1, face_fractions(hv1), self.h_thin_bed)
+        wu1, wv1 = face_fractions(hu1), face_fractions(hv1)                # once: remap target and thin-bed rule
+        u_new = zero_thin_bed_velocity(self._remap_faces(u_new, hu_lag, hu1, wu1), hu1, wu1, self.h_thin_bed)
+        v_new = zero_thin_bed_velocity(self._remap_faces(v_new, hv_lag, hv1, wv1), hv1, wv1, self.h_thin_bed)
         g = self._vi                                                    # CFL truncation backstop (MOM6 vertvisc_limit_vel)
         u_before, v_before = u_new, v_new
         u_new, nu_, fu = vi.truncate_cfl(u_new, dt, g["dx_t"], hu1, self.h_thin_bed)

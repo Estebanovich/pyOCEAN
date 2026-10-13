@@ -454,3 +454,17 @@ def test_transport_thickness_kernel_reads_nan_land_and_swapped_views_as_numpy(cl
         b = ale.face_transport_thickness_numpy(*args, clip)
         for x, y in zip(a, b):
             assert np.array_equal(x, y)
+
+
+def test_transport_velocity_kernel_matches_numpy():
+    # perf part 2, task 6: u^θ = θ u_new + (1−θ) u_old (0 on faces dry in the last step), Q_bt = L D Σ w u^θ
+    rng = np.random.default_rng(7)
+    n, a, b = 6, 5, 8
+    u1, u0 = rng.normal(size=(n, a, b)), rng.normal(size=(n, a, b))
+    wet = rng.random((a, b)) > 0.3
+    w = rng.random((n, a, b))
+    w /= w.sum(0)
+    L, D = rng.uniform(500, 900, (a, b)), rng.uniform(0, 50, (a, b))
+    ut, Qb = ale.transport_velocity(u1, u0, wet, w, L, D, 0.6)
+    ut0, Qb0 = ale.transport_velocity_numpy(u1, u0, wet, w, L, D, 0.6)
+    assert np.array_equal(ut, ut0) and np.array_equal(Qb, Qb0)
