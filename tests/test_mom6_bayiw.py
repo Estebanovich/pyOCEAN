@@ -86,3 +86,29 @@ def test_mom_input_cut_has_three_open_edges_and_zstar_levels(tmp_path):
     assert 'OBC_NUMBER_OF_SEGMENTS = 3' in txt and 'NK = 50' in txt and 'NIGLOBAL = 198' in txt
     assert 'REGRIDDING_COORDINATE_MODE = "ZSTAR"' in txt
     assert "ALE_RESOLUTION = " + ", ".join(f"{x:.6g}" for x in bayiw.DELR) in txt
+
+
+def test_series_from_mom6_matches_the_pyocean_record_layout(tmp_path):
+    from validation.bayiw_2d import section
+    from validation.mom6_bayiw import inputs, read_mom6
+    H = np.nan_to_num(section.section_inputs("2layer", "bay")["H"][:, 0])
+    nt, nk, ny, nx = 3, 4, 352, inputs.NX_SECTION
+    h = np.repeat((H / nk)[None, None, :, None], nk, 1).repeat(nt, 0).repeat(nx, 3)
+    temp = 15.0 + np.arange(nk)[None, :, None, None] * np.ones((nt, nk, ny, nx))     # surface first, as MOM6
+    with netCDF4.Dataset(tmp_path / "prog.nc", "w") as ds:
+        for n, s in (("Time", nt), ("zl", nk), ("yh", ny), ("xh", nx), ("yq", ny + 1)):
+            ds.createDimension(n, s)
+        ds.createVariable("Time", "f8", ("Time",))[:] = np.array([900.0, 1800.0, 2700.0]) / 86400.0
+        ds["Time"].units = "days since 0001-01-01 00:00:00"
+        ds.createVariable("h", "f8", ("Time", "zl", "yh", "xh"))[:] = h
+        ds.createVariable("temp", "f8", ("Time", "zl", "yh", "xh"))[:] = temp
+        ds.createVariable("v", "f8", ("Time", "zl", "yq", "xh"))[:] = 0.0
+        ds.createVariable("SSH", "f8", ("Time", "yh", "xh"))[:] = 0.01
+    s = read_mom6.section_series(tmp_path, "2layer", "bay")
+    for k in ("t_h", "eta", "T110", "T250", "V110", "T_sec", "V_sec", "n_trunc", "heat", "rpe"):
+        assert k in s, k
+    np.testing.assert_allclose(s["t_h"], [0.25, 0.5, 0.75])
+    np.testing.assert_allclose(s["eta"][0], 0.01)
+    exp = section.to_mitgcm_levels(h[0, ::-1, :, 1:2], temp[0, ::-1, :, 1:2], H[:, None])[::-1, :, 0]
+    np.testing.assert_allclose(s["T_sec"][0], exp)                # NaN below the bed, as run_pyocean.record
+    assert s["T_sec"].shape == (3, 50, ny) and s["V_sec"].shape == (3, 50, ny + 1)
