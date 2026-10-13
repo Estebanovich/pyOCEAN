@@ -134,6 +134,32 @@ En todas las estaciones, η, V110, la isoterma y ζ cambian ≤ 0.03 en el cocie
 | Híbrida lineal en la bahía: T110 2.5–3×, mapa 7–9× | (c) probable | Pocas capas activas en aguas someras (25 capas con objetivos para toda la columna de 600 m) más el muestreo sensible a la T de capas vacías. Falta separar las dos partes |
 | Híbrida dos capas: la interfaz casi quieta en Omega y 3–6× en la bahía; U110 la mitad en A y B | **(a) candidato** | Mismo patrón que la sección 2-D (borde de la plataforma 0.27–0.61). z\* con el mismo momento coincide, así que está en algo propio de la coordenada híbrida. Se diagnostica aparte antes de usar la híbrida en la fase 2 |
 
+## Híbrida corregida y caso realista (2026-10-13)
+
+El diagnóstico de la falla en dos capas está en `validation/bayiw_2d/README.md`, sección "Corrección de la híbrida". Hubo tres problemas: el piso z\* llegaba solo a 74.8 m, la inicialización no seguía a MOM6 y `keep_isopycnal` no conservaba la interfaz del salto. Las corridas híbridas de la fase 1 con el piso anterior se conservan como `*_hybrid_radiate_floor75` y se comparan con `compare.py <caso> hybrid radiate` cambiando `dt_tag="_floor75"`. Las de abajo usan la híbrida corregida.
+
+**Caso realista** (febrero, T equivalente en densidad; `bayiw.CASES["real"]`; MITgcm con S uniforme, exacto):
+
+| Métrica | z\* | híbrida |
+|---|---|---|
+| Seiche (período / rango / correlación) | −1.8 % / ±1 % / 1.00 ✅ | igual ✅ |
+| T110 en Seiche, Seiche2, Omega, C (criterio) | 0.99–1.12, correlación ≥ 0.98 ✅ | 0.93–1.04, correlación ≥ 0.93 ✅ |
+| V110, U110 (sin Gamma) | 1.01–1.04, correlación ≥ 0.96 | 1.01–1.03, correlación ≥ 0.96 |
+| Efecto de la bahía ΔT110 | 0.79–1.02 ✅ | 0.77–0.96 ✅ |
+| Mapa de T a 110 m (6 / 24 / 60 h) | 0.02 / 0.14 / 0.15 | 0.12 / 0.29 / 0.35 |
+
+En la estratificación realista, que es la de la tesis de Esteban, **z\* y la híbrida corregida reproducen a MITgcm**. Gamma (0.35 en T110 de la híbrida, 0.63–0.76 en V110 de los dos) está dentro de la esponja de pyOCEAN: es (c), como en los otros casos.
+
+**Dos capas, híbrida corregida:**
+- **Seiche:** pasa.
+- **V110:** 0.80–1.08, pero en A y B la correlación sin desfase es 0.65; la mejor correlación es 0.88, con +3 h.
+- **U110 en A y B:** 0.81 (correlación 0.72–0.76). Con el piso de 75 m era 0.53–0.57.
+- **ζ:** en amplitud ya está cerca de MITgcm (0.87–1.36; con el piso de 75 m, Omega daba 0.08 y Seiche2 6.5). La fase no: la correlación es 0.19–0.84, y la mejor llega con +1.25 a +3 h de retraso (salvo en C, −1 h).
+- **Columnas nativas** (`native_columns.py`): ζ 0.87–1.39, correlación 0.19–0.83.
+- **En la sección 2-D** la misma corrección deja ζ en 0.94–1.29 con correlación 0.78–0.99. El retraso en 3-D, en las estaciones del borde de la plataforma, queda **abierto**.
+
+**Lineal, híbrida corregida:** igual que con el piso de 75 m. Fuera de la bahía 0.96–1.02, correlación ≥ 0.99. Dentro, T110 2.5–3.1 (correlación 0.29–0.54), con el mapa en 7–9 por la bahía somera y la T de las capas vacías.
+
 ## Resultados de la fase 2: anidado en la corrida completa (z\*)
 
 **Configuración:**
@@ -199,7 +225,7 @@ En todas las estaciones, η, V110, la isoterma y ζ cambian ≤ 0.03 en el cocie
 
 ## Qué debe mejorar pyOCEAN (las dos fases)
 
-1. **La híbrida con una interfaz marcada (fase 1).** La interfaz responde mal al viento lejos de la costa y exagera la respuesta dentro de la bahía. Es la prioridad: es el caso de la tesis de Esteban. Se diagnostica aparte, en la sección 2-D.
+1. **La híbrida con una interfaz marcada.** Corregida en amplitud: piso hasta el fondo, inicialización como MOM6 y `keep_isopycnal` en saltos. Sigue abierto el retraso de 1.5–3 h de la interfaz en las estaciones del borde de la plataforma en 3-D, que no aparece en 2-D. En la estratificación realista la híbrida ya reproduce a MITgcm.
 2. **Un exterior 3-D en la banda de esponja.** Con anidado, la esponja de 30 celdas (150 km) relaja hacia el perfil del borde copiado y daña Gamma en el caso lineal. Hace falta `OBData` en toda la banda, o una esponja más angosta al anidar.
 3. **La T de las capas vacías.** Deriva sin masa. No cambia el calor, pero contamina cualquier reconstrucción vertical que la use en su plantilla.
 4. **La difusión de la interfaz en z\*** (unas 2 veces la de MITgcm). Ya conocida; afecta T en niveles fijos, no el desplazamiento.

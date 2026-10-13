@@ -109,11 +109,48 @@ Las señales a 110 m en dos capas son muy pequeñas: el rms de V110 en MITgcm va
 | Híbrida 50, dos capas: ruido de ~1 mm/s a 110 m y efecto de la bahía 16–985× | abierta, posible (a) | velocidad en ~38 capas casi desvanecidas (0–0.1 m) de una interfaz de dos masas de agua; configuración degenerada (50 objetivos para 2 densidades) |
 | Rotación (sección periódica) | (b) | pyOCEAN no tiene frontera periódica en x |
 
+## Corrección de la híbrida con una interfaz marcada (2026-10-13)
+
+La híbrida de dos capas dejaba la interfaz casi quieta cerca del escalón de la boca (600 → 163 m): desplazamiento por calor ζ de 0.05–0.06 del de MITgcm en Seiche2 y Omega. La causa no era el regrid, el flujo de grosor, la forma del momento ni la energía cinética: cada una se probó por separado. Se encontraron tres problemas.
+
+1. **Configuración: el piso z\* llegaba a 74.8 m.** Era `dz_top = delR[:25]`, con un fondo de 600 m.
+   - El piso es lo único que da espesor a las capas cuya densidad meta no existe en la columna (MOM6 `coord_hycom.F90:253-267`), y el de OM4 llega al fondo (`hycom1_75_800m`).
+   - Sin él, toda el agua fría era *una* capa de 484 m con una sola velocidad. Llevaba flujo de retorno por debajo de la profundidad del escalón: −1511 m³/s en la última cara antes de él, frente a −404 en z\*.
+   - **Corrección:** `bayiw.hybrid_dz_top(25)` llega al fondo, con pisos por encima del salto hasta la interfaz que lo lleva (la 13) y uno en el escalón (163.3 m).
+   - **Mejora del modelo:** `SigmaBaroclinic` avisa cuando el piso híbrido no llega al fondo más profundo.
+2. **Error (a): la inicialización híbrida no seguía a MOM6.**
+   - Iteraba "regrid sobre la malla del modelo → remapeo desde los datos". Con pisos profundos oscilaba alrededor del salto: 24–348 capas con agua mezclada según el número de pasadas.
+   - MOM6 regridea una vez sobre los niveles de los datos (`MOM_state_initialization.F90:2928`).
+   - **Corrección:**
+     - `regrid_columns(..., n_out=...)` regridea una fuente con otro número de capas;
+     - `snap_to_jumps` lleva al salto la interfaz que P1M deja dentro de una celda, porque P1M promedia los bordes discontinuos (`P1M_functions.F90:48`). Esto va más allá de MOM6.
+3. **Error (a): `keep_isopycnal` no conservaba la interfaz del salto.**
+   - Con el agua fría en capas tipo z cuyas metas no la contienen, ninguna vecina era "consistente". P1M recolocaba la interfaz 7 m dentro del agua cálida en cada paso, y la interfaz se ensanchaba a 21–29 m.
+   - **Corrección:** una interfaz cuya densidad meta queda entre las densidades de sus dos capas es isopícnica y se conserva (principio de `hybgen`).
+
+**Resultados (ζ híbrida 25 / MITgcm `orl`, dos capas con bahía, 24 h; amplitud · correlación):**
+
+| | Seiche | Seiche2 | Omega | plataforma (j = 300) | C |
+|---|---|---|---|---|---|
+| z\* | 0.90 · 0.99 | 0.92 · 0.99 | 1.20 · 0.96 | 1.04 · 0.99 | 1.01 · 0.99 |
+| híbrida, piso a 75 m | 1.70 · 0.85 | 0.06 · 0.08 | 0.05 · −0.13 | 1.11 · 0.99 | 1.03 · 0.99 |
+| híbrida corregida | 1.18 · 0.97 | 1.29 · 0.96 | 0.94 · 0.78 | 1.07 · 0.99 | 1.01 · 0.99 |
+
+Espesor de la interfaz (10–90 %): 8.0 m, frente a 8.1–9.3 m de MITgcm. V110 queda en 0.71–2.10 (correlación 0.76–0.94); sigue abierta.
+
+**Caso realista** (febrero, `bayiw.CASES["real"]`, T equivalente en densidad T − (β/α)(S − 33.6), exacta con EOS lineal y difusividades iguales de T y S; MITgcm `orl`):
+- **z\*:** T110, T250 y V110 entre 0.99 y 1.09, correlación ≥ 0.99; error de la sección 0.02–0.06.
+- **Híbrida corregida:** T110 0.86–1.06, correlación ≥ 0.95, todo pasa; V110 0.99–1.21 (Seiche 1.21).
+- **El período del seiche** sale 3.66 frente a 3.79 h en los dos modelos, con correlación 1.00 y rango ±2 %: es la métrica cuantizada, no el modelo.
+
+**Caso lineal:** fuera de la bahía no cambia (0.91–1.00). Dentro de la bahía, T110 sube a 3–5.6, frente a 1.07–1.32 con el piso de 75 m. La bahía somera tiene pocas capas activas, y la T muestreada depende de las capas vacías. Queda abierto.
+
 ## Qué debe mejorar pyOCEAN
 
 1. **Velocidad en capas casi desvanecidas** (híbrida con muchos objetivos vacíos): da ruido de ~1 mm/s. Revisar cómo MOM6/HYCOM acoplan o anulan la velocidad de capas vacías (MOM6 `vertvisc` con `Hmix`/`h_neglect`; HYCOM `momtum` en capas delgadas).
 2. **Fronteras periódicas en x/y:** para secciones 2.5-D con rotación y canales.
 3. **Gradiente de presión FV en escalones con T discontinua** (1e-4 m/s en z\*): evaluar la ponderación de masa en el fondo (`MASS_WEIGHT_IN_PRESSURE_GRADIENT`) también entre capas no desvanecidas, o PPM en la reconstrucción.
-4. **La híbrida de 25 capas en la bahía somera:** más capas isopicnas en zonas someras (objetivos según la profundidad) o una transición σ más amplia.
+4. **La híbrida de 25 capas en la bahía somera:** más capas isopicnas en zonas someras (objetivos según la profundidad) o una transición σ más amplia; el caso lineal empeoró ahí con el piso hasta el fondo (T110 3–5.6).
 5. **Métricas:** para la sección, período por cruces por cero o ajuste de un oscilador amortiguado, y en dos capas el desplazamiento de la isoterma central en lugar de T a profundidad fija.
 6. **Para Esteban (MITgcm):** su `data.obcs` refleja el pulso barotrópico. Para radiar, usar la esponja solo sobre la parte baroclínica o quitar `balanceFacS = -1`.
+7. **T fuera de rango en capas de ~1 mm** (lock exchange híbrido: 17.74 o 36.12 sobre 17.86–35.71, con la regla anterior y con la nueva de `keep_isopycnal`). Es parte del problema de las capas casi vacías (punto 1).
