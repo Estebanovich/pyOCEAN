@@ -134,13 +134,70 @@ def test_restart_refuses_other_layers_or_boundaries(tmp_path):
         read_restart(tmp_path / "rst.nc", _model(**kw))
 
 
-def test_restart_refuses_an_ale_model(tmp_path):
-    from core.grid.horizontal import create_cartesian_grid
-    hg = create_cartesian_grid(nx=6, ny=1, dx=1000.0, dy=1000.0, f0=0.0)
-    m = SigmaBaroclinic(hg, np.full((1, 6), 20.0), dt=10.0, n_layers=4, z0=None, closure="constant",
-                        vertical_coordinate="ale", regrid="zstar", regrid_params=dict(dz_top=np.full(4, 5.0)))
-    st = m.initial_state(np.zeros((1, 6)), np.full((4, 1, 6), 10.0))
-    with pytest.raises(NotImplementedError, match="ALE"):
-        write_restart(tmp_path / "r.nc", m, st)
-    with pytest.raises(NotImplementedError, match="ALE"):
-        read_restart(tmp_path / "r.nc", m)
+# ---------------------------------------------------------------- ALE (Plan D)
+def _ale_model(rule="zstar", open_=False, refactor_iterations=None):
+    from boundaries.obcs import OBData
+    hg = create_cartesian_grid(nx=NX, ny=1, dx=1000.0, dy=1000.0, f0=1e-4)
+    H = np.linspace(20.0, 8.0, NX)[None, :]
+    params = dict(dz_top=np.full(NZ, 20.0 / NZ))
+    if rule == "hybrid":
+        params["rho_target"] = np.linspace(996.0, 999.5, NZ + 1)
+    kw = dict(closure="constant", z0=None, nu_const=1e-4, ah=1.0, vertical_coordinate="ale", regrid=rule,
+              regrid_params=params, rho_ref="auto")
+    if open_:
+        zw = np.linspace(0.0, -20.0, 5)[:, None]
+
+        def state(t):                                                # exterior that varies in time
+            a = np.sin(2 * np.pi * t / 3600.0)
+            return {"west": OBData(side="west", T=np.full((4, 1), 12.0 + a), u_normal=np.full((4, 1), 0.01 * a),
+                                   zw=zw, eta=np.full(1, 0.02 * a), ubar=np.full(1, 0.01 * a))}
+        kw.update(open_boundaries=("west", "east"), sponge_cells=4, sponge_tau=(600.0, 60.0),
+                  open_boundary_state=state)
+    m = SigmaBaroclinic(hg, H, dt=20.0, n_layers=NZ, rho0=1000.0, t_coef=0.2, **kw)
+    if refactor_iterations is not None:
+        m.fs.refactor_iterations = refactor_iterations
+    return m
+
+
+def _ale_run(make, n_before, n_after, path):
+    """(continuous n_before + n_after steps, restarted at n_before into a fresh model) final states."""
+    m = make()
+    st = _initial(m)
+    for _ in range(n_before + n_after):
+        st = m.step(st)
+    m1 = make()
+    st1 = _initial(m1)
+    for _ in range(n_before):
+        st1 = m1.step(st1)
+    write_restart(path, m1, st1)
+    m2 = make()
+    st2 = read_restart(path, m2)
+    for _ in range(n_after):
+        st2 = m2.step(st2)
+    return st, st2
+
+
+@pytest.mark.parametrize("rule, open_", [("zstar", False), ("sigma", False), ("hybrid", True)])
+def test_ale_restart_is_bit_for_bit(tmp_path, rule, open_):
+    ref, st = _ale_run(lambda: _ale_model(rule, open_), 15, 25, tmp_path / "rst.nc")
+    _assert_identical(st, ref)
+    assert np.array_equal(st.h, ref.h)
+
+
+def test_ale_restart_keeps_the_lagged_lu_preconditioner(tmp_path):
+    # never refactorised after the first step: the restarted run must precondition CG with the same old
+    # matrix, or CG stops at a different iterate within its tolerance
+    ref, st = _ale_run(lambda: _ale_model("zstar", refactor_iterations=10**6), 15, 25, tmp_path / "rst.nc")
+    _assert_identical(st, ref)
+    assert np.array_equal(st.h, ref.h)
+
+
+def test_ale_restart_refuses_other_regrid_parameters(tmp_path):
+    m = _ale_model("hybrid")
+    write_restart(tmp_path / "rst.nc", m, m.step(_initial(m)))
+    m2 = _ale_model("hybrid")
+    m2.regrid_params["rho_target"] = np.linspace(996.0, 999.6, NZ + 1)
+    with pytest.raises(ValueError, match="rho_target"):
+        read_restart(tmp_path / "rst.nc", m2)
+    with pytest.raises(ValueError, match="regrid"):
+        read_restart(tmp_path / "rst.nc", _ale_model("zstar"))

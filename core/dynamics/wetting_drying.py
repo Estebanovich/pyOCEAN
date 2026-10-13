@@ -103,6 +103,7 @@ class WetDryFreeSurface:
         # stays an excellent SPD preconditioner (1–3 iterations vs ~100 with Jacobi on the northern Gulf nest)
         self.precond, self.refactor_iterations = precond, refactor_iterations
         self._lu = None
+        self._lu_matrix = None
         self._refactor = True
         self.lu_factorizations = 0
         self.cg_iterations = 0
@@ -199,6 +200,30 @@ class WetDryFreeSurface:
         return sp.csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(n, n))
 
     # ------------------------------------------------------------------
+    def preconditioner_state(self) -> dict | None:
+        """
+        The lagged-LU CG preconditioner as plain arrays, for bit-for-bit restarts: the CSC matrix it factorised
+        (data, indices, indptr, shape) and whether the next step refactorises.  CG stops at an iterate that
+        depends on the preconditioner, so a restart that refactorised the current matrix would drift at the
+        CG tolerance.  None when there is no LU yet.
+        """
+        if self._lu_matrix is None:
+            return None
+        A = self._lu_matrix
+        return dict(data=A.data.copy(), indices=A.indices.copy(), indptr=A.indptr.copy(), shape=A.shape,
+                    refactor=bool(self._refactor))
+
+    def set_preconditioner_state(self, state: dict | None) -> None:
+        """Restore preconditioner_state: SuperLU of the same matrix gives the same factors."""
+        if state is None:
+            self._lu = self._lu_matrix = None
+            self._refactor = True
+            return
+        self._lu_matrix = sp.csc_matrix((state["data"], state["indices"], state["indptr"]),
+                                        shape=tuple(int(n) for n in state["shape"]))
+        self._lu = splu(self._lu_matrix)
+        self._refactor = bool(state["refactor"])
+
     def step(self, eta: np.ndarray, u_n: np.ndarray, v_n: np.ndarray, u_hat: np.ndarray,
              v_hat: np.ndarray, flather_eta=None, flather_ubar: np.ndarray | None = None,
              flather_vbar: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -249,7 +274,8 @@ class WetDryFreeSurface:
         else:
             if self.precond == "lu":
                 if self._lu is None or self._refactor:
-                    self._lu = splu(A.tocsc())
+                    self._lu_matrix = A.tocsc()                   # kept for restarts (preconditioner_state)
+                    self._lu = splu(self._lu_matrix)
                     self.lu_factorizations += 1
                     self._refactor = False
                 M = LinearOperator(A.shape, matvec=self._lu.solve)

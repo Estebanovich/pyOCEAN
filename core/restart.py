@@ -11,7 +11,12 @@ SCHISM #140).  For ``SigmaBaroclinic`` that is:
   during the AB start-up also reproduces the continuous run);
 * the layer transports Qx, Qy, Fz and ω of the last step (flux-form momentum
   advection uses them), and the last numerical-mixing field;
-* the GLS turbulence state k, ε, ν held by the model (``core.gls``).
+* the GLS turbulence state k, ε, ν held by the model (``core.gls``);
+* the lagged-LU CG preconditioner of the free surface (the matrix it factorised and the refactor
+  flag): CG stops at an iterate that depends on it;
+* ALE (``vertical_coordinate='ale'``, Plan D): the layer thicknesses h, the exterior profile kept in z
+  (T_ext on h_ext) and the CFL truncation count.  ``open_boundary_state`` is a function and is passed
+  to the model again; its edges and modes are checked.
 
 Arrays are written as float64 NetCDF4 (CF attributes, named dimensions), so
 reading back is exact.  The model configuration (Δt, layers, closure, schemes,
@@ -40,14 +45,23 @@ _OPTIONAL = {
     "Qy": (("layer", "yv", "x"), "m3 s-1", "layer volume transport through v-faces"),
     "Fz": (("level", "y", "x"), "m3 s-1", "volume flux through layer interfaces"),
     "mix_num": (("layer", "y", "x"), "degC2 m3 s-1", "online numerical mixing (Burchard & Rennau 2008)"),
+    "h": (("layer", "y", "x"), "m", "layer thickness (ALE), bed first"),
 }
+
+
+def _text(v) -> str:
+    """A configuration value as exact text (arrays: every element at 17 significant digits)."""
+    a = np.asarray(v)
+    if a.dtype.kind in "fiub":
+        return " ".join(f"{x:.17g}" for x in np.atleast_1d(a).astype(float).ravel())
+    return str(v)
 
 
 def _config(model: SigmaBaroclinic) -> dict:
     """Configuration that must match between the writer and the reader."""
     core = model.core
     rr = model.rho_ref
-    return dict(dt=model.dt, n_layers=model.n, theta=model.fs.theta, d_min=model.fs.d_min,
+    cfg = dict(dt=model.dt, n_layers=model.n, theta=model.fs.theta, d_min=model.fs.d_min,
                 sigma_w=" ".join(f"{x:.17g}" for x in core.sigma_w[:, 0]), pgf=model.pgf,
                 rho_ref="none" if rr is None else ("auto" if isinstance(rr, (str, ReferenceProfile)) else "callable"),
                 open_boundaries=",".join(model.open) or "none",
@@ -57,13 +71,19 @@ def _config(model: SigmaBaroclinic) -> dict:
                 adv=model.adv, tracer_scheme=model.tracer_scheme, tracer_time=model.tracer_time,
                 rho0=model.rho0, t_coef=model.t_coef, t_ref=model.t_ref, ah=model.ah,
                 ny=int(model.H.shape[0]), nx=int(model.H.shape[1]))
+    if getattr(model, "ale", False):                           # ALE (Plan D): the rule and every scheme choice
+        cfg.update(vertical_coordinate="ale", regrid=model.regrid_rule, remap=int(model.remap_code),
+                   thickness_flux=model.thickness_flux, momentum=model.momentum, ke_scheme=model.ke_scheme,
+                   h_thin_bed=model.h_thin_bed, max_truncations=model.max_truncations,
+                   mix_diagnostic=int(model.mix_diagnostic), obc_tau_in=model.obc_tau_in, obc_tau_out=model.obc_tau_out,
+                   obc_mode=",".join(f"{e}:{m}" for e, m in sorted(model.obc_mode.items())) or "none",
+                   obc_state="none" if model.obc_state is None else "function")
+        cfg.update({f"regrid_{k}": _text(v) for k, v in sorted(model.regrid_params.items())})
+    return cfg
 
 
 def write_restart(path: str | Path, model: SigmaBaroclinic, state: SigmaState) -> None:
     """Write ``state`` and the model's hidden state to a float64 NetCDF4 restart file."""
-    if getattr(model, "ale", False):
-        raise NotImplementedError("restart of an ALE model (vertical_coordinate='ale') needs h and is not "
-                                  "implemented yet (ALE Plan D)")
     data = {}
     for name, (dims, units, long) in _FIELDS.items():
         data[name] = xr.Variable(dims, np.asarray(getattr(state, name), np.float64),
@@ -83,28 +103,37 @@ def write_restart(path: str | Path, model: SigmaBaroclinic, state: SigmaState) -
         for name, units in (("tke", "m2 s-2"), ("eps", "m2 s-3"), ("akv", "m2 s-1")):
             data[f"gls_{name}"] = xr.Variable(("level", "y", "x"), getattr(gls, name).reshape(-1, ny, nx),
                                               {"units": units, "long_name": f"GLS {name} at layer interfaces"})
-    if model.open and model.T_ext is not None:
+    if (model.open or getattr(model, "ale", False)) and model.T_ext is not None:
         data["T_ext"] = xr.Variable(("layer", "y", "x"), np.asarray(model.T_ext, np.float64),
                                     {"units": "degC", "long_name": "external temperature (open-boundary inflow, sponge)"})
+    if getattr(model, "ale", False) and getattr(model, "h_ext", None) is not None:
+        data["h_ext"] = xr.Variable(("layer", "y", "x"), np.asarray(model.h_ext, np.float64),
+                                    {"units": "m", "long_name": "layers of the external temperature (kept in z)"})
+    pre = model.fs.preconditioner_state() if hasattr(model.fs, "preconditioner_state") else None
+    if pre is not None:
+        data["fs_lu_data"] = xr.Variable(("lu_nnz",), pre["data"], {"long_name": "lagged CG preconditioner matrix (CSC data)"})
+        data["fs_lu_indices"] = xr.Variable(("lu_nnz",), pre["indices"].astype(np.int64))
+        data["fs_lu_indptr"] = xr.Variable(("lu_ptr",), pre["indptr"].astype(np.int64))
     if isinstance(model.rho_ref, ReferenceProfile):
         data["rho_ref_z"] = xr.Variable(("ref",), model.rho_ref.z, {"units": "m", "long_name": "reference profile height"})
         data["rho_ref_rho"] = xr.Variable(("ref",), model.rho_ref.rho,
                                           {"units": "kg m-3", "long_name": "reference density profile ρ_ref(z)"})
-    attrs = {"model": type(model).__name__, "time": float(state.time), "time_units": "s",
+    attrs = {"model": type(model).__name__, "time": float(state.time), "time_units": "s", "n_trunc": int(state.n_trunc),
              "Conventions": "CF-1.8", "title": "pyOCEAN bit-for-bit restart"}
     attrs.update({f"config_{k}": v for k, v in _config(model).items()})
+    if pre is not None:
+        attrs.update(fs_lu_rows=int(pre["shape"][0]), fs_lu_cols=int(pre["shape"][1]), fs_lu_refactor=int(pre["refactor"]))
     xr.Dataset(data, attrs=attrs).to_netcdf(path, engine="netcdf4", format="NETCDF4")
 
 
 def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
     """Read a restart into a ``SigmaState`` and restore the hidden state of ``model``."""
-    if getattr(model, "ale", False):
-        raise NotImplementedError("restart of an ALE model (vertical_coordinate='ale') needs h and is not "
-                                  "implemented yet (ALE Plan D)")
     with xr.open_dataset(path, engine="netcdf4") as ds:
         ds = ds.load()
     if ds.attrs.get("model") != type(model).__name__:
         raise ValueError(f"restart written by {ds.attrs.get('model')}, not {type(model).__name__}")
+    if not getattr(model, "ale", False) and "config_regrid" in ds.attrs:
+        raise ValueError("restart written by an ALE model (vertical_coordinate='ale'), not a σ model")
     bad = []
     for k, v in _config(model).items():
         stored = ds.attrs.get(f"config_{k}")
@@ -131,8 +160,19 @@ def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
         if "T_ext" not in ds:
             raise ValueError("restart has no external tracer but the model has open boundaries")
         model.T_ext = ds["T_ext"].values.copy()
+    if getattr(model, "ale", False):
+        if "T_ext" in ds:
+            model.T_ext = ds["T_ext"].values.copy()
+        if "h_ext" in ds:
+            model.h_ext = ds["h_ext"].values.copy()
+    if hasattr(model.fs, "set_preconditioner_state"):
+        model.fs.set_preconditioner_state(
+            dict(data=ds["fs_lu_data"].values.copy(), indices=ds["fs_lu_indices"].values.astype(np.int32),
+                 indptr=ds["fs_lu_indptr"].values.astype(np.int32),
+                 shape=(int(ds.attrs["fs_lu_rows"]), int(ds.attrs["fs_lu_cols"])),
+                 refactor=bool(ds.attrs["fs_lu_refactor"])) if "fs_lu_data" in ds else None)
     if isinstance(model.rho_ref, (str, ReferenceProfile)):
         if "rho_ref_z" not in ds:
             raise ValueError("restart has no reference density profile but the model uses rho_ref='auto'")
         model.rho_ref = ReferenceProfile(ds["rho_ref_z"].values.copy(), ds["rho_ref_rho"].values.copy())
-    return SigmaState(g_hist=hist, time=float(ds.attrs["time"]), **kw)
+    return SigmaState(g_hist=hist, time=float(ds.attrs["time"]), n_trunc=int(ds.attrs.get("n_trunc", 0)), **kw)
