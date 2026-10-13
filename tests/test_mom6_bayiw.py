@@ -142,3 +142,11 @@ Ocean dynamics                        3600     32.654754     32.782386     32.73
     (tmp_path / "stdout.txt").write_text(txt)
     c = read_mom6.clock_table(tmp_path / "stdout.txt")
     assert c == {"Total runtime": 43.615381, "Ocean dynamics": 32.731857, "(Ocean continuity correction)": 7.717807}
+
+
+def test_mom_input_uses_pyocean_gravity_and_no_bug_defaults(tmp_path):
+    # final review: MOM6 ran with its default G_EARTH = 9.8 (MITgcm and pyOCEAN 9.81) and ENABLE_BUGS_BY_DEFAULT = True
+    from validation.mom6_bayiw import config
+    txt = (config.write_case("section", "2layer", "bay", "zstar", tmp_path, hours=1.0) / "MOM_input").read_text()
+    assert "G_EARTH = 9.81" in txt and "ENABLE_BUGS_BY_DEFAULT = False" in txt
+    assert "OBC_TEMP_SALT_NEEDED_BUG = True" in txt                    # T/S at the open edges from the interior

@@ -24,8 +24,9 @@ case "$1" in
       kill -0 $pid 2>/dev/null || break
       sleep 1
     done
-    sleep 2; pkill -f "$EXE" 2>/dev/null || true
-    grep -E "Total runtime|FATAL" stdout.txt | head -2 || tail -5 stdout.txt ;;
+    sleep 2; pkill -P $pid 2>/dev/null || true; kill $pid 2>/dev/null || true   # only this run's mpirun and ranks
+    grep -E "Total runtime|FATAL" stdout.txt | head -2 || tail -5 stdout.txt
+    grep -q "Total runtime" stdout.txt || { echo "FAILED $2" >&2; exit 1; } ;;            # no post-processing of a failed run
   section)
     D="$RUNS/section/$2_$3_$4"; ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
     rm -rf "$D"

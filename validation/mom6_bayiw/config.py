@@ -35,6 +35,10 @@ def mom_input(kind: str, case: str, coord: str, nx: int, ny: int, hours: float, 
          'TOPO_CONFIG = "file"', 'TOPO_FILE = "topog.nc"', 'TOPO_VARNAME = "depth"',
          "MINIMUM_DEPTH = 1.0", "MASKING_DEPTH = 0.0", f"MAXIMUM_DEPTH = {float(np.sum(bayiw.DELR)):.6g}",
          'ROTATION = "betaplane"', f"F_0 = {bayiw.F0:.6E}", "BETA = 0.0",
+         "G_EARTH = 9.81", "ENABLE_BUGS_BY_DEFAULT = False",                  # MITgcm/pyOCEAN g; MOM6 default 9.8
+         # OBC T/S filled from the interior at start-up (no TEMP/SALT segment data: the exterior is the initial
+         # profile at rest); these three "bug" behaviours are kept on purpose (MOM_open_boundary.F90:764-770)
+         "OBC_TEMP_SALT_NEEDED_BUG = True", "OBC_RESERVOIR_INIT_BUG = True", "OBC_TS_RESERVOIR_INIT_BUG = True",
          'EQN_OF_STATE = "LINEAR"', f"RHO_0 = {bayiw.RHO0}", f"RHO_REF_LINEAR_EOS = {bayiw.RHO0}",
          f"T_REF_LINEAR_EOS = {bayiw.CASES[case]['t_ref']}", f"DRHO_DT = {-bayiw.T_COEF:.6g}", "DRHO_DS = 0.0",
          "USE_REGRIDDING = True", f'REGRIDDING_COORDINATE_MODE = "{COORDS[coord]}"', 'REMAPPING_SCHEME = "PPM_H4"']
