@@ -62,3 +62,13 @@ def test_read_cut_shapes_and_times():
     assert n == 240 and abs(d["t"][-1] - 216000.0) < 1.0 and abs(d["t"][0] - 900.0) < 1.0   # 900-s averages
     assert d["eta"].shape == (n, 160, 200) and d["T"].shape == (n, 21, 160, 200)
     assert d["U"].shape == (n, 2, 160, 201) and d["V"].shape == (n, 2, 161, 200)
+
+
+def test_cut_model_steps_radiating():
+    from validation.bayiw_cut import cut
+    for coord in ("zstar", "hybrid"):
+        m, st, wind = cut.build_model("2layer", "bay", coord)
+        assert st.h.shape[1:] == (159, 198) and m.open == ("west", "east", "south")
+        for _ in range(3):
+            st = m.step(st)
+        assert np.isfinite(st.u).all() and np.isfinite(st.v).all() and st.n_trunc == 0

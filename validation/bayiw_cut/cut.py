@@ -165,3 +165,36 @@ def read_cut(case: str, bay: str, mode: str) -> dict:
 def full_run_dir(case: str, bay: str) -> Path:
     """Esteban's full run: run_expand (bay) or run_expand_nobay."""
     return bayiw.CASES[case]["dir"] / ("run_expand" if bay == "bay" else "run_expand_nobay")
+
+
+def build_model(case: str, bay: str, coord: str = "zstar", dt: float = 120.0, boundary_state=None):
+    """
+    pyOCEAN on MITgcm's interior of the cut (spec §1.2): z* on the 50 delR levels or hybrid with 25 layers
+    (N_LIGHT light targets); west/east/south open with Flather + Orlanski 0.45 + 30-cell u′ sponge (phase 1),
+    or with ``boundary_state`` (phase 2, 'radiating' toward Esteban's full run); initial state from the MITgcm
+    levels.  Returns (model, initial state, wind (nrec, 159, 198)).
+    """
+    from core.dynamics.sigma_baroclinic import SigmaBaroclinic
+    from core.grid.horizontal import create_cartesian_grid_stretched
+    d = cut_inputs(case, bay, "py")
+    hg = create_cartesian_grid_stretched(d["dx"], d["dy"], x0=d["x0"], y0=d["y0"], f0=bayiw.F0)
+    t_ref = bayiw.CASES[case]["t_ref"]
+    if coord == "zstar":
+        nz, params = bayiw.DELR.size, dict(dz_top=bayiw.DELR.copy())
+    elif coord == "hybrid":
+        nz = 25
+        rho = bayiw.RHO0 - bayiw.T_COEF * (d["T"][:, np.isfinite(d["H"])] - t_ref)
+        tgt = (bayiw.centred_targets(float(rho.min()), float(rho.max()), nz, bayiw.N_LIGHT) if case == "2layer"
+               else bayiw.profile_targets(rho, nz, bayiw.N_LIGHT))
+        params = dict(dz_top=bayiw.DELR[:nz].copy(), rho_target=tgt)
+    else:
+        raise ValueError(f"unknown coord {coord!r}")
+    m = SigmaBaroclinic(hg, d["H"], dt=dt, n_layers=nz, rho0=bayiw.RHO0, t_coef=bayiw.T_COEF, t_ref=t_ref, z0=None,
+                        closure="constant", nu_const=1e-5, ah=100.0, kh=100.0, kv=1e-5, pgf="fv", rho_ref="auto",
+                        vertical_coordinate="ale", regrid=coord, regrid_params=params,
+                        open_boundaries=("west", "east", "south"), orlanski_cmax=0.45, sponge_cells=30,
+                        sponge_tau=(1200.0, 60.0), sponge_tracer=False, mix_diagnostic=False,
+                        open_boundary_state=boundary_state)
+    h_src, T_src = bayiw.mitgcm_source(d["H"], d["T"])
+    st = m.initial_state(np.zeros(d["H"].shape), T_src, h_src=h_src)
+    return m, st, d["wind"]
