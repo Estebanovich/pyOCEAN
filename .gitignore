@@ -30,3 +30,9 @@ run/
 # HYCOM reference source (external, not project code)
 HYCOM-src/
 HYCOM-tools-master/
+
+# Run outputs and regenerated validation data (never versioned; Esteban 2026-10-13)
+log_*.txt
+validation/**/out/*.npz
+validation/mitgcm_exf/input/cases.npz
+validation/tides/tpxo_real_oracle.npz
