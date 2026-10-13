@@ -232,3 +232,7 @@ En la estratificación realista, que es la de la tesis de Esteban, **z\* y la h�
 5. **Costo.** z\* tarda 2.5–2.7 veces lo de MITgcm con 5 procesos por hora simulada, y el anidado añade 35 % (el exterior evaluado en cada paso). La híbrida, 1.2–1.3 veces. El perfil de rendimiento está pendiente.
 6. **El diseño del criterio de anidado.** Un modelo anidado en sí mismo no da un piso de error en la parte baroclínica. Para el próximo benchmark de anidado, el piso debe venir de otro modelo, o de MITgcm con otra malla o resolución, y la métrica de η debe incluirse desde el principio: fue la que mostró que el anidado funciona.
 7. **La métrica del período** está cuantizada a un bin espectral (−1.8 % con 27 h); hace falta interpolar el pico en `validation/bayiw_baroclinic/compare.dominant_period`, que comparten todos los benchmarks de BayIW.
+
+## Restart ALE (Plan D)
+
+`restart_check.py hybrid`: el corte de dos capas con bahía, viento y fronteras abiertas, 60 h seguidas frente a 30 h + `write_restart` + modelo nuevo + `read_restart` + 30 h. η, u, v, T y h son idénticos bit a bit, con cero truncamientos (11.5 min; archivo de 98 MB).
