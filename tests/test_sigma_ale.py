@@ -1135,3 +1135,20 @@ def test_reference_profile_kernel_matches_np_interp():
     assert prof(zz).shape == zz.shape
     small = rng.uniform(-700, 50, (3, 4))
     assert np.array_equal(prof(small), np.interp(small, prof.z, prof.rho))
+
+
+def test_advect_kernel_matches_numpy():
+    # perf part 2, task 5: the fused SSP-RK3 stages reproduce the NumPy combination, vanished columns keep C
+    m = _ale_box("zstar", nx=12, nz=6)
+    st = m.initial_state(np.zeros((1, 12)), 10.0 + np.random.default_rng(6).random((6, 1, 12)))
+    for _ in range(3):
+        st = m.step(st)
+    V0 = m.layer_volumes(st.eta, st.h)
+    V1 = V0 * 1.01
+    V1[:, :, 0] = 0.0
+    ok = V1 > 0
+    C = np.stack([st.T, st.T**2])
+    Fz = np.zeros((m.n + 1,) + m.H.shape)
+    a = m._advect(C, V0, V1, st.Qx, st.Qy, Fz, ok)
+    b = m._advect_numpy(C, V0, V1, st.Qx, st.Qy, Fz, ok)
+    assert np.array_equal(a, b) and np.isfinite(a).all()

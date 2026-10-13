@@ -652,6 +652,29 @@ def _interp_kernel(x, xp, fp, out):  # pragma: no cover
                 out[p] = r
 
 
+@numba.njit(parallel=True, cache=True)
+def _rk_stage(qa, qb, r, dt, V, C, stage, q_out, c_out):  # pragma: no cover
+    """
+    One SSP-RK3 stage of SigmaBaroclinic._advect_numpy with its exact expressions: stage 1 q = q0 + dt r,
+    2: 0.75 q0 + 0.25 (q1 + dt r), 3: q0/3 + 2/3 (q2 + dt r) (qa = q0, qb the previous stage); then the
+    ``safe`` rule c = q / V where V > 0, else the step's initial C.  Arrays (ntr, N, ny, nx) C-contiguous;
+    V (N, ny, nx) broadcast over the tracers.
+    """
+    qa1, qb1, r1, c01 = qa.ravel(), qb.ravel(), r.ravel(), C.ravel()
+    qo, co, v1 = q_out.ravel(), c_out.ravel(), V.ravel()
+    nv = v1.size
+    for p in numba.prange(qo.size):
+        if stage == 1:
+            q = qa1[p] + dt * r1[p]
+        elif stage == 2:
+            q = 0.75 * qa1[p] + 0.25 * (qb1[p] + dt * r1[p])
+        else:
+            q = qa1[p] / 3.0 + 2.0 / 3.0 * (qb1[p] + dt * r1[p])
+        qo[p] = q
+        v = v1[p % nv]
+        co[p] = q / v if v > 0 else c01[p]
+
+
 class ReferenceProfile:
     """ρ_ref(z) tabulated at heights z [m] (increasing) with values rho [kg m⁻³]; linear in between."""
 
@@ -1533,9 +1556,10 @@ class SigmaBaroclinic:
                            ext, "west" in self.open, "east" in self.open, "south" in self.open,
                            "north" in self.open, self.tracer_scheme == "weno5", bool(np.any(Fz != 0.0)))
 
-    def _advect(self, C: np.ndarray, V0: np.ndarray, V1: np.ndarray, Qx: np.ndarray, Qy: np.ndarray,
+    def _advect_numpy(self, C: np.ndarray, V0: np.ndarray, V1: np.ndarray, Qx: np.ndarray, Qy: np.ndarray,
                 Fz: np.ndarray, ok: np.ndarray) -> np.ndarray:
         """
+        NumPy reference of _advect (test oracle).
         SSP-RK3 flux-form advection of the tracer stack C (ntr,N,ny,nx) with frozen
         transports Qx, Qy (layer volume fluxes at faces) and Fz (N+1,ny,nx, through
         the interfaces); layer volumes go linearly from V0 to V1.
@@ -1560,6 +1584,29 @@ class SigmaBaroclinic:
         c2 = safe(q2, Vb)
         q3 = q0 / 3.0 + 2.0 / 3.0 * (q2 + dt * rhs(c2))
         return safe(q3, V1)
+
+    def _advect(self, C: np.ndarray, V0: np.ndarray, V1: np.ndarray, Qx: np.ndarray, Qy: np.ndarray,
+                Fz: np.ndarray, ok: np.ndarray) -> np.ndarray:
+        """
+        SSP-RK3 flux-form advection of the tracer stack C (ntr,N,ny,nx) with frozen transports Qx, Qy and Fz;
+        layer volumes go linearly from V0 to V1.  The stage combinations and the ``safe`` division run in the
+        fused kernel _rk_stage with _advect_numpy's arithmetic (the reference); 'pc' keeps the NumPy path.
+        """
+        if self.tracer_time == "pc":
+            return self._advect_numpy(C, V0, V1, Qx, Qy, Fz, ok)
+        dt = self.dt
+        C = np.ascontiguousarray(C, dtype=float)
+        dV = V1 - V0
+        Va, Vb = np.ascontiguousarray(V0 + dV), np.ascontiguousarray(V0 + 0.5 * dV)
+        q0 = V0 * C
+        numba.set_num_threads(_THREADS[0])
+        q1, c1 = np.empty_like(C), np.empty_like(C)
+        _rk_stage(q0, q0, self._rhs(C, Qx, Qy, Fz, ok), dt, Va, C, 1, q1, c1)
+        q2, c2 = np.empty_like(C), np.empty_like(C)
+        _rk_stage(q0, q1, self._rhs(c1, Qx, Qy, Fz, ok), dt, Vb, C, 2, q2, c2)
+        q3, c3 = np.empty_like(C), np.empty_like(C)
+        _rk_stage(q0, q2, self._rhs(c2, Qx, Qy, Fz, ok), dt, np.ascontiguousarray(V1, dtype=float), C, 3, q3, c3)
+        return c3
 
     def _step_ale(self, st: SigmaState, gu_ab: np.ndarray, gv_ab: np.ndarray, tu, tv, hist: list) -> SigmaState:
         """
