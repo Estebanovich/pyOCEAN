@@ -130,3 +130,39 @@ def test_obcs_records_follow_the_forcing_calendar(tmp_path):
     np.testing.assert_allclose(Wt[179], s["west"]["T"][0], atol=1e-12)
     k = 7                                                                       # t = 9000 s = a 900-s dump
     np.testing.assert_allclose(Wt[k], s["west"]["T"][np.argmin(abs(s["t"] - 9000.0))], atol=1e-12)
+
+
+def test_full_reference_on_the_pyocean_grid():
+    # phase 2 reference: Esteban's full run cut to pyOCEAN's grid, on the sampled levels, as the series of run_pyocean
+    from validation.bayiw_cut import cut
+    r = cut.full_reference("2layer", "bay")
+    n = r["t"].size
+    assert r["T"].shape == (n, 21, 159, 198) and r["U"].shape == (n, 2, 159, 199)
+    assert r["V"].shape == (n, 2, 160, 198) and r["eta"].shape == (n, 159, 198)
+    assert (np.diff(r["t"]) > 0).all() and r["t"][-1] <= 216000.0
+    k = int(np.argmin(abs(r["t"] - 9000.0)))
+    _, Tb = cut.read_full_box(cut.full_run_dir("2layer", "bay"), "Temp", 193 + 60, 193 + 61, 181 + 99, 181 + 100,
+                              "2layer", "bay")
+    np.testing.assert_allclose(r["T"][k, :, 60, 99], Tb[k, 19:40, 0, 0], atol=1e-6)
+
+
+def test_phase2_interior_mask_and_criterion():
+    # spec §1.4: compare away from the open edges (10 cells off west, east, south; the north row is the coast);
+    # §2: pyOCEAN nested error ≤ 1.5 × MITgcm nested error
+    from validation.bayiw_cut import compare
+    m = compare.interior_mask((159, 198), 10)
+    assert m.shape == (159, 198) and not m[:10].any() and not m[:, :10].any() and not m[:, -10:].any()
+    assert m[10:, 10:-10].all()
+    assert compare.phase2_ok(0.15, 0.10) and not compare.phase2_ok(0.16, 0.10)
+
+
+def test_nested_namelist_prescribes_u_v_t_without_eta(tmp_path):
+    # MITgcm obcs_check.F:563-566: OB*etaFile only with nonlinFreeSurf; Esteban's runs use the linear free surface,
+    # so η at the edges follows from the prescribed transport
+    from validation.bayiw_cut import cut
+    cut.write_mitgcm_inputs("2layer", "bay", tmp_path, "nest")
+    obcs = (tmp_path / "data.obcs").read_text()
+    assert "useOBCSprescribe=.TRUE." in obcs and "etaFile" not in obcs
+    for e in "SWE":
+        for v in ("u", "v", "t"):
+            assert f"OB{e}{v}File='input/ob_{e}{v}.bin'" in obcs

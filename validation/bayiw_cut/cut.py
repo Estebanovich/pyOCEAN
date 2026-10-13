@@ -94,7 +94,8 @@ def write_mitgcm_inputs(case: str, bay: str, run_dir: Path, mode: str = "radiate
         body = (" useOrlanskiSouth=.TRUE.,\n useOrlanskiWest=.TRUE.,\n useOrlanskiEast=.TRUE.,\n"
                 " useOBCSprescribe=.FALSE.,\n &\n &OBCS_PARM02\n cvelTimeScale=250.0,\n CMAX=0.45,\n &\n")
     elif mode == "nest":
-        files = "".join(f" OB{e}{v}File='input/ob_{e}{v}.bin',\n" for e in "SWE" for v in ("u", "v", "t", "eta"))
+        files = "".join(f" OB{e}{v}File='input/ob_{e}{v}.bin',\n" for e in "SWE" for v in ("u", "v", "t"))
+        # no OB*etaFile: only allowed with nonlinFreeSurf (obcs_check.F:563-566); η follows from the transport
         body = " useOBCSprescribe=.TRUE.,\n" + files + " &\n &OBCS_PARM02\n &\n"
     else:
         raise ValueError(f"unknown mode {mode!r}")
@@ -205,12 +206,13 @@ NREC, PERIOD_FORCING = 180, 1200.0                       # MITgcm periodic forci
 
 
 def read_full_box(run_dir: Path, var: str, j0: int, j1: int, i0: int, i1: int, case: str, bay: str,
-                  t_max: float = 216000.0) -> tuple[np.ndarray, np.ndarray]:
+                  t_max: float = 216000.0, levels: list[int] | None = None) -> tuple[np.ndarray, np.ndarray]:
     """
     A global index box [j0, j1) × [i0, i1) of a full-run state variable (cell or face indices, as the variable),
     read tile by tile without joining the whole domain: time (n,) [s] and (n, nz, j1 − j0, i1 − i0).  Tiles are
     placed from their first X/Xp1 and Y/Yp1 coordinate on the case's global grid; duplicated tiles (one per
-    stage directory) are read once; a time written by two stages is kept once; only times ≤ t_max.
+    stage directory) are read once; a time written by two stages is kept once; only times ≤ t_max; ``levels``
+    (0-based, surface first) reads only those levels of a 3-D variable.
     """
     import glob
 
@@ -237,7 +239,10 @@ def read_full_box(run_dir: Path, var: str, j0: int, j1: int, i0: int, i1: int, c
                     tt = np.asarray(ds["T"][:], float)
                 if a0 >= a1 or b0 >= b1:
                     continue
-                sel = np.asarray(v[:, ..., b0 - tj0:b1 - tj0, a0 - ti0:a1 - ti0], float)
+                if v.ndim == 4 and levels is not None:
+                    sel = np.asarray(v[:, list(levels), b0 - tj0:b1 - tj0, a0 - ti0:a1 - ti0], float)
+                else:
+                    sel = np.asarray(v[:, ..., b0 - tj0:b1 - tj0, a0 - ti0:a1 - ti0], float)
                 if sel.ndim == 3:
                     sel = sel[:, None]
                 if arr is None:
@@ -283,6 +288,29 @@ def _fill_below_bed(T: np.ndarray) -> np.ndarray:
     for k in range(1, T.shape[-2]):
         T[..., k, :] = np.where(np.isnan(T[..., k, :]), T[..., k - 1, :], T[..., k, :])
     return np.nan_to_num(T)
+
+
+def full_reference(case: str, bay: str) -> dict:
+    """
+    Phase-2 reference (spec §1.4): Esteban's full run on the pyOCEAN grid, as the series of run_pyocean — η
+    (n, 159, 198), T on MITgcm levels 20–40 (n, 21, 159, 198), U on levels 30/40 at the faces 181–379
+    (n, 2, 159, 199), V at the faces 193–352 (n, 2, 160, 198); snapshots every 900 s, float32, cached in RUNS.
+    MITgcm's zeros below the bed are left as they are (compare.load_full masks them).
+    """
+    cache = RUNS / f"full_{case}_{bay}.npz"
+    if cache.exists():
+        with np.load(cache) as z:
+            return {k: z[k] for k in z.files}
+    run = full_run_dir(case, bay)
+    rd = lambda var, j0, j1, i0, i1, lev=None: read_full_box(run, var, j0, j1, i0, i1, case, bay,    # noqa: E731
+                                                            levels=lev)
+    t, eta = rd("Eta", PJ0, PJ1, PI0, PI1)
+    out = dict(t=t, eta=eta[:, 0].astype(np.float32),
+               T=rd("Temp", PJ0, PJ1, PI0, PI1, list(range(19, 40)))[1].astype(np.float32),
+               U=rd("U", PJ0, PJ1, PI0, PI1 + 1, [29, 39])[1].astype(np.float32),
+               V=rd("V", PJ0, PJ1 + 1, PI0, PI1, [29, 39])[1].astype(np.float32))
+    np.savez(cache, **out)
+    return out
 
 
 def nest_state(case: str, bay: str):

@@ -5,7 +5,7 @@ run (phase 2, ref 'full') — spec docs/superpowers/specs/2026-10-12-bayiw-cut-d
 pyOCEAN grid (MITgcm's interior); MITgcm's diagnostics are 900-s averages ending at their time stamp, so their
 times are shifted by −450 s (pyOCEAN stores snapshots).
 
-Usage: python validation/bayiw_cut/compare.py 2layer zstar [radiate|nest]
+Usage: python validation/bayiw_cut/compare.py 2layer zstar [radiate|nest|full]   (full: phase 2, nested vs full run)
 """
 from __future__ import annotations
 
@@ -172,5 +172,109 @@ def report(case: str, coord: str, mode: str = "radiate", ref: str = "mit", dt_ta
     return L
 
 
+# ---------------------------------------------------------------- phase 2: nested runs against the full run
+T_END2 = 59.5 * 3600.0                   # MITgcm's periodic OB calendar wraps the last record onto t > 215 400 s
+
+
+def interior_mask(shape: tuple[int, int], n: int = 10) -> np.ndarray:
+    """Cells at least n away from the open west, east and south edges (the north row is the coast)."""
+    m = np.zeros(shape, bool)
+    m[n:, n:-n] = True
+    return m
+
+
+def phase2_ok(e_py: float, e_mit: float) -> bool:
+    """Spec §2 phase 2: pyOCEAN's nested error is at most 1.5 times MITgcm's (the floor of nesting itself)."""
+    return e_py <= 1.5 * e_mit
+
+
+def load_full(case: str, bay: str) -> dict:
+    d = dict(cut.full_reference(case, bay))
+    d["T"] = np.where(d["T"] == 0.0, np.nan, d["T"]).astype(float)
+    return d
+
+
+def _rel(x: np.ndarray, ref: np.ndarray) -> float:
+    """Relative rms error rms(x − ref) / rms(ref)."""
+    return rms(x - ref) / rms(ref)
+
+
+def report_full(case: str, coord: str = "zstar") -> list[str]:
+    """
+    Spec §2 phase 2: pyOCEAN nested and MITgcm nested against Esteban's full run (snapshots, 0–59.5 h), on the
+    pyOCEAN grid.  Each metric is an error against the full run; PASS when pyOCEAN's ≤ 1.5 × MITgcm's.  MITgcm's
+    cut diagnostics are 900-s averages (shifted −450 s), the full run's are snapshots: that residual is in its
+    error (class c).
+    """
+    bays = ("bay", "nobay")
+    fr = {b: load_full(case, b) for b in bays}
+    py = {b: load_py(case, b, coord, "nest") for b in bays}
+    mn = {b: load_mit(case, b, "nest") for b in bays}
+    t = fr["bay"]["t"][fr["bay"]["t"] <= T_END2 + 1.0]
+    nt = t.size
+    sf = {b: station_series(fr[b], case) for b in bays}
+    sp = {b: station_series(py[b], case) for b in bays}
+    sm = {b: station_series(mn[b], case) for b in bays}
+    on = lambda series, tsrc: np.interp(t, tsrc, series)                       # noqa: E731
+    L = [f"# BayIW cut {case}, nested: pyOCEAN {coord} and MITgcm against the full run (error py | MITgcm)"]
+    L.append("\n## Seiche Δη (0–27 h): |period error|, |range error|, 1 − corr")
+    for s in ("Seiche", "Seiche2"):
+        d = {k: on(v["bay"][s]["eta"] - v["nobay"][s]["eta"], ts) for k, v, ts in
+             (("f", sf, fr["bay"]["t"]), ("p", sp, py["bay"]["t"]), ("m", sm, mn["bay"]["t"]))}
+        tw, xf = window(t, d["f"], 0.0, 27.0 * 3600)
+        th = tw / 3600.0
+        Pf, Rf = dominant_period(th, xf, 1.0, 10.0), np.ptp(xf)
+        e = {}
+        for k in ("p", "m"):
+            x = window(t, d[k], 0.0, 27.0 * 3600)[1]
+            e[k] = (abs(dominant_period(th, x, 1.0, 10.0) / Pf - 1), abs(np.ptp(x) / Rf - 1),
+                    1 - corr_lag(th, xf, x, 0.0)[0])
+        ok = all(phase2_ok(a, max(b, 0.01)) for a, b in zip(e["p"], e["m"]))
+        L.append(f"{s:8s} " + " | ".join(f"{a:.3f} {b:.3f}" for a, b in zip(e["p"], e["m"])) + f" | {_flag(ok)}")
+    keys = ("V110",) + (("iso", "zeta") if case == "2layer" else ("T110",))
+    for key in keys:
+        L.append(f"\n## {key} (0–59.5 h): relative rms error py | MITgcm")
+        for b in bays:
+            for s in cut.STATIONS:
+                base = lambda v: v[b][s][key] - (v[b][s][key][0] if key != "V110" else 0.0)   # noqa: E731
+                xf = on(base(sf), fr[b]["t"])
+                xp, xm = on(base(sp), py[b]["t"]), on(base(sm), mn[b]["t"])
+                if not all(np.isfinite(a).all() for a in (xf, xp, xm)) or rms(xf) == 0:
+                    continue
+                ep, em = _rel(xp, xf), _rel(xm, xf)
+                L.append(f"{b:5s} {s:8s} {ep:5.2f} | {em:5.2f} | {_flag(phase2_ok(ep, em))}")
+    L.append("\n## Bay effect ΔT110 (bay − nobay): relative rms error py | MITgcm")
+    for s in cut.STATIONS:
+        def eff(v, tb, tn):
+            a = v["bay"][s]["T110"] - v["bay"][s]["T110"][0]
+            c = v["nobay"][s]["T110"] - v["nobay"][s]["T110"][0]
+            return on(a, tb) - on(c, tn)
+        df = eff(sf, fr["bay"]["t"], fr["nobay"]["t"])
+        dp, dm = eff(sp, py["bay"]["t"], py["nobay"]["t"]), eff(sm, mn["bay"]["t"], mn["nobay"]["t"])
+        if not all(np.isfinite(a).all() for a in (df, dp, dm)) or rms(df) == 0:
+            continue
+        ep, em = _rel(dp, df), _rel(dm, df)
+        L.append(f"{s:8s} {ep:5.2f} | {em:5.2f} | {_flag(phase2_ok(ep, em))}")
+    L.append("\n## T110 map anomaly (bay, 10 cells off the open edges): relative rms error py | MITgcm")
+    msk = interior_mask(fr["bay"]["eta"].shape[1:])
+    T0 = fr["bay"]["T"][0, K110]
+    for hr in (6.0, 24.0, 59.5):
+        k = lambda tt: int(np.argmin(np.abs(tt - hr * 3600)))                  # noqa: E731
+        f = np.where(msk, fr["bay"]["T"][k(fr["bay"]["t"]), K110] - T0, np.nan)
+        ep = relative_field_error(np.where(msk, py["bay"]["T"][k(py["bay"]["t"]), K110] - T0, np.nan), f)
+        em = relative_field_error(np.where(msk, mn["bay"]["T"][k(mn["bay"]["t"]), K110] - T0, np.nan), f)
+        L.append(f"{hr:4.1f} h  {ep:5.2f} | {em:5.2f} | {_flag(phase2_ok(ep, em))}")
+    for b in bays:
+        p = py[b]
+        L.append(f"\n## Health py {b}: trunc {int(p['n_trunc'][-1])}, max|Σh − H − η| {p['sumh'].max():.1e} m, "
+                 f"cost {float(p['s_per_step']):.2f} s/step; samples {nt}")
+    print("\n".join(L))
+    return L
+
+
 if __name__ == "__main__":
-    report(sys.argv[1], sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "radiate")
+    mode = sys.argv[3] if len(sys.argv) > 3 else "radiate"
+    if mode == "full":
+        report_full(sys.argv[1], sys.argv[2])
+    else:
+        report(sys.argv[1], sys.argv[2], mode)

@@ -127,9 +127,51 @@ En todas las estaciones, la isoterma y V110 cambian ≤ 0.02 en el cociente de a
 | Híbrida lineal en la bahía: T110 2.5–3×, mapa 5× | (c) probable | Pocas capas activas en aguas someras (25 capas con objetivos para toda la columna de 600 m) más el muestreo sensible a la T de capas vacías. Falta separar las dos partes |
 | Híbrida dos capas: la interfaz casi quieta en Omega y 3–6× en la bahía; U110 la mitad en A y B | **(a) candidato** | Mismo patrón que la sección 2-D (borde de la plataforma 0.27–0.61). z\* con el mismo momento coincide, así que está en algo propio de la coordenada híbrida. Se diagnostica aparte antes de usar la híbrida en la fase 2 |
 
-## Qué debe mejorar pyOCEAN (fase 1)
+## Resultados de la fase 2: anidado en la corrida completa (z\*)
 
-1. **La híbrida con una interfaz marcada.** La interfaz responde mal al viento lejos de la costa y exagera la respuesta dentro de la bahía. Es la prioridad: es el caso de la tesis de Esteban.
-2. **La T de las capas vacías.** Deriva sin masa. No cambia el calor, pero contamina cualquier reconstrucción vertical (muestreo, PGF, remapeo) que la use en su plantilla.
-3. **La difusión de la interfaz en z\*** (unas 2 veces la de MITgcm). Ya conocida; afecta T en niveles fijos, no el desplazamiento.
-4. **Costo:** z\* tarda 2.5–2.7 veces lo de MITgcm con 5 procesos por hora simulada; la híbrida, 1.2–1.3 veces. El perfil de rendimiento está pendiente.
+**Configuración:**
+- **pyOCEAN:** `open_boundary_state` en modo `'radiating'`, con los bordes de la corrida completa cada 900 s e interpolados en el tiempo; Flather hacia (η, ū) exterior, Orlanski con nudging y la misma esponja de 30 celdas, ahora hacia ese exterior.
+- **MITgcm:** OBCS prescribe de u, v y T, sin balance ni esponja. **No prescribe η.** Con la superficie libre lineal de las corridas de Esteban, `obcs_check.F:561-569` rechaza los `OB*etaFile`. La η del borde solo se aplica con `NONLIN_FRSURF` (`update_etah.F:75`, `calc_r_star.F:170`, `calc_surf_dr.F:188`), y su `CPP_OPTIONS.h` lo tiene en `#undef` (línea 109). Se decidió con Esteban mantener la superficie lineal, la misma física que la "verdad".
+- **Ventana:** 0–59.5 h. El calendario periódico de OBCS pone el estado inicial (registro 179) en t > 215 400 s.
+- **Salidas:** las tablas completas están en `compare_<caso>_zstar_full.txt`. pyOCEAN cuesta 0.52–0.54 s/paso, frente a 0.37–0.40 radiando: +35 % por evaluar el exterior en cada paso.
+
+**El criterio del spec degenera.** MITgcm anidado reproduce su propia corrida completa con error relativo ≤ 0.01 en todas las estaciones y en el mapa. La excepción es Gamma, a 22 celdas del borde sur: 0.07–0.17. Es el mismo código con la misma malla y el mismo Δt, alimentado con sus propios bordes. Su error ya no es "el piso del anidado" sino casi cero, así que la regla "pyOCEAN ≤ 1.5 × MITgcm" sale FAIL en casi todo. Las tablas guardan esos FAIL tal cual. La lectura útil es comparar el error de pyOCEAN en las dos fases.
+
+**Error relativo rms de pyOCEAN z\*, fase 1 (contra MITgcm radiando) / fase 2 (contra la corrida completa):**
+
+| Caso · métrica | Seiche | Seiche2 | A | B | C | Omega | Gamma |
+|---|---|---|---|---|---|---|---|
+| dos capas · V110 | 0.30/0.30 | 0.55/0.55 | 0.40/0.40 | 0.42/0.42 | 0.19/0.19 | 0.10/0.10 | 0.66/0.06 |
+| dos capas · isoterma | 0.14/0.13 | 0.19/0.19 | 0.20/0.22 | 0.22/0.23 | 0.25/0.28 | 0.27/0.27 | 0.07/0.01 |
+| dos capas · ζ | 0.16/0.15 | 0.16/0.15 | 0.11/0.09 | 0.07/0.07 | 0.16/0.17 | 0.14/0.14 | 0.96/0.40 |
+| lineal · V110 | 0.17/0.17 | 0.11/0.11 | 0.10/0.10 | 0.10/0.10 | 0.26/0.26 | 0.08/0.08 | 0.71/0.74 |
+| lineal · T110 | 0.19/0.19 | 0.10/0.10 | 0.06/0.06 | 0.04/0.04 | 0.11/0.11 | 0.08/0.06 | 0.52/0.54 |
+
+(Con bahía; sin bahía es igual a ±0.03, salvo la isoterma y la V110 de Omega en dos capas: 0.37 y 0.36 en las dos fases.)
+
+- **El anidado no añade error en el interior.** En 60 h, lo que entra por los bordes no llega a las estaciones, y el error de pyOCEAN es el mismo que su diferencia con MITgcm en la fase 1. Es decir, la diferencia de modelos ya clasificada: la interfaz más difundida en z\*, (c).
+- **Seiche:** pasa en dos capas. En el caso lineal, el período en Seiche sale con error 0.018: es la resolución espectral de 27 h, 3.79 frente a 3.86 h, igual que en la fase 1.
+- **Gamma:** está en la esponja de pyOCEAN.
+  - En dos capas, el anidado la arregla: V110 0.66 → 0.06.
+  - En el caso lineal no: V110 0.74 y T110 0.54, mientras que MITgcm anidado da 0.07 y 0.02.
+  - La esponja relaja u′ hacia el perfil del borde copiado a lo largo de la normal (como `OBData` hoy), y Gamma está 22 celdas adentro. Con una onda interna que se propaga, ese perfil copiado no es el exterior local. Es la limitación ya anotada en `validation/internal_wave/README.md`: falta un exterior 3-D en toda la banda.
+- **Efecto de la bahía (ΔT110):** 0.68–0.75 en dos capas (Omega 3.3) frente a 0.08–0.21 en el lineal. En dos capas, T110 mide sobre todo la difusión de la interfaz (fase 1).
+- **Mapa de T a 110 m:** dos capas 0.30 / 0.58 / 0.56; lineal 0.02 / 0.16 / 0.20. Son las mismas cifras que en la fase 1.
+
+### Clasificación de la fase 2
+
+| Diferencia | Clase | Razonamiento |
+|---|---|---|
+| Criterio 1.5 × MITgcm anidado en FAIL | (d) del diseño del benchmark | MITgcm anidado en sí mismo es exacto (≤ 0.01), así que el piso es cero. El error de pyOCEAN anidado es igual al de la fase 1 |
+| Gamma lineal 0.74 / 0.54 | (b) | Falta un exterior 3-D en la banda de esponja; la esponja hacia el perfil del borde copiado no representa una onda que se propaga |
+| Interior en dos capas (isoterma 0.13–0.37, mapa 0.56) | (c) | Igual que en la fase 1: difusión de la interfaz en z\* |
+| MITgcm no prescribe η | (c) | Restricción de MITgcm con superficie libre lineal; su η del borde sale del transporte |
+
+## Qué debe mejorar pyOCEAN (las dos fases)
+
+1. **La híbrida con una interfaz marcada (fase 1).** La interfaz responde mal al viento lejos de la costa y exagera la respuesta dentro de la bahía. Es la prioridad: es el caso de la tesis de Esteban. Se diagnostica aparte, en la sección 2-D.
+2. **Un exterior 3-D en la banda de esponja.** Con anidado, la esponja de 30 celdas (150 km) relaja hacia el perfil del borde copiado y daña Gamma en el caso lineal. Hace falta `OBData` en toda la banda, o una esponja más angosta al anidar.
+3. **La T de las capas vacías.** Deriva sin masa. No cambia el calor, pero contamina cualquier reconstrucción vertical que la use en su plantilla.
+4. **La difusión de la interfaz en z\*** (unas 2 veces la de MITgcm). Ya conocida; afecta T en niveles fijos, no el desplazamiento.
+5. **Costo.** z\* tarda 2.5–2.7 veces lo de MITgcm con 5 procesos por hora simulada, y el anidado añade 35 % (el exterior evaluado en cada paso). La híbrida, 1.2–1.3 veces. El perfil de rendimiento está pendiente.
+6. **El diseño del criterio de anidado.** Un modelo anidado en sí mismo no da un piso de error. Para el próximo benchmark de anidado, el piso debe venir de otro modelo, o de MITgcm con otra malla o resolución.
