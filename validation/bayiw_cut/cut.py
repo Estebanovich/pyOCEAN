@@ -187,7 +187,7 @@ def build_model(case: str, bay: str, coord: str = "zstar", dt: float = 120.0, bo
         rho = bayiw.RHO0 - bayiw.T_COEF * (d["T"][:, np.isfinite(d["H"])] - t_ref)
         tgt = (bayiw.centred_targets(float(rho.min()), float(rho.max()), nz, bayiw.N_LIGHT) if case == "2layer"
                else bayiw.profile_targets(rho, nz, bayiw.N_LIGHT))
-        params = dict(dz_top=bayiw.DELR[:nz].copy(), rho_target=tgt)
+        params = dict(dz_top=bayiw.hybrid_dz_top(nz), rho_target=tgt)
     else:
         raise ValueError(f"unknown coord {coord!r}")
     m = SigmaBaroclinic(hg, d["H"], dt=dt, n_layers=nz, rho0=bayiw.RHO0, t_coef=bayiw.T_COEF, t_ref=t_ref, z0=None,

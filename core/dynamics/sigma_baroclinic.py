@@ -77,6 +77,7 @@ Borges, R., Carmona, M., Costa, B. & Don, W.S. (2008). An improved weighted
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 
 import numba
@@ -828,6 +829,16 @@ class SigmaBaroclinic:
         for key in {"sigma": (), "zstar": ("dz_top",), "hybrid": ("dz_top", "rho_target")}[regrid]:
             if key not in params:
                 raise ValueError(f"regrid={regrid!r} needs regrid_params[{key!r}]")
+        if regrid == "hybrid":
+            # the z* floor is the only thing that gives absent density targets thickness (MOM6 coord_hycom.F90:253-267);
+            # one that stops above the bed leaves a homogeneous deep water mass in one slab layer with one velocity,
+            # blind to topographic steps (BayIW two-layer section 2026-10-13: interface rise 0.06 of MITgcm's)
+            floor, h_max = float(np.sum(params["dz_top"])), float(np.nanmax(np.asarray(self.H, float)))
+            if floor < h_max * (1.0 - 1e-6):
+                warnings.warn(f"hybrid z* floor (Σ dz_top = {floor:.1f} m) stops above the deepest bed ({h_max:.1f} m): "
+                              "below it, layers whose target density is absent stay massless and a homogeneous water "
+                              "mass is one slab layer; give dz_top the full depth (as OM4's hycom1_75_800m)",
+                              UserWarning, stacklevel=2)
         floodable = act & (np.nan_to_num(np.asarray(self.H, float), nan=1.0) <= 0)
         if floodable.any() and (regrid == "zstar" or (regrid == "hybrid" and float(params.get("d_hybrid", 0.0)) <= 0)):
             raise ValueError("cells with H ≤ 0 can dry: use regrid='sigma', or 'hybrid' with a shallow σ zone "

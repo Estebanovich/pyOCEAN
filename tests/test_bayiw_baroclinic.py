@@ -179,3 +179,29 @@ def test_load_inputs_uses_the_mitgcm_effective_depth():
     wet = np.isfinite(H)
     assert np.abs(H[wet][:, None] + bayiw.Z_F[None, :]).min(axis=1).max() < 1e-9
     assert abs(H[345, 280] - 163.3) < 1e-9
+
+
+def test_realistic_case_uses_the_density_equivalent_temperature():
+    # Esteban's realistic run steps T and S with a linear EOS and equal diffusivities (data.stage1: diffKhT = diffKhS,
+    # diffKrT = diffKrS): T_eff = T − (β/α)(S − sRef) gives the same ρ and evolves identically
+    from validation.bayiw_baroclinic import bayiw
+    inp = bayiw.CASES["real"]["dir"] / "input"
+    T = bayiw.read_bin(inp / "feb_temp_50zlev_560x352.bin", (50, bayiw.NY, bayiw.NX))
+    S = bayiw.read_bin(inp / "feb_salt_50zlev_560x352.bin", (50, bayiw.NY, bayiw.NX))
+    Teff = bayiw.load_inputs("real", "bay")[3]
+    k, j, i = 25, 200, 280
+    np.testing.assert_allclose(Teff[k, j, i], T[k, j, i] - 7.4e-4 / 2e-4 * (S[k, j, i] - 33.6), rtol=1e-12)
+    assert bayiw.CASES["real"]["t_ref"] == 16.582
+
+
+def test_hybrid_floor_reaches_the_bed():
+    # the hybrid z* floor (dz_top) must cover the whole 599.9-m column (as OM4's hycom1_75_800m), or a homogeneous
+    # deep water mass ends in one slab layer that ignores the bay-mouth step (2-D two-layer: ζ 0.06 of MITgcm)
+    from validation.bayiw_baroclinic import bayiw
+    dz = bayiw.hybrid_dz_top(25)
+    z = np.cumsum(dz)
+    assert dz.size == 25 and abs(z[-1] - bayiw.DELR.sum()) < 1e-9
+    np.testing.assert_allclose(dz[:bayiw.N_LIGHT], bayiw.DELR[:bayiw.N_LIGHT])
+    assert z[bayiw.N_LIGHT] < 116.0 < z[bayiw.N_LIGHT + 1]          # one interface floor above the two-layer jump
+    assert np.isclose(z, 163.3).any()                               # an interface floor at the bay-mouth step
+    np.testing.assert_allclose(bayiw.hybrid_dz_top(50), bayiw.DELR)

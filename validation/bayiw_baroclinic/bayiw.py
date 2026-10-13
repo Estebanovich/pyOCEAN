@@ -15,6 +15,7 @@ from core.grid.horizontal import create_cartesian_grid_stretched
 
 NX, NY = 560, 352
 F0, RHO0, ALPHA = 6.97e-5, 999.8, 2e-4                  # MITgcm data: f0, rhoNil, tAlpha
+BETA = 7.4e-4                                           # sBeta (realistic case: T and S stepped)
 T_COEF = ALPHA * RHO0                                   # ρ = ρ₀ − ρ₀α (T − tRef) [kg m⁻³ °C⁻¹]
 DELR = np.array([1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.9, 2.0, 2.2, 2.4, 2.6, 2.8, 3.0, 3.2, 3.5, 3.8, 4.1,
                  4.4, 4.8, 5.2, 5.6, 6.0, 6.5, 7.1, 7.6, 8.2, 8.9, 9.6, 10.4, 11.3, 12.2, 13.2, 14.3, 15.4, 16.7,
@@ -34,6 +35,9 @@ CASES = {
                    temp="T_2layer_50z_560x352.bin", t_ref=11.4),
     "linear": dict(dir=Path("/Volumes/Esteban_SSD/Maestría/MITgcm/verification/BayIW_Rectan_linear"),
                    temp="linear_temp_50zlev_560x352.bin", t_ref=33.6),
+    # February climatology T and S, linear EOS, equal T/S diffusivities: run as the density-equivalent T
+    "real": dict(dir=Path("/Volumes/ESTEBAN_MIT/MITgcm/verification/BayIW_Rectan"),
+                 temp="feb_temp_50zlev_560x352.bin", salt="feb_salt_50zlev_560x352.bin", s_ref=33.6, t_ref=16.582),
 }
 STEMS = {"bay": "bahia_01_expand", "nobay": "nobahia_01_expand"}
 N_LIGHT = 10                                            # hybrid: top z* layers (Σ delR[:10] = 14.7 m)
@@ -69,7 +73,7 @@ def load_inputs(case: str, bay: str) -> tuple[np.ndarray, np.ndarray, np.ndarray
     """
     MITgcm inputs: dx (NX,), dy (NY,) [m]; rest depth H (NY, NX) [m], NaN on land: MITgcm's effective depth,
     clipped at Σ delR = 599.9 m (intentional, confirmed by Esteban) and rounded to a level interface
-    (mitgcm_depth); initial T (50, NY, NX) on the delR levels [°C];
+    (mitgcm_depth); initial T (50, NY, NX) on the delR levels [°C] (the density-equivalent T for cases with salt);
     meridional wind stress records (nrec, NY, NX) at the v-faces [N m⁻²].
     """
     inp = CASES[case]["dir"] / "input"
@@ -79,6 +83,11 @@ def load_inputs(case: str, bay: str) -> tuple[np.ndarray, np.ndarray, np.ndarray
     B = read_bin(inp / f"{stem}_bat.bin", (NY, NX))
     H = mitgcm_depth(np.where(B < 0, -B, np.nan))
     T = read_bin(inp / CASES[case]["temp"], (50, NY, NX))
+    if "salt" in CASES[case]:
+        # linear EOS ρ = ρ₀(1 − α(T − tRef) + β(S − sRef)) with diffKhT = diffKhS, diffKrT = diffKrS: the
+        # density-equivalent temperature T − (β/α)(S − sRef) gives the same ρ and is advected and diffused alike
+        S = read_bin(inp / CASES[case]["salt"], (50, NY, NX))
+        T = T - BETA / ALPHA * (S - CASES[case]["s_ref"])
     wind = read_bin(inp / "merid_local_bay_560x352.bin", (-1, NY, NX))
     return dx, dy, H, T, wind
 
@@ -145,12 +154,34 @@ def profile_targets(rho: np.ndarray, n: int, n_light: int = 0) -> np.ndarray:
     return np.concatenate([core[0] - s * np.arange(n_light, 0, -1), core])
 
 
+# Hybrid z* floor (interface depths [m] below the N_LIGHT z* layers): one floor above the two-layer jump (116.2 m)
+# and the rest spread to the bed, with one at the bay-mouth step (163.3 m, a MITgcm level interface).
+HYBRID_DEEP_FLOORS_25 = (30.0, 125.0, 140.0, 163.3, 190.0, 220.0, 255.0, 295.0, 340.0, 390.0, 445.0, 500.0,
+                         550.0, 580.0, float(np.sum(DELR)))
+
+
+def hybrid_dz_top(n: int) -> np.ndarray:
+    """
+    z* floor thicknesses dz_top (n,) [m] of the hybrid rule, reaching the bed (Σ = Σ delR = 599.9 m) as OM4's
+    hycom1_75_800m (MOM6 coord_hycom.F90:253-267: the floor is the only thing that gives absent density targets
+    thickness).  A floor that stops short (the first 25 delR reach 74.8 m) leaves a homogeneous deep water mass in
+    one slab layer with one velocity, which carries return flow below the depth of a topographic step: 2-D
+    two-layer section, interface rise 0.06 of MITgcm's at Seiche2, 1.02 with this floor.  n = 25: the N_LIGHT delR,
+    then HYBRID_DEEP_FLOORS_25; n = 50: delR.
+    """
+    if n == DELR.size:
+        return DELR.copy()
+    if n == 25:
+        z = np.concatenate([np.cumsum(DELR[:N_LIGHT]), HYBRID_DEEP_FLOORS_25])
+        return np.diff(np.concatenate([[0.0], z]))
+    raise ValueError(f"no hybrid floor designed for {n} layers (25 or 50)")
+
+
 def build_model(case: str, bay: str, coord: str = "zstar", dt: float = 120.0):
     """
     The ALE model with the MITgcm parameters (spec §3): z* on the 50 delR levels, or hybrid with 25 layers:
-    floor dz_top = the first 25 delR and N_LIGHT = 10 targets lighter than any water, so the top 10 layers
-    (14.7 m) stay z* and the other 15 are isopycnal (the hybrid rule makes z layers only where the target is
-    lighter than the water).  Returns (model, initial state, wind records).
+    floor dz_top = hybrid_dz_top(25) (reaching the bed) and N_LIGHT = 10 targets lighter than any water, so the
+    top 10 layers (14.7 m) stay z* and the others are isopycnal where their water exists and z* below it.  Returns (model, initial state, wind records).
     """
     dx, dy, H, T_mit, wind = load_inputs(case, bay)
     hg = create_cartesian_grid_stretched(dx, dy, x0=X0, y0=Y0, f0=F0)
@@ -162,7 +193,7 @@ def build_model(case: str, bay: str, coord: str = "zstar", dt: float = 120.0):
         rho = RHO0 - T_COEF * (T_mit[:, np.isfinite(H)] - t_ref)
         tgt = (centred_targets(float(rho.min()), float(rho.max()), nz, N_LIGHT) if case == "2layer"
                else profile_targets(rho, nz, N_LIGHT))
-        params = dict(dz_top=DELR[:nz].copy(), rho_target=tgt)
+        params = dict(dz_top=hybrid_dz_top(nz), rho_target=tgt)
     else:
         raise ValueError(f"unknown coord {coord!r}")
     m = SigmaBaroclinic(hg, H, dt=dt, n_layers=nz, rho0=RHO0, t_coef=T_COEF, t_ref=t_ref, z0=None,

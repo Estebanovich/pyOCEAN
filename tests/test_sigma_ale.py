@@ -1108,3 +1108,16 @@ def test_default_kinetic_energy_scheme_is_arakawa():
     # Esteban 2026-10-12: Arakawa by default — Godunov damps progressive internal waves ~9 % per 5 km at
     # dx = 100 m (validation/internal_wave/README.md); Godunov stays an option for density currents
     assert _ale_box("zstar").ke_scheme == "arakawa"
+
+
+def test_hybrid_warns_when_the_z_floor_stops_above_the_bed():
+    # BayIW two-layer (2026-10-13): dz_top = the first 25 delR reached 74.8 m of 600 m, so the cold water stayed one
+    # 484-m slab layer that ignored the bay-mouth step (interface rise 0.06 of MITgcm's); MOM6 OM4's floor reaches
+    # the bed (coord_hycom.F90:253-267 is the only thing that gives absent density targets thickness)
+    import warnings
+    tgt = np.linspace(1020.0, 1028.0, 10)
+    with pytest.warns(UserWarning, match="floor"):
+        _ale_box("hybrid", nx=4, nz=10, depth=100.0, params=dict(dz_top=np.full(10, 1.0), rho_target=tgt))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        _ale_box("hybrid", nx=4, nz=10, depth=100.0, params=dict(dz_top=np.full(10, 10.0), rho_target=tgt))
