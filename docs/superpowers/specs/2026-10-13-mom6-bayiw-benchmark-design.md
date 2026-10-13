@@ -39,7 +39,7 @@
   - difusividades 100 y 1e-5;
   - f constante 6.97e-5;
   - energía cinética Arakawa (`KE_SCHEME = KE_ARAKAWA`);
-  - sin fricción de fondo cuadrática extra (como MITgcm en BayIW, si así está; si no, la de MITgcm).
+  - sin fricción de fondo y con deslizamiento libre en el fondo y las paredes, como MITgcm en BayIW (`data.stage1`: `no_slip_bottom` y `no_slip_sides` = `.FALSE.`, sin `bottomDrag*`; en MOM6, `CDRAG = 0`, `BOTTOMDRAGLAW = False` y `NOSLIP = False`).
 - **Coordenadas:**
   - `REGRIDDING_COORDINATE_MODE = "ZSTAR"` con los 50 `delR`;
   - `"HYCOM1"` con 25 capas, los mismos objetivos de densidad (`bayiw.centred_targets` / `profile_targets`) y el mismo piso;
