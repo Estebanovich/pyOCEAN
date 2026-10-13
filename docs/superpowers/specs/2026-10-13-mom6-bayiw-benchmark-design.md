@@ -1,11 +1,11 @@
-# pyOCEAN contra MOM6 en BayIW: costo y resultados con un modelo que remapea
+# pyOCEAN contra MOM6 y HYCOM en BayIW: costo y resultados con modelos que remapean
 
 **Fecha:** 2026-10-13. **Estado:** diseño aprobado por Esteban en la conversación; falta revisar el texto escrito.
 **Rama:** `mom6-benchmark`, desde `main`.
 
 **Motivo:**
 - Tras el plan de rendimiento 2, pyOCEAN z\* tarda 9.1 s por hora simulada en el corte BayIW, frente a 4.4 s de MITgcm. Pero MITgcm no remapea y el paso ALE sí.
-- La comparación justa de costo es contra un modelo que también regridea y remapea en cada paso: MOM6 (ALE). HYCOM (hybgen) queda para después.
+- La comparación justa de costo es contra modelos que también regridean y remapean en cada paso: MOM6 (ALE) y HYCOM (hybgen). Esteban pidió los dos.
 - MOM6 da además una segunda referencia de resultados *con* remapeo. Permite saber si los problemas abiertos de nuestra híbrida de dos capas son nuestros o propios de la coordenada isopícnica:
   - en 2-D, la V110 variable;
   - en 3-D, el retraso de 1.5–3 h en el borde de la plataforma.
@@ -26,6 +26,22 @@
    - MOM6 z\* e HYCOM1, comparados con MITgcm `orl` y con pyOCEAN, con las métricas de `validation/bayiw_2d` y el desplazamiento de la interfaz por calor ζ.
 3. **El retraso 3-D (opcional):** una corrida de MOM6 HYCOM1 en el corte, dos capas con bahía, **30 h**. Solo si la sección 2-D no lo aclara. Se compara ζ en A, B y Omega con MITgcm y con pyOCEAN.
 
+## 1b. HYCOM, en dos niveles
+
+1. **El algoritmo de HYCOM dentro de MOM6 (barato):**
+   - MOM6 trae un puerto de `hybgen` (`REGRIDDING_COORDINATE_MODE = "HYBGEN"`, `src/ALE/MOM_hybgen_regrid.F90`).
+   - Se añade como tercera coordenada en la sección 2-D y en el costo del corte.
+   - Separa el efecto de la regla de la coordenada (HYCOM1 frente a hybgen frente a la nuestra) del resto del modelo.
+2. **HYCOM mismo (con una compuerta de factibilidad):**
+   - Se compila HYCOM 2.3 (`HYCOM-src`, configuración `generic-gnu-relo_mpi`, gfortran + MPICH de Homebrew) en `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/hycom_bayiw/build`.
+   - **Compuerta:** si en ~1 h de trabajo no compila y corre un caso trivial (una cuenca en reposo, 10 pasos), se para y se reporta a Esteban sin seguir con HYCOM.
+   - **Entradas:** `regional.grid` y `regional.depth` `.a/.b`, T inicial y viento, escritas desde `bayiw` con un escritor `.a/.b` (el formato que ya lee `forcing/sources/hycom_ab.py`, con su prueba de ida y vuelta).
+   - **`blkdat.input`:** la misma física que el benchmark, `hybgen` con 25 capas y los mismos objetivos de densidad (`sigma`), piso z\* (`dp0k`) y EOS lineal (HYCOM la admite con la opción de EOS lineal en `stmt_fns`; si la versión no la tiene, se reporta).
+   - **Fronteras:** HYCOM no tiene una frontera radiante tipo Orlanski. En la sección se usa una zona de relajación hacia el reposo en el sur, y en el corte zonas de relajación en los tres bordes. Esto se clasifica como (c) de configuración frente a MITgcm `orl`.
+   - **Corridas:**
+     - las 8 de la sección 2-D (60 h): la coordenada es la de HYCOM y la referencia sigue siendo MITgcm;
+     - el costo en el corte: 3 h con 5 procesos MPI.
+
 ## 2. Configuración de MOM6
 
 - **Build:** MOM6 + FMS de `~/pyOCEAN_refs`, recompilado con `-O2` en un directorio aparte: `~/pyOCEAN_refs/MOM6/build_opt`. El build de depuración `.testing/build/symmetric` (`-O0`) no se toca. MPI con 5 procesos.
@@ -43,6 +59,7 @@
 - **Coordenadas:**
   - `REGRIDDING_COORDINATE_MODE = "ZSTAR"` con los 50 `delR`;
   - `"HYCOM1"` con 25 capas, los mismos objetivos de densidad (`bayiw.centred_targets` / `profile_targets`) y el mismo piso;
+  - `"HYBGEN"` (el algoritmo de HYCOM) con las mismas capas y objetivos;
   - remapeo `PPM_H4` como el nuestro.
 - **Pasos de tiempo:**
   - **resultados:** Δt baroclínico de 120 s, como pyOCEAN;
@@ -71,11 +88,20 @@
 - `read_mom6.py` y `compare.py`: lectores y tablas.
 - `README.md`.
 
+**`validation/hycom_bayiw/`:**
+- `build_hycom.sh`: el build y el caso trivial de la compuerta.
+- `inputs.py`: un escritor `.a/.b` y las entradas desde `bayiw`.
+- `blkdat.py`: el `blkdat.input`.
+- `run_hycom.sh` y `read_hycom.py`: la lectura de archivos `archv` con `forcing/sources/hycom_archive.py`.
+- `README.md`.
+
 ## 5. Pruebas (sin simulaciones)
 
 - Las entradas generadas coinciden con `bayiw` en esquinas y estaciones.
 - El `MOM_input` generado contiene los parámetros pedidos (coordenada, capas, Δt, EOS, viscosidades, fronteras).
 - El lector reconstruye un campo conocido de un NetCDF sintético con el formato de MOM6.
+- El escritor `.a/.b` hace ida y vuelta exacta con el lector existente (`hycom_ab`), incluido el relleno a múltiplos de 4096 y la máscara de tierra.
+- El `blkdat.input` generado contiene las capas, los objetivos `sigma`, `dp0k` y el Δt pedidos.
 
 ## 6. Presupuesto de cómputo (estimado)
 
@@ -85,12 +111,14 @@
 | Costo en el corte (z\* e HYCOM1, 3 h c/u, más la prueba de Δt) | ~10 min |
 | Sección 2-D (dos capas y realista × con y sin bahía × z\* e HYCOM1: 8 corridas de 60 h) | ~1–2 min c/u |
 | Corrida 3-D opcional (HYCOM1, 30 h) | ~10 min |
+| MOM6 HYBGEN (sección: 4 corridas de dos capas; costo 3 h) | ~10 min |
+| Build de HYCOM y compuerta | una vez, ≤ 1 h de trabajo |
+| HYCOM: sección (8 corridas) y costo en el corte (3 h) | ~20 min |
 
 Si alguna corrida pasa de 3 veces su estimado, se reporta antes de seguir.
 
 ## 7. Fuera de alcance
 
-- HYCOM (hybgen): otro benchmark.
 - La fase 2 (anidado) con MOM6.
 - La salinidad.
 - Optimizar pyOCEAN en este plan: aquí solo se mide.
