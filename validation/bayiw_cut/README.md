@@ -248,3 +248,24 @@ En la estratificación realista, que es la de la tesis de Esteban, **z\* y la h�
 | z\* radiando | 0.745 | 0.385 | 1.93 | copias `ascontiguousarray` 29, `_step_ale` 23, `truncate_cfl` 13.5, `step` 12, `_advect` 9 |
 | híbrida radiando | 0.371 | 0.200 | 1.86 | copias 13, `_step_ale` 11, `step` 6, `truncate_cfl` 6 |
 | z\* anidado | 0.965 | 0.535 | 1.80 | copias 53, `_source_columns` 41, `_remap_stretched` 21, `_step_ale` 23, `truncate_cfl` 15 |
+
+**Final (rama `ale-perf-2`, `profile_final.txt`):**
+
+| Caso | 1 hilo | 5 hilos | Aceleración | Antes (5 hilos) | Meta |
+|---|---|---|---|---|---|
+| z\* radiando | 0.731 | 0.307 | 2.39 | 0.385 (−20 %) | ≤ 0.25 ❌ |
+| híbrida radiando | 0.368 | 0.165 | 2.23 | 0.200 (−18 %) | ≤ 0.13 ❌ |
+| z\* anidado | 0.789 | 0.329–0.348 | 2.27 | 0.535 (−35 %) | ≤ radiando + 5 % 🔶 (+7 %) |
+
+Las mediciones varían ~±6 % entre corridas.
+
+**Por qué no se alcanzan las metas:** ninguna pieza serie pasa ya del 5 % del paso (la mayor es el cuerpo de `_step_ale`, 14 ms), que era el criterio de parada del spec. Lo que queda son los núcleos paralelos:
+- remapeo vertical 41 ms, advección de T 26 ms, PGF FV 26 ms y flujo de grosor PPM 21 ms;
+- con 5 hilos escalan solo 3.1–3.9 veces, limitados por el ancho de banda de memoria;
+- con estos núcleos el piso está cerca de 0.2 s/paso en z\*.
+
+Bajar de ahí exige que los propios núcleos hagan menos pasadas por memoria (fusionar remapeo y advección, o un solo remapeo para T, u y v). Eso es otro plan.
+
+**Sobrecosto restante del anidado:** ~21 ms. Es casi todo `exterior_velocity`, que remapea u′ exterior en la banda de esponja de 30 celdas en cada paso (la esponja sobre u′ la necesita).
+
+**Por hora simulada, z\*:** 9.2 s, frente a 4.4 s de MITgcm con 5 procesos (antes 11.7 s). **Híbrida:** 5.0 s.
