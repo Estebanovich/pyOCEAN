@@ -32,15 +32,25 @@
    - MOM6 trae un puerto de `hybgen` (`REGRIDDING_COORDINATE_MODE = "HYBGEN"`, `src/ALE/MOM_hybgen_regrid.F90`).
    - Se añade como tercera coordenada en la sección 2-D y en el costo del corte.
    - Separa el efecto de la regla de la coordenada (HYCOM1 frente a hybgen frente a la nuestra) del resto del modelo.
-2. **HYCOM mismo (con una compuerta de factibilidad):**
-   - Se compila HYCOM 2.3 (`HYCOM-src`, configuración `generic-gnu-relo_mpi`, gfortran + MPICH de Homebrew) en `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/hycom_bayiw/build`.
-   - **Compuerta:** si en ~1 h de trabajo no compila y corre un caso trivial (una cuenca en reposo, 10 pasos), se para y se reporta a Esteban sin seguir con HYCOM.
-   - **Entradas:** `regional.grid` y `regional.depth` `.a/.b`, T inicial y viento, escritas desde `bayiw` con un escritor `.a/.b` (el formato que ya lee `forcing/sources/hycom_ab.py`, con su prueba de ida y vuelta).
-   - **`blkdat.input`:** la misma física que el benchmark, `hybgen` con 25 capas y los mismos objetivos de densidad (`sigma`), piso z\* (`dp0k`) y EOS lineal (HYCOM la admite con la opción de EOS lineal en `stmt_fns`; si la versión no la tiene, se reporta).
-   - **Fronteras:** HYCOM no tiene una frontera radiante tipo Orlanski. En la sección se usa una zona de relajación hacia el reposo en el sur, y en el corte zonas de relajación en los tres bordes. Esto se clasifica como (c) de configuración frente a MITgcm `orl`.
-   - **Corridas:**
-     - las 8 de la sección 2-D (60 h): la coordenada es la de HYCOM y la referencia sigue siendo MITgcm;
-     - el costo en el corte: 3 h con 5 procesos MPI.
+2. **HYCOM mismo, solo para costo (decisión de Esteban, opción 1), detrás de una compuerta de factibilidad:**
+   - **Por qué solo costo.** Una comparación de resultados contra HYCOM tendría demasiadas diferencias de configuración, todas de clase (c):
+     - no hay EOS lineal;
+     - no se puede fijar una mezcla vertical constante (o no hay mezcla, o hay KPP);
+     - no hay frontera radiante, solo esponja frente a una pared;
+     - el viento exige el módulo termodinámico;
+     - la difusión escala con dx.
+
+     Para el costo esas diferencias pesan poco. El algoritmo de su coordenada se compara en resultados con el puerto `HYBGEN` de MOM6.
+   - **Build:** HYCOM 2.3 (`HYCOM-src`, `make hycom ARCH=generic-gnu-relo TYPE=mpi`, con `-DEOS_SIG0 -DEOS_7T`) en `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/hycom_bayiw/build`, a partir de una copia de la configuración sin `-mavx` (arm64). El código fuente no se modifica.
+   - **Compuerta:** si en ~1 h de trabajo no compila y corre un caso trivial (una cuenca en reposo, 10 pasos, con `mpiexec -n 5`), se para y se reporta a Esteban sin seguir con HYCOM.
+   - **Caso de costo:** el corte BayIW de dos capas con bahía, 3 h, 5 procesos MPI.
+     - 25 capas híbridas con los objetivos σ0 de la estratificación de dos capas;
+     - EOS de 7 términos con S constante;
+     - viento meridional y flujos térmicos nulos;
+     - esponjas en los tres bordes abiertos;
+     - viscosidad Laplaciana `veldf2` equivalente a 100 m² s⁻¹ en la dx media;
+     - KPP mínimo.
+   - Se mide el s por hora simulada y el reparto de sus temporizadores (`-DTIMER`: cnuity, tsadvc, momtum, barotp, hybgen, …).
 
 ## 2. Configuración de MOM6
 
@@ -90,9 +100,9 @@
 
 **`validation/hycom_bayiw/`:**
 - `build_hycom.sh`: el build y el caso trivial de la compuerta.
-- `inputs.py`: un escritor `.a/.b` y las entradas desde `bayiw`.
+- `inputs.py`: un escritor `.a/.b` y las entradas desde `bayiw` (`regional.grid`, `regional.depth`, `relax.*`, forzamientos y `patch.input`).
 - `blkdat.py`: el `blkdat.input`.
-- `run_hycom.sh` y `read_hycom.py`: la lectura de archivos `archv` con `forcing/sources/hycom_archive.py`.
+- `run_hycom.sh`: corre el caso de costo y extrae la tabla de temporizadores.
 - `README.md`.
 
 ## 5. Pruebas (sin simulaciones)
@@ -113,7 +123,7 @@
 | Corrida 3-D opcional (HYCOM1, 30 h) | ~10 min |
 | MOM6 HYBGEN (sección: 4 corridas de dos capas; costo 3 h) | ~10 min |
 | Build de HYCOM y compuerta | una vez, ≤ 1 h de trabajo |
-| HYCOM: sección (8 corridas) y costo en el corte (3 h) | ~20 min |
+| HYCOM: costo en el corte (3 h) | ~10 min |
 
 Si alguna corrida pasa de 3 veces su estimado, se reporta antes de seguir.
 
