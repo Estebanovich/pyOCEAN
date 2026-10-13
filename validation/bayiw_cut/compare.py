@@ -5,7 +5,8 @@ run (phase 2, ref 'full') — spec docs/superpowers/specs/2026-10-12-bayiw-cut-d
 pyOCEAN grid (MITgcm's interior); MITgcm's diagnostics are 900-s averages ending at their time stamp, so their
 times are shifted by −450 s (pyOCEAN stores snapshots).
 
-Usage: python validation/bayiw_cut/compare.py 2layer zstar [radiate|nest|full]   (full: phase 2, nested vs full run)
+Usage: python validation/bayiw_cut/compare.py 2layer zstar [radiate|full|phases|dt]
+       (full: phase 2 nested vs the full run; phases: pyOCEAN error phase 1 / 2; dt: the Δt = 30 s control)
 """
 from __future__ import annotations
 
@@ -69,6 +70,39 @@ def heat_displacement(T: np.ndarray, dz: np.ndarray, t_upper: float, t_lower: fl
     return -np.einsum("nkji,k->nji", a, dz) / (t_upper - t_lower)
 
 
+NOBASE = ("V110", "eta")                 # series compared as they are (others: change from t = 0)
+FLOOR = {"T": 1e-6, "V": 1e-6, "U": 1e-6, "eta": 1e-5, "iso": 1e-4, "zeta": 1e-4}   # resolvable rms [°C, m/s, m]
+PHASE2_KEYS = ("eta", "V110")            # plus the case's T metrics (report_full)
+
+
+def resolvable(key: str, x: np.ndarray) -> bool:
+    """A reference series is worth a ratio only if its rms exceeds the floor of its kind (FLOOR, by key prefix)."""
+    floor = FLOOR.get(key, FLOOR.get(key[0], 0.0))
+    return bool(np.isfinite(x).all() and rms(x) > floor)
+
+
+def field_at(t: np.ndarray, F: np.ndarray, t0: float) -> np.ndarray:
+    """F (n, …) at time t0, linear between the two records that bracket it (t increasing)."""
+    k = int(np.clip(np.searchsorted(t, t0), 1, t.size - 1))
+    w = float(np.clip((t0 - t[k - 1]) / (t[k] - t[k - 1]), 0.0, 1.0))
+    return (1.0 - w) * F[k - 1] + w * F[k]
+
+
+def map_error(ta: np.ndarray, Fa: np.ndarray, T0a: np.ndarray, tb: np.ndarray, Fb: np.ndarray, T0b: np.ndarray,
+              t0: float, mask: np.ndarray) -> float:
+    """Relative rms error of model a's map anomaly against b's at t0, each on its own initial field, inside mask."""
+    a = np.where(mask, field_at(ta, Fa, t0) - T0a, np.nan)
+    b = np.where(mask, field_at(tb, Fb, t0) - T0b, np.nan)
+    return relative_field_error(a, b)
+
+
+def mit_t0(case: str, bay: str) -> np.ndarray:
+    """MITgcm's true initial T (input theta) on the pyOCEAN grid at the sampled levels 20–40; its first diagnostic
+    record is already a 900-s average."""
+    T = cut.cut_inputs(case, bay, "py")["T"][19:40]
+    return np.where(np.isfinite(cut.cut_inputs(case, bay, "py")["H"])[None] & (T != 0), T, np.nan)
+
+
 def load_py(case: str, bay: str, coord: str, mode: str = "radiate", dt_tag: str = "") -> dict:
     p = dict(np.load(cut.RUNS / "pyocean" / f"{case}_{bay}_{coord}_{mode}{dt_tag}" / "series.npz"))
     p["T"] = np.where(np.isnan(p["T"]), np.nan, p["T"]).astype(float)
@@ -125,15 +159,15 @@ def report(case: str, coord: str, mode: str = "radiate", ref: str = "mit", dt_ta
         c = corr_lag(th, xr, xp, 0.0)[0]
         L.append(f"{s:8s} {Pr:5.2f} {Pp:5.2f} | {1e3 * Rr:6.2f} {1e3 * Rp:6.2f} | {c:5.2f} | "
                  f"{_flag(abs(Pp / Pr - 1) <= 0.02 and abs(Rp / Rr - 1) <= 0.10 and c >= 0.95)}")
-    keys = ("T110", "T250", "V110") + (("iso", "zeta") if case == "2layer" else ())   # zeta: complementary, no criterion
+    keys = ("eta", "T110", "T250", "V110") + (("iso", "zeta") if case == "2layer" else ())   # zeta: complementary
     crit = "iso" if case == "2layer" else "T110"
     for key in keys:
         L.append(f"\n## {key} (0–60 h): rms py/ref, corr, lag [h], best corr" + ("   [criterion]" if key == crit else ""))
         for b in bays:
             for s in cut.STATIONS:
-                xr = sr[b][s][key] - (sr[b][s][key][0] if key != "V110" else 0.0)
-                xp = np.interp(tr, tp, sp[b][s][key] - (sp[b][s][key][0] if key != "V110" else 0.0))
-                if not (np.isfinite(xr).all() and np.isfinite(xp).all()) or rms(xr) == 0:
+                xr = sr[b][s][key] - (sr[b][s][key][0] if key not in NOBASE else 0.0)
+                xp = np.interp(tr, tp, sp[b][s][key] - (sp[b][s][key][0] if key not in NOBASE else 0.0))
+                if not (resolvable(key, xr) and np.isfinite(xp).all()):
                     continue
                 ratio = rms(xp) / rms(xr)
                 c0, lag, cb = corr_lag(tr / 3600.0, xr, xp)
@@ -145,7 +179,7 @@ def report(case: str, coord: str, mode: str = "radiate", ref: str = "mit", dt_ta
         row = []
         for b in bays:
             xr, xp = sr[b][s]["U110"], np.interp(tr, tp, sp[b][s]["U110"])
-            row.append(f"{rms(xp) / rms(xr):4.2f} {corr_lag(tr / 3600, xr, xp, 0.0)[0]:+4.2f}" if rms(xr) > 0 else "—")
+            row.append(f"{rms(xp) / rms(xr):4.2f} {corr_lag(tr / 3600, xr, xp, 0.0)[0]:+4.2f}" if resolvable("U110", xr) else "—")
         L.append(f"{s:8s} " + " | ".join(row))
     L.append("\n## Bay effect ΔT110 (bay − nobay), 0–60 h: rms py/ref, corr")
     for s in cut.STATIONS:
@@ -154,15 +188,15 @@ def report(case: str, coord: str, mode: str = "radiate", ref: str = "mit", dt_ta
             b = series["nobay"][s]["T110"] - series["nobay"][s]["T110"][0]
             return np.interp(tr, t_src, a - b) if t_src is not tr else a - b
         dr, dp = eff(sr, tr), eff(sp, tp)
-        if not (np.isfinite(dr).all() and np.isfinite(dp).all()) or rms(dr) == 0:
+        if not (resolvable("T110", dr) and np.isfinite(dp).all()):
             continue
         ratio, c = rms(dp) / rms(dr), corr_lag(tr / 3600, dr, dp, 0.0)[0]
         L.append(f"{s:8s} {ratio:6.2f} | {c:5.2f} | {_flag(1 / 3 <= ratio <= 3 and c > 0)}")
-    L.append("\n## T110 map anomaly (bay): relative rms error at 6, 24, 60 h")
-    T0 = np.where(np.isfinite(py["bay"]["T"][0, K110]), py["bay"]["T"][0, K110], np.nan)
+    L.append("\n## T110 map anomaly (bay, each model on its own initial T, linear in time): relative rms error")
+    T0p, T0r = py["bay"]["T"][0, K110], mit_t0(case, "bay")[K110]
     for hr in (6.0, 24.0, 60.0):
-        kr, kp = int(np.argmin(np.abs(tr - hr * 3600))), int(np.argmin(np.abs(tp - hr * 3600)))
-        L.append(f"{hr:4.0f} h  {relative_field_error(py['bay']['T'][kp, K110] - T0, rf['bay']['T'][kr, K110] - T0):5.2f}")
+        e = map_error(tp, py["bay"]["T"][:, K110], T0p, tr, rf["bay"]["T"][:, K110], T0r, hr * 3600, np.isfinite(T0p))
+        L.append(f"{hr:4.0f} h  {e:5.2f}")
     for b in bays:
         p = py[b]
         L.append(f"\n## Health py {b}: trunc {int(p['n_trunc'][-1])}, max|Σh − H − η| {p['sumh'].max():.1e} m, "
@@ -173,7 +207,8 @@ def report(case: str, coord: str, mode: str = "radiate", ref: str = "mit", dt_ta
 
 
 # ---------------------------------------------------------------- phase 2: nested runs against the full run
-T_END2 = 59.5 * 3600.0                   # MITgcm's periodic OB calendar wraps the last record onto t > 215 400 s
+T_END2 = 59.5 * 3600.0                   # MITgcm's periodic OB calendar interpolates toward record 179 (the
+                                         # initial state, also used for t < 600 s) after 214 200 s
 
 
 def interior_mask(shape: tuple[int, int], n: int = 10) -> np.ndarray:
@@ -231,15 +266,15 @@ def report_full(case: str, coord: str = "zstar") -> list[str]:
                     1 - corr_lag(th, xf, x, 0.0)[0])
         ok = all(phase2_ok(a, max(b, 0.01)) for a, b in zip(e["p"], e["m"]))
         L.append(f"{s:8s} " + " | ".join(f"{a:.3f} {b:.3f}" for a, b in zip(e["p"], e["m"])) + f" | {_flag(ok)}")
-    keys = ("V110",) + (("iso", "zeta") if case == "2layer" else ("T110",))
+    keys = PHASE2_KEYS + (("iso", "zeta") if case == "2layer" else ("T110",))
     for key in keys:
         L.append(f"\n## {key} (0–59.5 h): relative rms error py | MITgcm")
         for b in bays:
             for s in cut.STATIONS:
-                base = lambda v: v[b][s][key] - (v[b][s][key][0] if key != "V110" else 0.0)   # noqa: E731
+                base = lambda v: v[b][s][key] - (v[b][s][key][0] if key not in NOBASE else 0.0)   # noqa: E731
                 xf = on(base(sf), fr[b]["t"])
                 xp, xm = on(base(sp), py[b]["t"]), on(base(sm), mn[b]["t"])
-                if not all(np.isfinite(a).all() for a in (xf, xp, xm)) or rms(xf) == 0:
+                if not (resolvable(key, xf) and np.isfinite(xp).all() and np.isfinite(xm).all()):
                     continue
                 ep, em = _rel(xp, xf), _rel(xm, xf)
                 L.append(f"{b:5s} {s:8s} {ep:5.2f} | {em:5.2f} | {_flag(phase2_ok(ep, em))}")
@@ -251,18 +286,16 @@ def report_full(case: str, coord: str = "zstar") -> list[str]:
             return on(a, tb) - on(c, tn)
         df = eff(sf, fr["bay"]["t"], fr["nobay"]["t"])
         dp, dm = eff(sp, py["bay"]["t"], py["nobay"]["t"]), eff(sm, mn["bay"]["t"], mn["nobay"]["t"])
-        if not all(np.isfinite(a).all() for a in (df, dp, dm)) or rms(df) == 0:
+        if not (resolvable("T110", df) and np.isfinite(dp).all() and np.isfinite(dm).all()):
             continue
         ep, em = _rel(dp, df), _rel(dm, df)
         L.append(f"{s:8s} {ep:5.2f} | {em:5.2f} | {_flag(phase2_ok(ep, em))}")
-    L.append("\n## T110 map anomaly (bay, 10 cells off the open edges): relative rms error py | MITgcm")
+    L.append("\n## T110 map anomaly (bay, 10 cells off the open edges, own initial T): relative rms error py | MITgcm")
     msk = interior_mask(fr["bay"]["eta"].shape[1:])
-    T0 = fr["bay"]["T"][0, K110]
+    tf, Ff, T0f = fr["bay"]["t"], fr["bay"]["T"][:, K110], fr["bay"]["T"][0, K110]
     for hr in (6.0, 24.0, 59.5):
-        k = lambda tt: int(np.argmin(np.abs(tt - hr * 3600)))                  # noqa: E731
-        f = np.where(msk, fr["bay"]["T"][k(fr["bay"]["t"]), K110] - T0, np.nan)
-        ep = relative_field_error(np.where(msk, py["bay"]["T"][k(py["bay"]["t"]), K110] - T0, np.nan), f)
-        em = relative_field_error(np.where(msk, mn["bay"]["T"][k(mn["bay"]["t"]), K110] - T0, np.nan), f)
+        ep = map_error(py["bay"]["t"], py["bay"]["T"][:, K110], py["bay"]["T"][0, K110], tf, Ff, T0f, hr * 3600, msk)
+        em = map_error(mn["bay"]["t"], mn["bay"]["T"][:, K110], mit_t0(case, "bay")[K110], tf, Ff, T0f, hr * 3600, msk)
         L.append(f"{hr:4.1f} h  {ep:5.2f} | {em:5.2f} | {_flag(phase2_ok(ep, em))}")
     for b in bays:
         p = py[b]
@@ -272,9 +305,60 @@ def report_full(case: str, coord: str = "zstar") -> list[str]:
     return L
 
 
+def phase_table(case: str, coord: str = "zstar") -> list[str]:
+    """
+    pyOCEAN's relative rms error (0–59.5 h) in phase 1 (radiating, against MITgcm radiating) and phase 2 (nested,
+    against Esteban's full run) at the stations: equal errors mean that nesting adds none; the difference is what
+    the boundaries bring.
+    """
+    keys = PHASE2_KEYS + (("iso", "zeta") if case == "2layer" else ("T110",))
+    L = [f"# BayIW cut {case}, pyOCEAN {coord}: relative rms error phase 1 / phase 2"]
+    for b in ("bay", "nobay"):
+        m1, p1 = load_mit(case, b, "radiate"), load_py(case, b, coord, "radiate")
+        f2, p2 = load_full(case, b), load_py(case, b, coord, "nest")
+        s = {k: station_series(d, case) for k, d in (("m1", m1), ("p1", p1), ("f2", f2), ("p2", p2))}
+        t = f2["t"][f2["t"] <= T_END2 + 1.0]
+        for key in keys:
+            row = []
+            for st in cut.STATIONS:
+                base = lambda d: d[st][key] - (d[st][key][0] if key not in NOBASE else 0.0)   # noqa: E731
+                r1, x1 = np.interp(t, m1["t"], base(s["m1"])), np.interp(t, p1["t"], base(s["p1"]))
+                r2, x2 = np.interp(t, f2["t"], base(s["f2"])), np.interp(t, p2["t"], base(s["p2"]))
+                if resolvable(key, r1) and resolvable(key, r2) and np.isfinite(x1).all() and np.isfinite(x2).all():
+                    row.append(f"{st} {_rel(x1, r1):.2f}/{_rel(x2, r2):.2f}")
+            L.append(f"{b:5s} {key:5s} " + "  ".join(row))
+    print("\n".join(L))
+    return L
+
+
+def dt_table(case: str = "2layer", coord: str = "zstar", dt_tag: str = "_dt30") -> list[str]:
+    """The Δt control (bay only): rms ratio and correlation against MITgcm, control | Δt = 120 s."""
+    mit = load_mit(case, "bay")
+    tr = mit["t"]
+    a, c = load_py(case, "bay", coord), load_py(case, "bay", coord, dt_tag=dt_tag)
+    sm, sa, sc = station_series(mit, case), station_series(a, case), station_series(c, case)
+    L = [f"# BayIW cut {case} bay {coord}: {dt_tag[1:]} | dt120 against MITgcm (rms ratio, corr)"]
+    for st in cut.STATIONS:
+        for key in ("eta", "V110") + (("iso", "zeta") if case == "2layer" else ("T110",)):
+            r = sm[st][key] - (sm[st][key][0] if key not in NOBASE else 0.0)
+            if not resolvable(key, r):
+                continue
+            out = []
+            for x, tt in ((sc, c["t"]), (sa, a["t"])):
+                q = np.interp(tr, tt, x[st][key] - (x[st][key][0] if key not in NOBASE else 0.0))
+                out.append(f"{rms(q) / rms(r):5.2f} {corr_lag(tr / 3600, r, q, 0.0)[0]:5.2f}")
+            L.append(f"{st:8s} {key:5s} " + " | ".join(out))
+    print("\n".join(L))
+    return L
+
+
 if __name__ == "__main__":
     mode = sys.argv[3] if len(sys.argv) > 3 else "radiate"
-    if mode == "full":
+    if mode == "phases":
+        phase_table(sys.argv[1], sys.argv[2])
+    elif mode == "dt":
+        dt_table(sys.argv[1], sys.argv[2])
+    elif mode == "full":
         report_full(sys.argv[1], sys.argv[2])
     else:
         report(sys.argv[1], sys.argv[2], mode)

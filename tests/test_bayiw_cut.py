@@ -166,3 +166,35 @@ def test_nested_namelist_prescribes_u_v_t_without_eta(tmp_path):
     for e in "SWE":
         for v in ("u", "v", "t"):
             assert f"OB{e}{v}File='input/ob_{e}{v}.bin'" in obcs
+
+
+def test_field_at_interpolates_between_records():
+    # final review: argmin|t − t0| ties between two 900-s averages (shifted −450 s) and picked the earlier one
+    from validation.bayiw_cut import compare
+    t = np.array([20250.0, 21150.0, 22050.0])
+    F = np.stack([np.full((2, 2), 1.0), np.full((2, 2), 2.0), np.full((2, 2), 4.0)])
+    np.testing.assert_allclose(compare.field_at(t, F, 21600.0), 3.0)
+    np.testing.assert_allclose(compare.field_at(t, F, 21150.0), 2.0)
+
+
+def test_map_error_uses_each_models_own_baseline():
+    # final review: the MITgcm anomaly was taken on pyOCEAN's T0; a static representation offset must cancel
+    from validation.bayiw_cut import compare
+    rng = np.random.default_rng(0)
+    signal = rng.normal(size=(4, 5))
+    T0p, T0r = np.full((4, 5), 20.0), np.full((4, 5), 20.3)
+    t = np.array([0.0, 3600.0])
+    Fp = np.stack([T0p, T0p + signal])
+    Fr = np.stack([T0r, T0r + signal])
+    assert compare.map_error(t, Fp, T0p, t, Fr, T0r, 3600.0, np.ones((4, 5), bool)) < 1e-12
+
+
+def test_degenerate_reference_rows_are_skipped():
+    # final review: T250 in two layers (rms 5e-10 °C) gave a ratio of 34929; real signals are ≥ 5e-5 °C, 2e-5 m/s
+    from validation.bayiw_cut import compare
+    assert not compare.resolvable("T250", 1e-9 * np.arange(10.0))
+    assert compare.resolvable("T110", 5e-5 * np.sin(np.arange(10.0)))
+    assert compare.resolvable("V110", 2e-5 * np.sin(np.arange(10.0)))
+    assert compare.resolvable("T110", 0.05 * np.sin(np.arange(10.0)))
+    assert compare.resolvable("eta", 1e-3 * np.sin(np.arange(10.0)))
+    assert "eta" in compare.PHASE2_KEYS
