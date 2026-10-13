@@ -159,8 +159,9 @@ def _keep_consistent(h_top, rho_top, targets, h_mass, x):  # pragma: no cover
     """
     Isopycnal layer preservation (spec §3, Plan B2c).  Layer j (surface first, between the
     targets t_j and t_j+1) is consistent if it has no mass (h < h_mass) or t_j ≤ ρ_j ≤ t_j+1
-    with its own density.  An interface between two consistent layers stays where the
-    Lagrangian step left it; the others keep their P1M position, clipped between the nearest
+    with its own density.  An interface between two consistent layers, or one whose own target t_j
+    lies between the densities of its two layers (both with mass: a density jump over z-floor layers),
+    stays where the Lagrangian step left it; the others keep their P1M position, clipped between the nearest
     kept interfaces above and below so they never push a kept one.  x: depths from the surface
     (0 … D, surface first), overwritten in place.  Pure isopycnal layers have no spurious
     diffusion (White et al. 2009, figs. 11-12); hybgen moves only layers that left their target
@@ -178,7 +179,11 @@ def _keep_consistent(h_top, rho_top, targets, h_mass, x):  # pragma: no cover
     kept[0] = True
     kept[n] = True
     for j in range(1, n):
-        if ok[j - 1] and ok[j]:
+        # also an interface whose own target lies between the densities of its two layers (both with mass) is
+        # isopycnal: a jump with z-floor layers below it (BayIW two-layer, full-depth floor) — hybgen principle
+        straddle = (h_top[j - 1] >= h_mass and h_top[j] >= h_mass
+                    and rho_top[j - 1] <= targets[j] <= rho_top[j])
+        if (ok[j - 1] and ok[j]) or straddle:
             x[j] = xg[j]
             kept[j] = True
     lo = xg[0]

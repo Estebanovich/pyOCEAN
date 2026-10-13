@@ -374,10 +374,11 @@ def test_keep_isopycnal_regrids_only_the_interfaces_of_an_inconsistent_layer():
     zin = -200.0 + np.concatenate([[0.0], np.cumsum(h)])
     p1m = _hybrid(200.0, 0.0, h, rho, targets, dz=np.full(10, 1e-6), keep=False)
     zw = _hybrid(200.0, 0.0, h, rho, targets, dz=np.full(10, 1e-6), keep=True)
-    other = [k for k in range(11) if k not in (4, 5)]
+    # its lower interface (bed-first 4) separates 1021.2 from 1026.5 around its own target 1026.0, so it is
+    # isopycnal and stays (straddling rule, 2026-10-13); the upper one (statically unstable) is regridded
+    other = [k for k in range(11) if k != 5]
     np.testing.assert_allclose(zw[other], zin[other], rtol=0, atol=1e-11)
-    for k in (4, 5):                                                     # P1M position, between the kept 3 and 6
-        np.testing.assert_allclose(zw[k], np.clip(p1m[k], zin[3], zin[6]), rtol=0, atol=1e-11)
+    np.testing.assert_allclose(zw[5], np.clip(p1m[5], zin[4], zin[6]), rtol=0, atol=1e-11)
     assert (np.diff(zw) > 0).all()
 
 
@@ -460,3 +461,18 @@ def test_snap_to_jumps_splits_the_layer_that_straddles_a_density_jump():
     np.testing.assert_allclose(out[:, 0, 0], [-200.0, -116.0, -100.0, -50.0, 0.0])
     keep = rg.snap_to_jumps(zw[:, None, None].copy(), zw_src[:, None, None], rho_src[:, None, None], 5.0)
     np.testing.assert_allclose(keep[:, 0, 0], zw)
+
+
+def test_keep_holds_a_jump_whose_target_lies_between_the_two_water_masses():
+    # BayIW two-layer with a full-depth z* floor: the cold water below the jump sits in z-floor layers whose targets
+    # do not bracket it, so neither neighbour of the jump interface was "consistent" and P1M (edges averaged across
+    # the jump) moved it 7 m up into the warm water every step.  An interface whose own target lies between the
+    # densities of its two layers is isopycnal and stays (hybgen principle, Bleck 2002).
+    h_top = np.array([10.0, 90.0, 10.0, 30.0, 30.0, 30.0])                   # surface first, jump at 100 m
+    rho_top = np.array([1001.2, 1001.2, 1002.0, 1002.0, 1002.0, 1002.0])
+    targets = np.array([999.5, 1001.0, 1001.5, 1001.8, 1001.9, 1001.95, 1001.99])
+    dz = np.array([10.0, 40.0, 60.0, 30.0, 30.0, 30.0])                    # floors 10, 50, 110, 140, 170, 200 m
+    zw = np.empty(7)
+    rg.hycom1_column(200.0, 0.0, h_top[::-1].copy(), rho_top[::-1].copy(), targets, dz, np.full(6, np.inf),
+                     rg.H_MIN, True, zw)
+    np.testing.assert_allclose(-zw[::-1], [0.0, 10.0, 100.0, 110.0, 140.0, 170.0, 200.0], atol=1e-9)
