@@ -90,6 +90,7 @@ from core.dynamics.sigma_wd import SigmaWetDry, vertical_implicit
 from diagnostics.mixing import reference_potential_energy
 from core.vertical import regrid as rg
 from core.vertical import remap as rm
+from core.dynamics import open_boundary as obc
 from core.vertical.ale import (DZ_FLOOR, baroclinic_split, exterior_on_layers, face_fractions, face_thickness,
                                face_transport_thickness, lagrangian_thickness, open_face_transport, ppm_transport_x,
                                upwind_transport_x, zero_thin_bed_velocity)
@@ -692,6 +693,13 @@ class SigmaBaroclinic:
           lagged matrix, core.dynamics.wetting_drying; ≈1 s → ≈0.1 s per step on BayIW 560 × 352)
     open_boundaries, sponge_cells, sponge_tau, orlanski_cmax, sponge_tracer : also with vertical_coordinate='ale'
           (Plan C scope A: exterior at rest, T_ext/h_ext kept in z from the initial state; no H ≤ 0 cells at an edge)
+    open_boundary_state : t [s] → {edge: boundaries.obcs.OBData with zw}: time-varying exterior (spec
+          2026-10-12-baroclinic-obc-internal-wave), evaluated at tⁿ⁺¹ and remapped from its own z grid onto the
+          layers (core.dynamics.open_boundary); None = the resting exterior above, unchanged
+    open_boundary_mode : {edge: 'radiating' (default: Flather toward (η, ū)ₑₓₜ, Orlanski on u′ then nudging toward
+          u′ₑₓₜ with Δt/τ_in when flowing in, Δt/τ_out when out, as CROCO u3dbc.F:111-155; sponge toward the
+          exterior) | 'clamped' (u′ = u′ₑₓₜ, Dirichlet, as MITgcm OBCS prescribe / CROCO M3_FRC_BRY)}
+    obc_tau_in, obc_tau_out : nudging time scales [s] of 'radiating' (CROCO typical 1 and 10 days)
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, n_layers: int = 10,
@@ -706,7 +714,8 @@ class SigmaBaroclinic:
                  regrid: str = "sigma", regrid_params: dict | None = None, remap_scheme: str = "ppm_h4",
                  h_thin_bed: float = 0.01, init_iterations: int = 10, momentum: str | None = None,
                  ke_scheme: str = "gudonov", max_truncations: int = 1000, thickness_flux: str = "ppm",
-                 mix_diagnostic: bool = True) -> None:
+                 mix_diagnostic: bool = True, open_boundary_state=None, open_boundary_mode: dict | None = None,
+                 obc_tau_in: float = 86400.0, obc_tau_out: float = 864000.0) -> None:
         if pgf not in ("twoterm", "jacobian", "fv"):
             raise ValueError(f"unknown pressure-gradient scheme {pgf!r}")
         self.pgf, self.rho_ref = pgf, rho_ref
@@ -722,6 +731,16 @@ class SigmaBaroclinic:
         if sponge_cells and not open_boundaries:
             raise ValueError("a sponge needs open boundaries")
         self.open = tuple(open_boundaries)
+        if open_boundary_state is not None and not self.open:
+            raise ValueError("open_boundary_state needs open_boundaries")
+        self.obc_state, self.obc_mode = open_boundary_state, {e: "radiating" for e in self.open}
+        for e, mode in (open_boundary_mode or {}).items():
+            if e not in self.open or mode not in ("radiating", "clamped"):
+                raise ValueError(f"open_boundary_mode {{{e!r}: {mode!r}}}: edges must be open and modes "
+                                 "'radiating' or 'clamped'")
+            self.obc_mode[e] = mode
+        self.obc_tau_in, self.obc_tau_out = float(obc_tau_in), float(obc_tau_out)
+        self._ext = None
         self.orlanski_cmax, self.sponge_tracer = orlanski_cmax, sponge_tracer
         self.sponge_cells, self.sponge_tau = int(sponge_cells), tuple(float(t) for t in sponge_tau)
         self.kh, self.kv = float(kh), float(kv)
@@ -751,6 +770,10 @@ class SigmaBaroclinic:
         if self._sp_c is not None:
             bc |= self._sp_c > 0
         self._bc_mask = bc & act
+        self._bc_u, self._bc_v = fl_u.copy(), fl_v.copy()               # open faces + sponge band (exterior u′)
+        if self._sp_u is not None:
+            self._bc_u |= self._sp_u > 0
+            self._bc_v |= self._sp_v > 0
         self.h_ext, self._T_in = None, None
         self.hg, self.dt, self.n, self.g = h_grid, dt, n_layers, g
         self.rho0, self.t_coef, self.t_ref, self.ah, self.adv = rho0, t_coef, t_ref, ah, adv
@@ -1266,7 +1289,7 @@ class SigmaBaroclinic:
         return baroclinic_split(vel, w)
 
     def _radiate(self, u_old: np.ndarray, u_new: np.ndarray, axis: int, edge: int,
-                 w: np.ndarray | None = None) -> None:
+                 w: np.ndarray | None = None, ext: np.ndarray | None = None, mode: str = "radiating") -> None:
         """
         Orlanski (1976) radiation of the baroclinic normal velocity at one open edge, implicit
         upstream form as ROMS u3dbc (Marchesiello et al. 2001, normal part only):
@@ -1277,6 +1300,9 @@ class SigmaBaroclinic:
         with B the boundary face and 1, 2 the next faces inwards (r = 0: incoming → clamped).
         The depth-mean part (Flather) is kept; u_new is modified in place.  ``w``: depth-mean weights
         (Δσ when None, the ALE face fractions of hⁿ for both levels; spec 2026-10-12-ale-open-boundaries §3.2).
+        ``ext``: exterior u′ on the face layers (spec 2026-10-12-baroclinic-obc-internal-wave §2): 'radiating'
+        nudges the radiated value toward it, u′_B ← (1 − α) u′_B + α u′ₑₓₜ with α = Δt/τ_in when flowing in
+        (r = 0) and Δt/τ_out when out (CROCO u3dbc.F:119-127, 144-152); 'clamped' sets u′_B = u′ₑₓₜ.
         """
         _, po = self._baroclinic_part(u_old, w)
         bar, pn = self._baroclinic_part(u_new, w)
@@ -1286,6 +1312,13 @@ class SigmaBaroclinic:
         cx = (take(po, i1) - take(pn, i1)) * grad
         r = np.clip(cx / np.maximum(grad**2, 1e-30), 0.0, self.orlanski_cmax)
         pb = (take(po, edge) + r * take(pn, i1)) / (1.0 + r)
+        if ext is not None:
+            pe = take(ext, edge)
+            if mode == "clamped":
+                pb = pe.copy()
+            else:
+                alpha = np.where(cx <= 0.0, self.dt / self.obc_tau_in, self.dt / self.obc_tau_out)
+                pb = (1.0 - alpha) * pb + alpha * pe
         if w is None:
             pb -= np.tensordot(self.ds, pb, axes=(0, 0))[None]                        # keep Σ Δσ u′ = 0
         else:
@@ -1299,6 +1332,8 @@ class SigmaBaroclinic:
         """Flather radiation to a resting exterior (η = 0, ū = 0) for the free-surface step; {} if closed."""
         if not self.open:
             return {}
+        if self._ext is not None:
+            return self._ext["flather"]
         zu, zv = np.zeros(self.fs.H_u.shape), np.zeros(self.fs.H_v.shape)
         return dict(flather_eta=(zu, zv), flather_ubar=zu, flather_vbar=zv)
 
@@ -1309,14 +1344,55 @@ class SigmaBaroclinic:
         free-surface fluxes, are untouched — barotropic waves leave through Flather), then Orlanski
         radiation at the open edges.  Weights wu, wv: Δσ (None) or the ALE face fractions (spec §3.2-3.3).
         """
+        ext_u, ext_v = (None, None) if self._ext is None else (self._ext["up_u"], self._ext["up_v"])
         if self._sp_u is not None:
-            for vel, rate, w in ((u_new, self._sp_u, wu), (v_new, self._sp_v, wv)):
+            for vel, rate, w, pe in ((u_new, self._sp_u, wu, ext_u), (v_new, self._sp_v, wv, ext_v)):
                 bar, prime = self._baroclinic_part(vel, w)
-                vel[...] = bar[None] + prime / (1.0 + self.dt * rate[None])
-        for name, vel, old, axis, edge, w in (("west", u_new, st.u, 2, 0, wu), ("east", u_new, st.u, 2, -1, wu),
-                                              ("south", v_new, st.v, 1, 0, wv), ("north", v_new, st.v, 1, -1, wv)):
+                if pe is None:
+                    vel[...] = bar[None] + prime / (1.0 + self.dt * rate[None])
+                else:                                                     # toward the exterior u′
+                    r = self.dt * rate[None]
+                    vel[...] = bar[None] + (prime + r * pe) / (1.0 + r)
+        for name, vel, old, axis, edge, w, pe in (("west", u_new, st.u, 2, 0, wu, ext_u),
+                                                  ("east", u_new, st.u, 2, -1, wu, ext_u),
+                                                  ("south", v_new, st.v, 1, 0, wv, ext_v),
+                                                  ("north", v_new, st.v, 1, -1, wv, ext_v)):
             if name in self.open:
-                self._radiate(old, vel, axis, edge, w)
+                self._radiate(old, vel, axis, edge, w, ext=pe, mode=self.obc_mode[name])
+
+    def _evaluate_exterior(self, t: float, hu: np.ndarray, hv: np.ndarray, wu, wv) -> None:
+        """Exterior state at t (spec 2026-10-12-baroclinic-obc-internal-wave §1.4): Flather targets and u′ₑₓₜ on
+        the face layers of the open faces and sponge band; ``self._ext`` None without a provider."""
+        if self.obc_state is None:
+            self._ext = None
+            return
+        state = self.obc_state(t)
+        obc.validate_state(state, self.open, self.H.shape)
+        Hu, Hv = self._edge_face_depths()
+        wu_ = self.ds[:, None, None] * np.ones(hu.shape) if wu is None else wu
+        wv_ = self.ds[:, None, None] * np.ones(hv.shape) if wv is None else wv
+        code = getattr(self, "remap_code", rm.PPM_H4)
+        self._ext = dict(t=t, state=state, flather=obc.flather_targets(state, Hu.shape, Hv.shape),
+                         up_u=obc.exterior_velocity(state, "u", Hu, hu, self._bc_u, wu_, code),
+                         up_v=obc.exterior_velocity(state, "v", Hv, hv, self._bc_v, wv_, code))
+
+    def _edge_face_depths(self) -> tuple[np.ndarray, np.ndarray]:
+        """Rest depth at u- and v-faces [m], 0 on land; the open edge faces (NaN in H_u/H_v, outside the
+        domain) take the depth of their boundary cell."""
+        H = np.nan_to_num(np.asarray(self.H, float))
+        Hu, Hv = np.nan_to_num(self.fs.H_u), np.nan_to_num(self.fs.H_v)
+        for edge, (A, sl_f, sl_c) in (("west", (Hu, np.s_[:, 0], np.s_[:, 0])), ("east", (Hu, np.s_[:, -1], np.s_[:, -1])),
+                                      ("south", (Hv, np.s_[0, :], np.s_[0, :])), ("north", (Hv, np.s_[-1, :], np.s_[-1, :]))):
+            if edge in self.open:
+                A[sl_f] = H[sl_c]
+        return Hu, Hv
+
+    def _exterior_T(self, h: np.ndarray) -> np.ndarray:
+        """Tₑₓₜ on layers h in the boundary/sponge columns: from the provider when set, else the z profile."""
+        if self._ext is not None:
+            T = obc.exterior_tracer(self._ext["state"], self.H, h, self._bc_mask, getattr(self, "remap_code", rm.PPM_H4))
+            return np.where(self._bc_mask[None], T, 0.0)
+        return self._exterior(h) if self.ale else self.T_ext
 
     def _inflow_T(self) -> np.ndarray:
         """Exterior T on the layers of this step: σ, ``T_ext``; ALE, the z profile remapped to hⁿ (spec §3.5)."""
@@ -1428,6 +1504,7 @@ class SigmaBaroclinic:
         (qe, qw), (qn, qs) = self._transport_thickness(st.h)
         hu, hv = 0.5 * (qe + qw), (0.5 * (qn + qs)).swapaxes(1, 2)
         wu, wv = face_fractions(hu), face_fractions(hv)
+        self._evaluate_exterior(st.time + dt, hu, hv, wu, wv)
         eta_new, u_new, v_new = self.core.step(st.eta, st.u, st.v, G_u=gu_ab, G_v=gv_ab, tau_u=tu, tau_v=tv,
                                                wu=wu, wv=wv, hu=np.maximum(hu, DZ_FLOOR), hv=np.maximum(hv, DZ_FLOOR),
                                                **self._flather_args())
@@ -1454,7 +1531,7 @@ class SigmaBaroclinic:
         V0, V1 = self.layer_volumes(st.eta, st.h), self.layer_volumes(eta_new, h_lag)
         Fz = np.zeros((n + 1,) + self.H.shape)                              # Lagrangian: no flux through interfaces
         ok = np.broadcast_to(act[None], V1.shape) & (V1 > 0)
-        self._T_in = self._exterior(st.h) if self.open else None          # inflow T on hⁿ (spec §3.5)
+        self._T_in = self._exterior_T(st.h) if self.open else None        # inflow T on hⁿ (spec §3.5)
         mixd = self.mix_diagnostic
         C = self._advect(np.stack([st.T, st.T**2]) if mixd else st.T[None], V0, V1, Qx, Qy, Fz, ok)
         mix = V1 * (C[1] - C[0] ** 2) / dt if mixd else None                # advection part
@@ -1467,7 +1544,7 @@ class SigmaBaroclinic:
                                       np.zeros(dz.shape[1]), dt).reshape(T_lag.shape)
         if self._sp_c is not None and self.sponge_tracer:                 # tracer sponge toward the exterior on h†
             r = dt * self._sp_c[None]
-            T_lag = (T_lag + r * self._exterior(h_lag)) / (1.0 + r)
+            T_lag = (T_lag + r * self._exterior_T(h_lag)) / (1.0 + r)
         h_new, rem = self._regrid_remap(eta_new, h_lag, [T_lag, T_lag**2] if mixd else [T_lag], T_lag)
         T_new = rem[0]
         if mixd:
@@ -1517,6 +1594,12 @@ class SigmaBaroclinic:
         tv = None if tau_y is None else np.asarray(tau_y, float) / self.rho0
         if self.ale:
             return self._step_ale(st, gu_ab, gv_ab, tu, tv, hist)
+        if self.obc_state is not None:
+            ds = self.ds[:, None, None]
+            Hu_e, Hv_e = self._edge_face_depths()
+            self._evaluate_exterior(st.time + dt, Hu_e[None] * ds, Hv_e[None] * ds, None, None)
+            D0 = np.maximum(np.nan_to_num(self.H + st.eta, nan=self.fs.d_min), self.fs.d_min)
+            self._T_in = self._exterior_T(D0[None] * ds)
         eta_new, u_new, v_new = self.core.step(st.eta, st.u, st.v, G_u=gu_ab, G_v=gv_ab, tau_u=tu, tau_v=tv,
                                                **self._flather_args())
         self._open_velocity(st, u_new, v_new)
@@ -1552,7 +1635,7 @@ class SigmaBaroclinic:
                                       np.zeros(dz.shape[1]), dt).reshape(T_new.shape)
         if self._sp_c is not None and self.sponge_tracer:
             r = dt * self._sp_c[None]
-            T_new = (T_new + r * self.T_ext) / (1.0 + r)
+            T_new = (T_new + r * (self.T_ext if self._ext is None else self._T_in)) / (1.0 + r)
         omega = Fz / np.where(self.area > 0, self.area, 1.0)[None]
         return SigmaState(eta=eta_new, u=u_new, v=v_new, T=T_new, g_hist=hist, omega=omega, mix_num=mix,
                           Qx=Qx, Qy=Qy, Fz=Fz, time=st.time + dt)

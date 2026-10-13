@@ -558,3 +558,16 @@ def test_compiled_flux_form_momentum_matches_the_numpy_reference():
     ok = rng.random((1, ny, nx + 1)) > 0.15
     np.testing.assert_allclose(_flux_form_u(u, Qx, Qy, Fz, V, ok), _flux_form_u_numpy(u, Qx, Qy, Fz, V, ok),
                                rtol=1e-12, atol=1e-12)
+
+
+def test_sigma_open_boundary_state_inflow_temperature():
+    # σ path: inflow T comes from the time-varying exterior (exterior 12 °C into a 10 °C channel)
+    from boundaries.obcs import OBData
+    st_fn = lambda t: {"west": OBData(side="west", T=np.full((4, 1), 12.0), u_normal=np.full((4, 1), 0.05),  # noqa: E731
+                                      zw=np.linspace(0, -20, 5)[:, None], ubar=np.array([0.05]))}
+    m = _box(open_boundaries=("west", "east"), open_boundary_state=st_fn)
+    st = m.initial_state(np.zeros((1, m.H.shape[1])), np.full((m.n, 1, m.H.shape[1]), 10.0))
+    for _ in range(200):
+        st = m.step(st)
+    np.testing.assert_allclose(m._T_in[:, 0, 0], 12.0, rtol=1e-12)          # exterior T on the σ layers
+    assert st.T[:, 0, 0].mean() > 10.1 > st.T[:, 0, 2].mean()               # ~150 m of inflow into a 2 km cell

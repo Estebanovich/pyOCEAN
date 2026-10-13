@@ -950,3 +950,61 @@ def test_initial_state_source_errors():
                           nu_const=1e-5, theta=0.6, d_min=0.05)
     with pytest.raises(ValueError, match="ale"):
         sig.initial_state(np.zeros((1, 8)), T_src, h_src=h_src)
+
+
+from boundaries.obcs import OBData
+
+
+def _west_state(T_of_z, u_of_z, depth=20.0, nz=40, ny=1):
+    zw = np.linspace(0.0, -depth, nz + 1)[:, None].repeat(ny, 1)
+    zc = 0.5 * (zw[1:] + zw[:-1])
+    return OBData(side="west", T=T_of_z(zc), u_normal=u_of_z(zc), zw=zw)
+
+
+def test_open_boundary_state_errors():
+    with pytest.raises(ValueError, match="open_boundary_mode"):
+        _ale_box("zstar", open_boundaries=("west",), open_boundary_mode={"east": "clamped"})
+    with pytest.raises(ValueError, match="open_boundary_mode"):
+        _ale_box("zstar", open_boundaries=("west",), open_boundary_mode={"west": "sticky"})
+    m = _ale_box("zstar", open_boundaries=("west",),
+                 open_boundary_state=lambda t: {"east": _west_state(lambda z: 10 + 0 * z, lambda z: 0 * z)})
+    st = m.initial_state(np.zeros((1, 32)), np.full((10, 1, 32), 10.0))
+    with pytest.raises(ValueError, match="not in open_boundaries"):
+        m.step(st)
+
+
+def test_no_state_keeps_the_resting_exterior_bit_for_bit():
+    # the existing open-boundary channel with and without the new arguments at their defaults
+    kw = dict(open_boundaries=("west", "east"), sponge_cells=4)
+    a = _ale_box("zstar", **kw)
+    b = _ale_box("zstar", open_boundary_state=None, open_boundary_mode=None, **kw)
+    T = 10.0 + np.linspace(0, 1, 32)[None, None, :] * np.ones((10, 1, 1))
+    sa, sb = a.initial_state(np.zeros((1, 32)), T), b.initial_state(np.zeros((1, 32)), T)
+    for _ in range(20):
+        sa, sb = a.step(sa), b.step(sb)
+    assert np.array_equal(sa.u, sb.u) and np.array_equal(sa.T, sb.T) and np.array_equal(sa.h, sb.h)
+
+
+def test_radiating_relaxes_the_boundary_baroclinic_velocity_to_the_exterior():
+    # constant exterior u′ = 0.05 cos(πz/H); with τ_in = 10Δt the incoming boundary u′ approaches it
+    H = 20.0
+    st_fn = lambda t: {"west": _west_state(lambda z: 10 + 0 * z, lambda z: 0.05 * np.cos(np.pi * z / H))}  # noqa: E731
+    m = _ale_box("zstar", open_boundaries=("west",), open_boundary_state=st_fn, obc_tau_in=300.0)
+    st = m.initial_state(np.zeros((1, 32)), np.full((10, 1, 32), 10.0))
+    for _ in range(100):
+        st = m.step(st)
+    zc = m.layer_heights(st.eta, st.h)[:, 0, 0]
+    up = st.u[:, 0, 0] - st.u[:, 0, 0].mean()
+    ref = 0.05 * np.cos(np.pi * zc / H)
+    assert np.corrcoef(up, ref)[0, 1] > 0.99 and abs(np.std(up) / np.std(ref) - 1) < 0.2
+
+
+def test_flather_follows_the_exterior_surface():
+    # exterior η = 1 cm at a west edge of a channel closed in the east: the basin fills towards 1 cm
+    st_fn = lambda t: {"west": OBData(side="west", T=np.full((4, 1), 10.0), u_normal=np.zeros((4, 1)),  # noqa: E731
+                                      zw=np.linspace(0, -20, 5)[:, None], eta=np.array([0.01]))}
+    m = _ale_box("zstar", nx=8, open_boundaries=("west",), open_boundary_state=st_fn)
+    st = m.initial_state(np.zeros((1, 8)), np.full((10, 1, 8), 10.0))
+    for _ in range(400):
+        st = m.step(st)
+    np.testing.assert_allclose(st.eta, 0.01, atol=1e-3)
