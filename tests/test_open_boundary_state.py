@@ -148,3 +148,76 @@ def test_tangential_faces_in_another_edges_sponge_band_get_no_exterior():
                                rm.PPM_H4, open_edges=("west", "south"))
     assert np.abs(up[:, 4, 0]).max() > 0                                   # west edge face: exterior profile
     assert (up[:, :2, nx // 2] == 0).all()                                 # south band, nearest south: rest
+
+
+# ---------------------------------------------------------------- perf part 2, task 2: exterior only where used
+def _nested_model(sponge_tracer=False):
+    from core.dynamics.sigma_baroclinic import SigmaBaroclinic
+    from core.grid.horizontal import create_cartesian_grid
+    ny, nx, n = 4, 20, 6
+    hg = create_cartesian_grid(nx=nx, ny=ny, dx=1000.0, dy=1000.0, f0=1e-4)
+    zw = np.linspace(0.0, -50.0, 6)[:, None].repeat(ny, 1)
+
+    def state(t):
+        a = np.sin(2 * np.pi * t / 3600.0)
+        return {"west": OBData(side="west", T=np.full((5, ny), 12.0 + a), u_normal=np.full((5, ny), 0.01 * a),
+                               zw=zw, eta=np.full(ny, 0.02 * a), ubar=np.full(ny, 0.01 * a))}
+    return SigmaBaroclinic(hg, np.full((ny, nx), 50.0), dt=30.0, n_layers=n, rho0=1000.0, t_coef=0.2, z0=None,
+                           closure="constant", vertical_coordinate="ale", regrid="zstar",
+                           regrid_params=dict(dz_top=np.full(n, 50.0 / n)), open_boundaries=("west", "east"),
+                           sponge_cells=5, sponge_tau=(600.0, 60.0), sponge_tracer=sponge_tracer,
+                           open_boundary_state=state)
+
+
+def _rest(m):
+    T = 10.0 + 0.1 * np.arange(m.n)[:, None, None] * np.ones((1,) + m.H.shape)
+    return np.zeros(m.H.shape), T
+
+
+def test_exterior_tracer_equals_the_full_domain_version_at_the_masked_columns():
+    rng = np.random.default_rng(3)
+    ny, nx, n = 6, 9, 5
+    H = np.full((ny, nx), 100.0)
+    h = np.full((n, ny, nx), 20.0) * rng.uniform(0.9, 1.1, (1, ny, nx))
+    h *= H[None] / h.sum(0)
+    zw = np.linspace(0.0, -100.0, 5)[:, None].repeat(ny, 1)
+    st = {"west": OBData(side="west", T=rng.uniform(10, 20, (4, ny)), u_normal=np.zeros((4, ny)), zw=zw)}
+    band = np.zeros((ny, nx), bool)
+    band[:, :3] = True
+    full = obc._exterior_tracer_full(st, H, h, band, rm.PPM_H4, ("west",))
+    edge = np.zeros((ny, nx), bool)
+    edge[:, 0] = True
+    np.testing.assert_array_equal(obc.exterior_tracer(st, H, h, band, rm.PPM_H4, ("west",)), full)
+    np.testing.assert_array_equal(obc.exterior_tracer(st, H, h, edge, rm.PPM_H4, ("west",))[:, :, 0], full[:, :, 0])
+
+
+def test_exterior_tracer_band_kept_with_tracer_sponge():
+    m = _nested_model(sponge_tracer=True)
+    assert m._ext_cols.sum() == m._bc_mask.sum()
+    m2 = _nested_model(sponge_tracer=False)
+    assert m2._ext_cols.sum() < m2._bc_mask.sum() and m2._ext_cols[:, 0].all()
+
+
+def test_nested_model_is_bit_identical_with_the_restricted_exterior():
+    a, b = _nested_model(), _nested_model()
+    b._ext_cols = b._bc_mask.copy()                                  # the old behaviour: the whole band
+    sa, sb = a.initial_state(*_rest(a)), b.initial_state(*_rest(b))
+    for _ in range(10):
+        sa, sb = a.step(sa), b.step(sb)
+    for k in ("eta", "u", "v", "T", "h"):
+        assert np.array_equal(getattr(sa, k), getattr(sb, k)), k
+
+
+def test_exterior_velocity_equals_the_full_domain_version():
+    rng = np.random.default_rng(8)
+    ny, nx, n = 5, 8, 4
+    Hf = np.full((ny, nx + 1), 80.0)
+    hf = rng.uniform(5.0, 30.0, (n, ny, nx + 1))
+    hf *= Hf[None] / hf.sum(0)
+    w = hf / hf.sum(0)
+    zw = np.linspace(0.0, -80.0, 6)[:, None].repeat(ny, 1)
+    st = {"west": OBData(side="west", T=np.full((5, ny), 10.0), u_normal=rng.normal(0, 0.1, (5, ny)), zw=zw)}
+    band = np.zeros((ny, nx + 1), bool)
+    band[:, :4] = True
+    np.testing.assert_array_equal(obc.exterior_velocity(st, "u", Hf, hf, band, w, rm.PPM_H4, ("west",)),
+                                  obc._exterior_velocity_full(st, "u", Hf, hf, band, w, rm.PPM_H4, ("west",)))

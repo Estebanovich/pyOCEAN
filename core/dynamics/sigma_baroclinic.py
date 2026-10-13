@@ -777,6 +777,11 @@ class SigmaBaroclinic:
         if self._sp_c is not None:
             bc |= self._sp_c > 0
         self._bc_mask = bc & act
+        edge_cells = np.zeros(act.shape, bool)                           # boundary cells: the inflow T needs only
+        for edge, sl in (("west", np.s_[:, 0]), ("east", np.s_[:, -1]), ("south", np.s_[0, :]), ("north", np.s_[-1, :])):
+            if edge in self.open:                                        # these; the band only for the tracer sponge
+                edge_cells[sl] = True
+        self._ext_cols = self._bc_mask.copy() if self.sponge_tracer else edge_cells & act
         self._bc_u, self._bc_v = fl_u.copy(), fl_v.copy()               # open faces + sponge band (exterior u′)
         if self._sp_u is not None:
             self._bc_u |= self._sp_u > 0
@@ -1418,7 +1423,7 @@ class SigmaBaroclinic:
         rest = self._exterior(h) if self.ale else self.T_ext
         if self._ext is None:
             return rest
-        T = obc.exterior_tracer(self._ext["state"], self.H, h, self._bc_mask, getattr(self, "remap_code", rm.PPM_H4),
+        T = obc.exterior_tracer(self._ext["state"], self.H, h, self._ext_cols, getattr(self, "remap_code", rm.PPM_H4),
                                 self.open)
         return np.where(self._ext["own"][None], T, rest)              # edges without data: resting exterior
 
@@ -1436,7 +1441,7 @@ class SigmaBaroclinic:
             raise ValueError("ALE open boundaries need the exterior profile T_ext and h_ext, set together and "
                              f"with the layer shape {h.shape} (call initial_state, or set both)")
         numba.set_num_threads(_THREADS[0])                                 # parallel remap kernel
-        return exterior_on_layers(self.h_ext, self.T_ext, h, self._bc_mask, self.remap_code)
+        return exterior_on_layers(self.h_ext, self.T_ext, h, self._ext_cols, self.remap_code)
 
     def _open_face_transports(self, Qx: np.ndarray, Qy: np.ndarray, h: np.ndarray, un: np.ndarray, vn: np.ndarray,
                               u_new: np.ndarray, v_new: np.ndarray) -> None:

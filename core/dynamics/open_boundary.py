@@ -87,12 +87,9 @@ def _remap_stretched(h_src: np.ndarray, f_src: np.ndarray, h: np.ndarray, wet: n
     return np.where(ok[None], out, 0.0)
 
 
-def exterior_tracer(state: dict[str, OBData], H: np.ndarray, h: np.ndarray, mask: np.ndarray,
-                    scheme: int, open_edges=None) -> np.ndarray:
-    """
-    Tₑₓₜ on the layers h (N, ny, nx) in the ``mask`` columns (boundary + sponge) whose nearest open edge
-    (``open_edges``, default the edges of ``state``) has data; 0 elsewhere.
-    """
+def _exterior_tracer_full(state: dict[str, OBData], H: np.ndarray, h: np.ndarray, mask: np.ndarray,
+                          scheme: int, open_edges=None) -> np.ndarray:
+    """Reference of exterior_tracer (test oracle): source columns built on the whole domain."""
     H = np.nan_to_num(np.asarray(H, float))
     near = _nearest(state if open_edges is None else open_edges, H.shape)
     out = np.zeros(h.shape)
@@ -105,9 +102,43 @@ def exterior_tracer(state: dict[str, OBData], H: np.ndarray, h: np.ndarray, mask
     return out
 
 
-def exterior_velocity(state: dict[str, OBData], kind: str, Hf: np.ndarray, hf: np.ndarray, mask: np.ndarray,
+def _source_columns_at(ob: OBData, edge: str, depth: np.ndarray, a: np.ndarray,
+                       check: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """_source_columns at a list of points (npts,) only: bed-first thicknesses, T and u (nz, npts), same arithmetic."""
+    zw = np.asarray(ob.zw, float)[:, a]                                 # (nz+1, npts), surface first
+    if (check & (zw[-1] > -depth + 1e-6)).any():
+        raise ValueError(f"{edge}: exterior data do not reach the bed of the boundary column (zw[-1] > −H)")
+    z = np.maximum(zw, -depth[None])
+    z[-1] = -depth
+    return (z[:-1] - z[1:])[::-1], np.asarray(ob.T, float)[:, a][::-1], np.asarray(ob.u_normal, float)[:, a][::-1]
+
+
+def exterior_tracer(state: dict[str, OBData], H: np.ndarray, h: np.ndarray, mask: np.ndarray,
+                    scheme: int, open_edges=None) -> np.ndarray:
+    """
+    Tₑₓₜ on the layers h (N, ny, nx) in the ``mask`` columns whose nearest open edge (``open_edges``, default
+    the edges of ``state``) has data; 0 elsewhere.  Source columns are built and remapped only at the mask
+    points (gather–scatter; _exterior_tracer_full is the whole-domain reference with the same arithmetic).
+    """
+    H = np.nan_to_num(np.asarray(H, float))
+    near = _nearest(state if open_edges is None else open_edges, H.shape)
+    out = np.zeros(h.shape)
+    for e, ob in state.items():
+        jj, ii = np.nonzero(mask & (near == EDGES.index(e)))
+        if jj.size == 0:
+            continue
+        a, d = (x[jj, ii] for x in _along(e, H.shape))
+        h_src, T_src, _ = _source_columns_at(ob, e, H[jj, ii], a, d == 0)
+        res = _remap_stretched(h_src[:, :, None], T_src[:, :, None], np.ascontiguousarray(h[:, jj, ii])[:, :, None],
+                               np.ones((jj.size, 1), bool), scheme)
+        out[:, jj, ii] = res[:, :, 0]
+    return out
+
+
+def _exterior_velocity_full(state: dict[str, OBData], kind: str, Hf: np.ndarray, hf: np.ndarray, mask: np.ndarray,
                       w: np.ndarray, scheme: int, open_edges=None) -> np.ndarray:
     """
+    Reference of exterior_velocity (test oracle): source columns built on the whole face array.
     u′ₑₓₜ on the face layers hf in the ``mask`` faces of the edges normal to ``kind`` ('u': west/east,
     'v': south/north): the data's normal velocity remapped to the face layers, minus its mean with the model
     face weights w (Σ w u′ₑₓₜ = 0, so the free-surface flux stays Flather's).  Faces nearer an open edge
@@ -128,6 +159,36 @@ def exterior_velocity(state: dict[str, OBData], kind: str, Hf: np.ndarray, hf: n
         h_src, _, u_src = _source_columns(ob, e, Hf, sel & (_along(e, Hf.shape)[1] == 0))
         u = _remap_stretched(h_src, u_src, hf, sel, scheme)
         out = np.where(sel[None], baroclinic_split(u, w)[1], out)
+    return out
+
+
+
+def exterior_velocity(state: dict[str, OBData], kind: str, Hf: np.ndarray, hf: np.ndarray, mask: np.ndarray,
+                      w: np.ndarray, scheme: int, open_edges=None) -> np.ndarray:
+    """
+    u′ₑₓₜ on the face layers hf in the ``mask`` faces of the edges normal to ``kind`` ('u': west/east,
+    'v': south/north): the data's normal velocity remapped to the face layers, minus its mean with the model
+    face weights w (Σ w u′ₑₓₜ = 0, so the free-surface flux stays Flather's).  Faces nearer an open edge
+    (``open_edges``) without data, and all others, get 0 (the resting exterior).  Built only at the mask
+    faces (gather–scatter); _exterior_velocity_full is the reference.
+    """
+    Hf = np.nan_to_num(np.asarray(Hf, float))
+    normal = ("west", "east") if kind == "u" else ("south", "north")
+    sub = {e: ob for e, ob in state.items() if e in normal}
+    out = np.zeros(hf.shape)
+    if not sub:
+        return out
+    near = _nearest(sub if open_edges is None else open_edges, Hf.shape)   # all open edges: a face nearest a
+                                                                             # tangential edge keeps the rest
+    for e, ob in sub.items():
+        jj, ii = np.nonzero(mask & (near == EDGES.index(e)) & (Hf > 0))
+        if jj.size == 0:
+            continue
+        a, d = (x[jj, ii] for x in _along(e, Hf.shape))
+        h_src, _, u_src = _source_columns_at(ob, e, Hf[jj, ii], a, d == 0)
+        u = _remap_stretched(h_src[:, :, None], u_src[:, :, None], np.ascontiguousarray(hf[:, jj, ii])[:, :, None],
+                             np.ones((jj.size, 1), bool), scheme)
+        out[:, jj, ii] = baroclinic_split(u, np.ascontiguousarray(w[:, jj, ii])[:, :, None])[1][:, :, 0]
     return out
 
 
