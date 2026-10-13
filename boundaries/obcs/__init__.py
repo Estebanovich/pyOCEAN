@@ -138,12 +138,19 @@ class OBData:
         u-component for west/east, v-component for south/north.
     eta : np.ndarray (n_bdy,) or None
         Prescribed sea surface height [m].
+    zw : np.ndarray (nz+1, n_bdy) or None
+        Interface heights of the data's own vertical grid [m], surface first, decreasing (needed by the ALE/σ
+        model with a time-varying exterior; spec 2026-10-12-baroclinic-obc-internal-wave §1.1).
+    ubar : np.ndarray (n_bdy,) or None
+        Exterior depth-mean normal velocity for Flather [m/s]; None = 0.
     """
     side: Literal["west", "east", "south", "north"]
     T: np.ndarray | None = field(default=None)
     S: np.ndarray | None = field(default=None)
     u_normal: np.ndarray | None = field(default=None)
     eta: np.ndarray | None = field(default=None)
+    zw: np.ndarray | None = field(default=None)
+    ubar: np.ndarray | None = field(default=None)
 
 
 # ---------------------------------------------------------------------------
