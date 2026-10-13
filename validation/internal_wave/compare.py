@@ -31,6 +31,13 @@ def _window(t: np.ndarray, periods: float = 4.0) -> np.ndarray:
     return t >= t[-1] - periods * case.PERIOD - 1.0
 
 
+def cell_u(U: np.ndarray) -> np.ndarray:
+    """u at the cell centres from the u-faces (…, nx+1) → (…, nx); faces below the bed (NaN in pyOCEAN's
+    level remap, 0 in MITgcm's output) count as 0 in both."""
+    U = np.nan_to_num(U)
+    return 0.5 * (U[..., 1:] + U[..., :-1])
+
+
 def load(coord: str) -> tuple[dict, dict]:
     """(MITgcm, pyOCEAN) on the shared grid: t, U (n, 20, 60), T (n, 20, 59), eta (n, 59), x_u (60,), x_c (59,)."""
     d = case.read_mitgcm()
@@ -100,7 +107,7 @@ def report(coord: str) -> list[str]:
     Fs = {}
     for name, d in (("MIT", mit), ("py", py)):
         w = _window(d["t"])
-        Uc = 0.5 * (d["U"][w][:, :, 1:] + d["U"][w][:, :, :-1])                   # u at the cell centres
+        Uc = cell_u(d["U"][w])
         Hc = np.nan_to_num(case.mitgcm_depth(inp["H"][1:], inp["dz"]))
         Fs[name] = case.energy_flux(Uc, d["T"][w], d["eta"][w], Hc, inp["dz"], inp["tref"]).mean(0)
     for xx in X_FLUX:

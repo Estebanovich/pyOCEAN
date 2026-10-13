@@ -61,16 +61,18 @@ python validation/internal_wave/compare.py zstar[_arakawa]
 
 | x [km] (H [m]) | 1 (200) | 2 (200) | 3 (177) | 4 (144) | 4.5 (132) | 5 (118) | 6 (85) | x del 50 % [km] |
 |---|---|---|---|---|---|---|---|---|
-| MITgcm | 1.61 | 1.52 | 1.56 | 1.42 | 0.84 | 0.52 | 0.06 | 4.61 |
-| z\* | 1.52 | 1.40 | 1.19 | 0.88 | 0.68 | 0.49 | 0.07 | 4.45 ✅ |
-| híbrida | 1.53 | 1.43 | 1.17 | 0.87 | 0.69 | 0.48 | 0.04 | 4.44 ✅ |
-| σ | 1.54 | 1.41 | 1.19 | 1.00 | 0.83 | 0.62 | 0.10 | 4.62 ✅ |
-| z\* Arakawa | 1.63 | 1.58 | 1.44 | 1.37 | 1.16 | 0.71 | 0.15 | 4.74 ✅ |
-| híbrida Arakawa | 1.64 | 1.56 | 1.39 | 1.34 | 1.00 | 0.55 | 0.01 | 4.59 ✅ |
-| σ Arakawa | 1.64 | 1.56 | 1.37 | 1.50 | 1.23 | 0.73 | 0.29 | 4.76 ✅ |
+| MITgcm | 1.60 | 1.52 | 1.56 | 1.42 | 0.84 | 0.52 | 0.06 | 4.61 |
+| z\* | 1.52 | 1.40 | 1.27 | 0.95 | 0.75 | 0.49 | 0.08 | 4.53 ✅ |
+| híbrida | 1.53 | 1.43 | 1.25 | 0.95 | 0.77 | 0.48 | 0.05 | 4.53 ✅ |
+| σ | 1.54 | 1.41 | 1.28 | 1.10 | 0.92 | 0.62 | 0.11 | 4.74 ✅ |
+| z\* Arakawa | 1.63 | 1.58 | 1.55 | 1.51 | 1.31 | 0.71 | 0.17 | 4.83 ✅ |
+| híbrida Arakawa | 1.64 | 1.56 | 1.50 | 1.50 | 1.16 | 0.55 | 0.01 | 4.67 ✅ |
+| σ Arakawa | 1.64 | 1.56 | 1.48 | 1.68 | 1.39 | 0.73 | 0.30 | 4.85 ✅ |
+
+(u centrado en las celdas con las caras bajo el fondo = 0 en los dos modelos: MITgcm escribe 0 ahí y el remapeo de pyOCEAN daba NaN; la versión anterior de esta tabla sesgaba la pendiente 6–10 % contra pyOCEAN.)
 
 - **A 2 km**, el flujo de pyOCEAN es 0.92–0.94 del de MITgcm con Godunov y 1.02–1.04 con Arakawa (criterio ±15 %).
-- **En la pendiente**, la onda se peralta y su escala vertical baja como H, así que la disipación crece. Los dos modelos pierden el flujo en la misma zona: el 50 % cae a 4.44–4.76 km en pyOCEAN y a 4.61 km en MITgcm.
+- **En la pendiente**, la onda se peralta y su escala vertical baja como H, así que la disipación crece. Los dos modelos pierden el flujo en la misma zona: el 50 % cae a 4.53–4.85 km en pyOCEAN y a 4.61 km en MITgcm.
 - **Más allá de 6 km** el flujo es una cola de menos del 5 %, y su cociente no es significativo.
 
 **2.º armónico** cerca del fondo en la zona somera: 0.08 contra 0.03 mm/s a 9 km, despreciable en los dos.
@@ -82,7 +84,7 @@ python validation/internal_wave/compare.py zstar[_arakawa]
 | Diferencia | Clase | Razonamiento |
 |---|---|---|
 | u de modo 1 con Godunov: 0.83–0.99 en 2.5 km | (c) | El esquema de energía cinética Godunov (por defecto, elegido para corrientes de densidad) amortigua las ondas internas progresivas, con error de primer orden en dx. Con Arakawa, pyOCEAN = MITgcm (0.91–1.01) |
-| Flujo en la pendiente (forma del decaimiento entre 3 y 6 km) | (c) | La disipación de la onda que se peralta depende de la resolución vertical en aguas someras y de la disipación numérica; la posición del 50 % coincide a ±0.17 km |
+| Flujo en la pendiente (forma del decaimiento entre 3 y 6 km) | (c) | La disipación de la onda que se peralta depende de la resolución vertical en aguas someras y de la disipación numérica; la posición del 50 % coincide a ±0.24 km |
 | σ Arakawa: T′ 1.10 en un punto | (c) | En el límite del criterio; σ comprime capas sobre la pendiente |
 | Borde `'clamped'`: pyOCEAN deja el modo barotrópico con Flather; MITgcm fija el transporte total (0) | (c) | El forzamiento tiene media vertical nula; los dos coinciden en la parte plana |
 

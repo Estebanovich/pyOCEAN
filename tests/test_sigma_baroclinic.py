@@ -571,3 +571,32 @@ def test_sigma_open_boundary_state_inflow_temperature():
         st = m.step(st)
     np.testing.assert_allclose(m._T_in[:, 0, 0], 12.0, rtol=1e-12)          # exterior T on the σ layers
     assert st.T[:, 0, 0].mean() > 10.1 > st.T[:, 0, 2].mean()               # ~150 m of inflow into a 2 km cell
+
+
+def _sigma_obc_case(tracer_time: str):
+    """σ, 2-D, west + south open with a sponge, f ≠ 0, wind: the resting-exterior path pinned bit for bit."""
+    hg = create_cartesian_grid(nx=12, ny=8, dx=2000.0, dy=2000.0, f0=1e-4)
+    H = 20.0 + 2.0 * np.arange(12)[None, :] * np.ones((8, 1))
+    m = SigmaBaroclinic(hg, H, dt=30.0, n_layers=6, rho0=RHO0, t_coef=TCOEF, z0=None, closure="constant",
+                        nu_const=1e-4, ah=5.0, theta=0.6, d_min=0.05, open_boundaries=("west", "south"),
+                        sponge_cells=3, tracer_time=tracer_time, kh=5.0, kv=1e-5)
+    T = 10.0 + 0.1 * np.arange(6)[:, None, None] * np.ones((6, 8, 12))
+    st = m.initial_state(np.zeros((8, 12)), T)
+    tau = np.full((8, 13), 0.05)
+    for _ in range(40):
+        st = m.step(st, tau_x=tau)
+    return st
+
+
+@pytest.mark.parametrize("tracer_time", ["ssprk3", "pc"])
+def test_sigma_resting_exterior_bit_for_bit(tracer_time):
+    # spec 2026-10-12-baroclinic-obc-internal-wave §4: without open_boundary_state the σ path is unchanged bit for
+    # bit (tests/data/sigma_obc_reference.json generated with commit 5196341, before the time-varying exterior)
+    import json
+    from pathlib import Path
+    ref = json.load(open(Path(__file__).parent / "data" / "sigma_obc_reference.json"))[tracer_time]
+    st = _sigma_obc_case(tracer_time)
+    for k, r in ref.items():
+        a = np.asarray(getattr(st, k), float).ravel()
+        assert a.sum() == r["sum"] and np.abs(a).max() == r["maxabs"], k
+        assert a[r["idx"]].tolist() == r["vals"], k

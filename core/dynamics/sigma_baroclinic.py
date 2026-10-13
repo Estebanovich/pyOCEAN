@@ -739,6 +739,8 @@ class SigmaBaroclinic:
                 raise ValueError(f"open_boundary_mode {{{e!r}: {mode!r}}}: edges must be open and modes "
                                  "'radiating' or 'clamped'")
             self.obc_mode[e] = mode
+        if open_boundary_state is None and "clamped" in self.obc_mode.values():
+            raise ValueError("a 'clamped' open_boundary_mode needs open_boundary_state (the exterior to impose)")
         self.obc_tau_in, self.obc_tau_out = float(obc_tau_in), float(obc_tau_out)
         self._ext = None
         self.orlanski_cmax, self.sponge_tracer = orlanski_cmax, sponge_tracer

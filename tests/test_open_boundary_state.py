@@ -136,3 +136,15 @@ def test_points_nearer_an_open_edge_without_data_keep_the_resting_exterior():
     up = obc.exterior_velocity(state, "u", Hf, hf, np.ones((1, 7), bool), hf / 100.0, rm.PPM_H4,
                                open_edges=("west", "east"))
     assert np.abs(up[:, 0, 0]).max() > 0 and (up[:, 0, 4:] == 0).all()
+
+
+def test_tangential_faces_in_another_edges_sponge_band_get_no_exterior():
+    # west and south open, data for west only: u-faces in the south band, far from the west edge, are nearest
+    # the south edge (tangential to u) and must keep the resting exterior, not the west u_normal profile
+    ny, nx, N = 8, 16, 5
+    Hf = np.full((ny, nx + 1), 100.0)
+    hf = np.full((N, ny, nx + 1), 20.0)
+    up = obc.exterior_velocity({"west": _west(ny=ny)}, "u", Hf, hf, np.ones((ny, nx + 1), bool), hf / 100.0,
+                               rm.PPM_H4, open_edges=("west", "south"))
+    assert np.abs(up[:, 4, 0]).max() > 0                                   # west edge face: exterior profile
+    assert (up[:, :2, nx // 2] == 0).all()                                 # south band, nearest south: rest

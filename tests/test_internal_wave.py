@@ -85,3 +85,12 @@ def test_energy_flux_of_a_mode1_wave():
 def test_build_model_domain_starts_at_mitgcm_column_2():
     m, st = case.build_model("zstar")
     assert st.h.shape == (20, 1, 59) and np.isnan(m.H[0, -1]) and m.H[0, 0] == 200.0
+
+
+def test_cell_centred_u_treats_below_bed_faces_as_zero():
+    # MITgcm writes U = 0 below a face's bed, pyOCEAN's level remap gives NaN there: both must centre alike
+    from validation.internal_wave import compare
+    U_mit = np.array([[[0.2, 0.4, 0.0]]])
+    U_py = np.array([[[0.2, 0.4, np.nan]]])
+    np.testing.assert_array_equal(compare.cell_u(U_mit), compare.cell_u(U_py))
+    np.testing.assert_allclose(compare.cell_u(U_py), [[[0.3, 0.2]]])

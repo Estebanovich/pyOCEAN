@@ -1091,6 +1091,13 @@ def test_clamped_edges_have_no_sponge():
     # a Dirichlet edge needs no relaxation band: a sponge toward the edge profile copied along the normal
     # forces the whole band in phase and distorts an incoming wave (Task 4 diagnosis)
     m = _ale_box("zstar", open_boundaries=("west", "east"), sponge_cells=4,
-                 open_boundary_mode={"west": "clamped", "east": "radiating"})
+                 open_boundary_mode={"west": "clamped", "east": "radiating"},
+                 open_boundary_state=lambda t: {"west": _west_state(lambda z: 10 + 0 * z, lambda z: 0 * z)})
     assert (m._sp_c[0, :4] == 0).all() and m._sp_c[0, -1] > 0
     assert (m._sp_u[0, :4] == 0).all() and m._sp_u[0, -1] > 0
+
+
+def test_clamped_mode_needs_an_exterior_state():
+    # a Dirichlet edge without exterior data would silently radiate with no sponge
+    with pytest.raises(ValueError, match="clamped.*open_boundary_state"):
+        _ale_box("zstar", open_boundaries=("west",), open_boundary_mode={"west": "clamped"})

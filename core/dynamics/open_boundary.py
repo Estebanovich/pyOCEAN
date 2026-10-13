@@ -119,8 +119,8 @@ def exterior_velocity(state: dict[str, OBData], kind: str, Hf: np.ndarray, hf: n
     out = np.zeros(hf.shape)
     if not sub:
         return out
-    cand = sub if open_edges is None else [e for e in open_edges if e in normal]
-    near = _nearest(cand, Hf.shape)
+    near = _nearest(sub if open_edges is None else open_edges, Hf.shape)   # all open edges: a face nearest a
+                                                                             # tangential edge keeps the rest
     for e, ob in sub.items():
         sel = mask & (near == EDGES.index(e)) & (Hf > 0)
         if not sel.any():
