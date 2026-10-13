@@ -91,3 +91,19 @@ def test_isotherm_height_interpolates_between_levels():
     T = (20.0 + 0.1 * zc)[None, :, None, None] * np.ones((1, 1, 2, 2))
     z = compare.isotherm_height(T, zc, 20.0 + 0.1 * -116.0)
     np.testing.assert_allclose(z, -116.0, atol=1e-9)
+
+
+def test_heat_displacement_recovers_a_sharp_interface_shift():
+    # two layers, interface on a level face, raised by 0.3 m: the level above loses 0.3 m of warm water;
+    # smearing the interface symmetrically (diffusion) conserves heat and gives no displacement
+    from validation.bayiw_cut import compare
+    dz = np.array([4.0, 5.0, 6.0, 7.0])
+    T0 = np.array([22.0, 22.0, 18.0, 18.0])
+    T1 = T0.copy()
+    T1[1] -= 4.0 * 0.3 / 5.0
+    T2 = T0.copy()
+    T2[1] -= 0.4
+    T2[2] += 0.4 * 5.0 / 6.0
+    T = np.stack([T0, T1, T2])[:, :, None, None]
+    z = compare.heat_displacement(T, dz, 22.0, 18.0)
+    np.testing.assert_allclose(z[:, 0, 0], [0.0, 0.3, 0.0], atol=1e-12)
