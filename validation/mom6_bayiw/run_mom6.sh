@@ -2,6 +2,7 @@
 # MOM6 for the BayIW benchmark (spec 2026-10-13-mom6-bayiw-benchmark-design §2).
 #   run_mom6.sh build      : optimized build (.testing build/repro, FCFLAGS -g -O2); build/symmetric (-O0) untouched
 #   run_mom6.sh run <dir>  : run the case in <dir> on 5 MPI ranks
+#   run_mom6.sh section <case> <bay> <zstar|hycom1|hybgen> [hours] : the 2-D section (60 h), saved as section series
 # MPICH (Homebrew) may hang in MPI_Finalize after MOM6 has finished: wait for the timing line, then stop it.
 set -euo pipefail
 T=~/pyOCEAN_refs/MOM6/.testing
@@ -24,5 +25,13 @@ case "$1" in
     done
     sleep 2; pkill -f "$EXE" 2>/dev/null || true
     grep -E "Total runtime|FATAL" stdout.txt | head -2 || tail -5 stdout.txt ;;
-  *) echo "usage: $0 build | run <dir>" >&2; exit 2 ;;
+  section)
+    D="$RUNS/section/$2_$3_$4"; ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+    rm -rf "$D"
+    (cd "$ROOT" && python -c "from pathlib import Path; from validation.mom6_bayiw import config; \
+config.write_case('section', '$2', '$3', '$4', Path('$D'), hours=${5:-60.0})")
+    "$0" run "$D"
+    (cd "$ROOT" && python -c "from validation.mom6_bayiw import read_mom6; \
+print(read_mom6.save_series(read_mom6.section_series('$D', '$2', '$3'), '$2', '$3', '$4'))" 2>&1 | grep -v Warn) ;;
+  *) echo "usage: $0 build | run <dir> | section <case> <bay> <coord> [hours]" >&2; exit 2 ;;
 esac

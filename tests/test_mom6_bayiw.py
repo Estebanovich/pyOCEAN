@@ -112,3 +112,17 @@ def test_series_from_mom6_matches_the_pyocean_record_layout(tmp_path):
     exp = section.to_mitgcm_levels(h[0, ::-1, :, 1:2], temp[0, ::-1, :, 1:2], H[:, None])[::-1, :, 0]
     np.testing.assert_allclose(s["T_sec"][0], exp)                # NaN below the bed, as run_pyocean.record
     assert s["T_sec"].shape == (3, 50, ny) and s["V_sec"].shape == (3, 50, ny + 1)
+
+
+def test_hybgen_layers_come_from_the_linear_coordinate(tmp_path):
+    # FMS refuses the 1-D read of COORD_FILE ("FMS I/O requires a domain input"); the two-layer targets are evenly
+    # spaced, so COORD_CONFIG = "linear" gives MOM6 exactly their midpoints (MOM_coord_initialization.F90:526)
+    from validation.mom6_bayiw import config, inputs
+    d = config.write_case("section", "2layer", "bay", "hybgen", tmp_path, hours=1.0)
+    txt = (d / "MOM_input").read_text()
+    dm = inputs.domain("section", "2layer", "bay")
+    t = inputs.targets("2layer", dm["T"], dm["H"])
+    assert 'COORD_CONFIG = "linear"' in txt and 'COORD_FILE' not in txt
+    assert f"LIGHTEST_DENSITY = {t[0]:.10g}" in txt and f"DENSITY_RANGE = {t[-1] - t[0]:.10g}" in txt
+    with pytest.raises(ValueError, match="evenly"):
+        config.write_case("section", "real", "bay", "hybgen", tmp_path / "r", hours=1.0)

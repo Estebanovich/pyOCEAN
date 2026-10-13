@@ -26,7 +26,7 @@ def _list(a) -> str:
 
 
 def mom_input(kind: str, case: str, coord: str, nx: int, ny: int, hours: float, dt: float,
-              layout: tuple[int, int]) -> str:
+              layout: tuple[int, int], targets: np.ndarray | None = None) -> str:
     nk = 50 if coord == "zstar" else 25
     edges = ("south",) if kind == "section" else ("south", "west", "east")
     L = [f"NIGLOBAL = {nx}", f"NJGLOBAL = {ny}", f"NK = {nk}", "REENTRANT_X = False", "REENTRANT_Y = False",
@@ -43,8 +43,13 @@ def mom_input(kind: str, case: str, coord: str, nx: int, ny: int, hours: float, 
     elif coord == "hycom1":
         L += ['ALE_COORDINATE_CONFIG = "HYBRID:hyb.nc,sigma2,dz"']
     else:
+        # layer densities: COORD_CONFIG "linear" (MOM_coord_initialization.F90:526, Rlay at the midpoints of
+        # evenly spaced interfaces); "file" fails in this FMS ("FMS I/O requires a domain input")
+        t = np.asarray(targets, float)
+        if not np.allclose(np.diff(t), np.diff(t)[0], rtol=1e-9, atol=0.0):
+            raise ValueError("HYBGEN here needs evenly spaced targets (the two-layer centred targets)")
         dz = _list(bayiw.hybrid_dz_top(25))
-        L += ['COORD_CONFIG = "file"', 'COORD_FILE = "layers.nc"', 'COORD_VAR = "Layer"',
+        L += ['COORD_CONFIG = "linear"', f"LIGHTEST_DENSITY = {t[0]:.10g}", f"DENSITY_RANGE = {t[-1] - t[0]:.10g}",
               f"HYBGEN_DEEP_DZ_PR0FILE = {dz}", f"HYBGEN_SHALLOW_DZ_PR0FILE = {dz}"]
     L += ["INIT_LAYERS_FROM_Z_FILE = True", 'TEMP_SALT_Z_INIT_FILE = "ts_z.nc"', 'Z_INIT_FILE_PTEMP_VAR = "ptemp"',
           'Z_INIT_FILE_SALT_VAR = "salt"', "Z_INIT_ALE_REMAPPING = True", 'Z_INIT_REMAPPING_SCHEME = "PPM_H4"',
@@ -95,8 +100,10 @@ def write_case(kind: str, case: str, bay: str, coord: str, out_dir: Path, hours:
     out = Path(out_dir)
     (out / "RESTART").mkdir(parents=True, exist_ok=True)
     inputs.write_inputs(kind, case, bay, out)
-    ny, nx = inputs.domain(kind, case, bay)["H"].shape
-    (out / "MOM_input").write_text(mom_input(kind, case, coord, nx, ny, hours, dt, layout))
+    d = inputs.domain(kind, case, bay)
+    ny, nx = d["H"].shape
+    tgt = inputs.targets(case, d["T"], d["H"])
+    (out / "MOM_input").write_text(mom_input(kind, case, coord, nx, ny, hours, dt, layout, tgt))
     (out / "MOM_override").write_text("")
     (out / "diag_table").write_text(DIAG.format(kind=kind))
     (out / "input.nml").write_text(NML)
