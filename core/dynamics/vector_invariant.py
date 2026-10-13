@@ -123,8 +123,8 @@ def kinetic_energy_numpy(u: np.ndarray, v: np.ndarray, area_u: np.ndarray, area_
     raise ValueError(f"unknown ke_scheme {scheme!r}; use 'arakawa' or 'gudonov'")
 
 
-def ke_gradient(K: np.ndarray, dx_u: np.ndarray, dy_v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """−∂K/∂x at the u-faces and −∂K/∂y at the v-faces [m s⁻²]; domain-edge faces 0."""
+def ke_gradient_numpy(K: np.ndarray, dx_u: np.ndarray, dy_v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """NumPy reference of ke_gradient (test oracle).  −∂K/∂x at the u-faces and −∂K/∂y at the v-faces [m s⁻²]; domain-edge faces 0."""
     n, ny, nx = K.shape
     gx = np.zeros((n, ny, nx + 1))
     gy = np.zeros((n, ny + 1, nx))
@@ -133,9 +133,10 @@ def ke_gradient(K: np.ndarray, dx_u: np.ndarray, dy_v: np.ndarray) -> tuple[np.n
     return gx, gy
 
 
-def truncate_cfl(u: np.ndarray, dt: float, dx_t: np.ndarray, h_face: np.ndarray, h_count: float,
-                 cfl: float = 0.5) -> tuple[np.ndarray, int, tuple[int, int, int] | None]:
+def truncate_cfl_numpy(u: np.ndarray, dt: float, dx_t: np.ndarray, h_face: np.ndarray, h_count: float,
+                       cfl: float = 0.5) -> tuple[np.ndarray, int, tuple[int, int, int] | None]:
     """
+    NumPy reference of truncate_cfl (test oracle).
     CFL truncation of the layer velocities, a backstop that should not act (MOM6
     vertvisc_limit_vel, MOM_vert_friction.F90:2555-2715): where |u| Δt/Δx_donor > cfl,
     u = ±0.9 cfl Δx_donor/Δt, Δx_donor the width of the cell the water comes from (west for
@@ -151,6 +152,62 @@ def truncate_cfl(u: np.ndarray, dt: float, dx_t: np.ndarray, h_face: np.ndarray,
     counted = over & (h_face > h_count)
     first = tuple(int(a[0]) for a in np.nonzero(counted)) if counted.any() else None
     return out, int(counted.sum()), first
+
+
+@numba.njit(parallel=True, cache=True)
+def _truncate_kernel(u, dt, dx_t, h_face, h_count, cfl, out, counted):  # pragma: no cover
+    """truncate_cfl_numpy with the same arithmetic, parallel over (layer, row)."""
+    n, ny, nx1 = u.shape
+    nx = nx1 - 1
+    for p in numba.prange(n * ny):
+        k, j = p // ny, p % ny
+        for i in range(nx1):
+            x = u[k, j, i]
+            dxd = dx_t[j, max(i - 1, 0)] if x >= 0 else dx_t[j, min(i, nx - 1)]
+            over = abs(x) * dt / dxd > cfl
+            out[k, j, i] = np.sign(x) * 0.9 * cfl * dxd / dt if over else x
+            counted[k, j, i] = over and h_face[k, j, i] > h_count
+
+
+def truncate_cfl(u: np.ndarray, dt: float, dx_t: np.ndarray, h_face: np.ndarray, h_count: float,
+                 cfl: float = 0.5) -> tuple[np.ndarray, int, tuple[int, int, int] | None]:
+    """
+    CFL truncation of the layer velocities (MOM6 vertvisc_limit_vel; see truncate_cfl_numpy, the reference).
+    Returns (u, count of truncations at faces thicker than h_count, first counted (k, j, i) or None).
+    Numba kernel; threads set by the caller (the ALE step).  For v call it on swapped axes with dy_t.T.
+    """
+    out = np.empty(np.shape(u))
+    counted = np.empty(np.shape(u), np.bool_)
+    _truncate_kernel(np.asarray(u, float), float(dt), np.asarray(dx_t, float), np.asarray(h_face, float),
+                     float(h_count), float(cfl), out, counted)
+    c = int(counted.sum())
+    first = tuple(int(a[0]) for a in np.nonzero(counted)) if c else None
+    return out, c, first
+
+
+@numba.njit(parallel=True, cache=True)
+def _ke_grad_kernel(K, dx_u, dy_v, gx, gy):  # pragma: no cover
+    """ke_gradient_numpy with the same arithmetic."""
+    n, ny, nx = K.shape
+    for p in numba.prange(n * ny):
+        k, j = p // ny, p % ny
+        gx[k, j, 0] = 0.0
+        gx[k, j, nx] = 0.0
+        for i in range(1, nx):
+            gx[k, j, i] = -(K[k, j, i] - K[k, j, i - 1]) / dx_u[j, i]
+    for p in numba.prange(n * (ny + 1)):
+        k, J = p // (ny + 1), p % (ny + 1)
+        for i in range(nx):
+            gy[k, J, i] = 0.0 if (J == 0 or J == ny) else -(K[k, J, i] - K[k, J - 1, i]) / dy_v[J, i]
+
+
+def ke_gradient(K: np.ndarray, dx_u: np.ndarray, dy_v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """−∂K/∂x at the u-faces and −∂K/∂y at the v-faces [m s⁻²]; domain-edge faces 0.  Numba kernel;
+    ke_gradient_numpy is the reference."""
+    n, ny, nx = np.shape(K)
+    gx, gy = np.empty((n, ny, nx + 1)), np.empty((n, ny + 1, nx))
+    _ke_grad_kernel(np.asarray(K, float), np.asarray(dx_u, float), np.asarray(dy_v, float), gx, gy)
+    return gx, gy
 
 
 # ---------------------------------------------------------------- Numba kernels (ALE performance task 5.3)

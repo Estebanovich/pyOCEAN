@@ -218,3 +218,24 @@ def test_fused_vorticity_and_pv_match_numpy():
     z, q = vi.vorticity_and_pv(u, v, g["dx_u"], g["dy_v"], g["area_q"], g["mask_q"], fq, h, g["area_t"], active)
     zr = vi.vorticity_q_numpy(u, v, g["dx_u"], g["dy_v"], g["area_q"], g["mask_q"])
     assert np.array_equal(z, zr) and np.array_equal(q, vi.pv_q_numpy(zr, fq, h, g["area_t"], active))
+
+
+# ---------------------------------------------------------------- perf part 2, task 3
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_truncate_cfl_kernel_matches_numpy(seed):
+    rng = np.random.default_rng(seed)
+    n, ny, nx = 7, 9, 11
+    u = rng.normal(0.0, 3.0, (n, ny, nx + 1))
+    dx_t = rng.uniform(500.0, 2000.0, (ny, nx))
+    h_face = np.where(rng.random((n, ny, nx + 1)) < 0.3, 0.0, rng.uniform(0.0, 5.0, (n, ny, nx + 1)))
+    a = vi.truncate_cfl(u, 300.0, dx_t, h_face, 0.01)
+    b = vi.truncate_cfl_numpy(u, 300.0, dx_t, h_face, 0.01)
+    assert np.array_equal(a[0], b[0]) and a[1] == b[1] and a[2] == b[2]
+
+
+def test_ke_gradient_kernel_matches_numpy():
+    rng = np.random.default_rng(4)
+    K = rng.random((5, 8, 10))
+    dx_u, dy_v = rng.uniform(500, 900, (8, 11)), rng.uniform(500, 900, (9, 10))
+    for a, b in zip(vi.ke_gradient(K, dx_u, dy_v), vi.ke_gradient_numpy(K, dx_u, dy_v)):
+        assert np.array_equal(a, b)
