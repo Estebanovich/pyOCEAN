@@ -198,3 +198,140 @@ def build_model(case: str, bay: str, coord: str = "zstar", dt: float = 120.0, bo
     h_src, T_src = bayiw.mitgcm_source(d["H"], d["T"])
     st = m.initial_state(np.zeros(d["H"].shape), T_src, h_src=h_src)
     return m, st, d["wind"]
+
+
+# ---------------------------------------------------------------- phase 2: boundaries from the full runs
+NREC, PERIOD_FORCING = 180, 1200.0                       # MITgcm periodic forcing calendar (data.stage1)
+
+
+def read_full_box(run_dir: Path, var: str, j0: int, j1: int, i0: int, i1: int, case: str, bay: str,
+                  t_max: float = 216000.0) -> tuple[np.ndarray, np.ndarray]:
+    """
+    A global index box [j0, j1) × [i0, i1) of a full-run state variable (cell or face indices, as the variable),
+    read tile by tile without joining the whole domain: time (n,) [s] and (n, nz, j1 − j0, i1 − i0).  Tiles are
+    placed from their first X/Xp1 and Y/Yp1 coordinate on the case's global grid; duplicated tiles (one per
+    stage directory) are read once; a time written by two stages is kept once; only times ≤ t_max.
+    """
+    import glob
+
+    import netCDF4
+    dx, dy = bayiw.load_inputs(case, bay)[:2]
+    gx = {"X": bayiw.X0 + np.cumsum(dx) - 0.5 * dx, "Xp1": bayiw.X0 + np.concatenate([[0.0], np.cumsum(dx)])}
+    gy = {"Y": bayiw.Y0 + np.cumsum(dy) - 0.5 * dy, "Yp1": bayiw.Y0 + np.concatenate([[0.0], np.cumsum(dy)])}
+    blocks: dict[str, dict] = {}
+    for f in sorted(glob.glob(str(Path(run_dir) / "mnc_*" / "state.*t*.nc"))):
+        blocks.setdefault(Path(f).name.rsplit(".t", 1)[0], {})[Path(f).name] = f     # dedupe by tile name
+    ts, out = [], []
+    for name, tiles in sorted(blocks.items()):
+        arr, tt = None, None
+        for f in tiles.values():
+            with netCDF4.Dataset(f) as ds:
+                v = ds[var]
+                xd, yd = v.dimensions[-1], v.dimensions[-2]
+                ti0 = int(np.argmin(np.abs(gx[xd] - float(ds[xd][0]))))
+                tj0 = int(np.argmin(np.abs(gy[yd] - float(ds[yd][0]))))
+                nxt, nyt = ds.dimensions[xd].size, ds.dimensions[yd].size
+                a0, a1 = max(i0, ti0), min(i1, ti0 + nxt)
+                b0, b1 = max(j0, tj0), min(j1, tj0 + nyt)
+                if tt is None:
+                    tt = np.asarray(ds["T"][:], float)
+                if a0 >= a1 or b0 >= b1:
+                    continue
+                sel = np.asarray(v[:, ..., b0 - tj0:b1 - tj0, a0 - ti0:a1 - ti0], float)
+                if sel.ndim == 3:
+                    sel = sel[:, None]
+                if arr is None:
+                    arr = np.full((tt.size, sel.shape[1], j1 - j0, i1 - i0), np.nan)
+                arr[:, :, b0 - j0:b1 - j0, a0 - i0:a1 - i0] = sel
+        keep = tt <= t_max + 1.0
+        if arr is not None and keep.any():
+            ts.append(tt[keep])
+            out.append(arr[keep])
+    t = np.concatenate(ts)
+    t, o = np.unique(t, return_index=True)                  # a stage's last dump = the next stage's first
+    return t, np.concatenate(out)[o]
+
+
+def boundary_series(case: str, bay: str) -> dict:
+    """
+    Full-run values at MITgcm's open-boundary placement of the cut, every 900 s (cached in RUNS): for west/east
+    T and η in the OB cell (global column 180 / 379, rows 192–351), u at the face next to the interior
+    (181 / 379), v at the south faces of the OB cells; for south T and η in row 192 (columns 180–379), v at face
+    193, u at the west faces of the OB cells.  Arrays (n, 50, m) and η (n, m).
+    """
+    cache = RUNS / f"boundary_{case}_{bay}.npz"
+    if cache.exists():
+        z = np.load(cache)
+        return {"t": z["t"], **{e: {k: z[f"{e}_{k}"] for k in ("T", "u", "v", "eta")} for e in ("west", "east", "south")}}
+    run = full_run_dir(case, bay)
+    rd = lambda var, j0, j1, i0, i1: read_full_box(run, var, j0, j1, i0, i1, case, bay)    # noqa: E731
+    t, wT = rd("Temp", J0, J1, I0, I0 + 1)
+    out = {"t": t}
+    for e, ic, iu in (("west", I0, I0 + 1), ("east", I1 - 1, I1 - 1)):
+        out[e] = dict(T=rd("Temp", J0, J1, ic, ic + 1)[1][..., 0], u=rd("U", J0, J1, iu, iu + 1)[1][..., 0],
+                      v=rd("V", J0, J1, ic, ic + 1)[1][..., 0], eta=rd("Eta", J0, J1, ic, ic + 1)[1][:, 0, :, 0])
+    out["south"] = dict(T=rd("Temp", J0, J0 + 1, I0, I1)[1][:, :, 0], v=rd("V", J0 + 1, J0 + 2, I0, I1)[1][:, :, 0],
+                        u=rd("U", J0, J0 + 1, I0, I1)[1][:, :, 0], eta=rd("Eta", J0, J0 + 1, I0, I1)[1][:, 0, 0])
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(cache, t=t, **{f"{e}_{k}": out[e][k] for e in ("west", "east", "south") for k in ("T", "u", "v", "eta")})
+    return out
+
+
+def _fill_below_bed(T: np.ndarray) -> np.ndarray:
+    """MITgcm writes 0 (land) below the bed: give those levels the deepest wet value (axis −2 = levels, surface first)."""
+    T = np.where(T == 0.0, np.nan, T)
+    for k in range(1, T.shape[-2]):
+        T[..., k, :] = np.where(np.isnan(T[..., k, :]), T[..., k - 1, :], T[..., k, :])
+    return np.nan_to_num(T)
+
+
+def nest_state(case: str, bay: str):
+    """
+    t → {edge: OBData} for the pyOCEAN domain (rows 193–351 for west/east, columns 181–378 for south) from the
+    full run (spec §1.4): zw = the MITgcm interfaces, T and η of MITgcm's OB cell, u_normal = the velocity at
+    pyOCEAN's open face (MITgcm's prescribed u/v point), ubar its depth mean over the face's water column;
+    linear in time between the 900-s dumps (forcing.boundary_time.interpolated_boundary).
+    """
+    from boundaries.obcs import OBData
+    from forcing.boundary_time import interpolated_boundary
+    s = boundary_series(case, bay)
+    zw1 = -np.concatenate([[0.0], np.cumsum(bayiw.DELR)])
+    dz = bayiw.DELR[:, None]
+    H = cut_inputs(case, bay, "mit")["H"]
+    face_depth = dict(west=np.fmin(H[1:, 0], H[1:, 1]), east=np.fmin(H[1:, -1], H[1:, -2]),
+                      south=np.fmin(H[0, 1:-1], H[1, 1:-1]))
+    sl = dict(west=slice(1, None), east=slice(1, None), south=slice(1, -1))
+    norm = dict(west="u", east="u", south="v")
+    states = []
+    for n in range(s["t"].size):
+        st = {}
+        for e in ("west", "east", "south"):
+            T = _fill_below_bed(s[e]["T"][n][:, sl[e]].copy())
+            u = np.nan_to_num(s[e][norm[e]][n][:, sl[e]])
+            D = np.nan_to_num(face_depth[e])
+            ub = np.where(D > 0, (u * dz).sum(0) / np.where(D > 0, D, 1.0), 0.0)
+            st[e] = OBData(side=e, T=T, u_normal=u, zw=np.repeat(zw1[:, None], T.shape[1], 1),
+                           eta=np.nan_to_num(s[e]["eta"][n][sl[e]]), ubar=ub)
+        states.append(st)
+    return interpolated_boundary(s["t"], states)
+
+
+def write_obcs_files(case: str, bay: str, run_dir: Path) -> None:
+    """
+    MITgcm OBCS prescribe files (big-endian float64, (nrec, Nr, n) and η (nrec, n)) on the forcing calendar
+    (get_periodic_interval.F: record r at (r − ½)·1200 s, cycle 216 000 s): the full-run values interpolated
+    in time; the last record holds the initial state (the cycle wraps it onto t < 600 s).
+    """
+    s = boundary_series(case, bay)
+    tc = (np.arange(NREC) + 0.5) * PERIOD_FORCING
+    (Path(run_dir) / "input").mkdir(parents=True, exist_ok=True)
+
+    def interp(a: np.ndarray) -> np.ndarray:
+        flat = np.nan_to_num(a).reshape(a.shape[0], -1)
+        out = np.stack([np.interp(tc, s["t"], flat[:, c]) for c in range(flat.shape[1])], axis=1)
+        out = out.reshape((NREC,) + a.shape[1:])
+        out[-1] = np.nan_to_num(a[0])
+        return out
+    for e, tag in (("south", "S"), ("west", "W"), ("east", "E")):
+        for k, v in (("u", "u"), ("v", "v"), ("T", "t"), ("eta", "eta")):
+            _write(Path(run_dir) / "input" / f"ob_{tag}{v}.bin", interp(s[e][k]))

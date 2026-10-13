@@ -107,3 +107,26 @@ def test_heat_displacement_recovers_a_sharp_interface_shift():
     T = np.stack([T0, T1, T2])[:, :, None, None]
     z = compare.heat_displacement(T, dz, 22.0, 18.0)
     np.testing.assert_allclose(z[:, 0, 0], [0.0, 0.3, 0.0], atol=1e-12)
+
+
+def test_boundary_state_matches_the_full_run_at_an_instant():
+    # review focus 4: placement and sign at a dump time (t = 9000 s)
+    from validation.bayiw_cut import cut
+    st = cut.nest_state("2layer", "bay")(9000.0)
+    t, U = cut.read_mnc(cut.full_run_dir("2layer", "bay"), "state", "U", t_slice=slice(10, 11))
+    assert abs(t[0] - 9000.0) < 1.0
+    w = st["west"]
+    kw = np.flatnonzero(np.isfinite(w.T[:, 50]))
+    np.testing.assert_allclose(w.u_normal[kw, 50], U[0, kw, 193 + 50, 181], atol=1e-12)
+    assert w.zw.shape == (51, 159) and st["south"].u_normal.shape == (50, 198)
+
+
+def test_obcs_records_follow_the_forcing_calendar(tmp_path):
+    # review focus 3: 180 records at (n + ½)·1200 s, big-endian, (nrec, Nr, n) for u/v/T, record 179 = initial
+    from validation.bayiw_cut import cut
+    cut.write_obcs_files("2layer", "bay", tmp_path)
+    Wt = np.fromfile(tmp_path / "input" / "ob_Wt.bin", ">f8").reshape(180, 50, 160)
+    s = cut.boundary_series("2layer", "bay")
+    np.testing.assert_allclose(Wt[179], s["west"]["T"][0], atol=1e-12)
+    k = 7                                                                       # t = 9000 s = a 900-s dump
+    np.testing.assert_allclose(Wt[k], s["west"]["T"][np.argmin(abs(s["t"] - 9000.0))], atol=1e-12)
