@@ -589,3 +589,14 @@ def test_hycom_write_case_writes_every_input(tmp_path):
         assert (tmp_path / f).exists(), f
     vals = {ln.split("'")[1]: ln.split()[0] for ln in (tmp_path / "blkdat.input").read_text().splitlines()[4:]}
     assert float(vals["baclin"]) == 20.0 and float(vals["batrop"]) == 2.0
+
+
+def test_hycom_timer_parser_reads_the_last_block():
+    from validation.ilicak_benchmark.hycom import timers
+    out = ("   timer statistics, processor    1 out of    1\n"
+           "   total    calls =        1   time =    9.00000   time/call =    9.00000000\n"
+           "   timer statistics, processor    1 out of    1\n"
+           "   cnuity   calls =     4320   time =    1.50000   time/call =    0.00034722\n"
+           "   total    calls =        1   time =    6.25000   time/call =    6.25000000\n")
+    t = timers.parse(out)
+    assert t["total"] == 6.25 and t["cnuity"] == 1.5 and t["cnuity_calls"] == 4320
