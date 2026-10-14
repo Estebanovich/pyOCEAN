@@ -94,7 +94,7 @@ def croco_in(case: cases.Case, nu: float, dt: float, hours: float) -> str:
         "history: LDEFHIS, NWRT, NRPFHIS / filename", f"        T {nwrt} 0", "        croco_his.nc",
         "primary_history_fields: zeta UBAR VBAR U V wrtT(1:NT)", "        T T T T T T",
         "auxiliary_history_fields: rho Omega W Akv Akt Aks Visc3d Diff3d HBL HBBL Bostr Bustr Bvstr Wstr Ustr Vstr "
-        "Shfl rsw rlw lat sen Hm HEL BIOL", "        F F F F F F F F F F F F F F F F F F F F F F F F",
+        "Shfl rsw rlw lat sen Hm HEL BIOL", "        F F F F F F F F F F F F F 20*F",     # as croco.in.Grav_adj (≥ 33 items)
         "rho0:", "        1000.",
         "bottom_drag: RDRG(m/s), RDRG2, Zob [m], Cdb_min, Cdb_max", "        0. 0. 0. 0. 0.",
         "gamma2:", "        1.",
@@ -102,6 +102,7 @@ def croco_in(case: cases.Case, nu: float, dt: float, hours: float) -> str:
         f"        0. {cases.T_REF} 0. {cases.ALPHA} 0.",
         "vertical_mixing: Akv_bak, Akt_bak [m^2/sec]", "        1.e-4 0.",
         "lateral_visc: VISC2, VISC4 [m^2/sec]", f"        {float(nu)} 0.",
+        "tracer_diff4: TNU4(1:NT) [m^4/sec for all]", "        0.",          # RSUP3 implies TS_DIF4: only |u|Δx³/12
         ""])
 
 

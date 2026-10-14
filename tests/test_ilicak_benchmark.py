@@ -331,7 +331,7 @@ def test_mitgcm_data_and_size_for_zstar_os7mp_free_slip():
     for s in ("eosType='LINEAR'", "tAlpha=2.E-4", "sBeta=0.", "rhoNil=1000.", "rhoConst=1000.", "gravity=9.81",
               "viscAh=10.0", "viscAr=1.E-4", "no_slip_sides=.FALSE.", "no_slip_bottom=.FALSE.", "diffKhT=0.",
               "diffKrT=0.", "tempAdvScheme=7", "staggerTimeStep=.TRUE.", "select_rStar=2", "nonlinFreeSurf=4",
-              "exactConserv=.TRUE.", "implicitFreeSurface=.TRUE.", "hFacMin=0.1", "deltaT=10.0", "endTime=61200.0",
+              "exactConserv=.TRUE.", "implicitFreeSurface=.TRUE.", "hFacMin=0.1", "deltaT=10.0", "endTime=61210.0",
               "delX=129*500.0", "delR=20*1.0", "saltStepping=.FALSE.", "readBinaryPrec=64"):
         assert s in txt, s
     assert "tRef=20*0.0" in txt and "bottomDragLinear=0." in txt and "bottomDragQuadratic=0." in txt
@@ -370,7 +370,7 @@ def _fake_mitgcm_mnc(d, c, nt=2, n_land=1):
     with netCDF4.Dataset(d / "grid.t001.nc", "w") as ds:
         for n, sz in (("Z", c.nz), ("Y", c.ny), ("X", Nx)):
             ds.createDimension(n, sz)
-        ds.createVariable("HFacC", "f8", ("Z", "Y", "X"))[:] = hf
+        ds.createVariable("hFacC", "f8", ("Z", "Y", "X"))[:] = hf
         ds.createVariable("drF", "f8", ("Z",))[:] = c.dz
 
 
@@ -384,3 +384,23 @@ def test_mitgcm_reader_adds_t0_drops_land_and_keeps_surface_first(tmp_path):
     assert s["T"][1, 0, 0, 0] == 0.0 and s["T"][1, -1, 0, 0] == 19.0                        # k = 0 at the surface
     assert s["T"][0, 0, 0, 0] == 5.0 and s["T"][0, 0, 0, -1] == 30.0                        # t = 0 from theta.bin
     np.testing.assert_allclose(s["h"].sum(1), 20.0)
+
+
+SMOKE = [("pyocean", "zstar"), ("pyocean", "sigma"), ("pyocean", "hybrid"), ("mom6", "zstar"), ("mom6", "rho"),
+         ("croco", "sigma"), ("mitgcm", "zstar")]
+
+
+@pytest.mark.parametrize("model,coord", SMOKE)
+def test_smoke_lock_exchange_one_hour(model, coord):
+    from validation.ilicak_benchmark import cases, metrics, series
+    p = cases.run_dir("lock", model, coord, 10.0, "smoke") / "series.npz"
+    if not p.exists():
+        pytest.skip("smoke run not on disk")
+    s, meta = series.load(p)
+    assert s["t"][0] == 0.0 and np.isclose(s["t"][-1], 3600.0) and meta["wall_s"] > 0
+    np.testing.assert_allclose(s["h"].sum(1), 20.0 + s["eta"], atol=1e-6)            # column = depth + η
+    T0 = np.where(s["h"][0] > 0, s["T"][0], np.nan)
+    assert np.nanmin(T0) == 5.0 and np.nanmax(T0) == 30.0                              # the reader's initial state
+    assert np.isfinite(np.where(s["h"] > 0, s["T"], 0.0)).all()                        # extrema are results, not checked
+    assert np.isfinite(metrics.rpe(s)).all()          # a falling RPE (new extrema, Ilicak Fig. 7) is a result
+    assert metrics.max_speed(s)[-1] > 0.1                                              # the fronts are moving

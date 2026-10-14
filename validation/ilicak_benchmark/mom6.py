@@ -132,7 +132,8 @@ def read(run_dir: Path, case_name: str) -> dict:
     fields = {k: [] for k in ("t", "h", "T", "u", "v", "eta")}
     for fname, tvar in (("MOM_IC.nc", "Temp"), ("prog.nc", "temp")):
         with netCDF4.Dataset(run_dir / fname) as ds:
-            t = np.asarray(ds["Time"][:], float) * 86400.0
+            unit = ds["Time"].units.split()[0].lower()            # 'seconds since …' with TIMEUNIT = 1, else 'days'
+            t = np.asarray(ds["Time"][:], float) * {"seconds": 1.0, "hours": 3600.0, "days": 86400.0}[unit]
             for n in range(t.size):
                 fields["t"].append(t[n] if fname == "prog.nc" else 0.0)
                 fields["h"].append(np.asarray(ds["h"][n], float))
@@ -143,6 +144,9 @@ def read(run_dir: Path, case_name: str) -> dict:
                 fields["eta"].append(np.asarray(np.ma.filled(ds["SSH"][n], 0.0), float) if "SSH" in ds.variables
                                      else np.zeros((c.ny, c.nx)))
     s = {k: np.array(v) for k, v in fields.items()}
+    # η = Σh − H: MOM6's SSH diagnostic differs from the layer sum by up to ~2 mm (it is not the layer column), and
+    # the metrics need the geometry the layers actually have
+    s["eta"] = s["h"].sum(1) - np.nan_to_num(c.H)[None]
     s.update(x=c.x, y=c.y, dx=c.dx, dy=c.dy, H=c.H)
     return s
 

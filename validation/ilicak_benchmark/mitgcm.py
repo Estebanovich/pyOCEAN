@@ -6,7 +6,8 @@ flux-form momentum, Laplacian viscAh, viscAr = 1e-4, no tracer diffusion, free s
 set_defaults.F:132-133), no drag, g = 9.81. Walls from land: one land column east (and one land row north in 3-D),
 because the exchanges are periodic. Output: MNC diagnostics snapshots (THETA, UVEL, VVEL, hFactorC, ETAN); the cell
 thickness under z* is hFactorC·drF (diagnostics_fill_state.F:451-453). t = 0 comes from the inputs (hFacC of the
-grid file, theta.bin, η = 0). Copies of verification/advect_xz/code/{CPP_OPTIONS.h, DIAGNOSTICS_SIZE.h, GAD_OPTIONS.h}
+grid file, theta.bin, η = 0) when the diagnostics hold no iteration-0 snapshot; the run is one step longer than
+asked because the snapshot at endTime itself is not written. Copies of verification/advect_xz/code/{CPP_OPTIONS.h, DIAGNOSTICS_SIZE.h, GAD_OPTIONS.h}
 (NONLIN_FRSURF defined).
 """
 from __future__ import annotations
@@ -78,7 +79,7 @@ def data(case: cases.Case, nu: float, dt: float, hours: float) -> str:
  cg2dMaxIters=1000, cg2dTargetResidual=1.E-13,
  &
  &PARM03
- nIter0=0, deltaT={float(dt)}, endTime={hours * 3600.0}, abEps=0.1,
+ nIter0=0, deltaT={float(dt)}, endTime={hours * 3600.0 + dt}, abEps=0.1,
  dumpFreq=0., chkptFreq=0., pChkptFreq=0., monitorFreq={min(case.out_s, hours * 3600.0)},
  &
  &PARM04
@@ -139,19 +140,24 @@ def read(run_dir: Path, case_name: str) -> dict:
     U = _join(str(d / "diag3d.*.t001.nc"), "UVEL")[:, :, :ny, :nx + 1]
     V = _join(str(d / "diag3d.*.t001.nc"), "VVEL")[:, :, :ny + 1, :nx]
     hf = _join(str(d / "diag3d.*.t001.nc"), "hFactorC")[:, :, :ny, :nx]
-    eta = _join(str(d / "diag2d.*.t001.nc"), "ETAN")[:, :ny, :nx]
+    eta = _join(str(d / "diag2d.*.t001.nc"), "ETAN")
+    eta = eta.reshape(eta.shape[0], *eta.shape[-2:])[:, :ny, :nx]        # MNC keeps a 1-level Z axis
     drf = _join(str(d / "grid.t001.nc"), "drF")
-    hf0 = _join(str(d / "grid.t001.nc"), "HFacC")[:, :ny, :nx]
+    hf0 = _join(str(d / "grid.t001.nc"), "hFacC")[:, :ny, :nx]
     Nx, Ny = _shape(c)
     T0 = np.fromfile(d / "theta.bin", ">f8").reshape(c.nz, Ny, Nx)[:, :ny, :nx]
     if ny > 1:
         V[:, :, -1] = 0.0                                                  # the north wall face
     U[:, :, :, -1] = 0.0                                                   # the east wall face
-    h = np.concatenate([(hf0 * drf[:, None, None])[None], hf * drf[None, :, None, None]])
-    Tall = np.concatenate([T0[None], T])
-    s = dict(t=np.concatenate([[0.0], t]), h=h, T=np.where(h > 0, Tall, np.nan),
-             u=np.concatenate([np.zeros((1,) + U.shape[1:]), U]), v=np.concatenate([np.zeros((1,) + V.shape[1:]), V]),
-             eta=np.concatenate([np.zeros((1, ny, nx)), eta]))
+    h = hf * drf[None, :, None, None]
+    if t[0] > 0:                                   # no snapshot at iteration 0: the inputs are the initial state
+        h = np.concatenate([(hf0 * drf[:, None, None])[None], h])
+        T = np.concatenate([T0[None], T])
+        U = np.concatenate([np.zeros((1,) + U.shape[1:]), U])
+        V = np.concatenate([np.zeros((1,) + V.shape[1:]), V])
+        eta = np.concatenate([np.zeros((1, ny, nx)), eta])
+        t = np.concatenate([[0.0], t])
+    s = dict(t=t, h=h, T=np.where(h > 0, T, np.nan), u=U, v=V, eta=eta)
     s.update(x=c.x, y=c.y, dx=c.dx, dy=c.dy, H=(hf0 * drf[:, None, None]).sum(0))
     return s
 
