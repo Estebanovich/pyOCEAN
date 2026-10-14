@@ -796,11 +796,14 @@ class SigmaBaroclinic:
           u′ₑₓₜ with Δt/τ_in when flowing in, Δt/τ_out when out, as CROCO u3dbc.F:111-155; sponge toward the
           exterior) | 'clamped' (u′ = u′ₑₓₜ, Dirichlet, as MITgcm OBCS prescribe / CROCO M3_FRC_BRY)}
     obc_tau_in, obc_tau_out : nudging time scales [s] of 'radiating' (CROCO typical 1 and 10 days)
-    theta_bc : time weight of the baroclinic part u′ of the layer transport (default ½, time-centred: the AB3
-        momentum tendency is centred at n + ½); the depth mean keeps the free-surface ``theta`` so the layer fluxes add
-        up to the free-surface flux.  Before 2026-10-13 u′ took ``theta`` too, which damps internal waves at
-        ~(θ − ½) ω² Δt (Ilicak internal wave: 0.45 of the oscillation left after 200 days at ν = 0.01 against
-        0.65–0.72 in MOM6, CROCO and MITgcm; 0.74 with theta_bc = ½; validation/ilicak_benchmark/README.md)
+    theta_bc : time weight of the baroclinic part u′ of the layer transport (None = automatic: ½, time-centred, as
+        the AB3 momentum tendency is centred at n + ½; ``theta`` for the hybrid regrid); the depth mean keeps the
+        free-surface ``theta`` so the layer fluxes add up to the free-surface flux.  Before 2026-10-13 u′ took
+        ``theta`` too, which damps internal waves at ~(θ − ½) ω² Δt (Ilicak internal wave: 0.45 of the oscillation
+        left after 200 days at ν = 0.01 against 0.65–0.72 in MOM6, CROCO and MITgcm; 0.74 with theta_bc = ½;
+        validation/ilicak_benchmark/README.md).  The hybrid keeps ``theta``: the off-centring also damps the noise
+        of its near-vanished layers, and with ½ a layer empties in the Lagrangian step (Ilicak IW ν = 0.01 at day
+        103 even with Δt 150 s; overflow ν = 1000) until the outflow limiter of the hybrid plan exists
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, n_layers: int = 10,
@@ -816,7 +819,7 @@ class SigmaBaroclinic:
                  h_thin_bed: float = 0.01, init_iterations: int = 10, momentum: str | None = None,
                  ke_scheme: str = "arakawa", max_truncations: int = 1000, thickness_flux: str = "ppm",
                  mix_diagnostic: bool = True, open_boundary_state=None, open_boundary_mode: dict | None = None,
-                 obc_tau_in: float = 86400.0, obc_tau_out: float = 864000.0, theta_bc: float = 0.5) -> None:
+                 obc_tau_in: float = 86400.0, obc_tau_out: float = 864000.0, theta_bc: float | None = None) -> None:
         if pgf not in ("twoterm", "jacobian", "fv"):
             raise ValueError(f"unknown pressure-gradient scheme {pgf!r}")
         self.pgf, self.rho_ref = pgf, rho_ref
@@ -843,6 +846,8 @@ class SigmaBaroclinic:
         if open_boundary_state is None and "clamped" in self.obc_mode.values():
             raise ValueError("a 'clamped' open_boundary_mode needs open_boundary_state (the exterior to impose)")
         self.obc_tau_in, self.obc_tau_out = float(obc_tau_in), float(obc_tau_out)
+        if theta_bc is None:    # automatic: the hybrid keeps θ until the Lagrangian-step outflow limiter (docstring)
+            theta_bc = theta if vertical_coordinate == "ale" and regrid == "hybrid" else 0.5
         self.theta_bc = float(theta_bc)
         self._ext = None
         self.orlanski_cmax, self.sponge_tracer = orlanski_cmax, sponge_tracer

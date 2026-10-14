@@ -25,8 +25,8 @@ def _ale_box(rule="zstar", nx=32, nz=10, depth=20.0, dx=2000.0, dt=30.0, bathy=N
     if params is None:
         params = dict(dz_top=np.full(nz, np.nanmax(H) / nz))
     return SigmaBaroclinic(hg, H, dt=dt, n_layers=nz, rho0=RHO0, t_coef=TCOEF, z0=None, closure="constant",
-                           nu_const=nu, theta=0.6, d_min=0.05, vertical_coordinate="ale", regrid=rule,
-                           regrid_params=params, **kw)
+                           nu_const=nu, d_min=0.05, vertical_coordinate="ale", regrid=rule,
+                           regrid_params=params, **{"theta": 0.6, **kw})
 
 
 # ---------------------------------------------------------------- configuration
@@ -1186,6 +1186,20 @@ def test_new_kernel_wrappers_reject_mismatched_shapes():
         ale.transport_velocity(a, b, np.ones((4, 5), bool), a, np.ones((4, 5)), np.ones((4, 5)), 0.5)
     with pytest.raises(ValueError, match="shape"):
         ale.transport_velocity(a, a, np.ones((4, 6), bool), a, np.ones((4, 5)), np.ones((4, 5)), 0.5)
+
+
+def test_baroclinic_theta_defaults_to_centred_except_hybrid():
+    # θ_bc = ½ leaves the hybrid's thin-layer noise undamped until a layer empties in the Lagrangian step (Ilicak IW
+    # ν = 0.01 day 103 even at Δt 150 s; overflow ν = 1000), so the hybrid keeps θ_bc = θ (the scheme before
+    # 2026-10-13) until the Lagrangian-step outflow limiter of the hybrid plan; an explicit value always wins
+    hyb = dict(dz_top=np.full(10, 0.01), rho_target=np.linspace(1000.0, 1001.0, 11))
+    assert _ale_box("zstar").theta_bc == 0.5
+    assert _ale_box("sigma").theta_bc == 0.5
+    assert _ale_box("hybrid", params=hyb).theta_bc == 0.6
+    assert _ale_box("hybrid", params=hyb, theta=0.7).theta_bc == 0.7
+    assert _ale_box("hybrid", params=hyb, theta_bc=0.5).theta_bc == 0.5
+    hg = create_cartesian_grid(nx=8, ny=1, dx=1000.0, dy=1000.0, f0=0.0)
+    assert SigmaBaroclinic(hg, np.full((1, 8), 20.0), dt=30.0, z0=None, closure="constant").theta_bc == 0.5
 
 
 def test_internal_wave_is_not_damped_by_the_free_surface_theta():
