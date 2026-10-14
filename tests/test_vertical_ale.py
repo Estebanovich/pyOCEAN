@@ -468,3 +468,34 @@ def test_transport_velocity_kernel_matches_numpy():
     ut, Qb = ale.transport_velocity(u1, u0, wet, w, L, D, 0.6)
     ut0, Qb0 = ale.transport_velocity_numpy(u1, u0, wet, w, L, D, 0.6)
     assert np.array_equal(ut, ut0) and np.array_equal(Qb, Qb0)
+
+
+def test_transport_velocity_centres_the_baroclinic_part_only():
+    # IW damping fix (2026-10-13): the barotropic part keeps the free-surface θ (its volume flux is the free-surface
+    # flux), the baroclinic part u′ is time-centred with θ_bc: u^θ = θ_bc u¹ + (1−θ_bc) u⁰ + (θ−θ_bc)(ū¹ − ū⁰)
+    rng = np.random.default_rng(11)
+    n, a, b = 5, 3, 4
+    u1, u0 = rng.normal(size=(n, a, b)), rng.normal(size=(n, a, b))
+    wet = np.ones((a, b), bool)
+    w = rng.random((n, a, b))
+    w /= w.sum(0)
+    L, D = np.full((a, b), 800.0), rng.uniform(10, 50, (a, b))
+    ut, Qb = ale.transport_velocity_numpy(u1, u0, wet, w, L, D, 0.6, theta_bc=0.5)
+    m1, m0 = (w * u1).sum(0), (w * u0).sum(0)
+    np.testing.assert_allclose((w * ut).sum(0), 0.6 * m1 + 0.4 * m0, atol=1e-13)          # barotropic: θ
+    np.testing.assert_allclose(ut - (w * ut).sum(0)[None], 0.5 * (u1 - m1[None]) + 0.5 * (u0 - m0[None]), atol=1e-13)
+    _, Qb_old = ale.transport_velocity_numpy(u1, u0, wet, w, L, D, 0.6)                     # θ_bc = θ: old scheme
+    np.testing.assert_allclose(Qb, Qb_old, rtol=1e-13)                                       # same volume flux
+    ut_k, Qb_k = ale.transport_velocity(u1, u0, wet, w, L, D, 0.6, theta_bc=0.5)
+    np.testing.assert_allclose(ut_k, ut, atol=1e-14) and np.testing.assert_allclose(Qb_k, Qb, rtol=1e-14)
+
+
+def test_open_face_transport_centres_the_baroclinic_part():
+    h = np.array([[2.0, 1.0], [3.0, 0.0], [5.0, 4.0]])
+    un, uo = np.array([[0.3, 0.1], [0.1, 0.0], [-0.2, 0.2]]), np.array([[0.1, 0.0], [0.2, 0.0], [0.0, 0.1]])
+    Qbt, L = np.array([10.0, 3.0]), np.array([100.0, 100.0])
+    Q = ale.open_face_transport(h, un, uo, Qbt, L, 0.6, theta_bc=0.5)
+    np.testing.assert_allclose(Q.sum(0), Qbt, rtol=1e-13)
+    w = h / h.sum(0)
+    pn, po = un - (w * un).sum(0), uo - (w * uo).sum(0)
+    np.testing.assert_allclose(Q, w * Qbt + L * h * (0.5 * pn + 0.5 * po), rtol=1e-13)

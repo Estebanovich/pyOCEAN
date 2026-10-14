@@ -579,7 +579,8 @@ def _sigma_obc_case(tracer_time: str):
     H = 20.0 + 2.0 * np.arange(12)[None, :] * np.ones((8, 1))
     m = SigmaBaroclinic(hg, H, dt=30.0, n_layers=6, rho0=RHO0, t_coef=TCOEF, z0=None, closure="constant",
                         nu_const=1e-4, ah=5.0, theta=0.6, d_min=0.05, open_boundaries=("west", "south"),
-                        sponge_cells=3, tracer_time=tracer_time, kh=5.0, kv=1e-5)
+                        sponge_cells=3, tracer_time=tracer_time, kh=5.0, kv=1e-5,
+                        theta_bc=0.6)          # the reference predates theta_bc (2026-10-13): baroclinic weight = θ
     T = 10.0 + 0.1 * np.arange(6)[:, None, None] * np.ones((6, 8, 12))
     st = m.initial_state(np.zeros((8, 12)), T)
     tau = np.full((8, 13), 0.05)

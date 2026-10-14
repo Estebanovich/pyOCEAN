@@ -25,8 +25,8 @@ def _ale_box(rule="zstar", nx=32, nz=10, depth=20.0, dx=2000.0, dt=30.0, bathy=N
     if params is None:
         params = dict(dz_top=np.full(nz, np.nanmax(H) / nz))
     return SigmaBaroclinic(hg, H, dt=dt, n_layers=nz, rho0=RHO0, t_coef=TCOEF, z0=None, closure="constant",
-                           nu_const=nu, theta=0.6, d_min=0.05, vertical_coordinate="ale", regrid=rule,
-                           regrid_params=params, **kw)
+                           nu_const=nu, d_min=0.05, vertical_coordinate="ale", regrid=rule,
+                           regrid_params=params, **{"theta": 0.6, **kw})
 
 
 # ---------------------------------------------------------------- configuration
@@ -765,14 +765,17 @@ def test_rotating_open_boundaries_keep_a_resting_stratification_at_rest():
 
 # ---------------------------------------------------------------- performance regression (spec 2026-10-12-ale-step-performance §4)
 def _perf_cases():
-    # fingerprints of tests/data/ale_perf_reference.json were generated with the Godunov KE (then the default)
+    # fingerprints of tests/data/ale_perf_reference.json were generated with the Godunov KE (then the default) and
+    # with the baroclinic transport weighted by the free-surface θ = 0.6 (theta_bc = θ, the scheme before 2026-10-13):
+    # pinning theta_bc = 0.6 keeps them a bit-level guard of the kernels and shows the IW fix is isolated in theta_bc
+    old = dict(theta_bc=0.6)
     return {
-        "lock": lambda: _hybrid_lock(128, 21, 20.0, 20.0, solver="direct"),
+        "lock": lambda: _hybrid_lock(128, 21, 20.0, 20.0, solver="direct", **old),
         "channel": lambda: _ale_channel("hybrid", 60, 30e3, open_boundaries=("west", "east"), sponge_cells=10,
-                                        sponge_tau=(1200.0, 120.0), solver="direct", ke_scheme="gudonov"),
-        "step": lambda: _step_section("zstar", solver="direct"),
+                                        sponge_tau=(1200.0, 120.0), solver="direct", ke_scheme="gudonov", **old),
+        "step": lambda: _step_section("zstar", solver="direct", **old),
         "openbox": lambda: _ale_open_box("hybrid", nx=14, ny=12, open_=("west", "east", "south"), f0=1e-4,
-                                         sponge_cells=3, solver="direct", ke_scheme="gudonov"),
+                                         sponge_cells=3, solver="direct", ke_scheme="gudonov", **old),
     }
 
 
@@ -1183,3 +1186,43 @@ def test_new_kernel_wrappers_reject_mismatched_shapes():
         ale.transport_velocity(a, b, np.ones((4, 5), bool), a, np.ones((4, 5)), np.ones((4, 5)), 0.5)
     with pytest.raises(ValueError, match="shape"):
         ale.transport_velocity(a, a, np.ones((4, 6), bool), a, np.ones((4, 5)), np.ones((4, 5)), 0.5)
+
+
+def test_baroclinic_theta_defaults_to_centred_except_hybrid():
+    # θ_bc = ½ leaves the hybrid's thin-layer noise undamped until a layer empties in the Lagrangian step (Ilicak IW
+    # ν = 0.01 day 103 even at Δt 150 s; overflow ν = 1000), so the hybrid keeps θ_bc = θ (the scheme before
+    # 2026-10-13) until the Lagrangian-step outflow limiter of the hybrid plan; an explicit value always wins
+    hyb = dict(dz_top=np.full(10, 0.01), rho_target=np.linspace(1000.0, 1001.0, 11))
+    assert _ale_box("zstar").theta_bc == 0.5
+    assert _ale_box("sigma").theta_bc == 0.5
+    assert _ale_box("hybrid", params=hyb).theta_bc == 0.6
+    assert _ale_box("hybrid", params=hyb, theta=0.7).theta_bc == 0.7
+    assert _ale_box("hybrid", params=hyb, theta_bc=0.5).theta_bc == 0.5
+    hg = create_cartesian_grid(nx=8, ny=1, dx=1000.0, dy=1000.0, f0=0.0)
+    assert SigmaBaroclinic(hg, np.full((1, 8), 20.0), dt=30.0, z0=None, closure="constant").theta_bc == 0.5
+
+
+def test_internal_wave_is_not_damped_by_the_free_surface_theta():
+    # IW damping fix (2026-10-13; validation/ilicak_benchmark): the θ = 0.6 off-centring of the free surface was
+    # applied to the baroclinic layer transport too, damping internal waves ~(θ−½)ω²Δt (Ilicak internal wave, ν = 0.01:
+    # oscillation 0.45 of MOM6/CROCO/MITgcm's 0.65–0.72 after 200 days).  Ilicak IW, z*, Δt 600 s, 30 days.
+    from validation.ilicak_benchmark import cases
+    c = cases.get("iw")
+    hg = create_cartesian_grid(nx=c.nx, ny=1, dx=float(c.dx[0]), dy=float(c.dy[0]), f0=0.0)
+    ke = {}
+    for name, kw in (("default", {}), ("old", dict(theta_bc=0.6))):
+        m = SigmaBaroclinic(hg, c.H.copy(), dt=600.0, n_layers=c.nz, rho0=cases.RHO0, t_coef=cases.ALPHA, z0=None,
+                            closure="constant", nu_const=1e-4, ah=0.01, pgf="fv", vertical_coordinate="ale",
+                            regrid="zstar", regrid_params=dict(dz_top=c.dz.copy()), mix_diagnostic=False, **kw)
+        eta = np.zeros((1, c.nx))
+        st = m.initial_state(eta, c.T_fn(c.x[None, None, :], c.y[None, :, None], m.layer_heights(eta)))
+        k_t = []
+        for n in range(1, 30 * 144 + 1):
+            st = m.step(st)
+            if n % 36 == 0:
+                hu = np.zeros_like(st.u[:, 0])
+                hu[:, 1:-1] = 0.5 * (st.h[:, 0, 1:] + st.h[:, 0, :-1])
+                k_t.append((st.u[:, 0] ** 2 * hu).sum())
+        k_t = np.array(k_t)                                        # every 6 h
+        ke[name] = k_t[80:].mean() / k_t[:20].mean()              # days 20–30 / days 0–5
+    assert ke["default"] > 0.8 and ke["old"] < 0.75, ke

@@ -70,6 +70,7 @@ def _config(model: SigmaBaroclinic) -> dict:
                 closure=core.closure, z0=-1.0 if core.z0 is None else core.z0, nu_const=core.nu_const,
                 adv=model.adv, tracer_scheme=model.tracer_scheme, tracer_time=model.tracer_time,
                 rho0=model.rho0, t_coef=model.t_coef, t_ref=model.t_ref, ah=model.ah,
+                theta_bc=model.theta_bc,
                 ny=int(model.H.shape[0]), nx=int(model.H.shape[1]))
     if getattr(model, "ale", False):                           # ALE (Plan D): the rule and every scheme choice
         cfg.update(vertical_coordinate="ale", regrid=model.regrid_rule, remap=int(model.remap_code),
