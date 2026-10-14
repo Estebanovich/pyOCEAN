@@ -188,3 +188,63 @@ def test_pyocean_short_run_writes_a_series(tmp_path, monkeypatch):
     assert s["t"][0] == 0.0 and s["t"][-1] == 60.0 and meta["model"] == "pyOCEAN" and meta["n_steps"] == 6
     heat = (s["h"] * s["T"]).sum(axis=(1, 2, 3))
     np.testing.assert_allclose(heat, heat[0], rtol=1e-10)
+
+
+def test_mom6_source_centres_reproduce_the_case_interfaces():
+    from validation.ilicak_benchmark import cases, mom6
+    for name in ("lock", "overflow", "iw", "seamount"):
+        c = cases.get(name)
+        cen = mom6.source_centres(c.dz)
+        np.testing.assert_allclose(0.5 * (cen[1:] + cen[:-1]), np.cumsum(c.dz)[:-1], atol=1e-9)
+
+
+def test_mom6_input_free_slip_linear_eos_and_coordinates():
+    from validation.ilicak_benchmark import cases, mom6
+    c = cases.get("lock")
+    txt = mom6.mom_input(c, "rho", 10.0, 10.0, 17.0)
+    p = dict(l.split(" = ", 1) for l in txt.splitlines() if " = " in l)
+    assert p["NIGLOBAL"] == "128" and p["NJGLOBAL"] == "1" and p["NK"] == "20" and p["REENTRANT_Y"] == "False"
+    assert p["BOTTOMDRAGLAW"] == "True" and p["CDRAG"] == "0.0" and p["KV_BBL_MIN"] == "0.0" and p["NOSLIP"] == "False"
+    assert p["DRHO_DT"] == "-0.2" and p["DRHO_DS"] == "0.0" and p["RHO_REF_LINEAR_EOS"] == "1000.0"
+    assert p["G_EARTH"] == "9.81" and p["KH"] == "10.0" and p["KV"] == "0.0001" and p["KHTR"] == "0.0" and p["KD"] == "0.0"
+    assert p["REGRIDDING_COORDINATE_MODE"] == '"RHO"' and p["COORD_CONFIG"] == '"layer_ref"'
+    t = cases.targets(c, 20)
+    assert np.isclose(float(p["LIGHTEST_DENSITY"]), 0.5 * (t[0] + t[1]))
+    assert np.isclose(float(p["DENSITY_RANGE"]), 0.5 * (t[-2] + t[-1]) - 0.5 * (t[0] + t[1]))
+    assert p["TRACER_ADVECTION_SCHEME"] == '"PPM:H3"' and p["KE_SCHEME"] == '"KE_ARAKAWA"'
+    assert p["DT"] == "10.0" and p["DAYMAX"] == "61200.0" and p["TIMEUNIT"] == "1.0" and p["SAVE_INITIAL_CONDS"] == "True"
+    z = dict(l.split(" = ", 1) for l in mom6.mom_input(c, "zstar", 10.0, 10.0, 17.0).splitlines() if " = " in l)
+    assert z["REGRIDDING_COORDINATE_MODE"] == '"ZSTAR"' and "COORD_CONFIG" not in z
+    s = dict(l.split(" = ", 1) for l in mom6.mom_input(cases.get("seamount"), "sigma", 0.0, 600.0, 240.0)
+             .splitlines() if " = " in l)
+    assert s["REGRIDDING_COORDINATE_MODE"] == '"SIGMA"' and float(s["F_0"]) == 1e-4 and s["NJGLOBAL"] == "48"
+
+
+def _fake_mom6_output(d, c, nt=2):
+    """prog.nc + MOM_IC.nc in MOM6's layout (surface first, u on NI+1 faces) holding a known field."""
+    nz = c.nz
+    T = np.arange(nz, dtype=float)[:, None, None] * np.ones((nz, c.ny, c.nx))       # T = k: k = 0 at the surface
+    h = np.broadcast_to(c.dz[:, None, None], (nz, c.ny, c.nx))
+    for fname, times, tvar in (("prog.nc", np.arange(1, nt + 1) * c.out_s / 86400.0, "temp"),
+                               ("MOM_IC.nc", np.array([0.0]), "Temp")):
+        with netCDF4.Dataset(d / fname, "w") as ds:
+            for n, sz in (("Time", None), ("zl", nz), ("yh", c.ny), ("xh", c.nx), ("xq", c.nx + 1), ("yq", c.ny + 1)):
+                ds.createDimension(n, sz)
+            ds.createVariable("Time", "f8", ("Time",))[:] = times
+            ds["Time"].units = "days since 0001-01-01 00:00:00"
+            ds.createVariable(tvar, "f8", ("Time", "zl", "yh", "xh"))[:] = np.broadcast_to(T, (times.size,) + T.shape)
+            ds.createVariable("h", "f8", ("Time", "zl", "yh", "xh"))[:] = np.broadcast_to(h, (times.size,) + h.shape)
+            ds.createVariable("u", "f8", ("Time", "zl", "yh", "xq"))[:] = 0.0
+            ds.createVariable("v", "f8", ("Time", "zl", "yq", "xh"))[:] = 0.0
+            if fname == "prog.nc":
+                ds.createVariable("SSH", "f8", ("Time", "yh", "xh"))[:] = 0.0
+
+
+def test_mom6_reader_puts_the_initial_state_first_and_keeps_surface_first(tmp_path):
+    from validation.ilicak_benchmark import cases, mom6
+    c = cases.get("lock")
+    _fake_mom6_output(tmp_path, c)
+    s = mom6.read(tmp_path, "lock")
+    assert s["t"].tolist() == [0.0, 900.0, 1800.0]
+    assert s["T"].shape == (3, 20, 1, 128) and s["T"][0, 0, 0, 0] == 0.0 and s["T"][0, -1, 0, 0] == 19.0
+    np.testing.assert_allclose(s["h"][1].sum(0), 20.0)
