@@ -633,3 +633,19 @@ def test_blend_thin_layers_is_a_no_op_for_thick_columns():
     hf = np.full((3, 2, 3), 2.0)
     u = np.random.default_rng(1).normal(size=(3, 2, 3))
     assert np.array_equal(ale.blend_thin_layers(u, hf, hf / hf.sum(0), 0.5), u)
+
+
+def test_limit_outflow_solves_a_column_whose_same_way_layer_is_already_draining():
+    # final review 2026-10-14: the cut of a 1 mm layer had nowhere to go at its face (the 10 m layer's room was taken
+    # by its outflow through both faces, no counter-flow there) and the limiter stopped with "barotropic CFL",
+    # although the column holds 10 m and loses 5
+    h = np.array([[[1e-3, 1e-3, 1e-3]], [[10.0, 10.0, 10.0]], [[10.0, 1e-3, 10.0]]])
+    Qx = np.zeros((3, 1, 4)); Qy = np.zeros((3, 2, 3))
+    Qx[0, 0, 2] = 3e-3                                       # 1 mm layer leaves east with 3 mm in Δt
+    Qx[1, 0, 1], Qx[1, 0, 2] = -4.9995, 4.9995               # 10 m layer leaves through both faces
+    Qx[2, 0, 1] = 5.0                                        # the west cell's layer 2 flows in
+    area, act = np.ones((1, 3)), np.ones((1, 3), bool)
+    Qx2, Qy2, n = ale.limit_outflow(h, Qx, Qy, area, 1.0, act)
+    np.testing.assert_allclose(Qx2.sum(0), Qx.sum(0), rtol=0, atol=1e-12)
+    h_dag = h - (Qx2[..., 1:] - Qx2[..., :-1] + Qy2[:, 1:] - Qy2[:, :-1])
+    assert h_dag.min() >= -1e-12 and n > 0

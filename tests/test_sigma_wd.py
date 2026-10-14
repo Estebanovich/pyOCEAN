@@ -223,3 +223,32 @@ def test_viscous_coupling_keeps_the_bed_drag_thickness():
     c = m.column_step(u, None, np.full((1, 4), 18.0), dz=dz_mean, dz_drag=dz_mean[0])
     d = m.column_step(u, None, np.full((1, 4), 18.0), dz=dz_mean)
     np.testing.assert_array_equal(c, d)                            # same as before when dz_drag = dz[0]
+
+
+def _coupled_columns(z0):
+    from core.dynamics.sigma_wd import SigmaWetDry
+    from core.grid.horizontal import create_cartesian_grid
+    hg = create_cartesian_grid(nx=3, ny=1, dx=1000.0, dy=1000.0, f0=0.0)
+    m = SigmaWetDry(hg, np.full((1, 3), 50.0), dt=60.0, n_layers=3, z0=z0, closure="constant", nu_const=1e-3)
+    dz_mean = np.full((3, 1, 4), 50.0 / 3); dz_mean[-1] = 25.0; dz_mean[0] = 50.0 / 3 - 25.0 + 50.0 / 3
+    dz_visc = dz_mean.copy(); dz_visc[-1] = 2e-3                   # top layer: 1 mm on one side, 50 m on the other
+    w = dz_mean / dz_mean.sum(0)
+    D = np.full((1, 4), dz_mean.sum(0)[0, 0])
+    return m, dz_mean, dz_visc, w, D
+
+
+@pytest.mark.parametrize("z0, tau", [(None, 1e-4), (None, 0.0), (1e-3, 1e-4)])
+def test_coupled_viscous_step_keeps_the_depth_mean_physics(z0, tau):
+    # with the thin-layer coupling thickness the implicit solve conserves Σ dz_visc u, not the depth mean Σ w u of
+    # the free surface: internal friction must not change ū, and the wind must change it by Δt τ/D (minus the bed
+    # stress), not by Δt τ/dz_visc_top (final review 2026-10-14: 0.25 m/s instead of 2e-5 per step)
+    from physics.bottom_friction import first_layer_cd
+    m, dz_mean, dz_visc, w, D = _coupled_columns(z0)
+    u = np.zeros((3, 1, 4)); u[-1] = 0.5; u[0] = 0.1                # sheared column
+    taus = np.full((1, 4), tau)
+    out = m.column_step(u, None, D, tau=taus, dz=dz_visc, dz_drag=dz_mean[0], w=w)
+    r = 0.0 if z0 is None else first_layer_cd(dz_mean[0, 0, 0], z0, cd_max=m.cd_max) * abs(u[0, 0, 0])
+    expect = (w * u).sum(0) + m.dt * (tau - r * out[0]) / D
+    np.testing.assert_allclose((w * out).sum(0), expect, rtol=1e-12, atol=1e-15)
+    if tau == 0.0:                                                  # the thin layer is still tied to its neighbour
+        assert abs(out[-1, 0, 0] - out[1, 0, 0]) < abs(u[-1, 0, 0] - u[1, 0, 0])

@@ -52,6 +52,8 @@ near-bottom layers).
 
 from __future__ import annotations
 
+import warnings
+
 import numba
 import numpy as np
 
@@ -327,7 +329,7 @@ def _outflow_exceeds(h: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, area: np.nda
 
 
 def limit_outflow(h: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, area: np.ndarray, dt: float, active: np.ndarray,
-                  h_floor: float = H_PPM_MIN, max_pass: int = 10) -> tuple[np.ndarray, np.ndarray, int]:
+                  h_floor: float = H_PPM_MIN, max_pass: int = 50) -> tuple[np.ndarray, np.ndarray, int]:
     """
     Outflow limiter of the Lagrangian step (spec 2026-10-14-hybrid-robustness §2): no layer of a cell may lose
     more than it holds in Δt,
@@ -338,7 +340,10 @@ def limit_outflow(h: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, area: np.ndarra
     r = (h_k − h_floor)⁺ A / (Δt O_k); the flux cut at each face goes back to the other layers of that face so
     Σ_k Q_k (the free-surface flux) is unchanged: first to layers flowing the same way, in proportion to the room
     left in their donor cell, then by reducing layers flowing the other way (in proportion to |Q|, never past 0),
-    which only lowers the outflow of the neighbour.  Repeated until no cell exceeds (≤ max_pass).
+    which only lowers the outflow of the neighbour; if neither suffices, on the donor's layers by content (the
+    next pass cuts their other faces).  Repeated until no cell exceeds (≤ max_pass).  If some layer still exceeds
+    after max_pass but its inflow covers the rest (h† ≥ 0, the Lagrangian condition), the fluxes are accepted with
+    a warning: only the FCT's donor-cell bound is weakened there.  A negative h† raises (barotropic CFL).
 
     Why: the PPM swept-volume flux of a cell never exceeds its content for Courant ≤ ½ per face, but the uniform
     barotropic correction and the residual share can add the last few per cent (IW: 99.4 % + 1.2 %; overflow:
@@ -368,23 +373,35 @@ def limit_outflow(h: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, area: np.ndarra
             new = np.where(Q > 0, Q * r_lo, np.where(Q < 0, Q * r_hi, Q))
             delta = (Q - new).sum(axis=0)                              # net cut per face (sign = flow removed)
             Q[...] = new
-            _give_back(Q, delta, room0 - outflow(Qx, Qy), ax)
+            _give_back(Q, delta, room0 - outflow(Qx, Qy), ax, room0)
         O = outflow(Qx, Qy)
         over = active[None] & (O > room0 * (1.0 + 1e-12))
         if not over.any():
             return Qx, Qy, n_lim
+    div = Qx[..., 1:] - Qx[..., :-1] + Qy[:, 1:] - Qy[:, :-1]
+    h_dag = np.where(active[None], h - dt * div / np.where(A > 0, A, 1.0), 0.0)
     k, j, i = (int(a[0]) for a in np.nonzero(over))
-    raise RuntimeError(f"limit_outflow: layer {k} of cell (j={j}, i={i}) still loses more than it holds after "
+    if h_dag.min() >= -h_floor:
+        warnings.warn(f"limit_outflow: layer {k} of cell (j={j}, i={i}) still sends out more than it holds after "
+                      f"{max_pass} passes, but its inflow keeps h ≥ 0 (min {h_dag.min():.3g} m); the FCT bound is "
+                      f"weaker there", RuntimeWarning, stacklevel=2)
+        return Qx, Qy, n_lim
+    k, j, i = (int(a[0]) for a in np.nonzero(h_dag == h_dag.min()))
+    raise RuntimeError(f"limit_outflow: layer {k} of cell (j={j}, i={i}) would reach h = {h_dag.min():.3g} m after "
                        f"{max_pass} passes (Δt = {dt:g} s): the column cannot supply the free-surface flux — "
                        f"barotropic CFL")
 
 
-def _give_back(Q: np.ndarray, delta: np.ndarray, room: np.ndarray, ax: int) -> None:
+def _give_back(Q: np.ndarray, delta: np.ndarray, room: np.ndarray, ax: int, full: np.ndarray) -> None:
     """
     Put the net cut ``delta`` (one value per face, the sign of the removed flow) back on the layers of each face,
     in place: first to layers already flowing that way (donor room shared in proportion), then by reducing layers
-    flowing against it (in proportion to |Q|, never past 0).  Raises if neither can absorb it (barotropic CFL).
-    ``room`` (N, ny, nx): what each donor cell-layer can still give [m³ s⁻¹]; ``ax`` the face axis of Q (2: x, 1: y).
+    flowing against it (in proportion to |Q|, never past 0).  If neither can absorb it — the room of the same-way
+    layers is taken by their outflow through other faces — the rest goes on the donor's layers in proportion to
+    their whole content ``full``, and the next pass of limit_outflow cuts those other faces.  Raises only if the
+    donor column holds no water at all (barotropic CFL).
+    ``room`` (N, ny, nx): what each donor cell-layer can still give [m³ s⁻¹]; ``full``: its whole content
+    (h − h_floor)⁺ A / Δt; ``ax`` the face axis of Q (2: x, 1: y).
     """
     zero = np.zeros_like(np.take(room, [0], axis=ax))
     room_lo = np.maximum(np.concatenate([zero, room], axis=ax), 0.0)   # donor of eastward/northward flow
@@ -401,13 +418,20 @@ def _give_back(Q: np.ndarray, delta: np.ndarray, room: np.ndarray, ax: int) -> N
         return
     opp = (np.sign(Q) == -s) & (s != 0.0)
     cap = np.where(opp, np.abs(Q), 0.0).sum(axis=0)
-    if (rest > cap * (1.0 + 1e-12)).any():
-        idx = tuple(int(a[0]) for a in np.nonzero(rest > cap * (1.0 + 1e-12)))
-        raise RuntimeError(f"limit_outflow: face {idx} cannot carry its free-surface flux with the water of its "
-                           f"donor column (largest layer flux there {np.abs(Q[(slice(None),) + idx]).max():.3g} m³/s) — "
-                           f"barotropic CFL, or the flow has already blown up")
-    frac = np.where(cap > 0, rest / np.where(cap > 0, cap, 1.0), 0.0)[None]
+    frac = np.where(cap > 0, np.minimum(rest, cap) / np.where(cap > 0, cap, 1.0), 0.0)[None]
     Q -= np.where(opp, Q * frac, 0.0)
+    rest = rest - np.minimum(rest, cap)
+    if not (rest > 0).any():
+        return
+    full_lo = np.concatenate([np.zeros_like(np.take(full, [0], axis=ax)), full], axis=ax)
+    full_hi = np.concatenate([full, np.zeros_like(np.take(full, [0], axis=ax))], axis=ax)
+    fm = np.where(s > 0, full_lo, full_hi) * (rest > 0)[None]
+    tot = fm.sum(axis=0)
+    if ((rest > 0) & (tot <= 0)).any():
+        idx = tuple(int(a[0]) for a in np.nonzero((rest > 0) & (tot <= 0)))
+        raise RuntimeError(f"limit_outflow: face {idx} must carry {float(rest[idx]):.3g} m³/s out of a donor column "
+                           f"that holds no water — barotropic CFL, or the flow has already blown up")
+    Q += s * fm * np.where(tot > 0, rest / np.where(tot > 0, tot, 1.0), 0.0)[None]
 
 
 

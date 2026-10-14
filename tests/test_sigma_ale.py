@@ -777,10 +777,15 @@ def _perf_cases():
         "step": lambda: _step_section("zstar", solver="direct", **old),
         "openbox": lambda: _ale_open_box("hybrid", nx=14, ny=12, open_=("west", "east", "south"), f0=1e-4,
                                          sponge_cells=3, solver="direct", ke_scheme="gudonov", **old),
+        # the defaults since 2026-10-14 (θ_bc ½, thin-layer coupling, FCT, outflow limiter): generated from commit
+        # 7a499aa + the depth-mean fix of the final review, the end-to-end guard of the new default path (spec §4)
+        "lock_defaults": lambda: _hybrid_lock(128, 21, 20.0, 20.0, solver="direct"),
+        "openbox_defaults": lambda: _ale_open_box("hybrid", nx=14, ny=12, open_=("west", "east", "south"), f0=1e-4,
+                                                  sponge_cells=3, solver="direct"),
     }
 
 
-@pytest.mark.parametrize("name", ["lock", "channel", "step", "openbox"])
+@pytest.mark.parametrize("name", ["lock", "channel", "step", "openbox", "lock_defaults", "openbox_defaults"])
 def test_ale_results_unchanged_by_the_performance_kernels(name):
     # scalar fingerprints (sum, Σx², max|x|, 7 samples) of the 100-step states computed before any kernel
     # (tests/data/ale_perf_reference.json, generated from the NumPy code of commit c230423)
@@ -1417,3 +1422,21 @@ def test_fct_fused_kernels_match_the_numpy_oracle(open_):
     ref = m._advect_fct_numpy(C, V, V1, Qx, Qy, ok)
     got = m._advect_fct(C, V, V1, Qx, Qy, ok)
     np.testing.assert_allclose(got, ref, rtol=1e-13, atol=0)
+
+
+def test_thin_layer_coupling_keeps_the_wind_driven_depth_mean():
+    # a top layer of 1 mm on the west side of a face, wind 0.1 N/m²: with the coupling thickness the wind entered ū
+    # as Δt τ / h_harmonic (η 6.5e-3 m vs 1.4e-4 after one step; final review 2026-10-14); now both couplings agree
+    import dataclasses
+    nx, out = 32, {}
+    for cpl in ("none", "mom6"):
+        m = _ale_box("zstar", nx=nx, nz=10, depth=20.0, dt=30.0, nu=1e-4, thin_layer_coupling=cpl,
+                     mix_diagnostic=False)
+        st = m.initial_state(np.zeros((1, nx)), np.full((10, 1, nx), 7.0))
+        h = st.h.copy(); h[-2, :, :16] += h[-1, :, :16] - 1e-3; h[-1, :, :16] = 1e-3
+        u = st.u.copy(); u[-1, :, 16] = 0.01                                      # drains the thin side
+        st = dataclasses.replace(st, h=h, u=u)
+        tau = np.zeros((1, nx + 1)); tau[:, 1:-1] = 0.1
+        out[cpl] = m.step(st, tau_x=tau)
+    eta_none, eta_mom6 = np.abs(out["none"].eta).max(), np.abs(out["mom6"].eta).max()
+    assert eta_mom6 < 1.2 * eta_none, (eta_none, eta_mom6)
