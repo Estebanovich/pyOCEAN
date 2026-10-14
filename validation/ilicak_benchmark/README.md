@@ -184,7 +184,7 @@ Un escalón cuenta como estable si T y u son finitas y max\|u\| no pasa del dobl
 Notas:
 - Las otras coordenadas cuestan casi lo mismo que z\* dentro de cada modelo (`compare.py`).
 - La híbrida de pyOCEAN y MOM6 ρ no tienen costo en el overflow, porque sus corridas de resultados con la ν_h intermedia no terminan.
-- **HYCOM** (`hycom/README.md`) es solo costo: 100 capas híbridas con `hybgen`, EOS σ₀ de 7 términos y sin mezcla explícita. Con ν = 100 tampoco termina (`neg. dp` en el talud a las 6–7 h, también con Δt 5 s), así que se mide con ν = 1000. Con 5 procesos cuesta 2.84 s/h.
+- **HYCOM** (`hycom/README.md`) es solo costo: 100 capas híbridas con `hybgen`, EOS σ₀ de 7 términos y sin mezcla explícita. Con 100 × 20 m de `dp0k`, sus capas son casi todas z. Con ν = 100 tampoco termina (`neg. dp` en el talud a las 6–7 h, también con Δt 5 s; causa sin diagnosticar), así que se mide con ν = 1000. El costo por paso no depende de ν. Con Δt 20 s tiene un evento de grosor negativo, así que es un aprobado marginal; sin ninguno, el Δt máximo sería 10 s (11.2 s/h). Con 5 procesos cuesta 2.84 s/h.
 - No se midió el reparto por componente que pedía el spec: los casos 2-D son tan pequeños que domina el trabajo fijo por paso.
 
 ## Lectura y clasificación
@@ -236,7 +236,7 @@ Notas:
     - **Seamount:** pyOCEAN cuesta 7.6 veces lo de MITgcm (0.20 contra 0.027 s/h). Su Δt máximo es 600 s, la mitad que MOM6 σ y MITgcm (1200 s) e igual que CROCO.
     - **Al mismo Δt de resultados,** CROCO es 3–5.5 veces más rápido que pyOCEAN con 1 hilo en 2-D. Con 5 hilos pyOCEAN no gana en estas mallas.
 
-    - **HYCOM, en el overflow:** con 1 proceso es el más caro, 5.75 s/h con Δt 20 s (y ν = 1000), 14 veces pyOCEAN z\*. Con 5 procesos baja a 2.84 s/h. Su híbrida falla con ν = 100 igual que la de pyOCEAN y que MOM6 ρ: el overflow isopicnal con Re_Δ alto es difícil para los tres.
+    - **HYCOM, en el overflow:** con 1 proceso es el más caro, 5.75 s/h con Δt 20 s, 14 veces pyOCEAN z\*. Se midió con ν = 1000, que solo puede favorecerlo. Con 5 procesos baja a 2.84 s/h. Con ν = 100 también falla, pero por una causa sin diagnosticar, en capas casi todas z: no es evidencia sobre las coordenadas isopicnas.
 
     Lo que pierde pyOCEAN es costo fijo por paso: rendimiento, sin física faltante.
 12. **El diagnóstico de RPE de pyOCEAN** (`reference_potential_energy`) interpola el momento linealmente en volumen. Con una hipsometría gruesa se equivoca: con dos puntos en un fondo plano da 1.5 veces el valor exacto. Aquí se evitó refinando la hipsometría a pasos de H/50000. **(a)** en el diagnóstico.

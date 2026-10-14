@@ -3,7 +3,7 @@
 - **Spec:** `docs/superpowers/specs/2026-10-13-ilicak-four-model-benchmark-design.md` §A3
 - **Plan:** `docs/superpowers/plans/2026-10-13-ilicak-benchmark-hycom-addendum.md`
 
-**Resultado (2026-10-14):** HYCOM 2.3 corre el overflow. Su Δt máximo estable es 20 s, con 5.75 s por hora simulada en 1 proceso y 2.84 s en 5. Solo se mide el costo: la EOS, la mezcla y los bordes de HYCOM no son los de la física común, así que sus resultados no entran en las tablas de física.
+**Resultado (2026-10-14):** HYCOM 2.3 corre el overflow con ν = 1000. Su Δt máximo estable es 20 s, con 5.75 s por hora simulada en 1 proceso y 2.84 s en 5. Es un aprobado marginal: si no se acepta ningún grosor negativo, el Δt máximo es 10 s, con 11.2 s/h. Solo se mide el costo: la EOS, la mezcla y los bordes de HYCOM no son los de la física común, así que sus resultados no entran en las tablas de física.
 
 ```bash
 bash validation/ilicak_benchmark/hycom/gate.sh                       # build (~35 s)
@@ -28,10 +28,11 @@ Cambios hechos solo en la copia:
 
 Lo escriben `inputs.py` y `blkdat.py` a partir de `cases.get("overflow")`:
 - **Dominio:** 202 × 5 celdas con bordes de tierra, que dejan 200 × 3 celdas de océano. Δx = Δy = 1 km, f = 0, con el fondo de Petersen (2015) en cada fila.
-- **Capas:** 100 capas híbridas (`nhybrd = 100`), con `dp0k` = 20 m.
+- **Capas:** 100 capas híbridas (`nhybrd = 100`), con `dp0k` = 20 m. Como 100 × 20 m cubren los 2000 m de profundidad, las capas se quedan casi todas como z fijas: hybgen solo deja una interfaz isopicnal donde el agua la empuja hacia abajo (`hybgen.F90:446-460, 493-510`).
 - **Densidades objetivo:** σ₀ de 7 términos, uniformes entre σ₀(20 °C) y σ₀(10 °C), con S = 35.
 - **Estado inicial:** con `iniflg = 2`, desde 12 meses idénticos de archivos relax. Con `relax = 0`, nada se relaja.
-- **Sin mezcla vertical** (`mlflag = 0`, `vertmx = 0`).
+- **Sin mezcla vertical ni viscosidad vertical** (`mlflag = 0`, `vertmx = 0`). Los demás modelos llevan ν_v = 1e-4 y pagan su solución implícita, así que esto favorece un poco el costo de HYCOM.
+- **Sin difusión de interfaces ni fricción de fondo** (`thkdf2 = thkdf4 = 0`, `cb = 0`).
 - **Viscosidad:** `veldf2 = ν_h/Δx`.
 - **Orden de `blkdat.input`:** comprobado contra todas las lecturas `blkin*` de `blkdat.F90`. Con `nsigma = 0` no hay ninguna línea `ds0k`.
 
@@ -39,17 +40,21 @@ El tiempo es el del segundo bloque de `xctmrp`, que solo cubre el paso de tiempo
 
 ## Estabilidad: ν_h = 100 no termina
 
-Con ν = 100, HYCOM se detiene con grosores de capa negativos en el talud (`neg. dp`, x = 45–56 km):
+Con ν = 100, HYCOM se detiene en `cnuity` con grosores de capa negativos en el talud (`neg. dp`, x ≈ 43–55 km):
 - a las 6.2 h con Δt 10 s;
 - a las 6.8 h con Δt 5 s.
 
-Así que no es un límite del paso de tiempo. Es la misma falla que la híbrida de pyOCEAN (que se detiene porque una capa se vacía en el paso lagrangiano) y que MOM6 ρ (truncación de velocidad) con ν ≤ 100. Con ν = 1000 termina las 12 h. Por eso la escalera de HYCOM usa ν = 1000, y no ν = 100 como los demás modelos.
+Así que no es un límite del paso de tiempo. **La causa no está diagnosticada.** No es el mismo mecanismo que en la híbrida de pyOCEAN (una capa se vacía en el paso lagrangiano) ni en MOM6 ρ (truncación de velocidad): aquí las capas son casi todas z, y faltan la difusión de interfaces y la fricción de fondo, en las que HYCOM suele apoyarse.
+
+Con ν = 1000 termina las 12 h. Por eso la escalera de HYCOM usa ν = 1000, y no ν = 100 como los demás modelos. El costo por paso no depende de ν (31–32 ms por paso con Δt 10 y 20 s). El límite viscoso Δx²/8ν = 125 s no actúa entre 20 y 40 s. Una ν mayor solo puede ampliar el Δt máximo de HYCOM, así que la comparación le es favorable.
+
+**Criterio de estabilidad.** Que termine con "normal stop" y que el rango de SSH no pase del doble del de Δt 10 s. Los demás modelos usan max\|u\| ≤ 2× la corrida de resultados, pero HYCOM no escribe velocidades sin archivos de salida.
 
 | Δt baroclínico / barotrópico [s] | 1 proceso: s por hora simulada | Resultado |
 |---|---|---|
-| 10 / 1 | 11.2 | estable (SSH −0.89 a 0.18 m) |
-| **20 / 2** | **5.75** | **estable** (SSH −0.52 a 0.16 m) |
-| 40 / 2 | — | `neg. dp` a las 10 h (paso ~900) |
+| 10 / 1 | 11.2 | estable, sin `neg. dp` (SSH −0.89 a 0.18 m) |
+| **20 / 2** | **5.75** | **estable, marginal:** un `neg. dp` de −8 cm a las 10.2 h, que HYCOM corrige (SSH −0.52 a 0.16 m) |
+| 40 / 2 | — | 143 `neg. dp` desde las 10 h; se detiene (paso ~900) |
 | 80 / 2, 160 / 2 | — | falla |
 
 **Con Δt 20 s en 5 procesos:** 2.84 s/h, 2.0 veces más rápido que con 1 proceso, y la misma SSH.
@@ -65,4 +70,4 @@ Así que no es un límite del paso de tiempo. Es la misma falla que la híbrida 
 | barotp | 0.6 | 0.6 |
 | total | 69.1 | 34.1 |
 
-El momento se lleva más de la mitad del tiempo en 1 proceso.
+El momento se lleva más de la mitad del tiempo en 1 proceso. Con 5 procesos, `xctmrp` imprime los tiempos de un solo proceso, el último (mod_xc_mp.h:5326-5346), no los del más lento.

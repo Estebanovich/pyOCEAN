@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # HYCOM 2.3 feasibility gate (spec §A3): build from a copied config without -mavx (arm64), run a resting basin for
 # 10 steps on 5 MPI ranks. Time box: ~1 h of work; on failure stop and report (no further HYCOM work).
-# HYCOM sources are not modified; the build lives in RUNS/hycom/build.
+# HYCOM-src is not modified; the build copy in RUNS/hycom/build gets the config flags and the guard below.
 set -euo pipefail
 SRC=~/pyOCEAN/HYCOM-src
 B=/Volumes/ESTEBAN_MIT/pyOCEAN_runs/ilicak_benchmark/hycom/build
