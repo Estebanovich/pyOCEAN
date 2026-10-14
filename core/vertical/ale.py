@@ -96,7 +96,9 @@ def blend_thin_layers(vel: np.ndarray, hf: np.ndarray, w: np.ndarray, cutoff: fl
     partly, and a vanished one wholly, with the (already blended) layer above — the h → 0 limit of the interfacial
     friction (Higdon 2005 §3.1, 2020 §6.2: u_thin → its neighbours).  The top layer, which in HYCOM is never thin,
     is blended with the layer below.  A uniform correction then restores Σ_k w_k u_k (the depth mean of the free
-    surface).  vel, hf (face thickness [m]), w (face fractions): (N, ...) with k = 0 at the bed; cutoff c [m].
+    surface).  vel, hf (face thickness [m]: the ALE step passes the upwind/donor thickness, so a nose advancing
+    from a thick cell is not blended — Hallberg & Rhines 1996), w (face fractions): (N, ...) with k = 0 at the
+    bed; cutoff c [m].
     """
     if cutoff <= 0.0 or not (hf < cutoff).any():
         return vel

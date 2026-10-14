@@ -890,26 +890,31 @@ class SigmaBaroclinic:
           u′ₑₓₜ with Δt/τ_in when flowing in, Δt/τ_out when out, as CROCO u3dbc.F:111-155; sponge toward the
           exterior) | 'clamped' (u′ = u′ₑₓₜ, Dirichlet, as MITgcm OBCS prescribe / CROCO M3_FRC_BRY)}
     obc_tau_in, obc_tau_out : nudging time scales [s] of 'radiating' (CROCO typical 1 and 10 days)
-    theta_bc : time weight of the baroclinic part u′ of the layer transport (None = automatic: ½, time-centred, as
-        the AB3 momentum tendency is centred at n + ½; ``theta`` for the hybrid regrid); the depth mean keeps the
-        free-surface ``theta`` so the layer fluxes add up to the free-surface flux.  Before 2026-10-13 u′ took
-        ``theta`` too, which damps internal waves at ~(θ − ½) ω² Δt (Ilicak internal wave: 0.45 of the oscillation
-        left after 200 days at ν = 0.01 against 0.65–0.72 in MOM6, CROCO and MITgcm; 0.74 with theta_bc = ½;
-        validation/ilicak_benchmark/README.md).  The hybrid keeps ``theta``: the off-centring also damps the noise
-        of its near-vanished layers, and with ½ a layer empties in the Lagrangian step (Ilicak IW ν = 0.01 at day
-        103 even with Δt 150 s; overflow ν = 1000) until the outflow limiter of the hybrid plan exists
+    theta_bc : time weight of the baroclinic part u′ of the layer transport (None = ½ in every coordinate:
+        time-centred, as the AB3 momentum tendency is centred at n + ½); the depth mean keeps the free-surface
+        ``theta`` so the layer fluxes add up to the free-surface flux.  Before 2026-10-13 u′ took ``theta`` too,
+        which damps internal waves at ~(θ − ½) ω² Δt (Ilicak internal wave: 0.45 of the oscillation left after
+        200 days at ν = 0.01 against 0.65–0.72 in MOM6, CROCO and MITgcm; 0.74 with theta_bc = ½;
+        validation/ilicak_benchmark/README.md).  The hybrid kept ``theta`` until 2026-10-14: with ½ its
+        near-vanished layers blew up (Ilicak IW ν = 0.01 at day ~113); the outflow limiter, the thin-layer
+        coupling and blending below remove that (spec 2026-10-14-hybrid-robustness)
     thin_layer_coupling : ALE: thickness of the layers at the faces for the implicit vertical viscosity —
         'none' (the mean (q_E + q_W)/2) or 'mom6' (MOM6's upwind-biased thickness through the whole column:
         harmonic where the water leaves the thinner side, arithmetic where thick water advances over thin;
         core.vertical.ale.viscous_face_thickness): a layer draining from where it has vanished is tied to its
         neighbours instead of accelerating alone (spec 2026-10-14-hybrid-robustness §3); the bed drag keeps the
-        mean thickness
+        mean thickness.  None = 'mom6' in ALE, 'none' otherwise
     thin_layer_cutoff : ALE: layers thinner than this at a face [m] move partly (vanished: wholly) with the layer
-        above, HYCOM's blending (mod_momtum.F90:3055-3065, cutoff 0.5 m; core.vertical.ale.blend_thin_layers);
-        0 = off
+        above, HYCOM's blending (mod_momtum.F90:3055-3065, cutoff 0.5 m; core.vertical.ale.blend_thin_layers)
+        on the upwind (donor) thickness instead of HYCOM's mean, so an advancing nose is not held back;
+        0 = off.  None = 0: blending the vanished layer ahead of a gravity-current nose gives it the counter-flowing
+        velocity of the layer above, which then keeps the nose from entering (hybrid lock exchange front 1.05 →
+        0.70 U for any cutoff ≥ 0.01 m, 2026-10-14); in z*/σ thin layers mean shallow water, where blending would
+        erase the vertical shear
     tracer_limiter : 'fct': Zalesak (1979) flux-corrected transport around the SSP-RK3 WENO5 advection of the ALE
-        step — tracers stay inside the local extremes of the old and the donor-cell values (spec 2026-10-14 §4);
-        'none' (default for now)
+        step — tracers stay inside the local extremes of the old and the donor-cell values (spec 2026-10-14 §4;
+        Ilicak overflow z* ν = 1000: new T extrema 4.74 °C → 1e-8); 'none'.  None = 'fct' in ALE with SSP-RK3
+        WENO5, 'none' otherwise
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, n_layers: int = 10,
@@ -926,8 +931,8 @@ class SigmaBaroclinic:
                  ke_scheme: str = "arakawa", max_truncations: int = 1000, thickness_flux: str = "ppm",
                  mix_diagnostic: bool = True, open_boundary_state=None, open_boundary_mode: dict | None = None,
                  obc_tau_in: float = 86400.0, obc_tau_out: float = 864000.0, theta_bc: float | None = None,
-                 thin_layer_coupling: str = "none", thin_layer_cutoff: float = 0.0,
-                 tracer_limiter: str = "none") -> None:
+                 thin_layer_coupling: str | None = None, thin_layer_cutoff: float | None = None,
+                 tracer_limiter: str | None = None) -> None:
         if pgf not in ("twoterm", "jacobian", "fv"):
             raise ValueError(f"unknown pressure-gradient scheme {pgf!r}")
         self.pgf, self.rho_ref = pgf, rho_ref
@@ -954,8 +959,12 @@ class SigmaBaroclinic:
         if open_boundary_state is None and "clamped" in self.obc_mode.values():
             raise ValueError("a 'clamped' open_boundary_mode needs open_boundary_state (the exterior to impose)")
         self.obc_tau_in, self.obc_tau_out = float(obc_tau_in), float(obc_tau_out)
-        if theta_bc is None:    # automatic: the hybrid keeps θ until the Lagrangian-step outflow limiter (docstring)
-            theta_bc = theta if vertical_coordinate == "ale" and regrid == "hybrid" else 0.5
+        if theta_bc is None:    # automatic: time-centred u′ in every coordinate (spec 2026-10-14 §5)
+            theta_bc = 0.5
+        if thin_layer_coupling is None:
+            thin_layer_coupling = "mom6" if vertical_coordinate == "ale" else "none"
+        if thin_layer_cutoff is None:    # HYCOM blending off: it locks advancing fronts (docstring)
+            thin_layer_cutoff = 0.0
         self.theta_bc = float(theta_bc)
         if thin_layer_coupling not in ("none", "mom6"):
             raise ValueError(f"unknown thin_layer_coupling {thin_layer_coupling!r}; use 'none' or 'mom6'")
@@ -1015,6 +1024,9 @@ class SigmaBaroclinic:
         self.area = self.fs.area
         self._setup_ale(vertical_coordinate, regrid, regrid_params, remap_scheme, z0, closure, h_thin_bed,
                         init_iterations, act, momentum, ke_scheme, max_truncations, thickness_flux)
+        if tracer_limiter is None:
+            tracer_limiter = ("fct" if self.ale and self.tracer_time == "ssprk3"
+                              and self.tracer_scheme in ("weno5", "weno5js") else "none")
         if tracer_limiter not in ("none", "fct"):
             raise ValueError(f"unknown tracer_limiter {tracer_limiter!r}; use 'none' or 'fct'")
         if tracer_limiter == "fct" and not (self.ale and self.tracer_time == "ssprk3"
@@ -1872,8 +1884,12 @@ class SigmaBaroclinic:
         u_new = zero_thin_bed_velocity(u_new, hu, wu, self.h_thin_bed)
         v_new = zero_thin_bed_velocity(v_new, hv, wv, self.h_thin_bed)
         if self.thin_layer_cutoff > 0.0:                                # HYCOM blending of thin layers (spec §3, 1B)
-            u_new = blend_thin_layers(u_new, hu, wu, self.thin_layer_cutoff)
-            v_new = blend_thin_layers(v_new, hv, wv, self.thin_layer_cutoff)
+            # on the upwind (donor) thickness, not the mean (Hallberg & Rhines 1996): a nose advancing from a thick
+            # cell keeps its speed, a layer draining from where it has vanished moves with the layer above
+            u_up = np.where(u_new >= 0, qe, qw)
+            v_up = np.where(v_new.swapaxes(1, 2) >= 0, qn, qs).swapaxes(1, 2)
+            u_new = blend_thin_layers(u_new, u_up, wu, self.thin_layer_cutoff)
+            v_new = blend_thin_layers(v_new, v_up, wv, self.thin_layer_cutoff)
         # transport velocities and free-surface volume fluxes (core.vertical.ale.transport_velocity)
         tb = self.theta_bc
         utx, Qbx = transport_velocity(u_new, st.u, self.fs.last_wet_u, wu, self.fs.Lu, self.fs.last_Du, th, tb)

@@ -768,7 +768,8 @@ def _perf_cases():
     # fingerprints of tests/data/ale_perf_reference.json were generated with the Godunov KE (then the default) and
     # with the baroclinic transport weighted by the free-surface θ = 0.6 (theta_bc = θ, the scheme before 2026-10-13):
     # pinning theta_bc = 0.6 keeps them a bit-level guard of the kernels and shows the IW fix is isolated in theta_bc
-    old = dict(theta_bc=0.6)
+    # …and before the robustness defaults (spec 2026-10-14): thin-layer coupling, blending and FCT off
+    old = dict(theta_bc=0.6, thin_layer_coupling="none", thin_layer_cutoff=0.0, tracer_limiter="none")
     return {
         "lock": lambda: _hybrid_lock(128, 21, 20.0, 20.0, solver="direct", **old),
         "channel": lambda: _ale_channel("hybrid", 60, 30e3, open_boundaries=("west", "east"), sponge_cells=10,
@@ -1188,18 +1189,25 @@ def test_new_kernel_wrappers_reject_mismatched_shapes():
         ale.transport_velocity(a, a, np.ones((4, 6), bool), a, np.ones((4, 5)), np.ones((4, 5)), 0.5)
 
 
-def test_baroclinic_theta_defaults_to_centred_except_hybrid():
-    # θ_bc = ½ leaves the hybrid's thin-layer noise undamped until a layer empties in the Lagrangian step (Ilicak IW
-    # ν = 0.01 day 103 even at Δt 150 s; overflow ν = 1000), so the hybrid keeps θ_bc = θ (the scheme before
-    # 2026-10-13) until the Lagrangian-step outflow limiter of the hybrid plan; an explicit value always wins
+def test_baroclinic_theta_defaults_to_centred():
+    # θ_bc = ½ in every coordinate since the outflow limiter and the thin-layer coupling (spec 2026-10-14 §5);
+    # an explicit value always wins
     hyb = dict(dz_top=np.full(10, 0.01), rho_target=np.linspace(1000.0, 1001.0, 11))
     assert _ale_box("zstar").theta_bc == 0.5
     assert _ale_box("sigma").theta_bc == 0.5
-    assert _ale_box("hybrid", params=hyb).theta_bc == 0.6
-    assert _ale_box("hybrid", params=hyb, theta=0.7).theta_bc == 0.7
-    assert _ale_box("hybrid", params=hyb, theta_bc=0.5).theta_bc == 0.5
+    assert _ale_box("hybrid", params=hyb).theta_bc == 0.5
+    assert _ale_box("hybrid", params=hyb, theta_bc=0.6).theta_bc == 0.6
+
+
+def test_robustness_defaults():
+    hyb = dict(dz_top=np.full(10, 0.01), rho_target=np.linspace(1000.0, 1001.0, 11))
     hg = create_cartesian_grid(nx=8, ny=1, dx=1000.0, dy=1000.0, f0=0.0)
-    assert SigmaBaroclinic(hg, np.full((1, 8), 20.0), dt=30.0, z0=None, closure="constant").theta_bc == 0.5
+    m = _ale_box("zstar")
+    assert m.thin_layer_coupling == "mom6" and m.tracer_limiter == "fct" and m.thin_layer_cutoff == 0.0
+    assert _ale_box("hybrid", params=hyb).thin_layer_cutoff == 0.0          # HYCOM blending off: it locks fronts
+    e = SigmaBaroclinic(hg, np.full((1, 8), 20.0), dt=30.0, z0=None, closure="constant")      # σ Eulerian
+    assert e.thin_layer_coupling == "none" and e.tracer_limiter == "none" and e.thin_layer_cutoff == 0.0
+    assert _ale_box("zstar", tracer_time="pc").tracer_limiter == "none"
 
 
 def test_internal_wave_is_not_damped_by_the_free_surface_theta():
@@ -1210,7 +1218,7 @@ def test_internal_wave_is_not_damped_by_the_free_surface_theta():
     c = cases.get("iw")
     hg = create_cartesian_grid(nx=c.nx, ny=1, dx=float(c.dx[0]), dy=float(c.dy[0]), f0=0.0)
     ke = {}
-    for name, kw in (("default", {}), ("old", dict(theta_bc=0.6))):
+    for name, kw in (("default", {}), ("old", dict(theta_bc=0.6, thin_layer_coupling="none", thin_layer_cutoff=0.0, tracer_limiter="none"))):
         m = SigmaBaroclinic(hg, c.H.copy(), dt=600.0, n_layers=c.nz, rho0=cases.RHO0, t_coef=cases.ALPHA, z0=None,
                             closure="constant", nu_const=1e-4, ah=0.01, pgf="fv", vertical_coordinate="ale",
                             regrid="zstar", regrid_params=dict(dz_top=c.dz.copy()), mix_diagnostic=False, **kw)
