@@ -206,3 +206,20 @@ def test_layer_transports_with_face_fractions_add_up_to_the_free_surface_flux():
     Qy = (fs.Lv * fs.last_Dv)[None] * wv * (th * v1 + (1 - th) * vn)
     div = (Qx[..., 1:] - Qx[..., :-1] + Qy[:, 1:] - Qy[:, :-1]).sum(0)
     np.testing.assert_allclose(fs.area * (e1 - eta), -m.dt * div, atol=1e-9 * fs.area.max() * 0.3)
+
+
+def test_viscous_coupling_keeps_the_bed_drag_thickness():
+    # the log-law bed drag C_d(dz_0) must use dz_drag when given, not the (thin) viscous thickness
+    from core.dynamics.sigma_wd import SigmaWetDry
+    from core.grid.horizontal import create_cartesian_grid
+    hg = create_cartesian_grid(nx=3, ny=1, dx=1000.0, dy=1000.0, f0=0.0)
+    m = SigmaWetDry(hg, np.full((1, 3), 20.0), dt=10.0, n_layers=3, z0=1e-3, closure="constant", nu_const=1e-4)
+    u = np.ones((3, 1, 4))
+    dz_visc = np.full((3, 1, 4), 6.0); dz_visc[0] = 1e-3          # thin viscous bed thickness
+    dz_mean = np.full((3, 1, 4), 6.0)
+    a = m.column_step(u, None, np.full((1, 4), 18.0), dz=dz_visc, dz_drag=dz_mean[0])
+    b = m.column_step(u, None, np.full((1, 4), 18.0), dz=dz_visc)
+    assert not np.allclose(a, b)                                   # dz_drag is used
+    c = m.column_step(u, None, np.full((1, 4), 18.0), dz=dz_mean, dz_drag=dz_mean[0])
+    d = m.column_step(u, None, np.full((1, 4), 18.0), dz=dz_mean)
+    np.testing.assert_array_equal(c, d)                            # same as before when dz_drag = dz[0]

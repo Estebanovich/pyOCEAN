@@ -583,3 +583,10 @@ def test_outflow_check_kernel_matches_numpy():
         ref = bool((act[None] & (ale._outflow_numpy(Qx, Qy) > np.maximum(h - 2e-10, 0) * np.where(act, area, 0)[None]
                                                      / dt)).any())
         assert ale._outflow_exceeds(h, Qx, Qy, area, dt, act, 2e-10) == ref
+
+
+def test_viscous_face_thickness_vanishes_with_either_side():
+    qa = np.array([50.0, 1e-3, 0.0, 10.0])
+    qb = np.array([50.0, 50.0, 50.0, 10.0])
+    hv = ale.viscous_face_thickness(qa, qb)
+    np.testing.assert_allclose(hv, [50.0, 2 * 1e-3 * 50 / 50.001, 0.0, 10.0], rtol=1e-9, atol=1e-12)

@@ -76,6 +76,7 @@ def _config(model: SigmaBaroclinic) -> dict:
         cfg.update(vertical_coordinate="ale", regrid=model.regrid_rule, remap=int(model.remap_code),
                    thickness_flux=model.thickness_flux, momentum=model.momentum, ke_scheme=model.ke_scheme,
                    h_thin_bed=model.h_thin_bed, max_truncations=model.max_truncations,
+                   thin_layer_coupling=model.thin_layer_coupling,
                    mix_diagnostic=int(model.mix_diagnostic), obc_tau_in=model.obc_tau_in, obc_tau_out=model.obc_tau_out,
                    obc_mode=",".join(f"{e}:{m}" for e, m in sorted(model.obc_mode.items())) or "none",
                    obc_state="none" if model.obc_state is None else "function")

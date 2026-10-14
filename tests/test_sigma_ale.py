@@ -1226,3 +1226,26 @@ def test_internal_wave_is_not_damped_by_the_free_surface_theta():
         k_t = np.array(k_t)                                        # every 6 h
         ke[name] = k_t[80:].mean() / k_t[:20].mean()              # days 20–30 / days 0–5
     assert ke["default"] > 0.8 and ke["old"] < 0.75, ke
+
+
+def test_thin_layer_coupling_ties_a_vanished_layer_to_its_neighbours():
+    # one column of the implicit viscosity with the coupling thickness of 'mom6': a layer vanished on one side (1 µm)
+    # between two 10 m layers takes their velocity in one step — its relaxation time h_thin·h_int/ν ≈ 0.1 s ≪ Δt
+    # (a 1 mm layer: ≈ 100 s, tied within a few steps of 10 s); momentum Σ dz u is conserved
+    from core.dynamics.sigma_wd import vertical_implicit
+    from core.vertical import ale
+    hu_mean = np.array([[10.0], [25.0], [10.0]])                    # thin layer looks 25 m thick on the mean
+    q_a = np.array([[10.0], [1e-6], [10.0]]); q_b = np.array([[10.0], [50.0], [10.0]])
+    dz = np.maximum(ale.viscous_face_thickness(q_a, q_b), ale.DZ_FLOOR)
+    u0 = np.array([[1.0], [5.0], [0.0]])
+    nu = np.full((4, 1), 1e-4)
+    u1 = vertical_implicit(u0, dz, nu, np.zeros(1), 10.0)
+    assert abs(u1[1, 0] - 0.5 * (u1[0, 0] + u1[2, 0])) < 0.01 * abs(u0[1, 0] - 0.5)
+    np.testing.assert_allclose((dz * u1).sum(), (dz * u0).sum(), rtol=1e-12)
+    u_old = vertical_implicit(u0, hu_mean, nu, np.zeros(1), 10.0)   # the mean thickness barely couples it
+    assert abs(u_old[1, 0] - u0[1, 0]) < 0.01
+
+
+def test_thin_layer_coupling_option_is_validated():
+    with pytest.raises(ValueError, match="thin_layer_coupling"):
+        _ale_box("zstar", thin_layer_coupling="harmonic")

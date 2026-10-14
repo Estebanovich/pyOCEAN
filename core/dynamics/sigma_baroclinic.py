@@ -94,7 +94,8 @@ from core.vertical import remap as rm
 from core.dynamics import open_boundary as obc
 from core.vertical.ale import (DZ_FLOOR, baroclinic_split, exterior_on_layers, face_fractions, face_thickness,
                                face_transport_thickness, lagrangian_thickness, limit_outflow, open_face_transport,
-                               ppm_transport_x, transport_velocity, upwind_transport_x, zero_thin_bed_velocity)
+                               ppm_transport_x, transport_velocity, upwind_transport_x, viscous_face_thickness,
+                               zero_thin_bed_velocity)
 from core.vertical.pgf import fv_pgf
 
 G = 9.81
@@ -805,6 +806,10 @@ class SigmaBaroclinic:
         validation/ilicak_benchmark/README.md).  The hybrid keeps ``theta``: the off-centring also damps the noise
         of its near-vanished layers, and with ½ a layer empties in the Lagrangian step (Ilicak IW ν = 0.01 at day
         103 even with Δt 150 s; overflow ν = 1000) until the outflow limiter of the hybrid plan exists
+    thin_layer_coupling : ALE: thickness of the layers at the faces for the implicit vertical viscosity —
+        'none' (the mean (q_E + q_W)/2) or 'mom6' (the harmonic mean, MOM6 HARMONIC_VISC = True,
+        core.vertical.ale.viscous_face_thickness): a layer vanished on one side is then tied to its neighbours
+        instead of accelerating alone (spec 2026-10-14-hybrid-robustness §3); the bed drag keeps the mean thickness
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, n_layers: int = 10,
@@ -820,7 +825,8 @@ class SigmaBaroclinic:
                  h_thin_bed: float = 0.01, init_iterations: int = 10, momentum: str | None = None,
                  ke_scheme: str = "arakawa", max_truncations: int = 1000, thickness_flux: str = "ppm",
                  mix_diagnostic: bool = True, open_boundary_state=None, open_boundary_mode: dict | None = None,
-                 obc_tau_in: float = 86400.0, obc_tau_out: float = 864000.0, theta_bc: float | None = None) -> None:
+                 obc_tau_in: float = 86400.0, obc_tau_out: float = 864000.0, theta_bc: float | None = None,
+                 thin_layer_coupling: str = "none") -> None:
         if pgf not in ("twoterm", "jacobian", "fv"):
             raise ValueError(f"unknown pressure-gradient scheme {pgf!r}")
         self.pgf, self.rho_ref = pgf, rho_ref
@@ -850,6 +856,9 @@ class SigmaBaroclinic:
         if theta_bc is None:    # automatic: the hybrid keeps θ until the Lagrangian-step outflow limiter (docstring)
             theta_bc = theta if vertical_coordinate == "ale" and regrid == "hybrid" else 0.5
         self.theta_bc = float(theta_bc)
+        if thin_layer_coupling not in ("none", "mom6"):
+            raise ValueError(f"unknown thin_layer_coupling {thin_layer_coupling!r}; use 'none' or 'mom6'")
+        self.thin_layer_coupling = thin_layer_coupling
         self._ext = None
         self.orlanski_cmax, self.sponge_tracer = orlanski_cmax, sponge_tracer
         self.sponge_cells, self.sponge_tau = int(sponge_cells), tuple(float(t) for t in sponge_tau)
@@ -1672,9 +1681,15 @@ class SigmaBaroclinic:
         hu, hv = 0.5 * (qe + qw), (0.5 * (qn + qs)).swapaxes(1, 2)
         wu, wv = face_fractions(hu), face_fractions(hv)
         self._evaluate_exterior(st.time + dt, hu, hv, wu, wv)
+        if self.thin_layer_coupling == "mom6":                         # viscous tie of vanished layers (spec §3)
+            hu_v = viscous_face_thickness(qe, qw)
+            hv_v = viscous_face_thickness(qn, qs).swapaxes(1, 2)
+            visc = dict(hu=np.maximum(hu_v, DZ_FLOOR), hv=np.maximum(hv_v, DZ_FLOOR),
+                        hu_drag=np.maximum(hu[0], DZ_FLOOR), hv_drag=np.maximum(hv[0], DZ_FLOOR))
+        else:
+            visc = dict(hu=np.maximum(hu, DZ_FLOOR), hv=np.maximum(hv, DZ_FLOOR))
         eta_new, u_new, v_new = self.core.step(st.eta, st.u, st.v, G_u=gu_ab, G_v=gv_ab, tau_u=tu, tau_v=tv,
-                                               wu=wu, wv=wv, hu=np.maximum(hu, DZ_FLOOR), hv=np.maximum(hv, DZ_FLOOR),
-                                               **self._flather_args())
+                                               wu=wu, wv=wv, **visc, **self._flather_args())
         self._open_velocity(st, u_new, v_new, wu, wv)                   # sponge on u′, Orlanski (spec §3.2-3.3)
         u_new = zero_thin_bed_velocity(u_new, hu, wu, self.h_thin_bed)
         v_new = zero_thin_bed_velocity(v_new, hv, wv, self.h_thin_bed)

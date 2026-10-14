@@ -216,3 +216,12 @@ def test_ale_restart_keeps_the_outflow_limiter_count(tmp_path):
     st.n_limited = 7
     write_restart(tmp_path / "rst.nc", m, st)
     assert read_restart(tmp_path / "rst.nc", _ale_model("zstar")).n_limited == 7
+
+
+def test_ale_restart_refuses_another_thin_layer_coupling(tmp_path):
+    m = _ale_model("zstar")
+    write_restart(tmp_path / "rst.nc", m, m.step(_initial(m)))
+    other = _ale_model("zstar")
+    other.thin_layer_coupling = "mom6" if m.thin_layer_coupling == "none" else "none"
+    with pytest.raises(ValueError, match="thin_layer_coupling"):
+        read_restart(tmp_path / "rst.nc", other)

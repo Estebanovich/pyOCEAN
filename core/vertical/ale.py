@@ -68,6 +68,19 @@ def face_thickness(h: np.ndarray, active: np.ndarray) -> tuple[np.ndarray, np.nd
     return hu, hv
 
 
+def viscous_face_thickness(q_a: np.ndarray, q_b: np.ndarray, h_neglect: float = 1e-10) -> np.ndarray:
+    """
+    Layer thickness at a velocity face for the vertical-viscosity coupling only (spec 2026-10-14 §3): the harmonic
+    mean 2 q_a q_b / (q_a + q_b + h_neglect) of the two sides' thicknesses [m] — MOM6 with HARMONIC_VISC = True
+    (MOM_vert_friction.F90:1457, 1486-1493; MOM6's default, False, keeps the arithmetic mean in the interior and
+    blends toward the harmonic only near the bed, :1517-1533).  A layer that has vanished on one side gets a
+    thickness → 0, so ν Δt / h² is large and the implicit viscosity ties its velocity to its neighbours; the mean
+    (q_a + q_b)/2 would give it half the thick side and let it accelerate alone (overflow ν = 100: 2 → 24 m/s on
+    faces with a side < 1 cm, 2026-10-14).
+    """
+    return 2.0 * q_a * q_b / (q_a + q_b + h_neglect)
+
+
 def face_transport_thickness_numpy(h: np.ndarray, H: np.ndarray, active: np.ndarray,
                                    clip: bool) -> tuple[np.ndarray, np.ndarray]:
     """
