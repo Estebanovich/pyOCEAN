@@ -78,3 +78,84 @@ def test_series_round_trip(tmp_path):
     assert meta["wall_s"] == 1.5 and set(s2) == set(series.KEYS)
     with pytest.raises(ValueError, match="shape"):
         series.save(tmp_path / "bad.npz", {**s, "u": np.zeros((nt, nz, ny, nx))}, {})
+
+
+def _flat_series(h_layers, T_layers, dx=1.0, nx=1):
+    """One-record series with layers (surface first) h_layers [m] and T_layers [°C] in every column."""
+    h = np.asarray(h_layers, float)[None, :, None, None] * np.ones((1, 1, 1, nx))
+    T = np.asarray(T_layers, float)[None, :, None, None] * np.ones((1, 1, 1, nx))
+    nz = h.shape[1]
+    return dict(t=np.array([0.0]), x=np.arange(nx) * dx + dx / 2, y=np.array([0.5]), dx=np.full(nx, dx),
+                dy=np.array([1.0]), H=h[0].sum(0), h=h, T=T, u=np.zeros((1, nz, 1, nx + 1)),
+                v=np.zeros((1, nz, 2, nx)), eta=np.zeros((1, 1, nx)))
+
+
+def test_rpe_does_not_depend_on_how_the_column_is_split():
+    from validation.ilicak_benchmark import metrics
+    a = metrics.rpe(_flat_series(np.full(20, 1.0), [30.0] * 10 + [5.0] * 10))          # 20 z-levels
+    b = metrics.rpe(_flat_series([10.0, 10.0], [30.0, 5.0]))                            # two layers
+    c = metrics.rpe(_flat_series([10.0, 0.0, 4.0, 6.0], [30.0, 17.0, 5.0, 5.0]))       # σ-like, one vanished layer
+    np.testing.assert_allclose([b[0], c[0]], a[0], rtol=1e-9)
+    # analytic: g Σ ρ ∫ z dz, light 10 m on dense 10 m, unit area
+    exact = 9.81 * (999.0 * 0.5 * 10.0 ** 2 + 994.0 * 0.5 * (20.0 ** 2 - 10.0 ** 2))
+    np.testing.assert_allclose(a[0], exact, rtol=1e-9)
+
+
+def test_rpe_hypsometry_exact_for_two_column_steps():
+    from validation.ilicak_benchmark import metrics
+    # columns of 10 m and 30 m, unit width: uniform density fills the deep column's bottom 20 m first
+    s = _flat_series([10.0], [10.0], nx=2)
+    s["h"] = np.array([10.0, 30.0])[None, None, None, :]
+    s["T"] = np.full((1, 1, 1, 2), 10.0)
+    s["H"] = np.array([[10.0, 30.0]])
+    z, A = metrics.hypsometry(s["H"], s["dx"], s["dy"])
+    assert z[0] == 0.0 and A[0] == 1.0 and A[-1] == 2.0 and np.diff(z).max() <= 40.0 / 50000 * 1.0001
+    rho = 998.0
+    exact = 9.81 * rho * (0.5 * 20.0 ** 2 + 2 * 0.5 * (30.0 ** 2 - 20.0 ** 2))
+    np.testing.assert_allclose(metrics.rpe(s)[0], exact, rtol=1e-9)
+
+
+def test_drpe_dt_is_per_unit_surface_area():
+    from validation.ilicak_benchmark import metrics
+    s = _flat_series([1.0], [5.0], dx=500.0, nx=4)
+    s["t"] = np.array([0.0, 3600.0, 7200.0])
+    rpe = np.array([0.0, 2000.0, 4000.0])
+    assert np.isclose(metrics.drpe_dt(s, rpe, 0.0, 7200.0), (4000.0 / 7200.0) / (4 * 500.0 * 1.0))
+
+
+def test_lock_fronts_track_a_steady_gravity_current():
+    from validation.ilicak_benchmark import metrics
+    nx, dx, U = 128, 500.0, 0.5
+    t = np.arange(0, 9) * 3600.0
+    nz = 20
+    h = np.ones((t.size, nz, 1, nx))
+    T = np.full((t.size, nz, 1, nx), 30.0)
+    x = np.arange(nx) * dx + dx / 2
+    for n, tt in enumerate(t):
+        T[n, 10:, 0, x < 32e3 + U * tt] = 5.0           # dense bottom half advancing east
+        T[n, 10:, 0, x < 32e3] = 5.0
+        T[n, :10, 0, (x < 32e3) & (x >= 32e3 - U * tt)] = 30.0
+        T[n, :10, 0, x < 32e3 - U * tt] = 5.0           # light top half advancing west
+    s = dict(t=t, x=x, y=np.array([250.0]), dx=np.full(nx, dx), dy=np.array([500.0]), H=np.full((1, nx), 20.0),
+             h=h, T=T, u=np.zeros((t.size, nz, 1, nx + 1)), v=np.zeros((t.size, nz, 2, nx)),
+             eta=np.zeros((t.size, 1, nx)))
+    f = metrics.lock_fronts(s)
+    for k in ("dense_nose", "light_nose", "dense_body", "light_body"):
+        assert abs(f[k] - U) < 0.02, (k, f[k])
+
+
+def test_overflow_descent_and_iw_amplitude_and_t_range():
+    from validation.ilicak_benchmark import metrics
+    s = _flat_series([10.0, 10.0], [20.0, 10.0], nx=3)
+    s["T"][0, :, 0, 0] = [20.0, 20.0]
+    xc, dep = metrics.overflow_descent(s)
+    assert np.allclose(xc, s["x"][1:].mean()) and np.allclose(dep, 15.0)
+    # isotherm 11.25 °C between centres at 5 m and 15 m: record 0 (20, 10 °C) → 13.75 m deep;
+    # record 1 (12.5, 10 °C: colder top at x0) → 10 m deep, i.e. lifted 3.75 m
+    s2 = _flat_series([10.0, 10.0], [20.0, 10.0], dx=125e3, nx=2)
+    s2 = {k: (np.concatenate([v, v]) if k in ("h", "T", "u", "v", "eta") else v) for k, v in s2.items()}
+    s2["t"], s2["x"] = np.array([0.0, 3600.0]), np.array([0.0, 125e3])
+    s2["T"][1, 0, 0, 1] = 12.5
+    np.testing.assert_allclose(metrics.iw_amplitude(s2, T_iso=11.25), [0.0, 3.75], atol=1e-12)
+    lo, hi = metrics.t_range(s)
+    assert (lo, hi) == (10.0, 20.0)
