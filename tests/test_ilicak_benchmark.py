@@ -514,3 +514,40 @@ def test_stable_accepts_a_fast_run_that_matches_its_results_run(tmp_path):
     s["u"][0, 0, 0, 1] = 16.0                                   # MOM6 z* overflow: 14–17 m/s in its own results run
     series.save(tmp_path / "x.npz", s, {})
     assert campaign.stable(tmp_path / "x.npz", ref_umax=16.0)
+
+
+# ---------------------------------------------------------------- HYCOM cost addendum (plan 2026-10-13, Task 1)
+def test_hycom_sig0_matches_the_7_term_fit():
+    from validation.ilicak_benchmark.hycom import inputs
+    assert abs(float(inputs.sig0(10.0, 35.0)) - 26.957) < 2e-3            # stmt_fns.h:317 at (10 °C, 35)
+    assert float(inputs.sig0(10.0, 35.0)) - float(inputs.sig0(20.0, 35.0)) > 1.9
+
+
+def test_hycom_ab_round_trip_and_closed_domain(tmp_path):
+    from forcing.sources import hycom_ab
+    from validation.ilicak_benchmark import cases
+    from validation.ilicak_benchmark.hycom import inputs
+    inputs.write_grid(tmp_path)
+    inputs.write_depth(tmp_path)
+    g = inputs.geometry()
+    d = hycom_ab.read_record(tmp_path / "regional.depth.b", 0, idm=g["idm"], jdm=g["jdm"])   # checks .b min/max
+    assert np.isnan(d[:, 0]).all() and np.isnan(d[:, -1]).all() and np.isnan(d[0]).all() and np.isnan(d[-1]).all()
+    np.testing.assert_allclose(d[2, 1:-1], cases.get("overflow").H[0], rtol=1e-6)        # float32
+    lines = (tmp_path / "regional.grid.b").read_text().splitlines()
+    assert lines[0].split()[0] == "202" and lines[1].split()[0] == "5" and len(lines) == 3 + 18
+    for irec in range(18):                                     # read_record(check=True) compares .b min/max with .a
+        hycom_ab.read_record(tmp_path / "regional.grid.b", irec, idm=g["idm"], jdm=g["jdm"])
+
+
+def test_hycom_relax_files_hold_the_lock_columns(tmp_path):
+    from forcing.sources import hycom_ab
+    from validation.ilicak_benchmark.hycom import inputs
+    inputs.write_relax(tmp_path, kdm=100)
+    g = inputs.geometry()
+    rd = lambda f, i: hycom_ab.read_record(tmp_path / f, i, idm=g["idm"], jdm=g["jdm"])          # noqa: E731
+    T0 = rd("relax.temp.b", 0)
+    assert np.isclose(T0[2, 1], 10.0) and np.isclose(T0[2, 100], 20.0)                 # x < 20 km cold
+    rd("relax.temp.b", 1199)                                                            # 12 months × 100 layers
+    assert np.allclose(np.nan_to_num(rd("relax.intf.b", 0)), 0.0) and np.isclose(rd("relax.intf.b", 1)[2, 1], 20.0 * 9806.0)
+    head = (tmp_path / "relax.temp.b").read_text().splitlines()
+    assert len(head) == 5 + 1200 and "= 01 01" in head[5].replace("  ", " ")
