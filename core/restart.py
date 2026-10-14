@@ -120,6 +120,7 @@ def write_restart(path: str | Path, model: SigmaBaroclinic, state: SigmaState) -
         data["rho_ref_rho"] = xr.Variable(("ref",), model.rho_ref.rho,
                                           {"units": "kg m-3", "long_name": "reference density profile ρ_ref(z)"})
     attrs = {"model": type(model).__name__, "time": float(state.time), "time_units": "s", "n_trunc": int(state.n_trunc),
+             "n_limited": int(state.n_limited),
              "Conventions": "CF-1.8", "title": "pyOCEAN bit-for-bit restart"}
     attrs.update({f"config_{k}": v for k, v in _config(model).items()})
     if pre is not None:
@@ -176,4 +177,5 @@ def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
         if "rho_ref_z" not in ds:
             raise ValueError("restart has no reference density profile but the model uses rho_ref='auto'")
         model.rho_ref = ReferenceProfile(ds["rho_ref_z"].values.copy(), ds["rho_ref_rho"].values.copy())
-    return SigmaState(g_hist=hist, time=float(ds.attrs["time"]), n_trunc=int(ds.attrs.get("n_trunc", 0)), **kw)
+    return SigmaState(g_hist=hist, time=float(ds.attrs["time"]), n_trunc=int(ds.attrs.get("n_trunc", 0)),
+                      n_limited=int(ds.attrs.get("n_limited", 0)), **kw)

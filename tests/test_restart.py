@@ -208,3 +208,11 @@ def test_restart_refuses_a_different_baroclinic_theta(tmp_path):
     write_restart(tmp_path / "rst.nc", m, m.step(_initial(m)))
     with pytest.raises(ValueError, match="theta_bc"):
         read_restart(tmp_path / "rst.nc", _model(theta_bc=0.6))
+
+
+def test_ale_restart_keeps_the_outflow_limiter_count(tmp_path):
+    m = _ale_model("zstar")
+    st = m.step(_initial(m))
+    st.n_limited = 7
+    write_restart(tmp_path / "rst.nc", m, st)
+    assert read_restart(tmp_path / "rst.nc", _ale_model("zstar")).n_limited == 7

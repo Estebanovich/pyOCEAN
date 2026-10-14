@@ -224,6 +224,122 @@ def lagrangian_thickness(h: np.ndarray, divq: np.ndarray, dt: float, area: np.nd
 H_PPM_MIN = 2e-10      # [m] positive-definite floor of the PPM thickness (2 Angstrom, MOM_continuity_PPM.F90:534)
 
 
+def _outflow_numpy(Qx: np.ndarray, Qy: np.ndarray) -> np.ndarray:
+    """Outgoing volume flux of every cell-layer, Σ over its four faces [m³ s⁻¹] (N, ny, nx)."""
+    return (np.maximum(Qx[..., 1:], 0.0) - np.minimum(Qx[..., :-1], 0.0)
+            + np.maximum(Qy[:, 1:, :], 0.0) - np.minimum(Qy[:, :-1, :], 0.0))
+
+
+@numba.njit(parallel=True, cache=True)
+def _exceeds_kernel(h, Qx, Qy, area, dt, active, h_floor):  # pragma: no cover
+    """Per (layer, row): does any active cell lose more than (h − h_floor)⁺ A / Δt? (limit_outflow's test)."""
+    n, ny, nx = h.shape
+    hit = np.zeros(n * ny, np.bool_)
+    for p in numba.prange(n * ny):
+        k, j = p // ny, p % ny
+        for i in range(nx):
+            if not active[j, i]:
+                continue
+            o = (max(Qx[k, j, i + 1], 0.0) - min(Qx[k, j, i], 0.0)
+                 + max(Qy[k, j + 1, i], 0.0) - min(Qy[k, j, i], 0.0))
+            if o > max(h[k, j, i] - h_floor, 0.0) * area[j, i] / dt:
+                hit[p] = True
+                break
+    return hit.any()
+
+
+def _outflow_exceeds(h: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, area: np.ndarray, dt: float,
+                     active: np.ndarray, h_floor: float) -> bool:
+    """Compiled check of limit_outflow's condition (the common case: nothing to limit, ~1 ms on BayIW)."""
+    f = lambda a: np.ascontiguousarray(a, dtype=float)                 # noqa: E731
+    return bool(_exceeds_kernel(f(h), f(Qx), f(Qy), f(area), float(dt), np.ascontiguousarray(active), float(h_floor)))
+
+
+def limit_outflow(h: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, area: np.ndarray, dt: float, active: np.ndarray,
+                  h_floor: float = H_PPM_MIN, max_pass: int = 10) -> tuple[np.ndarray, np.ndarray, int]:
+    """
+    Outflow limiter of the Lagrangian step (spec 2026-10-14-hybrid-robustness §2): no layer of a cell may lose
+    more than it holds in Δt,
+
+        Δt O_k ≤ (h_k − h_floor)⁺ A ,   O_k = Σ_faces outgoing |Q_k|   (x and y together, unsplit),
+
+    so h† = h − Δt ∇·Q_k / A ≥ 0 exactly.  A cell-layer that would exceed it has its outgoing fluxes scaled by
+    r = (h_k − h_floor)⁺ A / (Δt O_k); the flux cut at each face goes back to the other layers of that face so
+    Σ_k Q_k (the free-surface flux) is unchanged: first to layers flowing the same way, in proportion to the room
+    left in their donor cell, then by reducing layers flowing the other way (in proportion to |Q|, never past 0),
+    which only lowers the outflow of the neighbour.  Repeated until no cell exceeds (≤ max_pass).
+
+    Why: the PPM swept-volume flux of a cell never exceeds its content for Courant ≤ ½ per face, but the uniform
+    barotropic correction and the residual share can add the last few per cent (IW: 99.4 % + 1.2 %; overflow:
+    90.6 % + 10 %, 2026-10-14).  MOM6 bounds that correction by the CFL and accepts a barotropic/baroclinic
+    mismatch instead (MOM_continuity_PPM.F90:783-874, 1542-1544); here Σh = H + η stays exact.  HYCOM cnuity.F90
+    has no such limit (FCT only) and stops below −10 m.  Velocities are not changed (as MOM6: only the fluxes).
+
+    h (N, ny, nx) [m]; Qx (N, ny, nx+1), Qy (N, ny+1, nx) [m³ s⁻¹], edge faces included (open boundaries);
+    area (ny, nx) [m²]; active (ny, nx).  Returns (Qx, Qy, n_limited); the inputs themselves when nothing exceeds.
+    """
+    A = np.where(active, area, 0.0)[None]
+    room0 = np.maximum(h - h_floor, 0.0) * A / dt                      # what each cell-layer can give [m³ s⁻¹]
+
+    outflow = _outflow_numpy
+    if not _outflow_exceeds(h, Qx, Qy, area, dt, active, h_floor):    # fast path: one fused parallel pass
+        return Qx, Qy, 0
+    O = outflow(Qx, Qy)
+    over = active[None] & (O > room0)
+    Qx, Qy, n_lim = Qx.copy(), Qy.copy(), 0
+    for _ in range(max_pass):
+        n_lim += int(over.sum())
+        r = np.where(over, room0 / np.where(O > 0, O, 1.0), 1.0)
+        for Q, ax in ((Qx, 2), (Qy, 1)):
+            one = np.ones_like(np.take(r, [0], axis=ax))
+            r_lo = np.concatenate([one, r], axis=ax)                   # cell on the low side of each face
+            r_hi = np.concatenate([r, one], axis=ax)                   # cell on the high side
+            new = np.where(Q > 0, Q * r_lo, np.where(Q < 0, Q * r_hi, Q))
+            delta = (Q - new).sum(axis=0)                              # net cut per face (sign = flow removed)
+            Q[...] = new
+            _give_back(Q, delta, room0 - outflow(Qx, Qy), ax)
+        O = outflow(Qx, Qy)
+        over = active[None] & (O > room0 * (1.0 + 1e-12))
+        if not over.any():
+            return Qx, Qy, n_lim
+    k, j, i = (int(a[0]) for a in np.nonzero(over))
+    raise RuntimeError(f"limit_outflow: layer {k} of cell (j={j}, i={i}) still loses more than it holds after "
+                       f"{max_pass} passes (Δt = {dt:g} s): the column cannot supply the free-surface flux — "
+                       f"barotropic CFL")
+
+
+def _give_back(Q: np.ndarray, delta: np.ndarray, room: np.ndarray, ax: int) -> None:
+    """
+    Put the net cut ``delta`` (one value per face, the sign of the removed flow) back on the layers of each face,
+    in place: first to layers already flowing that way (donor room shared in proportion), then by reducing layers
+    flowing against it (in proportion to |Q|, never past 0).  Raises if neither can absorb it (barotropic CFL).
+    ``room`` (N, ny, nx): what each donor cell-layer can still give [m³ s⁻¹]; ``ax`` the face axis of Q (2: x, 1: y).
+    """
+    zero = np.zeros_like(np.take(room, [0], axis=ax))
+    room_lo = np.maximum(np.concatenate([zero, room], axis=ax), 0.0)   # donor of eastward/northward flow
+    room_hi = np.maximum(np.concatenate([room, zero], axis=ax), 0.0)   # donor of westward/southward flow
+    s = np.sign(delta)[None]
+    same = (np.sign(Q) == s) & (Q != 0.0) & (s != 0.0)
+    rm = np.where(same, np.where(s > 0, room_lo, room_hi), 0.0)
+    tot = rm.sum(axis=0)
+    need = np.abs(delta)
+    give = np.minimum(need, tot)
+    Q += s * rm * np.where(tot > 0, give / np.where(tot > 0, tot, 1.0), 0.0)[None]
+    rest = need - give
+    if not (rest > 0).any():
+        return
+    opp = (np.sign(Q) == -s) & (s != 0.0)
+    cap = np.where(opp, np.abs(Q), 0.0).sum(axis=0)
+    if (rest > cap * (1.0 + 1e-12)).any():
+        idx = tuple(int(a[0]) for a in np.nonzero(rest > cap * (1.0 + 1e-12)))
+        raise RuntimeError(f"limit_outflow: face {idx} cannot carry its free-surface flux with the water of its "
+                           f"donor column (largest layer flux there {np.abs(Q[(slice(None),) + idx]).max():.3g} m³/s) — "
+                           f"barotropic CFL, or the flow has already blown up")
+    frac = np.where(cap > 0, rest / np.where(cap > 0, cap, 1.0), 0.0)[None]
+    Q -= np.where(opp, Q * frac, 0.0)
+
+
+
 def ppm_edges_x(h: np.ndarray, active: np.ndarray, h_min: float = H_PPM_MIN) -> tuple[np.ndarray, np.ndarray]:
     """
     West and east edge values of the layer thickness in each cell [m] (MOM6 PPM_reconstruction_x,

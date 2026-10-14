@@ -499,3 +499,87 @@ def test_open_face_transport_centres_the_baroclinic_part():
     w = h / h.sum(0)
     pn, po = un - (w * un).sum(0), uo - (w * uo).sum(0)
     np.testing.assert_allclose(Q, w * Qbt + L * h * (0.5 * pn + 0.5 * po), rtol=1e-13)
+
+
+# ---------------------------------------------------------------- outflow limiter (spec 2026-10-14-hybrid-robustness §2)
+def _thin_divergent_cell():
+    """One row, 3 cells × 3 layers; layer 1 of the middle cell is 1 mm and loses through both faces more than it
+    holds (Courant 0.45 west + 0.52 east plus a barotropic correction, the IW failure of 2026-10-14)."""
+    dx, dt = 5000.0, 300.0
+    h = np.array([[[50.0, 50.0, 50.0]], [[0.08, 0.001, 49.9]], [[50.0, 50.0, 50.0]]])
+    area = np.full((1, 3), dx * dx)
+    Qx = np.zeros((3, 1, 4))
+    Qx[1, 0, 1] = -0.459 * 0.001 * dx * dx / dt          # west face, flows west out of the middle cell
+    Qx[1, 0, 2] = +0.553 * 0.001 * dx * dx / dt          # east face, flows east out of the middle cell
+    Qx[0, 0, 1:3] = [0.2, 0.3]
+    Qx[2, 0, 1:3] = [-0.4, 0.1]
+    return h, Qx, np.zeros((3, 2, 3)), area, dt, np.ones((1, 3), bool)
+
+
+def test_limit_outflow_keeps_the_thin_layer_non_negative_and_the_face_sums():
+    h, Qx, Qy, area, dt, act = _thin_divergent_cell()
+    Qx2, Qy2, n = ale.limit_outflow(h, Qx, Qy, area, dt, act)
+    div = Qx2[..., 1:] - Qx2[..., :-1] + Qy2[:, 1:] - Qy2[:, :-1]
+    h_new = h - dt * div / area[None]
+    assert n >= 1 and h_new.min() >= 0.0
+    np.testing.assert_allclose(Qx2.sum(0), Qx.sum(0), rtol=1e-12, atol=1e-12)       # Σ_k Q_k per face kept
+    assert np.all(np.sign(Qx2[1]) * np.sign(Qx[1]) >= 0)                              # no direction reversal
+
+
+def test_limit_outflow_is_a_no_op_when_nothing_empties():
+    h, Qx, Qy, area, dt, act = _thin_divergent_cell()
+    h = h.copy()
+    h[1, 0, 1] = 1.0                                                                  # now holds enough
+    Qx2, Qy2, n = ale.limit_outflow(h, Qx, Qy, area, dt, act)
+    assert n == 0 and Qx2 is Qx and Qy2 is Qy
+
+
+def test_limit_outflow_reduces_counter_flowing_layers_when_no_same_way_layer_has_room():
+    # two layers; layer 0 empties eastwards, layer 1 flows westwards: the cut must come off layer 1's inflow
+    dx, dt = 1000.0, 10.0
+    h = np.array([[[1e-3, 10.0]], [[10.0, 10.0]]])
+    area = np.full((1, 2), dx * dx)
+    Qx = np.zeros((2, 1, 3))
+    Qx[0, 0, 1] = 2e-3 * dx * dx / dt            # layer 0: twice its content out of cell 0
+    Qx[1, 0, 1] = -500.0                         # layer 1: westwards into cell 0 (can absorb the ~100 m³/s cut)
+    Qx2, _, n = ale.limit_outflow(h, Qx, np.zeros((2, 2, 2)), area, dt, np.ones((1, 2), bool))
+    assert n == 1
+    np.testing.assert_allclose(Qx2[0, 0, 1], 1e-3 * dx * dx / dt * (1 - 2e-7), rtol=1e-6)   # down to its content
+    np.testing.assert_allclose(Qx2.sum(0), Qx.sum(0), rtol=1e-12)
+    assert -500.0 < Qx2[1, 0, 1] < 0.0
+
+
+def test_limit_outflow_handles_open_edge_fluxes():
+    # outflow through an open west edge face (index 0) counts as outflow of cell 0
+    dx, dt = 1000.0, 10.0
+    h = np.array([[[1e-3, 10.0]], [[10.0, 10.0]]])
+    area = np.full((1, 2), dx * dx)
+    Qx = np.zeros((2, 1, 3))
+    Qx[0, 0, 0] = -3e-3 * dx * dx / dt           # leaves cell 0 through the west edge (300 m³/s, holds 100)
+    Qx[1, 0, 0] = 500.0                          # inflow of layer 1 through the edge absorbs the 200 m³/s cut
+    Qx2, _, n = ale.limit_outflow(h, Qx, np.zeros((2, 2, 2)), area, dt, np.ones((1, 2), bool))
+    h_new = h - dt * (Qx2[..., 1:] - Qx2[..., :-1]) / area[None]
+    assert n >= 1 and h_new.min() >= 0.0
+    np.testing.assert_allclose(Qx2.sum(0), Qx.sum(0), rtol=1e-12)
+
+
+def test_limit_outflow_raises_when_the_column_cannot_supply_the_flux():
+    dx, dt = 1000.0, 10.0
+    h = np.array([[[1e-3, 10.0]], [[1e-3, 10.0]]])
+    area = np.full((1, 2), dx * dx)
+    Qx = np.zeros((2, 1, 3))
+    Qx[:, 0, 1] = 150.0                          # 3000 m³ in 10 s eastwards from a column holding 2000 m³
+    with pytest.raises(RuntimeError, match="barotropic CFL"):
+        ale.limit_outflow(h, Qx, np.zeros((2, 2, 2)), area, dt, np.ones((1, 2), bool))
+
+
+def test_outflow_check_kernel_matches_numpy():
+    rng = np.random.default_rng(5)
+    n, ny, nx = 4, 6, 7
+    h = rng.uniform(0, 2, (n, ny, nx)); h[1, 2, 3] = 1e-4
+    Qx = rng.normal(0, 50, (n, ny, nx + 1)); Qy = rng.normal(0, 50, (n, ny + 1, nx))
+    area = np.full((ny, nx), 1e4); act = rng.uniform(0, 1, (ny, nx)) > 0.1
+    for dt in (1.0, 30.0, 300.0):
+        ref = bool((act[None] & (ale._outflow_numpy(Qx, Qy) > np.maximum(h - 2e-10, 0) * np.where(act, area, 0)[None]
+                                                     / dt)).any())
+        assert ale._outflow_exceeds(h, Qx, Qy, area, dt, act, 2e-10) == ref

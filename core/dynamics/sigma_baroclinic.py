@@ -93,8 +93,8 @@ from core.vertical import regrid as rg
 from core.vertical import remap as rm
 from core.dynamics import open_boundary as obc
 from core.vertical.ale import (DZ_FLOOR, baroclinic_split, exterior_on_layers, face_fractions, face_thickness,
-                               face_transport_thickness, lagrangian_thickness, open_face_transport, ppm_transport_x,
-                               transport_velocity, upwind_transport_x, zero_thin_bed_velocity)
+                               face_transport_thickness, lagrangian_thickness, limit_outflow, open_face_transport,
+                               ppm_transport_x, transport_velocity, upwind_transport_x, zero_thin_bed_velocity)
 from core.vertical.pgf import fv_pgf
 
 G = 9.81
@@ -118,6 +118,7 @@ class SigmaState:
     Fz: np.ndarray | None = None
     time: float = 0.0
     n_trunc: int = 0                                         # CFL velocity truncations so far (ALE, counted faces)
+    n_limited: int = 0                                       # cell-layers scaled by the outflow limiter so far (ALE)
 
 
 def _up3_faces(c: np.ndarray, flux: np.ndarray, ok: np.ndarray, axis: int, order: int = 3) -> np.ndarray:
@@ -1691,6 +1692,8 @@ class SigmaBaroclinic:
             Qy = upwind_transport_x(qn, qs, uty.swapaxes(1, 2), self.fs.Lv.T, Qby.T).swapaxes(1, 2)
         if self.open:                                                   # old velocity unmasked: the wet flag is False at edges
             self._open_face_transports(Qx, Qy, st.h, st.u, st.v, u_new, v_new)
+        # outflow limiter: no layer loses more than it holds; Σ_k Q_k unchanged (core.vertical.ale.limit_outflow)
+        Qx, Qy, n_lim = limit_outflow(st.h, Qx, Qy, self.area, dt, act)
         divh = Qx[..., 1:] - Qx[..., :-1] + Qy[:, 1:, :] - Qy[:, :-1, :]
         h_lag = lagrangian_thickness(st.h, divh, dt, self.area)
         V0, V1 = self.layer_volumes(st.eta, st.h), self.layer_volumes(eta_new, h_lag)
@@ -1737,7 +1740,7 @@ class SigmaBaroclinic:
             raise RuntimeError(f"{n_trunc} CFL velocity truncations exceed max_truncations={self.max_truncations}; "
                                f"first this step: {where}")
         return SigmaState(eta=eta_new, u=u_new, v=v_new, T=T_new, h=h_new, g_hist=hist, omega=None, mix_num=mix,
-                          Qx=Qx, Qy=Qy, Fz=Fz, time=st.time + dt, n_trunc=n_trunc)
+                          Qx=Qx, Qy=Qy, Fz=Fz, time=st.time + dt, n_trunc=n_trunc, n_limited=st.n_limited + n_lim)
 
     # ------------------------------------------------------------------ step
     def step(self, st: SigmaState, tau_x: np.ndarray | None = None, tau_y: np.ndarray | None = None) -> SigmaState:
