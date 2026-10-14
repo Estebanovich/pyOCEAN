@@ -248,3 +248,74 @@ def test_mom6_reader_puts_the_initial_state_first_and_keeps_surface_first(tmp_pa
     assert s["t"].tolist() == [0.0, 900.0, 1800.0]
     assert s["T"].shape == (3, 20, 1, 128) and s["T"][0, 0, 0, 0] == 0.0 and s["T"][0, -1, 0, 0] == 19.0
     np.testing.assert_allclose(s["h"][1].sum(0), 20.0)
+
+
+CROCO_SRC = __import__("pathlib").Path.home() / "pyOCEAN_refs/croco/OCEAN"
+
+
+@pytest.mark.skipif(not CROCO_SRC.exists(), reason="CROCO source not on disk")
+def test_croco_in_and_cppdefs_have_uniform_sigma_and_no_diffusion():
+    from validation.ilicak_benchmark import cases, croco
+    cpp = croco.cppdefs("overflow", (CROCO_SRC / "cppdefs.h").read_text())
+    assert "#define PYO_OVERFLOW" in cpp and "#undef REGIONAL" in cpp and "#define REGIONAL" not in cpp
+    block = cpp[cpp.index("defined PYO_LOCK"):cpp.index("END OF CONFIGURATION CHOICE")]
+    for key in ("NEW_S_COORD", "UV_VIS2", "UV_HADV_UP3", "UV_VADV_SPLINES", "TS_HADV_RSUP3", "TS_VADV_SPLINES",
+                "OUT_DOUBLE", "ANA_SMFLUX", "ANA_STFLUX", "ANA_BTFLUX", "NO_FRCFILE"):
+        assert f"# define {key}" in block, key
+    for key in ("ANA_GRID", "ANA_INITIAL", "SALINITY", "NONLIN_EOS", "TS_DIF2", "UV_VIS_SMAGO", "LMD_MIXING",
+                "GLS_MIXING", "MASKING", "UV_COR"):
+        assert f"# undef  {key}" in block, key
+    par = croco.param("overflow", (CROCO_SRC / "param.h").read_text())
+    assert "parameter (LLm0=200, MMm0=1, N=100)" in par
+    txt = croco.croco_in(cases.get("overflow"), 100.0, 10.0, 40.0)
+    assert "0.d0 0.d0 1.e16" in txt and "1.e-4 0." in txt and "100.0 0." in txt
+    assert "0. 0. 0. 0. 0." in txt and "0. 0.0 0. 0.2 0." in txt
+    lines = txt.splitlines()
+    ts = lines[lines.index("time_stepping: NTIMES dt[sec] NDTFAST NINFO") + 1].split()
+    assert ts[:2] == ["14400", "10.0"]
+    sm = croco.cppdefs("seamount", (CROCO_SRC / "cppdefs.h").read_text())
+    assert "# define UV_COR" in sm[sm.index("defined PYO_SEAMOUNT"):]
+
+
+def test_croco_grid_and_initial_files_hold_the_case(tmp_path):
+    from validation.ilicak_benchmark import cases, croco
+    c = cases.get("overflow")
+    croco.write_run("overflow", 100.0, tmp_path)
+    with netCDF4.Dataset(tmp_path / "croco_grd.nc") as ds:
+        h = ds["h"][:]
+        assert h.shape == (3, 202) and ds["spherical"][:].tobytes().strip() in (b"F", b"f")
+        np.testing.assert_allclose(h[1, 1:-1], c.H[0])
+        np.testing.assert_allclose(ds["pm"][:], 1 / 1e3)
+    with netCDF4.Dataset(tmp_path / "croco_ini.nc") as ds:
+        T = ds["temp"][0]
+        assert T.shape == (100, 3, 202) and ds["scrum_time"].units.startswith("second")
+        assert (T[:, 1, 1] == 10.0).all() and (T[:, 1, -2] == 20.0).all()   # s_rho bottom first; x < 20 km cold
+
+
+def _fake_croco_his(d, c, nt=2):
+    """A history file in CROCO's layout: s_rho bottom first, ghost rho columns/rows, u on LLm+1 faces."""
+    N, L, M = c.nz, c.nx, c.ny
+    with netCDF4.Dataset(d / "croco_his.nc", "w") as ds:
+        for n, sz in (("time", None), ("s_rho", N), ("s_w", N + 1), ("eta_rho", M + 2), ("xi_rho", L + 2),
+                      ("xi_u", L + 1), ("eta_v", M + 1)):
+            ds.createDimension(n, sz)
+        ds.createVariable("scrum_time", "f8", ("time",))[:] = np.arange(nt) * c.out_s
+        ds.createVariable("h", "f8", ("eta_rho", "xi_rho"))[:] = np.pad(c.H, 1, mode="edge")
+        ds.createVariable("s_w", "f8", ("s_w",))[:] = np.linspace(-1, 0, N + 1)
+        ds.createVariable("Cs_w", "f8", ("s_w",))[:] = -np.linspace(-1, 0, N + 1) ** 2
+        ds.createVariable("hc", "f8", ())[:] = 1e16
+        ds.createVariable("zeta", "f8", ("time", "eta_rho", "xi_rho"))[:] = 0.0
+        k = np.arange(N, dtype=float)[:, None, None] * np.ones((N, M + 2, L + 2))   # temp = k, k = 0 at the bed
+        ds.createVariable("temp", "f8", ("time", "s_rho", "eta_rho", "xi_rho"))[:] = np.broadcast_to(k, (nt,) + k.shape)
+        ds.createVariable("u", "f8", ("time", "s_rho", "eta_rho", "xi_u"))[:] = 0.0
+        ds.createVariable("v", "f8", ("time", "s_rho", "eta_v", "xi_rho"))[:] = 0.0
+
+
+def test_croco_reader_flips_to_surface_first_and_drops_ghosts(tmp_path):
+    from validation.ilicak_benchmark import cases, croco
+    c = cases.get("lock")
+    _fake_croco_his(tmp_path, c)
+    s = croco.read(tmp_path, "lock")
+    assert s["t"].tolist() == [0.0, 900.0] and s["T"].shape == (2, 20, 1, 128) and s["u"].shape == (2, 20, 1, 129)
+    assert s["T"][0, 0, 0, 0] == 19.0 and s["T"][0, -1, 0, 0] == 0.0                # surface first
+    np.testing.assert_allclose(s["h"][0], 1.0, rtol=1e-12)                          # uniform σ: 20 m / 20
