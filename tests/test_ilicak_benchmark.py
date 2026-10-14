@@ -466,3 +466,51 @@ def test_overflow_cold_centroid_survives_mixing_above_the_threshold():
     s["T"][0, 1, 0, 0] = 20.0
     xc, dep = metrics.overflow_cold_centroid(s, T_amb=20.0)
     assert np.allclose(xc, s["x"][1:].mean()) and np.allclose(dep, 15.0)
+
+
+def test_iw_oscillation_ratio_ignores_a_steady_offset():
+    from validation.ilicak_benchmark import metrics
+    t = np.arange(0, 200 * 86400.0 + 1, 6 * 3600.0)
+    a = -60.0 * (t > 50 * 86400) + 10.0 * np.exp(-t / 400e5) * np.sin(2 * np.pi * t / (5 * 86400))
+    r = metrics.oscillation_ratio(t, a, window=20 * 86400.0)
+    exact = np.exp(-(t[-1] - 10 * 86400) / 400e5) / np.exp(-10 * 86400 / 400e5)     # e-fold over the 180-day gap
+    assert abs(r - exact) < 0.03
+
+
+def test_t_excess_measures_new_extrema_in_thick_cells():
+    from validation.ilicak_benchmark import metrics
+    s = _flat_series([10.0, 10.0, 0.0005], [20.0, 10.0, 3.0], nx=2)
+    s = {k: (np.concatenate([v, v]) if k in ("h", "T", "u", "v", "eta") else v) for k, v in s.items()}
+    s["t"] = np.array([0.0, 3600.0])
+    s["T"][0, 2] = 10.0                                         # the thin layer starts in range
+    s["T"][1, 1, 0, 0] = 8.0                                    # 2 °C below the initial minimum in a 10-m cell
+    exc, frac = metrics.t_excess(s, h_min=1.0)
+    assert np.isclose(exc, 2.0) and np.isclose(frac, 10.0 / 40.001)    # thin 3 °C layer ignored (h < 1 m)
+
+
+def test_pyocean_run_removes_a_stale_series_before_running(tmp_path, monkeypatch):
+    from validation.ilicak_benchmark import cases, run_pyocean
+    monkeypatch.setattr(cases, "RUNS", tmp_path)
+    stale = cases.run_dir("lock", "pyocean", "nonsense", 10.0) / "series.npz"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("old")
+    with pytest.raises(ValueError):
+        run_pyocean.run("lock", "nonsense", 10.0, hours=0.01, threads=1)
+    assert not stale.exists()
+
+
+def test_stable_rejects_speeds_far_above_the_results_run(tmp_path):
+    from validation.ilicak_benchmark import campaign, series
+    s = _flat_series([1.0], [5.0], nx=2)
+    s["u"][0, 0, 0, 1] = 3.0
+    series.save(tmp_path / "x.npz", s, {})
+    assert campaign.stable(tmp_path / "x.npz", ref_umax=2.0)
+    assert not campaign.stable(tmp_path / "x.npz", ref_umax=1.0)
+
+
+def test_stable_accepts_a_fast_run_that_matches_its_results_run(tmp_path):
+    from validation.ilicak_benchmark import campaign, series
+    s = _flat_series([1.0], [5.0], nx=2)
+    s["u"][0, 0, 0, 1] = 16.0                                   # MOM6 z* overflow: 14–17 m/s in its own results run
+    series.save(tmp_path / "x.npz", s, {})
+    assert campaign.stable(tmp_path / "x.npz", ref_umax=16.0)

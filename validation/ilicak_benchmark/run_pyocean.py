@@ -69,6 +69,8 @@ def run(case_name: str, coord: str, nu: float, dt: float | None = None, hours: f
         threads: int = 5) -> Path:
     """Run and write cases.run_dir(case, 'pyocean', coord, nu, tag)/series.npz; returns its path."""
     set_threads(threads)
+    out = cases.run_dir(case_name, "pyocean", coord, nu, tag) / "series.npz"
+    out.unlink(missing_ok=True)                    # a failed re-run must not leave the old series behind
     c = cases.get(case_name)
     dt = c.dt if dt is None else dt
     hours = c.hours if hours is None else hours
@@ -89,7 +91,7 @@ def run(case_name: str, coord: str, nu: float, dt: float | None = None, hours: f
     s.update(t=np.array(times), x=c.x, y=c.y, dx=c.dx, dy=c.dy, H=c.H)
     meta = dict(model="pyOCEAN", coord=coord, case=case_name, nu=nu, dt=dt, n_steps=n_steps, wall_s=wall,
                 threads=threads, n_trunc=int(st.n_trunc))
-    return series.save(cases.run_dir(case_name, "pyocean", coord, nu, tag) / "series.npz", s, meta)
+    return series.save(out, s, meta)
 
 
 def main() -> None:

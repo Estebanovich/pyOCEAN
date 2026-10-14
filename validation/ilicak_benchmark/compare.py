@@ -1,7 +1,9 @@
 #!/usr/bin/env python
 """
 Tables of the four-model benchmark part A (spec §A4–A5): per case and ν_h, every configuration side by side:
-(RPE − RPE₀)/RPE₀ at the end, dRPE/dt [W m⁻²] over the spec window, the T range, and the physics of the case;
+(RPE − RPE₀)/RPE₀ at the end, dRPE/dt [W m⁻²] over the spec window (lock: the 15–17 h mean), the T range and the
+new extrema in cells ≥ 1 m (t_excess [°C], v_excess = volume fraction), and the physics of the case (IW: damping of
+the oscillation, metrics.oscillation_ratio);
 then the cost table (cost.json). Missing runs show '—'.
 
 Usage: python validation/ilicak_benchmark/compare.py [lock|overflow|iw|seamount]
@@ -31,8 +33,9 @@ def summary(case: str, model: str, coord: str, nu: float) -> dict:
     s, meta = series.load(cases.run_dir(case, model, coord, nu) / "series.npz")
     r = metrics.rpe(s)
     lo, hi = metrics.t_range(s)
+    exc, frac = metrics.t_excess(s)
     out = dict(rpe_rel_end=float((r[-1] - r[0]) / r[0]), drpe_dt=metrics.drpe_dt(s, r, *WINDOW[case]),
-               t_min=lo, t_max=hi, wall_s=meta.get("wall_s"))
+               t_min=lo, t_max=hi, t_excess=exc, v_excess=frac, wall_s=meta.get("wall_s"))
     if case == "lock":
         out.update({k: v / metrics.BENJAMIN for k, v in metrics.lock_fronts(s).items()})
     elif case == "overflow":
@@ -40,9 +43,7 @@ def summary(case: str, model: str, coord: str, nu: float) -> dict:
         xa, da = metrics.overflow_cold_centroid(s)
         out.update(x_c_end=xc[-1] / 1e3, depth_c_end=dep[-1], x_cold_end=xa[-1] / 1e3, depth_cold_end=da[-1])
     elif case == "iw":
-        a, t = metrics.iw_amplitude(s), s["t"]
-        first, last = t <= 20 * 86400.0, t >= t[-1] - 20 * 86400.0
-        out.update(amp_ratio=float(np.sqrt(np.mean(a[last] ** 2)) / np.sqrt(np.mean(a[first] ** 2))))
+        out.update(amp_ratio=metrics.oscillation_ratio(s["t"], metrics.iw_amplitude(s)))
     else:
         out.update(umax_end=float(metrics.max_speed(s)[-1] * 100.0))
     return out
@@ -55,7 +56,7 @@ def _fmt(v) -> str:
 def table(case: str) -> list[str]:
     extra = {"lock": ["dense_nose", "light_nose", "dense_body", "light_body"], "overflow": ["x_c_end", "depth_c_end", "x_cold_end", "depth_cold_end"],
              "iw": ["amp_ratio"], "seamount": ["umax_end"]}[case]
-    cols = ["rpe_rel_end", "drpe_dt", "t_min", "t_max"] + extra
+    cols = ["rpe_rel_end", "drpe_dt", "t_min", "t_max", "t_excess", "v_excess"] + extra
     rows = [f"## {case}", "", "| ν_h | modelo | " + " | ".join(cols) + " |", "|" + "---|" * (len(cols) + 2)]
     for nu in cases.get(case).nu_h:
         for model, coord in campaign.CONFIGS[case]:
@@ -71,7 +72,8 @@ def table(case: str) -> list[str]:
         for key, v in json.loads(cj.read_text()).items():
             m, co = key.split("_", 1)
             v = v or {}
-            rows.append(f"| {NAMES.get((m, co), key)} | {_fmt(v.get('dt_max'))} | {_fmt(v.get('s_per_hour'))} | "
+            dtm = ("≥ " if v.get("at_top") else "") + _fmt(v.get("dt_max"))
+            rows.append(f"| {NAMES.get((m, co), key)} | {dtm} | {_fmt(v.get('s_per_hour'))} | "
                         f"{_fmt(v.get('s_per_hour_results_dt'))} | {_fmt(v.get('threads'))} |")
     return rows
 

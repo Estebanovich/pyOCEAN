@@ -123,6 +123,26 @@ def overflow_cold_centroid(s: dict, T_amb: float = 20.0) -> tuple[np.ndarray, np
     return np.array(xs), np.array(ds)
 
 
+def t_excess(s: dict, h_min: float = 1.0, tol: float = 0.01) -> tuple[float, float]:
+    """New extrema: (largest excursion [°C] of T beyond the initial range in cells ≥ h_min thick, over all records;
+    largest fraction of the water volume in such cells exceeding the range by more than tol [°C]).  Spec §A5: no run
+    should leave the initial range; RPE is not comparable when a scheme makes new extrema (Ilicak 2012, Fig. 7)."""
+    T0 = np.where(s["h"][0] > 0, s["T"][0], np.nan)
+    lo, hi = np.nanmin(T0), np.nanmax(T0)
+    V = s["h"] * (s["dy"][:, None] * s["dx"][None, :])[None, None]
+    T = np.nan_to_num(s["T"], nan=0.5 * (lo + hi))
+    over = np.where(s["h"] >= h_min, np.maximum(T - hi, lo - T), 0.0)
+    frac = (np.where(over > tol, V, 0.0).reshape(s["t"].size, -1).sum(1) / V.reshape(s["t"].size, -1).sum(1))
+    return float(max(over.max(), 0.0)), float(frac.max())
+
+
+def oscillation_ratio(t: np.ndarray, a: np.ndarray, window: float = 20 * 86400.0) -> float:
+    """Damping of an oscillation: std of a(t) over the last ``window`` [s] / std over the first ``window`` — a steady
+    offset (the bump's mean displacement relaxing as it spreads) does not count."""
+    first, last = t <= t[0] + window, t >= t[-1] - window
+    return float(np.std(a[last]) / np.std(a[first]))
+
+
 def iw_amplitude(s: dict, x0: float = 125e3, T_iso: float | None = None) -> np.ndarray:
     """Displacement [m, positive up] of the isotherm T_iso (default: the mid-depth background value 15.1 °C) in the
     column nearest x0, relative to record 0; linear interpolation between cell centres."""

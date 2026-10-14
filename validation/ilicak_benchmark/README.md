@@ -33,7 +33,7 @@ En el seamount entran pyOCEAN σ y z\*, MOM6 σ y z\*, CROCO σ y MITgcm z\*.
 **Diferencias de configuración, todas de clase (c):**
 - **CROCO:**
   - RSUP3 lleva una difusión biarmónica explícita |u|Δx³/12 con mezcla rotada (`cppdefs_dev.h:423-436`);
-  - `RESET_RHO0` es forzado: ρ₀ es la media del volumen, ~1e-3 de g/ρ₀.
+  - `RESET_RHO0` es forzado: ρ₀ es la media del volumen, lo que cambia g/ρ₀ en 3.5e-3–4e-3.
 - **MITgcm:** momento en forma de flujo y celdas parciales.
 - **pyOCEAN, seamount:** usa el perfil de referencia `rho_ref = "auto"`. Sin él, el Jacobiano en σ daba 42 cm/s (`validation/seamount/README.md`).
 - **Procesos:** MOM6, CROCO y MITgcm corren en 1 proceso (con NJ = 1, MOM6 solo admite 1) y pyOCEAN en 5 hilos. También se midió pyOCEAN con 1 hilo.
@@ -52,11 +52,11 @@ python validation/ilicak_benchmark/compare.py [caso]              # tablas
 
 **Métricas:**
 - **RPE** (Winters et al. 1995; Ilicak ec. 1–2): con `diagnostics.mixing.reference_potential_energy`, sobre el volumen real de cada celda y la hipsometría exacta del fondo de cada modelo.
-- **dRPE/dt** por unidad de área, en tres ventanas: 15–17 h en el lock exchange, 13–37 h en el overflow y días 10–100 en la onda interna.
-- **Rango de T** en celdas de más de 1 mm.
-- **Lock exchange:** frentes con umbrales de 1 m (punta) y 5 m (cuerpo), ajustados entre 2 y 8 h, divididos entre la velocidad de Benjamin U = 0.495 m/s.
+- **dRPE/dt** por unidad de área, en tres ventanas: la media de 15–17 h en el lock exchange (el spec dice "a las 17 h"), 13–37 h en el overflow y días 10–100 en la onda interna.
+- **Rango de T** en celdas de más de 1 mm y **extremos nuevos** (`t_excess`): la mayor excursión fuera del rango inicial en celdas de al menos 1 m y la fracción del volumen que sale del rango por más de 0.01 °C.
+- **Lock exchange:** frentes con umbrales de 1 m (punta) y 5 m (cuerpo), ajustados entre 2 y 8 h, divididos entre la velocidad de Benjamin U = 0.496 m/s.
 - **Overflow:** centroide del agua con T < 15 °C, la métrica del spec, y centroide del déficit de calor (20 − T)⁺. Esta segunda se añadió porque la primera queda indefinida cuando el agua densa se mezcla por encima de 15 °C.
-- **Onda interna:** rms del desplazamiento de la isoterma de 15.1 °C en x₀, en los últimos 20 días dividido entre los primeros 20.
+- **Onda interna:** amortiguamiento de la oscilación (`oscillation_ratio`): desviación estándar del desplazamiento de la isoterma de 15.1 °C en x₀ en los últimos 20 días, dividida entre la de los primeros 20. La desviación estándar quita el desplazamiento medio, de ~60 m, que deja el abultamiento al extenderse; la primera versión usaba el rms y medía sobre todo ese desplazamiento.
 - **max|u|** en caras de al menos 1 cm: las velocidades en capas vacías no llevan masa.
 
 **Re_Δ = UΔx/ν_h:**
@@ -119,26 +119,26 @@ En las primeras 3 h los tres modelos z\* coinciden casi exactamente: grosor del 
 
 ### Onda interna (200 días)
 
-| ν_h | Modelo | ΔRPE/RPE₀ | dRPE/dt [W m⁻²] (días 10–100) | Rango de T | Amplitud final / inicial |
+| ν_h | Modelo | ΔRPE/RPE₀ | dRPE/dt [W m⁻²] (días 10–100) | Rango de T | Oscilación final / inicial |
 |---|---|---|---|---|---|
-| 0.01 | pyOCEAN z\* (= σ) | 1.34e-6 | 1.47e-4 | 10.10–19.84 | 0.92 |
-| 0.01 | pyOCEAN híbrida | 9.1e-8 | 2.5e-6 | 10.10–19.84 | 0.92 |
-| 0.01 | MOM6 z\* | 3.70e-6 | 3.81e-4 | 10.10–19.84 | 0.96 |
-| 0.01 | MOM6 ρ | 6.1e-7 | 4.0e-5 | 10.10–19.84 | 0.94 |
-| 0.01 | CROCO σ | −8.5e-8 | 7.2e-6 | **10.01–19.96** | 0.95 |
-| 0.01 | MITgcm z\* | 2.95e-6 | 3.41e-4 | 10.10–19.84 | 0.91 |
-| 15 | pyOCEAN z\* (= σ) | 1.01e-6 | 1.05e-4 | 10.10–19.84 | 0.91 |
-| 15 | pyOCEAN híbrida | 8.8e-8 | 2.2e-6 | 10.10–19.84 | 0.92 |
-| 15 | MOM6 z\* | 2.21e-6 | 2.57e-4 | 10.10–19.84 | 0.94 |
-| 15 | MOM6 ρ | 1.4e-7 | 1.1e-5 | 10.10–19.84 | 0.96 |
-| 15 | CROCO σ | −7.4e-8 | 6.3e-6 | **10.01–19.96** | 0.94 |
-| 15 | MITgcm z\* | 1.42e-6 | 1.76e-4 | 10.10–19.84 | 0.91 |
-| 150 | pyOCEAN z\* (= σ) | 6.5e-7 | 5.9e-5 | 10.10–19.84 | 0.91 |
-| 150 | pyOCEAN híbrida | 8.5e-8 | 1.9e-6 | 10.10–19.84 | 0.91 |
-| 150 | MOM6 z\* | 7.0e-7 | 7.0e-5 | 10.10–19.84 | 0.91 |
-| 150 | MOM6 ρ | 3.2e-8 | 2.8e-6 | 10.10–19.84 | 0.91 |
-| 150 | CROCO σ | −5.6e-8 | 3.4e-5 | **10.01–19.96** | 0.91 |
-| 150 | MITgcm z\* | 8.6e-7 | 8.4e-5 | 10.10–19.84 | 0.94 |
+| 0.01 | pyOCEAN z\* (= σ) | 1.34e-6 | 1.47e-4 | 10.10–19.84 | **0.45** |
+| 0.01 | pyOCEAN híbrida | 9.1e-8 | 2.5e-6 | 10.10–19.84 | **0.45** |
+| 0.01 | MOM6 z\* | 3.70e-6 | 3.81e-4 | 10.10–19.84 | 0.67 |
+| 0.01 | MOM6 ρ | 6.1e-7 | 4.0e-5 | 10.10–19.84 | 0.65 |
+| 0.01 | CROCO σ | −8.5e-8 | 7.2e-6 | **10.01–19.96** | 0.68 |
+| 0.01 | MITgcm z\* | 2.95e-6 | 3.41e-4 | 10.10–19.84 | 0.72 |
+| 15 | pyOCEAN z\* (= σ) | 1.01e-6 | 1.05e-4 | 10.10–19.84 | **0.39** |
+| 15 | pyOCEAN híbrida | 8.8e-8 | 2.2e-6 | 10.10–19.84 | **0.43** |
+| 15 | MOM6 z\* | 2.21e-6 | 2.57e-4 | 10.10–19.84 | 0.55 |
+| 15 | MOM6 ρ | 1.4e-7 | 1.1e-5 | 10.10–19.84 | 0.65 |
+| 15 | CROCO σ | −7.4e-8 | 6.3e-6 | **10.01–19.96** | 0.60 |
+| 15 | MITgcm z\* | 1.42e-6 | 1.76e-4 | 10.10–19.84 | 0.56 |
+| 150 | pyOCEAN z\* (= σ) | 6.5e-7 | 5.9e-5 | 10.10–19.84 | 0.24 |
+| 150 | pyOCEAN híbrida | 8.5e-8 | 1.9e-6 | 10.10–19.84 | 0.25 |
+| 150 | MOM6 z\* | 7.0e-7 | 7.0e-5 | 10.10–19.84 | 0.25 |
+| 150 | MOM6 ρ | 3.2e-8 | 2.8e-6 | 10.10–19.84 | 0.26 |
+| 150 | CROCO σ | −5.6e-8 | 3.4e-5 | **10.01–19.96** | 0.26 |
+| 150 | MITgcm z\* | 8.6e-7 | 8.4e-5 | 10.10–19.84 | 0.24 |
 
 ### Seamount (10 días, sin viscosidad)
 
@@ -155,63 +155,111 @@ Beckmann & Haidvogel (1993) obtuvieron ~1 cm/s a 10 días. El ejemplo `seamount`
 
 ### Costo
 
-En segundos de reloj por hora simulada, en el bucle principal sin la inicialización:
+**Cómo se mide.** Segundos de reloj por hora simulada, en el bucle principal sin la inicialización:
 - **pyOCEAN:** después de los 5 primeros pasos, que incluyen la compilación de Numba;
 - **MOM6:** el reloj "Main loop";
 - **MITgcm:** `MAIN_DO_LOOP`;
-- **CROCO:** `/usr/bin/time` de toda la corrida, que incluye ~0.1 s de inicio.
+- **CROCO:** `/usr/bin/time` de toda la corrida. Su resolución es de 0.01 s, así que los valores de CROCO por debajo de ~0.05 s/h tienen ±50 %.
+
+**Comparación principal: al Δt máximo estable y con 1 proceso en todos los modelos** (spec §A2). Se usa la escalera Δt × 1, 2, 4, 8, 16 sobre 2 h (lock exchange), 12 h (overflow, más allá de la caída por el talud) y 48 h (onda interna y seamount), con la ν_h intermedia.
+
+Un escalón cuenta como estable si T y u son finitas y max\|u\| no pasa del doble de la corrida de resultados en el mismo tramo. "≥" indica que se llegó al tope de la escalera.
+
+| Caso | pyOCEAN z\* | MOM6 z\* | CROCO σ | MITgcm z\* |
+|---|---|---|---|---|
+| Lock exchange: Δt máx [s] / s por hora | ≥ 160 / 0.046 | ≥ 160 / 0.076 | ≥ 160 / 0.015 | ≥ 160 / 0.106 |
+| Overflow | **80 / 0.40** | 20 / 4.28 | 10 / 0.94 | 10 / 4.69 |
+| Onda interna | 2400 / 0.0017 | 2400 / 0.0025 | 2400 / 0.0008 | 2400 / 0.0038 |
+| Seamount (MOM6: σ) | 600 / 0.20 | 1200 / 0.19 | 600 / 0.12 | 1200 / 0.027 |
+
+**Al Δt de resultados** (10 s, 10 s, 300 s y 600 s). pyOCEAN con 5 hilos y con 1 hilo; los demás con 1 proceso:
 
 | Caso | pyOCEAN z\* (5 hilos / 1 hilo) | MOM6 z\* | CROCO σ | MITgcm z\* |
 |---|---|---|---|---|
-| Lock exchange, Δt 10 s | 0.93 / 0.71 | 1.16 | **0.13** | 0.75 |
-| Overflow, Δt 10 s | 3.02 / 3.13 | 10.3 | **1.05** | 5.06 |
-| Onda interna, Δt 300 s | 0.022 / 0.013 | 0.017 | **0.0024** | 0.013 |
-| Seamount, Δt 600 s | 0.15 (5 hilos) | 0.39 (σ) | 0.13 | **0.051** |
-| **Δt máximo estable** (escalera ×1…16) | lock ≥ 160, overflow ≥ 160, IW 2400, seamount 600 | ≥ 160, 80, 4800, — (σ: 1200) | ≥ 160, 20, 2400, 600 | ≥ 160, ≥ 160, 4800, 1200 |
+| Lock exchange | 0.93 / 0.71 | 1.16 | 0.13 | 0.75 |
+| Overflow | 3.02 / 3.13 | 10.3 | 1.05 | 5.06 |
+| Onda interna | 0.022 / 0.013 | 0.017 | 0.0024 | 0.013 |
+| Seamount | 0.15 / 0.20 | 0.39 (σ) | 0.13 | 0.051 |
 
-Las otras coordenadas cuestan casi lo mismo que z\* dentro de cada modelo (`compare.py`).
+Notas:
+- Las otras coordenadas cuestan casi lo mismo que z\* dentro de cada modelo (`compare.py`).
+- La híbrida de pyOCEAN y MOM6 ρ no tienen costo en el overflow, porque sus corridas de resultados con la ν_h intermedia no terminan.
+- No se midió el reparto por componente que pedía el spec: los casos 2-D son tan pequeños que domina el trabajo fijo por paso.
 
 ## Lectura y clasificación
 
-1. **pyOCEAN z\* = MOM6 z\* en el lock exchange** en las tres viscosidades: RPE dentro del 1.5 % y frentes iguales. MITgcm queda a ±30 % en RPE y es un poco más rápido. **Coinciden.**
+1. **pyOCEAN z\* = MOM6 z\* en el lock exchange** en las tres viscosidades: RPE dentro del 1.6 % y frentes iguales. MITgcm queda a ±30 % en RPE y es un poco más rápido. Ninguno de los tres crea extremos apreciables: ≤ 2e-4 °C en pyOCEAN y ≤ 0.09 °C en MITgcm. **Coinciden.**
 2. **Velocidad del frente contra Benjamin.** pyOCEAN z\* queda dentro de ±10 % con ν = 10 y 100 (0.89–0.96 U). Con ν = 0.1 baja a 0.86–0.88 U, igual que MOM6 z\*. Ilicak (Fig. 3) también ve frentes lentos en modelos hidrostáticos con esta resolución. **(c)**
-3. **Re_Δ:** todos los modelos z\* reducen dRPE/dt entre 3.6 y 5.6 veces al pasar de Re_Δ 2480 a 2.5. pyOCEAN reduce 3.6 veces, MOM6 3.7 y MITgcm 5.6. Ilicak describe un orden de magnitud entre Re_Δ > 100 y < 5. pyOCEAN se comporta como los demás. **(c)**
-4. **Hipótesis previa 1, que pyOCEAN mezclaría más que CROCO con Re_Δ alto: no se puede contestar con este CROCO.** Sus esquemas regionales crean extremos nuevos de T, de −9 a 39 °C en el lock exchange y de 1.3 a 25.8 °C en el overflow. Su RPE baja (es negativa en la onda interna y en el overflow con ν = 1000) y no es comparable (Ilicak, Fig. 7). Para responderla hace falta CROCO con WENO5. **(c)**, pendiente.
+3. **Re_Δ:** los modelos z\* reducen dRPE/dt entre 3.6 y 5.6 veces al pasar de Re_Δ 2480 a 2.5: pyOCEAN 3.6, MOM6 3.7 y MITgcm 5.6. Ilicak describe un orden de magnitud entre Re_Δ > 100 y < 5. pyOCEAN se comporta como los demás. **(c)**
+4. **Hipótesis previa 1, que pyOCEAN mezclaría más que CROCO con Re_Δ alto: no se puede contestar con este CROCO.**
+   - Sus esquemas regionales crean extremos nuevos de T: hasta 14 °C fuera de rango en el 11–18 % del volumen en el lock exchange, y 6.8–8.7 °C en el 25–40 % en el overflow.
+   - Su RPE baja (es negativa en la onda interna y en el overflow con ν = 1000) y no es comparable (Ilicak, Fig. 7).
+   - Para responderla hace falta CROCO con WENO5. **(c)**, pendiente.
 5. **Hipótesis previa 2, que la híbrida e isopicnal mezclarían mucho menos que z\*: se confirma.**
-   - Lock exchange: la híbrida de pyOCEAN mezcla ~1000 veces menos que z\* y ~200 veces menos que MOM6 ρ.
-   - Onda interna: mezcla ~15 veces menos que z\* y entre 0.15 y 2.7 veces lo de MOM6 ρ.
-   - Lock exchange: tiene los mejores frentes, 0.96–1.04 U; MOM6 ρ tiene el cuerpo ligero lento, 0.44–0.94 U.
+   - **Lock exchange:** la híbrida de pyOCEAN mezcla ~1000 veces menos que z\* y ~200 veces menos que MOM6 ρ. Tiene los mejores frentes (0.96–1.04 U); MOM6 ρ tiene el cuerpo ligero lento (0.44–0.94 U).
+   - **Onda interna:** mezcla 7.6–15 veces menos que z\*, y entre 0.15 y 2.7 veces lo de MOM6 ρ.
+   - **Su RPE sí es comparable**, a diferencia de la de CROCO: la T fuera de rango (punto 6) está solo en capas de menos de 1 m. En celdas de al menos 1 m la excursión es ≤ 1.8e-5 °C en el lock exchange y ≤ 3e-4 °C en el overflow.
 6. **La híbrida de pyOCEAN crea T fuera de rango en capas delgadas: (a).**
-   - Lock exchange: T de 3.2 a 31 °C en capas de ~1 mm.
-   - Overflow con ν = 1000: T hasta 33.1 °C y 47 m/s en caras de al menos 1 cm.
+   - Lock exchange: T de 3.2 a 31 °C, en capas de ~1 mm.
+   - Overflow con ν = 1000: hasta 33.1 °C, y max\|u\| de 47 m/s en caras de al menos 1 cm.
 
    MOM6 ρ mantiene el rango exacto. Es el problema conocido de T fuera de rango en capas de 1 mm del plan de la híbrida, ahora con un reproductor de 1 h.
 7. **La híbrida de pyOCEAN no completa el overflow con ν ≤ 100: (a) de robustez.** Se detiene porque una capa se vacía en el paso lagrangiano. MOM6 ρ también falla en los mismos dos casos, por truncación de velocidad, así que la isopicnal con Re_Δ alto en esta pendiente es difícil para los dos. Pero pyOCEAN debería limitar el flujo saliente de la capa en lugar de detenerse.
-8. **Overflow en z\*:** pyOCEAN z\* ≈ MITgcm z\*. Con ν = 1000, dRPE/dt es 0.58 contra 0.52 y el centroide frío 150 km / 1770 m contra 148 km / 1720 m. **MOM6 z\* mezcla 2–3 veces más**: con ν = 100 y 1000 no queda agua bajo 15 °C. pyOCEAN z\* fue el único modelo z\* que completó ν = 1; MITgcm se rompió.
-   - pyOCEAN: correcto.
-   - MOM6 z\*: **(c)/(d)** sin explicar, no afecta a pyOCEAN.
-9. **Onda interna:** pyOCEAN z\* mezcla 1.7–2.6 veces menos que MOM6 z\* y MITgcm con ν = 0.01 y 15, y lo mismo con ν = 150. Las amplitudes finales son iguales: 0.91–0.96 de la inicial en todos los modelos. **Mejor que las referencias.**
+8. **Overflow en z\*:**
+   - **Mezcla y descenso:** pyOCEAN z\* ≈ MITgcm z\*. Con ν = 100, dRPE/dt es 1.85 contra 1.44 W m⁻²; con ν = 1000, 0.58 contra 0.52, y el centroide frío 150 km / 1770 m contra 148 km / 1720 m.
+   - **MOM6 z\*** mezcla 2.4–2.9 veces más con ν = 100 y 1000, y no le queda agua bajo 15 °C. Con ν = 1 mezcla la mitad que pyOCEAN (2.12 contra 4.96).
+   - **Con ν = 1** terminan pyOCEAN z\*, MOM6 z\* y CROCO; MITgcm se rompe a las ~11 h.
+   - **pyOCEAN z\* crea extremos nuevos de T: (a)/(c).** Llega hasta 5.26 °C con un rango inicial de 10–20 °C: excursiones de 2.9–4.7 °C en celdas de al menos 1 m, en el 0.1–0.25 % del volumen. MITgcm (OS7MP) llega a ≤ 0.41 °C en el 0.04 %, y MOM6 z\* no crea ninguno. pyOCEAN σ crea 1.6 °C con ν = 1.
+
+     WENO5-Z no garantiza que T se quede en el rango. En el lock exchange no se nota, pero en la caída por el talud sí. Por eso la RPE de pyOCEAN z\* en el overflow se compara con cautela: el volumen afectado es pequeño, pero va contra el criterio del spec (§A5).
+   - MOM6 z\*: **(c)/(d)**, sin explicar; no afecta a pyOCEAN.
+9. **Onda interna:**
+   - **Mezcla:** pyOCEAN z\* mezcla 1.7–2.6 veces menos que MOM6 z\* y MITgcm con ν = 0.01 y 15, y lo mismo con ν = 150.
+   - **Amortiguamiento: (a)/(b), a diagnosticar.** pyOCEAN amortigua la oscilación más que todos los modelos de referencia con viscosidad baja. La oscilación final / inicial es:
+     - con ν = 0.01: 0.45, frente a 0.65–0.72;
+     - con ν = 15: 0.39–0.43, frente a 0.55–0.65;
+     - con ν = 150: todos coinciden (0.24–0.26).
+
+     Le pasa igual a la híbrida (0.45), así que no es la coordenada: está en el momento, el tiempo o la superficie libre. Las sospechas, por revisar:
+     - el AB3 con Δt 300 s;
+     - la superficie libre implícita con θ = 0.6;
+     - el KE Arakawa.
+
+     En `validation/internal_wave` ya se vio que el KE Godunov amortigua ondas progresivas. Por la regla del spec, si pyOCEAN se separa de todos, se diagnostica.
 10. **Seamount:**
-    - **pyOCEAN σ con el perfil de referencia (0.22 cm/s)** queda dos órdenes por debajo de CROCO (36 cm/s, SM03) y de MOM6 σ (154 cm/s). Ninguno de los dos resta un perfil de referencia.
+    - **pyOCEAN σ con el perfil de referencia (0.22 cm/s)** queda dos órdenes por debajo de CROCO σ (36 cm/s, SM03) y de MOM6 σ (154 cm/s, creciendo). Ninguno de los dos resta un perfil de referencia. La ventaja de pyOCEAN viene de `rho_ref`, que es una opción del modelo. **(c)**, a favor de pyOCEAN.
     - **z\*:** pyOCEAN da 0.08 cm/s y MITgcm 0 exacto.
-    - **MOM6 z\*** no corre el caso sin viscosidad: **(c)**, MOM6 necesita disipación.
-    - La ventaja de pyOCEAN viene de `rho_ref`, que es una opción del modelo y no una diferencia de física. **(c)**, a favor de pyOCEAN.
-11. **Costo.** En los tres casos 2-D, **pyOCEAN cuesta más del doble que CROCO**: 7 veces en el lock exchange, 2.9 en el overflow y 9 en la onda interna. Frente a MOM6 y MITgcm, pyOCEAN está entre 0.3 y 1.7 veces su costo; en el overflow es el más rápido de los tres (3.0 contra 10.3 y 5.1 s/h).
-    - **Seamount:** pyOCEAN cuesta 3 veces lo de MITgcm.
-    - **Hilos:** en mallas 2-D tan pequeñas, 5 hilos no ayudan (lock exchange 0.93 contra 0.71 s/h con 1 hilo). El costo está en el trabajo fijo de Python y Numba por paso.
-    - **Δt:** el Δt máximo estable de pyOCEAN es la mitad del de MOM6 y MITgcm en la onda interna (2400 contra 4800 s) y en el seamount (600 contra 1200 s). **(b)**, candidato.
+    - **MOM6 z\* trunca la velocidad desde el día 1, partiendo del reposo con isopicnas planas: sin explicar.** Más que una necesidad de disipación, apunta a un problema de configuración.
+      - Ya se probó: Δt 300 s, y `BOUND_CORIOLIS` + `CORIOLIS_EN_DIS` + `MIN_THICKNESS` 0.1.
+      - Falta probar las opciones numéricas del ejemplo `seamount` de MOM6: `DTBT = 10`, `BOUND_BT_CORRECTION`, `KH_VEL_SCALE`.
+
+      Mientras no se aclare, el número de MOM6 σ tampoco se toma como su error de gradiente de presión. **Pendiente.**
+11. **Costo, al Δt máximo y con 1 proceso en todos:**
+    - **Frente a MOM6 y MITgcm:** pyOCEAN z\* es más barato en el lock exchange (0.046 contra 0.076 y 0.106 s/h), en el overflow (0.40 contra 4.3 y 4.7) y en la onda interna (0.0017 contra 0.0025 y 0.0038).
+    - **Overflow:** pyOCEAN admite el Δt más grande, 80 s, frente a 20 s de MOM6 y 10 s de CROCO y MITgcm.
+    - **Frente a CROCO:** pyOCEAN cuesta 3 veces más en el lock exchange, 2.1 en la onda interna y 1.7 en el seamount, y la mitad en el overflow.
+    - **Seamount:** pyOCEAN cuesta 7.6 veces lo de MITgcm (0.20 contra 0.027 s/h). Su Δt máximo es 600 s, la mitad que MOM6 σ y MITgcm (1200 s) e igual que CROCO.
+    - **Al mismo Δt de resultados,** CROCO es 3–5.5 veces más rápido que pyOCEAN con 1 hilo en 2-D. Con 5 hilos pyOCEAN no gana en estas mallas.
+
+    Lo que pierde pyOCEAN es costo fijo por paso: rendimiento, sin física faltante.
 12. **El diagnóstico de RPE de pyOCEAN** (`reference_potential_energy`) interpola el momento linealmente en volumen. Con una hipsometría gruesa se equivoca: con dos puntos en un fondo plano da 1.5 veces el valor exacto. Aquí se evitó refinando la hipsometría a pasos de H/50000. **(a)** en el diagnóstico.
 
 ## Qué debe mejorar pyOCEAN
 
-1. **(a) Híbrida, T fuera de rango en capas delgadas**: 3.2–33 °C con un rango inicial de 5–30 °C. Va al plan de la híbrida, con el lock exchange de 1 h como reproductor. Candidatos de la literatura: Higdon (2005, 2020) para atar la velocidad de la capa delgada a la de sus vecinas y poner un piso de grosor en la viscosidad. Hallberg & Adcroft (2009) para el reparto del residuo barotrópico.
-2. **(a) Híbrida, robustez en el overflow:** limitar el flujo saliente de una capa en el paso lagrangiano, como el limitador de celdas que se vacían que ya existe en la forma de flujo, en lugar de detenerse. También las velocidades de 47 m/s en el overflow con ν = 1000.
-3. **(a) Diagnóstico de RPE:** integrar exactamente ∫ z A dz por tramo en `reference_potential_energy`, para que sea exacto con cualquier hipsometría.
-4. **(b) Costo en mallas pequeñas:** reducir el trabajo fijo por paso y elegir el número de hilos según el tamaño de la malla. CROCO es 3–9 veces más rápido en 2-D.
-5. **(b) Δt máximo:** averiguar por qué el paso de pyOCEAN se vuelve inestable al doble de Δt que MOM6 y MITgcm en la onda interna y el seamount.
+1. **(a)/(b) Amortiguamiento de la onda interna con viscosidad baja.** pyOCEAN deja 0.39–0.45 de la oscilación, frente a 0.55–0.72 en MOM6, CROCO y MITgcm; afecta igual a z\* y a la híbrida. Diagnosticar con el caso de la onda interna, que tarda ~2 min, variando el esquema de tiempo, θ y el KE. Es lo más importante del benchmark para las ondas internas.
+2. **(a) Extremos nuevos de T con WENO5-Z** en la caída del overflow: hasta 4.7 °C en el 0.25 % del volumen. Opción: un limitador que conserve el rango (Zhang & Shu 2010 [verificar]) o un esquema que preserve la monotonía como opción.
+3. **(a) Híbrida, T fuera de rango en capas delgadas** (3.2–33 °C con 5–30 °C). Va al plan de la híbrida, con el lock exchange de 1 h como reproductor. Candidatos de la literatura:
+   - Higdon (2005, 2020): atar la velocidad de la capa delgada a la de sus vecinas y poner un piso de grosor en la viscosidad;
+   - Hallberg & Adcroft (2009): el reparto del residuo barotrópico.
+4. **(a) Híbrida, robustez en el overflow:** limitar el flujo saliente de una capa en el paso lagrangiano en lugar de detenerse, como el limitador de celdas que se vacían que ya existe en la forma de flujo. También las velocidades de 47 m/s con ν = 1000.
+5. **(a) Diagnóstico de RPE:** integrar exactamente ∫ z A dz por tramo en `reference_potential_energy`, para que sea exacto con cualquier hipsometría.
+6. **Rendimiento:**
+   - reducir el trabajo fijo por paso y elegir el número de hilos según el tamaño de la malla (CROCO es 3–5.5 veces más rápido al mismo Δt en 2-D);
+   - revisar por qué el Δt máximo del seamount es la mitad que el de MITgcm y MOM6 σ.
 
 **Para Esteban, fuera de pyOCEAN:**
 - Correr CROCO también con WENO5, como en `validation/lock_exchange`, para que su RPE sea comparable.
+- Aclarar la configuración de MOM6 z\* en el seamount.
 - El costo de HYCOM queda pendiente de un anexo (`hycom/README.md`): compila, pero no hay entradas para correrlo.
 
 ## Referencias
