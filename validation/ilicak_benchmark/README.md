@@ -165,25 +165,26 @@ Beckmann & Haidvogel (1993) obtuvieron ~1 cm/s a 10 días. El ejemplo `seamount`
 
 Un escalón cuenta como estable si T y u son finitas y max\|u\| no pasa del doble de la corrida de resultados en el mismo tramo. "≥" indica que se llegó al tope de la escalera.
 
-| Caso | pyOCEAN z\* | MOM6 z\* | CROCO σ | MITgcm z\* |
-|---|---|---|---|---|
-| Lock exchange: Δt máx [s] / s por hora | ≥ 160 / 0.045 | ≥ 160 / 0.076 | ≥ 160 / 0.015 | ≥ 160 / 0.106 |
-| Overflow | **80 / 0.40** | 20 / 4.28 | 10 / 0.94 | 10 / 4.69 |
-| Onda interna | 2400 / 0.0017 | 2400 / 0.0025 | 2400 / 0.0008 | 2400 / 0.0038 |
-| Seamount (MOM6: σ) | 600 / 0.20 | 1200 / 0.19 | 600 / 0.12 | 1200 / 0.027 |
+| Caso | pyOCEAN z\* | MOM6 z\* | CROCO σ | MITgcm z\* | HYCOM (solo costo) |
+|---|---|---|---|---|---|
+| Lock exchange: Δt máx [s] / s por hora | ≥ 160 / 0.045 | ≥ 160 / 0.076 | ≥ 160 / 0.015 | ≥ 160 / 0.106 | — |
+| Overflow | **80 / 0.40** | 20 / 4.28 | 10 / 0.94 | 10 / 4.69 | 20 / 5.75 (ν = 1000) |
+| Onda interna | 2400 / 0.0017 | 2400 / 0.0025 | 2400 / 0.0008 | 2400 / 0.0038 | — |
+| Seamount (MOM6: σ) | 600 / 0.20 | 1200 / 0.19 | 600 / 0.12 | 1200 / 0.027 | — |
 
 **Al Δt de resultados** (10 s, 10 s, 300 s y 600 s). pyOCEAN con 5 hilos y con 1 hilo; los demás con 1 proceso:
 
-| Caso | pyOCEAN z\* (5 hilos / 1 hilo) | MOM6 z\* | CROCO σ | MITgcm z\* |
-|---|---|---|---|---|
-| Lock exchange | 0.93 / 0.71 | 1.16 | 0.13 | 0.75 |
-| Overflow | 3.02 / 3.13 | 10.3 | 1.05 | 5.06 |
-| Onda interna | 0.022 / 0.013 | 0.017 | 0.0024 | 0.013 |
-| Seamount | 0.15 / 0.20 | 0.39 (σ) | 0.13 | 0.051 |
+| Caso | pyOCEAN z\* (5 hilos / 1 hilo) | MOM6 z\* | CROCO σ | MITgcm z\* | HYCOM |
+|---|---|---|---|---|---|
+| Lock exchange | 0.93 / 0.71 | 1.16 | 0.13 | 0.75 | — |
+| Overflow | 3.02 / 3.13 | 10.3 | 1.05 | 5.06 | 11.2 (ν = 1000) |
+| Onda interna | 0.022 / 0.013 | 0.017 | 0.0024 | 0.013 | — |
+| Seamount | 0.15 / 0.20 | 0.39 (σ) | 0.13 | 0.051 | — |
 
 Notas:
 - Las otras coordenadas cuestan casi lo mismo que z\* dentro de cada modelo (`compare.py`).
 - La híbrida de pyOCEAN y MOM6 ρ no tienen costo en el overflow, porque sus corridas de resultados con la ν_h intermedia no terminan.
+- **HYCOM** (`hycom/README.md`) es solo costo: 100 capas híbridas con `hybgen`, EOS σ₀ de 7 términos y sin mezcla explícita. Con ν = 100 tampoco termina (`neg. dp` en el talud a las 6–7 h, también con Δt 5 s), así que se mide con ν = 1000. Con 5 procesos cuesta 2.84 s/h.
 - No se midió el reparto por componente que pedía el spec: los casos 2-D son tan pequeños que domina el trabajo fijo por paso.
 
 ## Lectura y clasificación
@@ -235,6 +236,8 @@ Notas:
     - **Seamount:** pyOCEAN cuesta 7.6 veces lo de MITgcm (0.20 contra 0.027 s/h). Su Δt máximo es 600 s, la mitad que MOM6 σ y MITgcm (1200 s) e igual que CROCO.
     - **Al mismo Δt de resultados,** CROCO es 3–5.5 veces más rápido que pyOCEAN con 1 hilo en 2-D. Con 5 hilos pyOCEAN no gana en estas mallas.
 
+    - **HYCOM, en el overflow:** con 1 proceso es el más caro, 5.75 s/h con Δt 20 s (y ν = 1000), 14 veces pyOCEAN z\*. Con 5 procesos baja a 2.84 s/h. Su híbrida falla con ν = 100 igual que la de pyOCEAN y que MOM6 ρ: el overflow isopicnal con Re_Δ alto es difícil para los tres.
+
     Lo que pierde pyOCEAN es costo fijo por paso: rendimiento, sin física faltante.
 12. **El diagnóstico de RPE de pyOCEAN** (`reference_potential_energy`) interpola el momento linealmente en volumen. Con una hipsometría gruesa se equivoca: con dos puntos en un fondo plano da 1.5 veces el valor exacto. Aquí se evitó refinando la hipsometría a pasos de H/50000. **(a)** en el diagnóstico.
 
@@ -254,7 +257,7 @@ Notas:
 **Para Esteban, fuera de pyOCEAN:**
 - Correr CROCO también con WENO5, como en `validation/lock_exchange`, para que su RPE sea comparable.
 - Aclarar la configuración de MOM6 z\* en el seamount.
-- El costo de HYCOM queda pendiente de un anexo (`hycom/README.md`): compila, pero no hay entradas para correrlo.
+- HYCOM 2.3 se cae en cualquier corrida sin marea (`hnudge`/`salfac` sin reservar, `hycom/README.md`). Aquí se corrigió en la copia del build; vale la pena reportarlo a los desarrolladores de HYCOM.
 
 ## Referencias
 
