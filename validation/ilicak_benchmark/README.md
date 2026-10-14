@@ -23,7 +23,7 @@ Cuatro casos baratos, definidos una sola vez en `cases.py`. Cada modelo los corr
 
 | Modelo | Coordenadas | Esquemas |
 |---|---|---|
-| pyOCEAN | z\*, σ, híbrida | vector-invariante con KE Arakawa, WENO5-Z, PPM_H4, continuidad PPM, PGF de volumen finito |
+| pyOCEAN | z\*, σ, híbrida | vector-invariante con KE Arakawa, WENO5-Z, PPM_H4, continuidad PPM, PGF de volumen finito; transporte baroclínico de capa centrado (θ_bc = ½; la híbrida θ = 0.6, punto 9) |
 | MOM6 (`repro -O2`, 1 proceso) | z\*, ρ (`layer_ref` con los mismos objetivos que la híbrida); σ en el seamount | PPM:H3, KE_ARAKAWA, PPM_H4 |
 | CROCO 2.1.3 (serial) | σ uniforme (`NEW_S_COORD`, hc = 1e16) | los de REGIONAL: UV_HADV_UP3, UV_VADV_SPLINES, TS_HADV_RSUP3, TS_VADV_SPLINES |
 | MITgcm (serial) | z\* con celdas parciales (hFacMin 0.1) | OS7MP, momento en forma de flujo |
@@ -70,13 +70,13 @@ python validation/ilicak_benchmark/compare.py [caso]              # tablas
 
 | ν_h | Modelo | ΔRPE/RPE₀ | dRPE/dt [W m⁻²] | Rango de T | Frentes / U (punta densa, punta ligera, cuerpo denso, cuerpo ligero) |
 |---|---|---|---|---|---|
-| 0.1 | pyOCEAN z\* (= σ) | 6.66e-5 | 3.85e-3 | 5–30 | 0.88, 0.87, 0.88, 0.86 |
+| 0.1 | pyOCEAN z\* (= σ) | 6.67e-5 | 3.86e-3 | 5–30 | 0.88, 0.87, 0.88, 0.86 |
 | 0.1 | pyOCEAN híbrida | 6.2e-8 | 4.2e-6 | **3.24–30.1** | 0.97, 0.96, 0.99, 0.97 |
 | 0.1 | MOM6 z\* | 6.75e-5 | 3.91e-3 | 5–30 | 0.87, 0.87, 0.88, 0.86 |
 | 0.1 | MOM6 ρ | 1.46e-5 | 9.4e-4 | 5–30 | 0.85, 0.96, 0.68, 0.94 |
 | 0.1 | CROCO σ | 1.91e-5 | 2.13e-3 | **−9.3–39.1** | 0.95, 0.96, 0.96, 0.95 |
 | 0.1 | MITgcm z\* | 6.89e-5 | 4.28e-3 | 4.93–30.1 | 0.92, 0.91, 0.91, 0.90 |
-| 10 | pyOCEAN z\* (= σ) | 5.72e-5 | 3.28e-3 | 5–30 | 0.89, 0.89, 0.89, 0.89 |
+| 10 | pyOCEAN z\* (= σ) | 5.73e-5 | 3.29e-3 | 5–30 | 0.89, 0.89, 0.89, 0.89 |
 | 10 | pyOCEAN híbrida | 6.7e-8 | 4.3e-6 | **4.02–30.6** | 1.01, 0.98, 1.00, 1.00 |
 | 10 | MOM6 z\* | 5.81e-5 | 3.36e-3 | 5–30 | 0.88, 0.89, 0.89, 0.89 |
 | 10 | MOM6 ρ | 1.57e-5 | 8.9e-4 | 5–30 | 0.96, 0.88, 0.90, 0.71 |
@@ -93,22 +93,22 @@ python validation/ilicak_benchmark/compare.py [caso]              # tablas
 
 | ν_h | Modelo | ΔRPE/RPE₀ | dRPE/dt [W m⁻²] | Rango de T | Centroide frío: x [km], profundidad [m] |
 |---|---|---|---|---|---|
-| 1 | pyOCEAN z\* | 3.41e-5 | 4.96 | 7.09–20.1 | 120, 1300 |
-| 1 | pyOCEAN σ | 3.34e-5 | 4.55 | 9.61–21.6 | 138, 1160 |
+| 1 | pyOCEAN z\* | 3.55e-5 | 5.26 | 7.02–20.1 | 117, 1280 |
+| 1 | pyOCEAN σ | 3.19e-5 | 4.17 | 9.75–21.6 | 141, 1160 |
 | 1 | pyOCEAN híbrida | — se detiene: "layer emptied in the Lagrangian step (reduce dt)" | | | |
 | 1 | MOM6 z\* | 3.14e-5 | 2.12 | 10–20 | 83, 980 |
 | 1 | MOM6 ρ | — se detiene: velocidad truncada demasiadas veces (~16 h) | | | |
 | 1 | CROCO σ | 3.0e-6 | 0.94 | **3.2–25.8** | 146, 1600 |
 | 1 | MITgcm z\* | — se detiene: `CALC_R_STAR`, rStarFac demasiado pequeño (~11 h, u hasta 13 m/s) | | | |
-| 100 | pyOCEAN z\* | 1.40e-5 | 1.85 | 6.37–20.0 | 154, 1460 |
-| 100 | pyOCEAN σ | 1.47e-5 | 1.67 | 9.84–20.1 | 154, 1410 |
+| 100 | pyOCEAN z\* | 1.41e-5 | 1.86 | 6.35–20.0 | 154, 1460 |
+| 100 | pyOCEAN σ | 1.49e-5 | 1.69 | 9.76–20.2 | 154, 1410 |
 | 100 | pyOCEAN híbrida | — se detiene: "layer emptied in the Lagrangian step" | | | |
 | 100 | MOM6 z\* | 3.24e-5 | 4.36 | 10–20 | 137, 944 |
 | 100 | MOM6 ρ | — se detiene: velocidad truncada demasiadas veces | | | |
 | 100 | CROCO σ | 8.1e-7 | 0.59 | **1.3–25.4** | 148, 1670 |
 | 100 | MITgcm z\* | 1.34e-5 | 1.44 | 9.59–20.1 | 124, 1370 |
 | 1000 | pyOCEAN z\* | 4.9e-6 | 0.58 | 5.26–20.0 | 150, 1770 |
-| 1000 | pyOCEAN σ | 5.7e-6 | 0.68 | 9.89–20.0 | 153, 1740 |
+| 1000 | pyOCEAN σ | 5.8e-6 | 0.68 | 9.89–20.0 | 153, 1740 |
 | 1000 | pyOCEAN híbrida | 4.7e-11 | 7.2e-6 | **8.72–33.1** (max\|u\| 47 m/s) | 142, 1960 |
 | 1000 | MOM6 z\* | 1.34e-5 | 1.66 | 10–20 | 154, 1330 |
 | 1000 | MOM6 ρ | 1.2e-6 | 0.19 | 10–20 | 101, 1770 |
@@ -121,19 +121,19 @@ En las primeras 3 h los tres modelos z\* coinciden casi exactamente: grosor del 
 
 | ν_h | Modelo | ΔRPE/RPE₀ | dRPE/dt [W m⁻²] (días 10–100) | Rango de T | Oscilación final / inicial |
 |---|---|---|---|---|---|
-| 0.01 | pyOCEAN z\* (= σ) | 1.34e-6 | 1.47e-4 | 10.10–19.84 | **0.45** |
+| 0.01 | pyOCEAN z\* (= σ) | 3.25e-6 | 3.14e-4 | 10.10–19.84 | 0.74 |
 | 0.01 | pyOCEAN híbrida | 9.1e-8 | 2.5e-6 | 10.10–19.84 | **0.45** |
 | 0.01 | MOM6 z\* | 3.70e-6 | 3.81e-4 | 10.10–19.84 | 0.67 |
 | 0.01 | MOM6 ρ | 6.1e-7 | 4.0e-5 | 10.10–19.84 | 0.65 |
 | 0.01 | CROCO σ | −8.5e-8 | 7.2e-6 | **10.01–19.96** | 0.68 |
 | 0.01 | MITgcm z\* | 2.95e-6 | 3.41e-4 | 10.10–19.84 | 0.72 |
-| 15 | pyOCEAN z\* (= σ) | 1.01e-6 | 1.05e-4 | 10.10–19.84 | **0.39** |
+| 15 | pyOCEAN z\* (= σ) | 1.71e-6 | 1.85e-4 | 10.10–19.84 | 0.58 |
 | 15 | pyOCEAN híbrida | 8.8e-8 | 2.2e-6 | 10.10–19.84 | **0.43** |
 | 15 | MOM6 z\* | 2.21e-6 | 2.57e-4 | 10.10–19.84 | 0.55 |
 | 15 | MOM6 ρ | 1.4e-7 | 1.1e-5 | 10.10–19.84 | 0.65 |
 | 15 | CROCO σ | −7.4e-8 | 6.3e-6 | **10.01–19.96** | 0.60 |
 | 15 | MITgcm z\* | 1.42e-6 | 1.76e-4 | 10.10–19.84 | 0.56 |
-| 150 | pyOCEAN z\* (= σ) | 6.5e-7 | 5.9e-5 | 10.10–19.84 | 0.24 |
+| 150 | pyOCEAN z\* (= σ) | 6.5e-7 | 6.2e-5 | 10.10–19.84 | 0.26 |
 | 150 | pyOCEAN híbrida | 8.5e-8 | 1.9e-6 | 10.10–19.84 | 0.25 |
 | 150 | MOM6 z\* | 7.0e-7 | 7.0e-5 | 10.10–19.84 | 0.25 |
 | 150 | MOM6 ρ | 3.2e-8 | 2.8e-6 | 10.10–19.84 | 0.26 |
@@ -167,7 +167,7 @@ Un escalón cuenta como estable si T y u son finitas y max\|u\| no pasa del dobl
 
 | Caso | pyOCEAN z\* | MOM6 z\* | CROCO σ | MITgcm z\* |
 |---|---|---|---|---|
-| Lock exchange: Δt máx [s] / s por hora | ≥ 160 / 0.046 | ≥ 160 / 0.076 | ≥ 160 / 0.015 | ≥ 160 / 0.106 |
+| Lock exchange: Δt máx [s] / s por hora | ≥ 160 / 0.045 | ≥ 160 / 0.076 | ≥ 160 / 0.015 | ≥ 160 / 0.106 |
 | Overflow | **80 / 0.40** | 20 / 4.28 | 10 / 0.94 | 10 / 4.69 |
 | Onda interna | 2400 / 0.0017 | 2400 / 0.0025 | 2400 / 0.0008 | 2400 / 0.0038 |
 | Seamount (MOM6: σ) | 600 / 0.20 | 1200 / 0.19 | 600 / 0.12 | 1200 / 0.027 |
@@ -197,7 +197,7 @@ Notas:
    - Para responderla hace falta CROCO con WENO5. **(c)**, pendiente.
 5. **Hipótesis previa 2, que la híbrida e isopicnal mezclarían mucho menos que z\*: se confirma.**
    - **Lock exchange:** la híbrida de pyOCEAN mezcla ~1000 veces menos que z\* y ~200 veces menos que MOM6 ρ. Tiene los mejores frentes (0.96–1.04 U); MOM6 ρ tiene el cuerpo ligero lento (0.44–0.94 U).
-   - **Onda interna:** mezcla 7.6–15 veces menos que z\*, y entre 0.15 y 2.7 veces lo de MOM6 ρ.
+   - **Onda interna:** mezcla 7.7–36 veces menos que z\*, y entre 0.15 y 2.7 veces lo de MOM6 ρ. La comparación con z\* favorece algo a la híbrida, cuya onda todavía se amortigua más (punto 9).
    - **Su RPE sí es comparable**, a diferencia de la de CROCO: la T fuera de rango (punto 6) está solo en capas de menos de 1 m. En celdas de al menos 1 m la excursión es ≤ 1.8e-5 °C en el lock exchange y ≤ 3e-4 °C en el overflow.
 6. **La híbrida de pyOCEAN crea T fuera de rango en capas delgadas: (a).**
    - Lock exchange: T de 3.2 a 31 °C, en capas de ~1 mm.
@@ -207,25 +207,19 @@ Notas:
 7. **La híbrida de pyOCEAN no completa el overflow con ν ≤ 100: (a) de robustez.** Se detiene porque una capa se vacía en el paso lagrangiano. MOM6 ρ también falla en los mismos dos casos, por truncación de velocidad, así que la isopicnal con Re_Δ alto en esta pendiente es difícil para los dos. Pero pyOCEAN debería limitar el flujo saliente de la capa en lugar de detenerse.
 8. **Overflow en z\*:**
    - **Mezcla y descenso:** pyOCEAN z\* ≈ MITgcm z\*. Con ν = 100, dRPE/dt es 1.85 contra 1.44 W m⁻²; con ν = 1000, 0.58 contra 0.52, y el centroide frío 150 km / 1770 m contra 148 km / 1720 m.
-   - **MOM6 z\*** mezcla 2.4–2.9 veces más con ν = 100 y 1000, y no le queda agua bajo 15 °C. Con ν = 1 mezcla la mitad que pyOCEAN (2.12 contra 4.96).
+   - **MOM6 z\*** mezcla 2.4–2.9 veces más con ν = 100 y 1000, y no le queda agua bajo 15 °C. Con ν = 1 mezcla menos de la mitad que pyOCEAN (2.12 contra 5.26).
    - **Con ν = 1** terminan pyOCEAN z\*, MOM6 z\* y CROCO; MITgcm se rompe a las ~11 h.
    - **pyOCEAN z\* crea extremos nuevos de T: (a)/(c).** Llega hasta 5.26 °C con un rango inicial de 10–20 °C: excursiones de 2.9–4.7 °C en celdas de al menos 1 m, en el 0.1–0.25 % del volumen. MITgcm (OS7MP) llega a ≤ 0.41 °C en el 0.04 %, y MOM6 z\* no crea ninguno. pyOCEAN σ crea 1.6 °C con ν = 1.
 
      WENO5-Z no garantiza que T se quede en el rango. En el lock exchange no se nota, pero en la caída por el talud sí. Por eso la RPE de pyOCEAN z\* en el overflow se compara con cautela: el volumen afectado es pequeño, pero va contra el criterio del spec (§A5).
    - MOM6 z\*: **(c)/(d)**, sin explicar; no afecta a pyOCEAN.
 9. **Onda interna:**
-   - **Mezcla:** pyOCEAN z\* mezcla 1.7–2.6 veces menos que MOM6 z\* y MITgcm con ν = 0.01 y 15, y lo mismo con ν = 150.
-   - **Amortiguamiento: (a)/(b), a diagnosticar.** pyOCEAN amortigua la oscilación más que todos los modelos de referencia con viscosidad baja. La oscilación final / inicial es:
-     - con ν = 0.01: 0.45, frente a 0.65–0.72;
-     - con ν = 15: 0.39–0.43, frente a 0.55–0.65;
-     - con ν = 150: todos coinciden (0.24–0.26).
-
-     Le pasa igual a la híbrida (0.45), así que no es la coordenada: está en el momento, el tiempo o la superficie libre. Las sospechas, por revisar:
-     - el AB3 con Δt 300 s;
-     - la superficie libre implícita con θ = 0.6;
-     - el KE Arakawa.
-
-     En `validation/internal_wave` ya se vio que el KE Godunov amortigua ondas progresivas. Por la regla del spec, si pyOCEAN se separa de todos, se diagnostica.
+   - **Amortiguamiento: (a), corregido el 2026-10-14 en z\* y σ.** pyOCEAN amortiguaba la oscilación más que todos los modelos con viscosidad baja: 0.45 con ν = 0.01 y 0.39 con ν = 15, frente a 0.65–0.72 y 0.55–0.65.
+     - **Causa:** la velocidad de transporte de las capas, u^θ = θ u^{n+1} + (1 − θ) u^n, aplicaba el θ = 0.6 de la superficie libre también a la parte baroclínica. Con el momento AB3, centrado en n + ½, eso amortigua las ondas internas a ~(θ − ½) ω² Δt.
+     - **Diagnóstico**, una variante a la vez, con la energía cinética de la onda en z\* (días 40–60 entre días 0–5): esquema base 0.58; θ = ½ 0.90; θ = 1 0.37; Δt 150 s 0.65 y 600 s 0.50; KE Godunov 0.35; momento en forma de flujo 0.52; trazadores predictor-corrector, continuidad upwind o UP3, sin efecto (0.58). Solo importan θ y Δt.
+     - **Corrección:** `theta_bc` (½) pesa la parte baroclínica u′; la media vertical conserva θ, para que los flujos de capa sumen el flujo de la superficie libre. z\* y σ dejan ahora 0.74 / 0.58 / 0.26, en el rango de los demás (0.65–0.72 / 0.55–0.65 / 0.24–0.26). El lock exchange, el seamount y el costo no cambian; el overflow con ν = 1 cambia ~6 % en dRPE/dt.
+     - **La híbrida conserva θ_bc = θ** (0.45 / 0.43 / 0.25): con ½, el ruido de sus capas casi vacías deja de amortiguarse y una capa se vacía en el paso lagrangiano (onda interna con ν = 0.01 en el día 103 aun con Δt 150 s; overflow con ν = 1000). θ_bc = 0.55 aguanta, pero z\* dejaría solo 0.57. Pasa a ½ con el limitador de flujo saliente (punto 4 de la lista).
+   - **Mezcla:** con la onda sin amortiguar, pyOCEAN z\* mezcla como MITgcm y algo menos que MOM6 z\*. dRPE/dt es 3.14e-4 contra 3.41e-4 y 3.81e-4 con ν = 0.01, y 1.85e-4 contra 1.76e-4 y 2.57e-4 con ν = 15. La versión anterior de este README decía 1.7–2.6 veces menos: era en buena parte efecto de la onda amortiguada.
 10. **Seamount:**
     - **pyOCEAN σ con el perfil de referencia (0.22 cm/s)** queda dos órdenes por debajo de CROCO σ (36 cm/s, SM03) y de MOM6 σ (154 cm/s, creciendo). Ninguno de los dos resta un perfil de referencia. La ventaja de pyOCEAN viene de `rho_ref`, que es una opción del modelo. **(c)**, a favor de pyOCEAN.
     - **z\*:** pyOCEAN da 0.08 cm/s y MITgcm 0 exacto.
@@ -235,7 +229,7 @@ Notas:
 
       Mientras no se aclare, el número de MOM6 σ tampoco se toma como su error de gradiente de presión. **Pendiente.**
 11. **Costo, al Δt máximo y con 1 proceso en todos:**
-    - **Frente a MOM6 y MITgcm:** pyOCEAN z\* es más barato en el lock exchange (0.046 contra 0.076 y 0.106 s/h), en el overflow (0.40 contra 4.3 y 4.7) y en la onda interna (0.0017 contra 0.0025 y 0.0038).
+    - **Frente a MOM6 y MITgcm:** pyOCEAN z\* es más barato en el lock exchange (0.045 contra 0.076 y 0.106 s/h), en el overflow (0.40 contra 4.3 y 4.7) y en la onda interna (0.0017 contra 0.0025 y 0.0038).
     - **Overflow:** pyOCEAN admite el Δt más grande, 80 s, frente a 20 s de MOM6 y 10 s de CROCO y MITgcm.
     - **Frente a CROCO:** pyOCEAN cuesta 3 veces más en el lock exchange, 2.1 en la onda interna y 1.7 en el seamount, y la mitad en el overflow.
     - **Seamount:** pyOCEAN cuesta 7.6 veces lo de MITgcm (0.20 contra 0.027 s/h). Su Δt máximo es 600 s, la mitad que MOM6 σ y MITgcm (1200 s) e igual que CROCO.
@@ -246,12 +240,12 @@ Notas:
 
 ## Qué debe mejorar pyOCEAN
 
-1. **(a)/(b) Amortiguamiento de la onda interna con viscosidad baja.** pyOCEAN deja 0.39–0.45 de la oscilación, frente a 0.55–0.72 en MOM6, CROCO y MITgcm; afecta igual a z\* y a la híbrida. Diagnosticar con el caso de la onda interna, que tarda ~2 min, variando el esquema de tiempo, θ y el KE. Es lo más importante del benchmark para las ondas internas.
+1. ~~**(a) Amortiguamiento de la onda interna con viscosidad baja.**~~ Corregido el 2026-10-14 en z\* y σ (`theta_bc`, punto 9); en la híbrida va con el punto 4.
 2. **(a) Extremos nuevos de T con WENO5-Z** en la caída del overflow: hasta 4.7 °C en el 0.25 % del volumen. Opción: un limitador que conserve el rango (Zhang & Shu 2010 [verificar]) o un esquema que preserve la monotonía como opción.
 3. **(a) Híbrida, T fuera de rango en capas delgadas** (3.2–33 °C con 5–30 °C). Va al plan de la híbrida, con el lock exchange de 1 h como reproductor. Candidatos de la literatura:
    - Higdon (2005, 2020): atar la velocidad de la capa delgada a la de sus vecinas y poner un piso de grosor en la viscosidad;
    - Hallberg & Adcroft (2009): el reparto del residuo barotrópico.
-4. **(a) Híbrida, robustez en el overflow:** limitar el flujo saliente de una capa en el paso lagrangiano en lugar de detenerse, como el limitador de celdas que se vacían que ya existe en la forma de flujo. También las velocidades de 47 m/s con ν = 1000.
+4. **(a) Híbrida, robustez en el overflow y onda interna:** limitar el flujo saliente de una capa en el paso lagrangiano en lugar de detenerse, como el limitador de celdas que se vacían que ya existe en la forma de flujo (MOM6 limita el flujo a la masa disponible). También las velocidades de 47 m/s con ν = 1000. Con el limitador, la híbrida pasa a θ_bc = ½ y deja de amortiguar la onda interna (0.45 frente a 0.65–0.72). Es el primer punto del plan de la híbrida.
 5. **(a) Diagnóstico de RPE:** integrar exactamente ∫ z A dz por tramo en `reference_potential_energy`, para que sea exacto con cualquier hipsometría.
 6. **Rendimiento:**
    - reducir el trabajo fijo por paso y elegir el número de hilos según el tamaño de la malla (CROCO es 3–5.5 veces más rápido al mismo Δt en 2-D);
