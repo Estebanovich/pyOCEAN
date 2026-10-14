@@ -796,6 +796,11 @@ class SigmaBaroclinic:
           u′ₑₓₜ with Δt/τ_in when flowing in, Δt/τ_out when out, as CROCO u3dbc.F:111-155; sponge toward the
           exterior) | 'clamped' (u′ = u′ₑₓₜ, Dirichlet, as MITgcm OBCS prescribe / CROCO M3_FRC_BRY)}
     obc_tau_in, obc_tau_out : nudging time scales [s] of 'radiating' (CROCO typical 1 and 10 days)
+    theta_bc : time weight of the baroclinic part u′ of the layer transport (default ½, time-centred: the AB3
+        momentum tendency is centred at n + ½); the depth mean keeps the free-surface ``theta`` so the layer fluxes add
+        up to the free-surface flux.  Before 2026-10-13 u′ took ``theta`` too, which damps internal waves at
+        ~(θ − ½) ω² Δt (Ilicak internal wave: 0.45 of the oscillation left after 200 days at ν = 0.01 against
+        0.65–0.72 in MOM6, CROCO and MITgcm; 0.74 with theta_bc = ½; validation/ilicak_benchmark/README.md)
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, n_layers: int = 10,
@@ -811,7 +816,7 @@ class SigmaBaroclinic:
                  h_thin_bed: float = 0.01, init_iterations: int = 10, momentum: str | None = None,
                  ke_scheme: str = "arakawa", max_truncations: int = 1000, thickness_flux: str = "ppm",
                  mix_diagnostic: bool = True, open_boundary_state=None, open_boundary_mode: dict | None = None,
-                 obc_tau_in: float = 86400.0, obc_tau_out: float = 864000.0) -> None:
+                 obc_tau_in: float = 86400.0, obc_tau_out: float = 864000.0, theta_bc: float = 0.5) -> None:
         if pgf not in ("twoterm", "jacobian", "fv"):
             raise ValueError(f"unknown pressure-gradient scheme {pgf!r}")
         self.pgf, self.rho_ref = pgf, rho_ref
@@ -838,6 +843,7 @@ class SigmaBaroclinic:
         if open_boundary_state is None and "clamped" in self.obc_mode.values():
             raise ValueError("a 'clamped' open_boundary_mode needs open_boundary_state (the exterior to impose)")
         self.obc_tau_in, self.obc_tau_out = float(obc_tau_in), float(obc_tau_out)
+        self.theta_bc = float(theta_bc)
         self._ext = None
         self.orlanski_cmax, self.sponge_tracer = orlanski_cmax, sponge_tracer
         self.sponge_cells, self.sponge_tau = int(sponge_cells), tuple(float(t) for t in sponge_tau)
@@ -1555,7 +1561,7 @@ class SigmaBaroclinic:
                 ("north", Qy[:, -1, :], self.fs.last_open_Dv[-1, :], self.fs.last_open_Qv[-1, :], self.fs.Lv[-1, :],
                  h[:, -1, :], vn[:, -1, :], v_new[:, -1, :])):
             if edge in self.open:
-                Q[...] = np.where((D > 0)[None], open_face_transport(hc, vn1, vo, Qo, L, th), Q)
+                Q[...] = np.where((D > 0)[None], open_face_transport(hc, vn1, vo, Qo, L, th, self.theta_bc), Q)
 
     def _rhs_numpy(self, c: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, Fz: np.ndarray, ok: np.ndarray,
                    centred: bool = False) -> np.ndarray:
@@ -1667,8 +1673,9 @@ class SigmaBaroclinic:
         u_new = zero_thin_bed_velocity(u_new, hu, wu, self.h_thin_bed)
         v_new = zero_thin_bed_velocity(v_new, hv, wv, self.h_thin_bed)
         # transport velocities and free-surface volume fluxes (core.vertical.ale.transport_velocity)
-        utx, Qbx = transport_velocity(u_new, st.u, self.fs.last_wet_u, wu, self.fs.Lu, self.fs.last_Du, th)
-        uty, Qby = transport_velocity(v_new, st.v, self.fs.last_wet_v, wv, self.fs.Lv, self.fs.last_Dv, th)
+        tb = self.theta_bc
+        utx, Qbx = transport_velocity(u_new, st.u, self.fs.last_wet_u, wu, self.fs.Lu, self.fs.last_Du, th, tb)
+        uty, Qby = transport_velocity(v_new, st.v, self.fs.last_wet_v, wv, self.fs.Lv, self.fs.last_Dv, th, tb)
         if self.thickness_flux == "ppm":
             dx_t, dy_t = self._vi["dx_t"], self._vi["dy_t"]
             Qx = ppm_transport_x(st.h, utx, self.fs.Lu, Qbx, qe, qw, act, dt, dx_t)
@@ -1761,8 +1768,12 @@ class SigmaBaroclinic:
         # layer transports consistent with the free-surface flux (fs.last_Du / last_Dv: upwind face depth)
         un = np.where(self.fs.last_wet_u[None], st.u, 0.0)
         vn = np.where(self.fs.last_wet_v[None], st.v, 0.0)
-        Qx = (self.fs.Lu * self.fs.last_Du)[None] * self.ds[:, None, None] * (th * u_new + (1 - th) * un)
-        Qy = (self.fs.Lv * self.fs.last_Dv)[None] * self.ds[:, None, None] * (th * v_new + (1 - th) * vn)
+        # depth mean with the free-surface θ, baroclinic part with θ_bc (see transport_velocity)
+        tb, ds = self.theta_bc, self.ds[:, None, None]
+        ux = tb * u_new + (1 - tb) * un + ((th - tb) * ((ds * u_new).sum(0) - (ds * un).sum(0)))[None]
+        vy = tb * v_new + (1 - tb) * vn + ((th - tb) * ((ds * v_new).sum(0) - (ds * vn).sum(0)))[None]
+        Qx = (self.fs.Lu * self.fs.last_Du)[None] * ds * ux
+        Qy = (self.fs.Lv * self.fs.last_Dv)[None] * ds * vy
         if self.open:
             # open faces: Δσ_k × the free-surface (Flather) flux + the baroclinic part, so Σ_k Q_k is exactly
             # the volume flux of the continuity equation
@@ -1770,7 +1781,7 @@ class SigmaBaroclinic:
                                          (Qy, self.fs.last_open_Dv, self.fs.last_open_Qv, self.fs.Lv, st.v, v_new)):
                 po, pn = self._baroclinic_part(vo)[1], self._baroclinic_part(vn1)[1]
                 ds = self.ds[:, None, None]
-                Q[...] = np.where((D > 0)[None], ds * Qo[None] + (L * D)[None] * ds * (th * pn + (1 - th) * po), Q)
+                Q[...] = np.where((D > 0)[None], ds * Qo[None] + (L * D)[None] * ds * (tb * pn + (1 - tb) * po), Q)
         V0, V1 = self.layer_volumes(st.eta), self.layer_volumes(eta_new)
         divh = Qx[..., 1:] - Qx[..., :-1] + Qy[:, 1:, :] - Qy[:, :-1, :]
         Fz = np.zeros((n + 1,) + self.H.shape)                              # volume flux through interface k (k=0 bed)

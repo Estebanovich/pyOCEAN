@@ -201,3 +201,10 @@ def test_ale_restart_refuses_other_regrid_parameters(tmp_path):
         read_restart(tmp_path / "rst.nc", m2)
     with pytest.raises(ValueError, match="regrid"):
         read_restart(tmp_path / "rst.nc", _ale_model("zstar"))
+
+
+def test_restart_refuses_a_different_baroclinic_theta(tmp_path):
+    m = _model()
+    write_restart(tmp_path / "rst.nc", m, m.step(_initial(m)))
+    with pytest.raises(ValueError, match="theta_bc"):
+        read_restart(tmp_path / "rst.nc", _model(theta_bc=0.6))

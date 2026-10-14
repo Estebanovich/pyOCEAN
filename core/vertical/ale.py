@@ -547,35 +547,52 @@ def ppm_transport_x(h: np.ndarray, ut: np.ndarray, L: np.ndarray, Q_bt: np.ndarr
 
 
 def transport_velocity_numpy(u_new: np.ndarray, u_old: np.ndarray, last_wet: np.ndarray, w: np.ndarray,
-                             L: np.ndarray, D: np.ndarray, theta: float) -> tuple[np.ndarray, np.ndarray]:
+                             L: np.ndarray, D: np.ndarray, theta: float,
+                             theta_bc: float | None = None) -> tuple[np.ndarray, np.ndarray]:
     """
-    NumPy reference of transport_velocity (test oracle).  Transport velocity of the ALE step
-    u^θ = θ u^{n+1} + (1 − θ) u^n, with u^n = 0 on faces that carried no flow in the free-surface step
-    (``last_wet`` False), and the free-surface volume flux Q_bt = L D Σ_k w_k u^θ_k [m³ s⁻¹].
+    NumPy reference of transport_velocity (test oracle).  Transport velocity of the ALE step: the depth mean
+    ū = Σ_k w_k u_k with the free-surface θ (its volume flux must be the free-surface flux), the baroclinic part
+    u′ = u − ū with θ_bc (time-centred, θ_bc = ½: the AB3 momentum tendency is centred at n + ½; a θ_bc > ½ damps
+    internal waves at ~(θ_bc − ½) ω² Δt — Ilicak internal wave, validation/ilicak_benchmark):
+
+        u^θ_k = θ_bc u_k^{n+1} + (1 − θ_bc) u_k^n + (θ − θ_bc)(ū^{n+1} − ū^n)
+
+    θ_bc = None means θ (the scheme before 2026-10-13).  u^n = 0 on faces that carried no flow in the
+    free-surface step (``last_wet`` False); Q_bt = L D Σ_k w_k u^θ_k [m³ s⁻¹] (Σ_k w_k = 1, face_fractions).
     u (N, a, b), last_wet, L, D (a, b), w (N, a, b) layer fractions.
     """
+    tb = theta if theta_bc is None else theta_bc
     un = np.where(last_wet[None], u_old, 0.0)
-    ut = theta * u_new + (1 - theta) * un
+    m1, m0 = (w * u_new).sum(axis=0), (w * un).sum(axis=0)
+    ut = tb * u_new + (1 - tb) * un + ((theta - tb) * (m1 - m0))[None]
     return ut, L * D * (w * ut).sum(axis=0)
 
 
 @numba.njit(parallel=True, cache=True)
-def _transport_velocity_kernel(u_new, u_old, last_wet, w, L, D, theta, ut, Qb):  # pragma: no cover
+def _transport_velocity_kernel(u_new, u_old, last_wet, w, L, D, theta, theta_bc, ut, Qb):  # pragma: no cover
     """transport_velocity_numpy with the same arithmetic, one face column per thread item."""
     n, a, b = u_new.shape
     for p in numba.prange(a * b):
         j, i = p // b, p % b
+        m1 = 0.0
+        m0 = 0.0
+        for k in range(n):
+            un = u_old[k, j, i] if last_wet[j, i] else 0.0
+            m1 += w[k, j, i] * u_new[k, j, i]
+            m0 += w[k, j, i] * un
+        d = (theta - theta_bc) * (m1 - m0)
         s = 0.0
         for k in range(n):
             un = u_old[k, j, i] if last_wet[j, i] else 0.0
-            x = theta * u_new[k, j, i] + (1 - theta) * un
+            x = theta_bc * u_new[k, j, i] + (1 - theta_bc) * un + d
             ut[k, j, i] = x
             s += w[k, j, i] * x
         Qb[j, i] = L[j, i] * D[j, i] * s
 
 
 def transport_velocity(u_new: np.ndarray, u_old: np.ndarray, last_wet: np.ndarray, w: np.ndarray,
-                       L: np.ndarray, D: np.ndarray, theta: float) -> tuple[np.ndarray, np.ndarray]:
+                       L: np.ndarray, D: np.ndarray, theta: float,
+                       theta_bc: float | None = None) -> tuple[np.ndarray, np.ndarray]:
     """(u^θ, Q_bt) of the ALE step (see transport_velocity_numpy, the reference).  Numba kernel."""
     n, a, b = np.shape(u_new)
     if np.shape(u_old) != (n, a, b) or np.shape(w) != (n, a, b) or any(
@@ -584,7 +601,8 @@ def transport_velocity(u_new: np.ndarray, u_old: np.ndarray, last_wet: np.ndarra
                          f"w {np.shape(w)}, last_wet/L/D {np.shape(last_wet)}/{np.shape(L)}/{np.shape(D)}")
     ut, Qb = np.empty((n, a, b)), np.empty((a, b))
     _transport_velocity_kernel(np.asarray(u_new, float), np.asarray(u_old, float), np.asarray(last_wet, np.bool_),
-                               np.asarray(w, float), np.asarray(L, float), np.asarray(D, float), float(theta), ut, Qb)
+                               np.asarray(w, float), np.asarray(L, float), np.asarray(D, float), float(theta),
+                               float(theta if theta_bc is None else theta_bc), ut, Qb)
     return ut, Qb
 
 
@@ -603,11 +621,13 @@ def baroclinic_split_numpy(vel: np.ndarray, w: np.ndarray) -> tuple[np.ndarray, 
 
 
 def open_face_transport(h_int: np.ndarray, u_new: np.ndarray, u_old: np.ndarray, Q_bt: np.ndarray,
-                        L: np.ndarray, theta: float) -> np.ndarray:
+                        L: np.ndarray, theta: float, theta_bc: float | None = None) -> np.ndarray:
     """
     Layer volume fluxes through the faces of one open edge [m³ s⁻¹] (spec §3.4):
 
-        Q_k = (h_k / Σ_j h_j) Q_bt + L h_k (θ u′_kⁿ⁺¹ + (1 − θ) u′_kⁿ)
+        Q_k = (h_k / Σ_j h_j) Q_bt + L h_k (θ_bc u′_kⁿ⁺¹ + (1 − θ_bc) u′_kⁿ)
+
+    (θ_bc: the time weight of the baroclinic part, as transport_velocity; None means θ)
 
     with h_k the thickness of the interior cell (MOM6 MOM_continuity_PPM.F90:1237-1248) and u′ split
     with the interior fractions h_k/Σh, so Σ_k Q_k = Q_bt (the Flather flux of the free surface) to
@@ -618,7 +638,8 @@ def open_face_transport(h_int: np.ndarray, u_new: np.ndarray, u_old: np.ndarray,
     w = np.where(wet[None], h_int / np.where(wet, tot, 1.0)[None], 0.0)
     pn = u_new - (w * u_new).sum(axis=0)[None]
     po = u_old - (w * u_old).sum(axis=0)[None]
-    Q = w * Q_bt[None] + L[None] * h_int * (theta * pn + (1.0 - theta) * po)
+    tb = theta if theta_bc is None else theta_bc
+    Q = w * Q_bt[None] + L[None] * h_int * (tb * pn + (1.0 - tb) * po)
     return np.where(wet[None], Q, 0.0)
 
 
