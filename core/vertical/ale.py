@@ -34,6 +34,15 @@ Three face thicknesses, each for its job (ALE Plan B2, 2026-10-12):
   w_k = Δσ_k.
 * Min (``face_thickness``): min(h_L, h_R), as MITgcm hFacW (model/src/ini_masks_etc.F:250-252),
   for the along-layer tracer diffusion, so no diffusive flux enters a vanished cell.
+* Viscous (``viscous_face_thickness``, hybrid robustness plan 2026-10-14): the vertical viscosity's
+  coupling uses MOM6's upwind-biased thickness — harmonic 2 q_a q_b / (q_a + q_b) where the water
+  leaves the thinner side, arithmetic where thick water advances (MOM_vert_friction.F90:1519-1533;
+  Hallberg & Rhines 1996) — so a draining, nearly vanished layer is tied to its neighbours
+  (Higdon 2005 §3.1) while the nose of a gravity current is not held back.
+
+Positivity: ``limit_outflow`` cuts the outgoing fluxes of each layer to its content before the
+Lagrangian step (h ≥ 0 guaranteed) and hands the cut flux to the other layers of the same face,
+so Σ_k Q_k stays the free-surface flux (MOM6 and HYCOM limit a layer's flux to its mass).
 
 References: Adcroft, A. & Hallberg, R. (2006). Ocean Modelling 11, 224–233.  Hallberg, R. &
 Adcroft, A. (2009). Ocean Modelling 29, 15–26 [verificar].  Adcroft, A. et al. (2019). JAMES 11,
