@@ -514,3 +514,89 @@ def test_stable_accepts_a_fast_run_that_matches_its_results_run(tmp_path):
     s["u"][0, 0, 0, 1] = 16.0                                   # MOM6 z* overflow: 14–17 m/s in its own results run
     series.save(tmp_path / "x.npz", s, {})
     assert campaign.stable(tmp_path / "x.npz", ref_umax=16.0)
+
+
+# ---------------------------------------------------------------- HYCOM cost addendum (plan 2026-10-13, Task 1)
+def test_hycom_sig0_matches_the_7_term_fit():
+    from validation.ilicak_benchmark.hycom import inputs
+    assert abs(float(inputs.sig0(10.0, 35.0)) - 26.957) < 2e-3            # stmt_fns.h:317 at (10 °C, 35)
+    assert float(inputs.sig0(10.0, 35.0)) - float(inputs.sig0(20.0, 35.0)) > 1.9
+
+
+def test_hycom_ab_round_trip_and_closed_domain(tmp_path):
+    from forcing.sources import hycom_ab
+    from validation.ilicak_benchmark import cases
+    from validation.ilicak_benchmark.hycom import inputs
+    inputs.write_grid(tmp_path)
+    inputs.write_depth(tmp_path)
+    g = inputs.geometry()
+    d = hycom_ab.read_record(tmp_path / "regional.depth.b", 0, idm=g["idm"], jdm=g["jdm"])   # checks .b min/max
+    assert np.isnan(d[:, 0]).all() and np.isnan(d[:, -1]).all() and np.isnan(d[0]).all() and np.isnan(d[-1]).all()
+    np.testing.assert_allclose(d[2, 1:-1], cases.get("overflow").H[0], rtol=1e-6)        # float32
+    lines = (tmp_path / "regional.grid.b").read_text().splitlines()
+    assert lines[0].split()[0] == "202" and lines[1].split()[0] == "5" and len(lines) == 3 + 18
+    for irec in range(18):                                     # read_record(check=True) compares .b min/max with .a
+        hycom_ab.read_record(tmp_path / "regional.grid.b", irec, idm=g["idm"], jdm=g["jdm"])
+
+
+def test_hycom_relax_files_hold_the_lock_columns(tmp_path):
+    from forcing.sources import hycom_ab
+    from validation.ilicak_benchmark.hycom import inputs
+    inputs.write_relax(tmp_path, kdm=100)
+    g = inputs.geometry()
+    rd = lambda f, i: hycom_ab.read_record(tmp_path / f, i, idm=g["idm"], jdm=g["jdm"])          # noqa: E731
+    T0 = rd("relax.temp.b", 0)
+    assert np.isclose(T0[2, 1], 10.0) and np.isclose(T0[2, 100], 20.0)                 # x < 20 km cold
+    rd("relax.temp.b", 1199)                                                            # 12 months × 100 layers
+    assert np.allclose(np.nan_to_num(rd("relax.intf.b", 0)), 0.0) and np.isclose(rd("relax.intf.b", 1)[2, 1], 20.0 * 9806.0)
+    head = (tmp_path / "relax.temp.b").read_text().splitlines()
+    assert len(head) == 5 + 1200 and "= 01 01" in head[5].replace("  ", " ")
+
+
+def test_hycom_blkdat_order_and_time_steps():
+    from validation.ilicak_benchmark.hycom import blkdat
+    sig = np.linspace(24.5, 27.0, 100)
+    txt = blkdat.blkdat(100, 10.0, 1.0, 100.0, sig, np.full(100, 20.0))
+    names = [ln.split("'")[1] for ln in txt.splitlines()[4:]]
+    assert names[:7] == ["iversn", "iexpt ", "idm   ", "jdm   ", "itest ", "jtest ", "kdm   "]
+    assert names.count("dp0k  ") == 100 and names.count("sigma ") == 100 and names[-1] == "epmass"
+    assert "ds0k  " not in names                             # nsigma = 0: blkdat.F90:287 reads none
+    assert names.index("baclin") < names.index("batrop") < names.index("incflg")
+    vals = {ln.split("'")[1]: ln.split()[0] for ln in txt.splitlines()[4:]}
+    assert float(vals["veldf2"]) == 0.1 and vals["iniflg"] == "2" and vals["relax "] == "0"
+    with pytest.raises(ValueError):
+        blkdat.blkdat(100, 10.0, 3.0, 100.0, sig, np.full(100, 20.0))       # 10/3 not an even integer
+    with pytest.raises(ValueError):
+        blkdat.blkdat(100, 7.0, 1.0, 100.0, sig, np.full(100, 20.0))        # 86400 / 7 not an integer
+    assert "    5     5     1   202     5    41     5     0" in blkdat.patch(5, 202, 5)
+    assert blkdat.limits(12.0).split() == ["0.0", "0.5000000000"]
+
+
+def test_hycom_patch_tiles_cover_the_domain():
+    from validation.ilicak_benchmark.hycom import blkdat
+    lines = blkdat.patch(5, 202, 5).splitlines()
+    ispt = [int(v) for v in lines[3][12:].split()]
+    iipe = [int(v) for v in lines[4][12:].split()]
+    assert iipe == [41, 41, 40, 40, 40] and ispt == [1, 42, 83, 123, 163]
+    assert lines[6][12:].split() == ["1"] and lines[7][12:].split() == ["5"]
+
+
+def test_hycom_write_case_writes_every_input(tmp_path):
+    from validation.ilicak_benchmark.hycom import blkdat
+    blkdat.write_case(tmp_path, npes=1, baclin=20.0, batrop=2.0, hours=1.0)
+    for f in ("regional.grid.a", "regional.grid.b", "regional.depth.a", "regional.depth.b", "relax.temp.a",
+              "relax.saln.b", "relax.intf.b", "relax.weird", "blkdat.input", "patch.input", "limits"):
+        assert (tmp_path / f).exists(), f
+    vals = {ln.split("'")[1]: ln.split()[0] for ln in (tmp_path / "blkdat.input").read_text().splitlines()[4:]}
+    assert float(vals["baclin"]) == 20.0 and float(vals["batrop"]) == 2.0
+
+
+def test_hycom_timer_parser_reads_the_last_block():
+    from validation.ilicak_benchmark.hycom import timers
+    out = ("   timer statistics, processor    1 out of    1\n"
+           "   total    calls =        1   time =    9.00000   time/call =    9.00000000\n"
+           "   timer statistics, processor    1 out of    1\n"
+           "   cnuity   calls =     4320   time =    1.50000   time/call =    0.00034722\n"
+           "   total    calls =        1   time =    6.25000   time/call =    6.25000000\n")
+    t = timers.parse(out)
+    assert t["total"] == 6.25 and t["cnuity"] == 1.5 and t["cnuity_calls"] == 4320
