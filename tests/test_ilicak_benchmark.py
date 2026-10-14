@@ -404,3 +404,31 @@ def test_smoke_lock_exchange_one_hour(model, coord):
     assert np.isfinite(np.where(s["h"] > 0, s["T"], 0.0)).all()                        # extrema are results, not checked
     assert np.isfinite(metrics.rpe(s)).all()          # a falling RPE (new extrema, Ilicak Fig. 7) is a result
     assert metrics.max_speed(s)[-1] > 0.1                                              # the fronts are moving
+
+
+def test_campaign_matrix_and_commands():
+    from validation.ilicak_benchmark import campaign
+    two_d = [("pyocean", "zstar"), ("pyocean", "sigma"), ("pyocean", "hybrid"), ("mom6", "zstar"), ("mom6", "rho"),
+             ("croco", "sigma"), ("mitgcm", "zstar")]
+    for c in ("lock", "overflow", "iw"):
+        assert campaign.CONFIGS[c] == two_d
+    assert campaign.CONFIGS["seamount"] == [("pyocean", "sigma"), ("pyocean", "zstar"), ("mom6", "sigma"),
+                                            ("mom6", "zstar"), ("croco", "sigma"), ("mitgcm", "zstar")]
+    cmd = campaign.command("lock", "mom6", "rho", 10.0, dt=20.0, hours=1.0, tag="cost")
+    assert cmd[-7:] == ["run", "lock", "rho", "10", "20", "1", "cost"] and cmd[0].endswith("run_mom6.sh")
+    py = campaign.command("iw", "pyocean", "hybrid", 15.0)
+    assert py[1].endswith("run_pyocean.py") and py[2:5] == ["iw", "hybrid", "15"]
+
+
+def test_stable_rejects_nan_and_fast_flow(tmp_path):
+    from validation.ilicak_benchmark import campaign, series
+    s = _flat_series([1.0], [5.0], nx=2)
+    series.save(tmp_path / "ok.npz", s, {})
+    assert campaign.stable(tmp_path / "ok.npz")
+    s["u"] = s["u"] + 9.0
+    series.save(tmp_path / "fast.npz", s, {})
+    assert not campaign.stable(tmp_path / "fast.npz")
+    s["u"] = s["u"] * 0
+    s["T"] = s["T"] * np.nan
+    series.save(tmp_path / "nan.npz", s, {})
+    assert not campaign.stable(tmp_path / "nan.npz")
