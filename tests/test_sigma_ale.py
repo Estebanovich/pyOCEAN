@@ -1396,3 +1396,24 @@ def test_fct_bounds_include_the_layers_above_and_below():
     for f in (fct_coefficients_numpy, _fct_coeff_kernel):
         Cx, _ = f(c0, cL, V1, Ax, Ay, ok, 30.0)
         assert Cx[0, 1, 0, 1] > 0.5, f.__name__
+
+
+@pytest.mark.parametrize("open_", [("west", "east", "south", "north"), ()])
+def test_fct_fused_kernels_match_the_numpy_oracle(open_):
+    # the Numba path of the FCT (stages, donor/antidiffusive fluxes, final update) = the NumPy reference, with
+    # 2-D flow, two tracers, a thin and a dry cell, and inflow/outflow on all four open edges (or closed)
+    m, st = _ale_open_box("zstar", nx=14, ny=12, open_=open_, tracer_limiter="fct")
+    rng = np.random.default_rng(7)
+    h = st.h.copy(); h[2, 5, 6] = 1e-3
+    V = m.layer_volumes(st.eta, h)
+    Qx = rng.uniform(-0.4, 0.4, st.u.shape) * 1e3 * np.concatenate([h[..., :1], h], axis=-1)
+    Qy = rng.uniform(-0.4, 0.4, st.v.shape) * 1e3 * np.concatenate([h[:, :1], h], axis=1)
+    if not open_:
+        Qx[..., [0, -1]] = 0.0; Qy[:, [0, -1]] = 0.0
+    V1 = V - m.dt * (Qx[..., 1:] - Qx[..., :-1] + Qy[:, 1:] - Qy[:, :-1])
+    ok = np.broadcast_to(m.fs.active[None], V.shape) & (V1 > 0)
+    T = 7.0 + rng.normal(0, 1, st.T.shape)
+    C = np.stack([T, T ** 2])
+    ref = m._advect_fct_numpy(C, V, V1, Qx, Qy, ok)
+    got = m._advect_fct(C, V, V1, Qx, Qy, ok)
+    np.testing.assert_allclose(got, ref, rtol=1e-13, atol=0)

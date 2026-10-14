@@ -603,6 +603,18 @@ def test_viscous_face_thickness_is_upwind_biased_with_a_velocity():
     np.testing.assert_allclose(hv, [harm, 25.0005, 25.0005, harm], rtol=1e-9)
 
 
+def test_viscous_face_thickness_kernel_matches_numpy_on_strided_3d_arrays():
+    # the ALE step passes (N, ny, nx+1) arrays and swapped views of the v faces: the fused kernel = the NumPy rule
+    rng = np.random.default_rng(5)
+    q_a = rng.uniform(0, 30, (6, 9, 7)); q_b = rng.uniform(0, 30, (6, 9, 7)); u = rng.normal(0, 1, (6, 9, 7))
+    q_a[0, 0, 0] = 0.0; u[1, 2, 3] = 0.0
+    for a, b, w in ((q_a, q_b, u), (q_a.swapaxes(1, 2), q_b.swapaxes(1, 2), u.swapaxes(1, 2))):
+        harm = 2.0 * a * b / (a + b + 1e-10)
+        ref = np.where(w * (b - a) > 0, harm, 0.5 * (a + b))
+        np.testing.assert_allclose(ale.viscous_face_thickness(a, b, w), ref, rtol=1e-15, atol=0)
+    assert ale._viscous_face_kernel is not None
+
+
 def test_blend_thin_layers_follows_hycom():
     # HYCOM mod_momtum.F90:3055-3065: top-down, u_k ← (u_k q + u_above (c − q))/c, q = min(h, c); k = 0 at the bed
     c = 0.5

@@ -83,10 +83,29 @@ def viscous_face_thickness(q_a: np.ndarray, q_b: np.ndarray, u: np.ndarray | Non
     plume 10 → 2 m/s at 4 h).  Without ``u``: the harmonic mean everywhere (MOM6 HARMONIC_VISC = True, :1486-1493).
     Tie time of a thin layer ≈ h_thin · h_interface / ν_v (Higdon 2005 §3.1: u_thin → mean of its neighbours as h → 0).
     """
+    if u is not None and np.ndim(q_a) == 3 and np.shape(q_a) == np.shape(q_b) == np.shape(u):
+        out = np.empty(np.shape(q_a))                                    # the ALE step: fused kernel, same rule
+        _viscous_face_kernel(np.asarray(q_a, float), np.asarray(q_b, float), np.asarray(u, float),
+                             float(h_neglect), out)
+        return out
     harm = 2.0 * q_a * q_b / (q_a + q_b + h_neglect)
     if u is None:
         return harm
     return np.where(u * (q_b - q_a) > 0, harm, 0.5 * (q_a + q_b))
+
+
+@numba.njit(parallel=True, cache=True)
+def _viscous_face_kernel(q_a, q_b, u, h_neglect, out):  # pragma: no cover
+    """viscous_face_thickness with a velocity, (N, ·, ·) arrays of any strides, parallel over the layers."""
+    n, ny, nx = q_a.shape
+    for k in numba.prange(n):
+        for j in range(ny):
+            for i in range(nx):
+                a, b = q_a[k, j, i], q_b[k, j, i]
+                if u[k, j, i] * (b - a) > 0:
+                    out[k, j, i] = 2.0 * a * b / (a + b + h_neglect)
+                else:
+                    out[k, j, i] = 0.5 * (a + b)
 
 
 def blend_thin_layers(vel: np.ndarray, hf: np.ndarray, w: np.ndarray, cutoff: float) -> np.ndarray:

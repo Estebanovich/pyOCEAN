@@ -421,6 +421,87 @@ def _fct_coeff_kernel(c0, cL, V1, Ax, Ay, ok, dt):  # pragma: no cover
 
 
 @njit(cache=True, parallel=True)
+def _fct_stage(q0, qp, fx, fy, a, b, dt, V, C, q_out, c_out):  # pragma: no cover
+    """
+    One update of SigmaBaroclinic._advect_fct_numpy with its exact expressions: q = a q0 + b (qp − Δt ∇·F) with the
+    face fluxes F = (fx, fy) (a = 0, b = 1: q0 − Δt ∇·F; a = ¾, b = ¼: the second RK3 stage), then the ``safe``
+    rule c = q / V where V > 0, else the step's initial C.  Stacks (nt, N, ny, nx), V (N, ny, nx).
+    """
+    nt, n, ny, nx = q0.shape
+    for p in prange(nt * n):
+        t, k = p // n, p % n
+        for j in range(ny):
+            for i in range(nx):
+                d = fx[t, k, j, i + 1] - fx[t, k, j, i] + fy[t, k, j + 1, i] - fy[t, k, j, i]
+                q = a * q0[t, k, j, i] + b * (qp[t, k, j, i] - dt * d)
+                q_out[t, k, j, i] = q
+                v = V[k, j, i]
+                c_out[t, k, j, i] = q / v if v > 0 else C[t, k, j, i]
+
+
+@njit(cache=True, parallel=True)
+def _fct_fluxes(c, Qx, Qy, ext, open_w, open_e, open_s, open_n, fx0, fy0, fx1, fy1, fx2, fy2):  # pragma: no cover
+    """
+    Donor-cell flux F_L = Q c_up (open edges: ``ext`` on inflow, the boundary cell on outflow, as _advect_faces_h)
+    and antidiffusive flux A = F_H − F_L with the RK3 flux F_H = (F0 + F1)/6 + 2 F2/3 (Zalesak 1979, eq. 6), the
+    arithmetic of SigmaBaroclinic._upwind_faces_h and _advect_fct_numpy.  Returns (FLx, FLy, Ax, Ay).
+    """
+    nt, n, ny, nx = c.shape
+    FLx = np.zeros((nt, n, ny, nx + 1))
+    FLy = np.zeros((nt, n, ny + 1, nx))
+    Ax = np.empty((nt, n, ny, nx + 1))
+    Ay = np.empty((nt, n, ny + 1, nx))
+    for p in prange(nt * n):
+        t, k = p // n, p % n
+        for j in range(ny):
+            for f in range(1, nx):
+                q = Qx[k, j, f]
+                FLx[t, k, j, f] = q * (c[t, k, j, f - 1] if q >= 0 else c[t, k, j, f])
+            q = Qx[k, j, 0]
+            if open_w:
+                FLx[t, k, j, 0] = q * (ext[t, k, j, 0] if q > 0 else c[t, k, j, 0])
+            q = Qx[k, j, nx]
+            if open_e:
+                FLx[t, k, j, nx] = q * (ext[t, k, j, nx - 1] if q < 0 else c[t, k, j, nx - 1])
+            for f in range(nx + 1):
+                fh = (fx0[t, k, j, f] + fx1[t, k, j, f]) / 6.0 + 2.0 * fx2[t, k, j, f] / 3.0
+                Ax[t, k, j, f] = fh - FLx[t, k, j, f]
+        for i in range(nx):
+            for f in range(1, ny):
+                q = Qy[k, f, i]
+                FLy[t, k, f, i] = q * (c[t, k, f - 1, i] if q >= 0 else c[t, k, f, i])
+            q = Qy[k, 0, i]
+            if open_s:
+                FLy[t, k, 0, i] = q * (ext[t, k, 0, i] if q > 0 else c[t, k, 0, i])
+            q = Qy[k, ny, i]
+            if open_n:
+                FLy[t, k, ny, i] = q * (ext[t, k, ny - 1, i] if q < 0 else c[t, k, ny - 1, i])
+            for f in range(ny + 1):
+                fh = (fy0[t, k, f, i] + fy1[t, k, f, i]) / 6.0 + 2.0 * fy2[t, k, f, i] / 3.0
+                Ay[t, k, f, i] = fh - FLy[t, k, f, i]
+    return FLx, FLy, Ax, Ay
+
+
+@njit(cache=True, parallel=True)
+def _fct_final(q0, FLx, FLy, Ax, Ay, Cx, Cy, dt, V1, C):  # pragma: no cover
+    """V1 c = V0 c0 − Δt ∇·(F_L + C A) (Zalesak 1979, eq. 14) with the ``safe`` rule, as _advect_fct_numpy."""
+    nt, n, ny, nx = q0.shape
+    out = np.empty((nt, n, ny, nx))
+    for p in prange(nt * n):
+        t, k = p // n, p % n
+        for j in range(ny):
+            for i in range(nx):
+                d = (FLx[t, k, j, i + 1] + Cx[t, k, j, i + 1] * Ax[t, k, j, i + 1]
+                     - (FLx[t, k, j, i] + Cx[t, k, j, i] * Ax[t, k, j, i])
+                     + (FLy[t, k, j + 1, i] + Cy[t, k, j + 1, i] * Ay[t, k, j + 1, i])
+                     - (FLy[t, k, j, i] + Cy[t, k, j, i] * Ay[t, k, j, i]))
+                q = q0[t, k, j, i] - dt * d
+                v = V1[k, j, i]
+                out[t, k, j, i] = q / v if v > 0 else C[t, k, j, i]
+    return out
+
+
+@njit(cache=True, parallel=True)
 def _diffuse_ale_kernel(T, Tw, h, act, cx, cy, okx, oky, V, kh, dt, out):  # pragma: no cover
     """
     ALE horizontal diffusion (SigmaBaroclinic._diffuse_h_numpy with h given) with the same per-element
@@ -1738,12 +1819,14 @@ class SigmaBaroclinic:
         T_in = self._inflow_T()
         return c if T_in is None or not self.open else np.ascontiguousarray(np.stack([T_in, T_in**2])[: c.shape[0]])
 
-    def _faces_h(self, c: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, ok: np.ndarray):
-        """WENO5 horizontal face fluxes (fx, fy) of the stack — the terms _advect_div differences (no ω in ALE)."""
+    def _faces_h(self, c: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, ok: np.ndarray, ext: np.ndarray | None = None):
+        """WENO5 horizontal face fluxes (fx, fy) of the stack — the terms _advect_div differences (no ω in ALE).
+        ``ext``: the inflow values of _ext_stack, when the caller already has them."""
         c = np.ascontiguousarray(c, dtype=float)
         numba.set_num_threads(_THREADS[0])
         return _advect_faces_h(c, np.ascontiguousarray(Qx, dtype=float), np.ascontiguousarray(Qy, dtype=float),
-                               np.ascontiguousarray(np.broadcast_to(ok, c.shape[1:])), self._ext_stack(c),
+                               np.ascontiguousarray(np.broadcast_to(ok, c.shape[1:])),
+                               self._ext_stack(c) if ext is None else ext,
                                "west" in self.open, "east" in self.open, "south" in self.open, "north" in self.open,
                                self.tracer_scheme == "weno5")
 
@@ -1767,6 +1850,42 @@ class SigmaBaroclinic:
     def _advect_fct(self, C: np.ndarray, V0: np.ndarray, V1: np.ndarray, Qx: np.ndarray, Qy: np.ndarray,
                     ok: np.ndarray, unlimited: bool = False) -> np.ndarray:
         """
+        _advect_fct_numpy with its arithmetic in fused Numba kernels (_fct_stage, _fct_fluxes, _fct_coeff_kernel,
+        _fct_final): the NumPy glue cost 23–36 % of the BayIW step (2026-10-14).  ``unlimited``: the NumPy path.
+        """
+        if unlimited:
+            return self._advect_fct_numpy(C, V0, V1, Qx, Qy, ok, unlimited=True)
+        dt = float(self.dt)
+        C = np.ascontiguousarray(C, dtype=float)
+        Qx, Qy = np.ascontiguousarray(Qx, dtype=float), np.ascontiguousarray(Qy, dtype=float)
+        V0, V1 = np.ascontiguousarray(V0, dtype=float), np.ascontiguousarray(V1, dtype=float)
+        dV = V1 - V0
+        Va, Vb = np.ascontiguousarray(V0 + dV), np.ascontiguousarray(V0 + 0.5 * dV)
+        okc = np.ascontiguousarray(np.broadcast_to(ok, C.shape[1:]))
+        ext = self._ext_stack(C)
+        ext_s = None if ext is C else ext                                # no inflow data: each stage's own values
+        ext = np.ascontiguousarray(ext, dtype=float)
+        q0 = V0 * C
+        q1, c1 = np.empty_like(C), np.empty_like(C)
+        q2, c2 = np.empty_like(C), np.empty_like(C)
+        fx0, fy0 = self._faces_h(C, Qx, Qy, okc, ext)
+        numba.set_num_threads(_THREADS[0])
+        _fct_stage(q0, q0, fx0, fy0, 0.0, 1.0, dt, Va, C, q1, c1)
+        fx1, fy1 = self._faces_h(c1, Qx, Qy, okc, ext_s)
+        _fct_stage(q0, q1, fx1, fy1, 0.75, 0.25, dt, Vb, C, q2, c2)
+        fx2, fy2 = self._faces_h(c2, Qx, Qy, okc, ext_s)
+        opn = self.open
+        FLx, FLy, Ax, Ay = _fct_fluxes(C, Qx, Qy, ext, "west" in opn, "east" in opn, "south" in opn, "north" in opn,
+                                       fx0, fy0, fx1, fy1, fx2, fy2)
+        qL, cL = q1, c1                                                  # stage buffers reused
+        _fct_stage(q0, q0, FLx, FLy, 0.0, 1.0, dt, V1, C, qL, cL)
+        Cx, Cy = _fct_coeff_kernel(C, cL, V1, Ax, Ay, okc, dt)
+        return _fct_final(q0, FLx, FLy, Ax, Ay, Cx, Cy, dt, V1, C)
+
+    def _advect_fct_numpy(self, C: np.ndarray, V0: np.ndarray, V1: np.ndarray, Qx: np.ndarray, Qy: np.ndarray,
+                          ok: np.ndarray, unlimited: bool = False) -> np.ndarray:
+        """
+        NumPy reference of _advect_fct (test oracle).
         SSP-RK3 WENO5 advection of the stack C with Zalesak (1979) FCT (spec 2026-10-14 §4).  The high-order flux
         of the step is the RK3 combination F_H = (F(c0) + F(c1))/6 + 2F(c2)/3, so V1 c_RK3 = V0 c0 − Δt ∇·F_H;
         the low-order flux is donor cell, V1 c_L = V0 c0 − Δt ∇·F_L, bounded because limit_outflow keeps every
