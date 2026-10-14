@@ -319,3 +319,68 @@ def test_croco_reader_flips_to_surface_first_and_drops_ghosts(tmp_path):
     assert s["t"].tolist() == [0.0, 900.0] and s["T"].shape == (2, 20, 1, 128) and s["u"].shape == (2, 20, 1, 129)
     assert s["T"][0, 0, 0, 0] == 19.0 and s["T"][0, -1, 0, 0] == 0.0                # surface first
     np.testing.assert_allclose(s["h"][0], 1.0, rtol=1e-12)                          # uniform σ: 20 m / 20
+
+
+def test_mitgcm_data_and_size_for_zstar_os7mp_free_slip():
+    from validation.ilicak_benchmark import cases, mitgcm
+    c = cases.get("lock")
+    size = mitgcm.size_h(c)
+    for s in ("sNx = 129", "sNy =   1", "OLx =   4", "OLy =   4", "Nr  =  20"):
+        assert s in size, s
+    txt = mitgcm.data(c, 10.0, 10.0, 17.0)
+    for s in ("eosType='LINEAR'", "tAlpha=2.E-4", "sBeta=0.", "rhoNil=1000.", "rhoConst=1000.", "gravity=9.81",
+              "viscAh=10.0", "viscAr=1.E-4", "no_slip_sides=.FALSE.", "no_slip_bottom=.FALSE.", "diffKhT=0.",
+              "diffKrT=0.", "tempAdvScheme=7", "staggerTimeStep=.TRUE.", "select_rStar=2", "nonlinFreeSurf=4",
+              "exactConserv=.TRUE.", "implicitFreeSurface=.TRUE.", "hFacMin=0.1", "deltaT=10.0", "endTime=61200.0",
+              "delX=129*500.0", "delR=20*1.0", "saltStepping=.FALSE.", "readBinaryPrec=64"):
+        assert s in txt, s
+    assert "tRef=20*0.0" in txt and "bottomDragLinear=0." in txt and "bottomDragQuadratic=0." in txt
+
+
+def test_mitgcm_binary_inputs(tmp_path):
+    from validation.ilicak_benchmark import cases, mitgcm
+    c = cases.get("overflow")
+    mitgcm.write_run("overflow", 100.0, tmp_path)
+    b = np.fromfile(tmp_path / "bathy.bin", ">f8").reshape(1, 201)
+    np.testing.assert_allclose(-b[0, :200], c.H[0])
+    assert b[0, 200] == 0.0                                                      # the land column (east wall)
+    T = np.fromfile(tmp_path / "theta.bin", ">f8").reshape(100, 1, 201)
+    assert (T[:, 0, 0] == 10.0).all() and (T[:, 0, 199] == 20.0).all()
+
+
+def _fake_mitgcm_mnc(d, c, nt=2, n_land=1):
+    """MNC diagnostics in MITgcm's layout: surface first, one land column east, t = 0 absent (snapshots)."""
+    Nx = c.nx + n_land
+    with netCDF4.Dataset(d / "diag3d.0000000000.t001.nc", "w") as ds:
+        for n, sz in (("T", None), ("Z", c.nz), ("Y", c.ny), ("X", Nx), ("Xp1", Nx + 1), ("Yp1", c.ny + 1)):
+            ds.createDimension(n, sz)
+        ds.createVariable("T", "f8", ("T",))[:] = np.arange(1, nt + 1) * c.out_s
+        k = np.arange(c.nz, dtype=float)[:, None, None] * np.ones((c.nz, c.ny, Nx))
+        ds.createVariable("THETA", "f8", ("T", "Z", "Y", "X"))[:] = np.broadcast_to(k, (nt,) + k.shape)
+        ds.createVariable("UVEL", "f8", ("T", "Z", "Y", "Xp1"))[:] = 0.0
+        ds.createVariable("VVEL", "f8", ("T", "Z", "Yp1", "X"))[:] = 0.0
+        hf = np.ones((c.nz, c.ny, Nx))
+        hf[:, :, -1] = 0.0
+        ds.createVariable("hFactorC", "f8", ("T", "Z", "Y", "X"))[:] = np.broadcast_to(hf, (nt,) + hf.shape)
+    with netCDF4.Dataset(d / "diag2d.0000000000.t001.nc", "w") as ds:
+        for n, sz in (("T", None), ("Y", c.ny), ("X", Nx)):
+            ds.createDimension(n, sz)
+        ds.createVariable("T", "f8", ("T",))[:] = np.arange(1, nt + 1) * c.out_s
+        ds.createVariable("ETAN", "f8", ("T", "Y", "X"))[:] = 0.0
+    with netCDF4.Dataset(d / "grid.t001.nc", "w") as ds:
+        for n, sz in (("Z", c.nz), ("Y", c.ny), ("X", Nx)):
+            ds.createDimension(n, sz)
+        ds.createVariable("HFacC", "f8", ("Z", "Y", "X"))[:] = hf
+        ds.createVariable("drF", "f8", ("Z",))[:] = c.dz
+
+
+def test_mitgcm_reader_adds_t0_drops_land_and_keeps_surface_first(tmp_path):
+    from validation.ilicak_benchmark import cases, mitgcm
+    c = cases.get("lock")
+    _fake_mitgcm_mnc(tmp_path, c)
+    mitgcm.write_run("lock", 10.0, tmp_path)                                                # theta.bin for t = 0
+    s = mitgcm.read(tmp_path, "lock")
+    assert s["t"].tolist() == [0.0, 900.0, 1800.0] and s["T"].shape == (3, 20, 1, 128)
+    assert s["T"][1, 0, 0, 0] == 0.0 and s["T"][1, -1, 0, 0] == 19.0                        # k = 0 at the surface
+    assert s["T"][0, 0, 0, 0] == 5.0 and s["T"][0, 0, 0, -1] == 30.0                        # t = 0 from theta.bin
+    np.testing.assert_allclose(s["h"].sum(1), 20.0)
