@@ -13,6 +13,8 @@ print(cases.run_dir('$CASE', 'mom6', '$COORD', float('$NU'), '$TAG'))")
 rm -rf "$D"; mkdir -p "$D"
 (cd "$ROOT" && python -c "from pathlib import Path; from validation.ilicak_benchmark import mom6; \
 mom6.write_case('$CASE', '$COORD', float('$NU'), Path('$D'), dt=${DT:-None}, hours=${HRS:-None})")
+# optional MOM_override lines (variants outside the matrix), e.g. MOM6_OVERRIDE='BOUND_CORIOLIS = True\n...'
+[[ -n "${MOM6_OVERRIDE:-}" ]] && printf "%b\n" "$MOM6_OVERRIDE" > "$D/MOM_override"
 cd "$D"
 mpirun -n "${NP:-1}" "$EXE" > stdout.txt 2>&1 &
 pid=$!
