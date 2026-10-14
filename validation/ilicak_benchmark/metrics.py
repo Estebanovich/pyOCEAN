@@ -111,6 +111,18 @@ def overflow_descent(s: dict, T_mid: float = 15.0) -> tuple[np.ndarray, np.ndarr
     return np.array(xs), np.array(ds)
 
 
+def overflow_cold_centroid(s: dict, T_amb: float = 20.0) -> tuple[np.ndarray, np.ndarray]:
+    """Centroid (x [m], depth [m]) of the cold anomaly (T_amb − T)⁺ in every record: unlike the T < 15 °C centre of
+    mass it stays defined when the dense water has been mixed above the threshold."""
+    xs, ds = [], []
+    for n in range(s["t"].size):
+        V = s["h"][n] * (s["dy"][:, None] * s["dx"][None, :])[None]
+        w = V * np.clip(T_amb - np.nan_to_num(s["T"][n], nan=T_amb), 0.0, None)
+        xs.append(float((w * s["x"][None, None, :]).sum() / w.sum()))
+        ds.append(float((w * _centres(s, n)).sum() / w.sum()))
+    return np.array(xs), np.array(ds)
+
+
 def iw_amplitude(s: dict, x0: float = 125e3, T_iso: float | None = None) -> np.ndarray:
     """Displacement [m, positive up] of the isotherm T_iso (default: the mid-depth background value 15.1 °C) in the
     column nearest x0, relative to record 0; linear interpolation between cell centres."""

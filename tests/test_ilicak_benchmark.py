@@ -440,3 +440,29 @@ def test_max_speed_ignores_vanished_layers():
     s["u"][0, 1, 0, 1] = 9.0                                   # fast flow in a 1-mm layer: carries no mass
     s["u"][0, 0, 0, 1] = 0.5
     assert np.isclose(metrics.max_speed(s)[0], 0.5)
+
+
+def test_compare_summary_on_a_synthetic_lock_run(tmp_path, monkeypatch):
+    from validation.ilicak_benchmark import cases, compare, series
+    monkeypatch.setattr(cases, "RUNS", tmp_path)
+    c = cases.get("lock")
+    t = np.arange(0, 18) * 3600.0
+    nz, nx = 20, 128
+    T = np.where(c.x[None, None, None, :] < 32e3, 5.0, 30.0) * np.ones((t.size, nz, 1, nx))
+    s = dict(t=t, x=c.x, y=c.y, dx=c.dx, dy=c.dy, H=c.H, h=np.ones((t.size, nz, 1, nx)), T=T,
+             u=np.zeros((t.size, nz, 1, nx + 1)), v=np.zeros((t.size, nz, 2, nx)), eta=np.zeros((t.size, 1, nx)))
+    series.save(cases.run_dir("lock", "mom6", "zstar", 10.0) / "series.npz", s,
+                dict(model="MOM6", wall_s=1.0, n_steps=6120, dt=10.0))
+    r = compare.summary("lock", "mom6", "zstar", 10.0)
+    assert r["rpe_rel_end"] == 0.0 and r["drpe_dt"] == 0.0 and (r["t_min"], r["t_max"]) == (5.0, 30.0)
+    assert r["dense_nose"] == 0.0                                       # nothing moved
+    rows = compare.table("lock")
+    assert any("MOM6 z*" in row and "10" in row for row in rows)
+
+
+def test_overflow_cold_centroid_survives_mixing_above_the_threshold():
+    from validation.ilicak_benchmark import metrics
+    s = _flat_series([10.0, 10.0], [20.0, 16.0], nx=3)       # dense water mixed to 16 °C: none below 15 °C
+    s["T"][0, 1, 0, 0] = 20.0
+    xc, dep = metrics.overflow_cold_centroid(s, T_amb=20.0)
+    assert np.allclose(xc, s["x"][1:].mean()) and np.allclose(dep, 15.0)
