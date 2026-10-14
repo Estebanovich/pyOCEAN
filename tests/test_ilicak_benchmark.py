@@ -159,3 +159,32 @@ def test_overflow_descent_and_iw_amplitude_and_t_range():
     np.testing.assert_allclose(metrics.iw_amplitude(s2, T_iso=11.25), [0.0, 3.75], atol=1e-12)
     lo, hi = metrics.t_range(s)
     assert (lo, hi) == (10.0, 20.0)
+
+
+@pytest.mark.parametrize("name,coord", [("lock", "zstar"), ("lock", "hybrid"), ("overflow", "sigma"),
+                                        ("iw", "hybrid"), ("seamount", "zstar")])
+def test_pyocean_builds_each_case_and_records_surface_first(name, coord):
+    from validation.ilicak_benchmark import cases, run_pyocean
+    c = cases.get(name)
+    m, st = run_pyocean.build(c, coord, c.nu_h[-1])
+    r = run_pyocean.record(m, st)
+    nz = st.h.shape[0]
+    assert r["h"].shape == (nz, c.ny, c.nx) and r["u"].shape == (nz, c.ny, c.nx + 1)
+    np.testing.assert_allclose(r["h"].sum(0), c.H, rtol=1e-9)                     # rest, η = 0
+    # surface first: the top layer of the lock's east half is the warm water, the top of the IW column the warmest
+    if name == "lock":
+        assert np.allclose(r["T"][0, 0, -1], 30.0) and np.allclose(r["T"][-1, 0, 0], 5.0)
+    if name == "iw":
+        assert r["T"][0, 0, 0] > r["T"][-1, 0, 0]
+    T0 = c.T_fn(c.x[None, None, :], c.y[None, :, None], c.zc[:, None, None])
+    assert np.nanmin(r["T"]) >= T0.min() - 1e-6 and np.nanmax(r["T"]) <= T0.max() + 1e-6
+
+
+def test_pyocean_short_run_writes_a_series(tmp_path, monkeypatch):
+    from validation.ilicak_benchmark import cases, run_pyocean, series
+    monkeypatch.setattr(cases, "RUNS", tmp_path)
+    p = run_pyocean.run("lock", "zstar", 10.0, hours=60.0 / 3600.0, threads=1)     # 6 steps
+    s, meta = series.load(p)
+    assert s["t"][0] == 0.0 and s["t"][-1] == 60.0 and meta["model"] == "pyOCEAN" and meta["n_steps"] == 6
+    heat = (s["h"] * s["T"]).sum(axis=(1, 2, 3))
+    np.testing.assert_allclose(heat, heat[0], rtol=1e-10)
