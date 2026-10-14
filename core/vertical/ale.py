@@ -68,17 +68,45 @@ def face_thickness(h: np.ndarray, active: np.ndarray) -> tuple[np.ndarray, np.nd
     return hu, hv
 
 
-def viscous_face_thickness(q_a: np.ndarray, q_b: np.ndarray, h_neglect: float = 1e-10) -> np.ndarray:
+def viscous_face_thickness(q_a: np.ndarray, q_b: np.ndarray, u: np.ndarray | None = None,
+                           h_neglect: float = 1e-10) -> np.ndarray:
     """
-    Layer thickness at a velocity face for the vertical-viscosity coupling only (spec 2026-10-14 §3): the harmonic
-    mean 2 q_a q_b / (q_a + q_b + h_neglect) of the two sides' thicknesses [m] — MOM6 with HARMONIC_VISC = True
-    (MOM_vert_friction.F90:1457, 1486-1493; MOM6's default, False, keeps the arithmetic mean in the interior and
-    blends toward the harmonic only near the bed, :1517-1533).  A layer that has vanished on one side gets a
-    thickness → 0, so ν Δt / h² is large and the implicit viscosity ties its velocity to its neighbours; the mean
-    (q_a + q_b)/2 would give it half the thick side and let it accelerate alone (overflow ν = 100: 2 → 24 m/s on
-    faces with a side < 1 cm, 2026-10-14).
+    Layer thickness at a velocity face for the vertical-viscosity coupling only (spec 2026-10-14 §3) [m], from the
+    thicknesses q_a (low-index side: west or south) and q_b (high-index side).
+
+    With ``u`` (the face velocity), MOM6's upwind-biased rule (MOM_vert_friction.F90:1519-1533, there only near the
+    bed; Hallberg & Rhines 1996 via Hallberg & Adcroft 2009 §2.4) through the whole column: the harmonic mean
+    2 q_a q_b / (q_a + q_b + h_neglect) where the water leaves the thinner side, u·(q_b − q_a) > 0 — a layer draining
+    into its thick part is tied to its neighbours, which suppresses spurious accelerations of nearly massless layers
+    (overflow ν = 100: 2 → 24 m/s on faces with a side < 1 cm, 2026-10-14) — and the arithmetic mean where thick water
+    advances over thin, so the nose of a gravity current is not held back (harmonic everywhere slowed the overflow
+    plume 10 → 2 m/s at 4 h).  Without ``u``: the harmonic mean everywhere (MOM6 HARMONIC_VISC = True, :1486-1493).
+    Tie time of a thin layer ≈ h_thin · h_interface / ν_v (Higdon 2005 §3.1: u_thin → mean of its neighbours as h → 0).
     """
-    return 2.0 * q_a * q_b / (q_a + q_b + h_neglect)
+    harm = 2.0 * q_a * q_b / (q_a + q_b + h_neglect)
+    if u is None:
+        return harm
+    return np.where(u * (q_b - q_a) > 0, harm, 0.5 * (q_a + q_b))
+
+
+def blend_thin_layers(vel: np.ndarray, hf: np.ndarray, w: np.ndarray, cutoff: float) -> np.ndarray:
+    """
+    Velocities of thin layers blended with the layer above, as HYCOM mod_momtum.F90:3055-3065 (cutoff 0.5 m, :1256):
+    from the top down, u_k ← (u_k q + u_above (c − q)) / c with q = min(h_k, c), so a layer thinner than c moves
+    partly, and a vanished one wholly, with the (already blended) layer above — the h → 0 limit of the interfacial
+    friction (Higdon 2005 §3.1, 2020 §6.2: u_thin → its neighbours).  The top layer, which in HYCOM is never thin,
+    is blended with the layer below.  A uniform correction then restores Σ_k w_k u_k (the depth mean of the free
+    surface).  vel, hf (face thickness [m]), w (face fractions): (N, ...) with k = 0 at the bed; cutoff c [m].
+    """
+    if cutoff <= 0.0 or not (hf < cutoff).any():
+        return vel
+    out = vel.copy()
+    n = vel.shape[0]
+    for k in range(n - 1, -1, -1):
+        nb = out[k - 1] if k == n - 1 else out[k + 1]               # top layer: the one below; else the one above
+        q = np.minimum(hf[k], cutoff)
+        out[k] = np.where(q < cutoff, (out[k] * q + nb * (cutoff - q)) / cutoff, out[k])
+    return out + ((w * vel).sum(axis=0) - (w * out).sum(axis=0))[None]
 
 
 def face_transport_thickness_numpy(h: np.ndarray, H: np.ndarray, active: np.ndarray,

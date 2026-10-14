@@ -1249,3 +1249,9 @@ def test_thin_layer_coupling_ties_a_vanished_layer_to_its_neighbours():
 def test_thin_layer_coupling_option_is_validated():
     with pytest.raises(ValueError, match="thin_layer_coupling"):
         _ale_box("zstar", thin_layer_coupling="harmonic")
+
+
+def test_thin_layer_cutoff_option_is_validated():
+    assert _ale_box("zstar", thin_layer_cutoff=0.5).thin_layer_cutoff == 0.5
+    with pytest.raises(ValueError, match="thin_layer_cutoff"):
+        _ale_box("zstar", thin_layer_cutoff=-1.0)

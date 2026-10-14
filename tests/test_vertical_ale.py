@@ -590,3 +590,34 @@ def test_viscous_face_thickness_vanishes_with_either_side():
     qb = np.array([50.0, 50.0, 50.0, 10.0])
     hv = ale.viscous_face_thickness(qa, qb)
     np.testing.assert_allclose(hv, [50.0, 2 * 1e-3 * 50 / 50.001, 0.0, 10.0], rtol=1e-9, atol=1e-12)
+
+
+def test_viscous_face_thickness_is_upwind_biased_with_a_velocity():
+    # MOM6 (MOM_vert_friction.F90:1519-1533; Hallberg & Rhines 1996): harmonic where water leaves the thin side
+    # (u·(h_b − h_a) > 0), arithmetic where thick water advances over thin — the nose of a current is not held back
+    q_a = np.array([1e-3, 1e-3, 50.0, 50.0])        # low-index (west/south) side
+    q_b = np.array([50.0, 50.0, 1e-3, 1e-3])        # high-index side
+    u = np.array([1.0, -1.0, 1.0, -1.0])
+    hv = ale.viscous_face_thickness(q_a, q_b, u)
+    harm = 2 * 1e-3 * 50 / 50.001
+    np.testing.assert_allclose(hv, [harm, 25.0005, 25.0005, harm], rtol=1e-9)
+
+
+def test_blend_thin_layers_follows_hycom():
+    # HYCOM mod_momtum.F90:3055-3065: top-down, u_k ← (u_k q + u_above (c − q))/c, q = min(h, c); k = 0 at the bed
+    c = 0.5
+    hf = np.array([[[0.0]], [[0.25]], [[10.0]], [[0.0]]])        # bed: vanished, 25 cm, thick, top: vanished
+    u = np.array([[[9.0]], [[4.0]], [[1.0]], [[7.0]]])
+    w = hf / hf.sum(0)
+    out = ale.blend_thin_layers(u, hf, w, c)
+    raw = out - (out[2] - 1.0)                                     # remove the uniform Σ w u correction
+    assert abs(raw[3, 0, 0] - 1.0) < 1e-14                         # thin top layer takes the layer below
+    assert abs(raw[1, 0, 0] - (0.5 * 4.0 + 0.5 * 1.0)) < 1e-14     # half way: q = 0.25 of c = 0.5
+    assert abs(raw[0, 0, 0] - raw[1, 0, 0]) < 1e-14                            # vanished bed layer: the (blended) layer above
+    np.testing.assert_allclose((w * out).sum(0), (w * u).sum(0), rtol=1e-14)
+
+
+def test_blend_thin_layers_is_a_no_op_for_thick_columns():
+    hf = np.full((3, 2, 3), 2.0)
+    u = np.random.default_rng(1).normal(size=(3, 2, 3))
+    assert np.array_equal(ale.blend_thin_layers(u, hf, hf / hf.sum(0), 0.5), u)
