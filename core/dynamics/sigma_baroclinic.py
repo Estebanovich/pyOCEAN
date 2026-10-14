@@ -234,17 +234,14 @@ def _weno5_rows(c: np.ndarray, flux: np.ndarray, ok: np.ndarray, z_variant: bool
 
 
 @njit(cache=True, parallel=True)
-def _advect_div(c, Qx, Qy, Fz, ok, ext, open_w, open_e, open_s, open_n, z_variant, vert):  # pragma: no cover
+def _advect_faces_h(c, Qx, Qy, ok, ext, open_w, open_e, open_s, open_n, z_variant):  # pragma: no cover
     """
-    Fused flux-form advection RHS −∇·(Q c) of the tracer stack c (ntr, N, ny, nx) with WENO5 face
-    values in x, y and z (same rules as ``_weno5_rows``) and upstream values on the open edges
-    (``ext`` on inflow, the boundary cell on outflow; ``SigmaBaroclinic._open_faces``).  Face
-    fluxes are computed once, in parallel over (tracer, layer) or (tracer, row), then differenced.
+    Horizontal face fluxes Q·c_face of ``_advect_div`` (WENO5 upwind faces, upstream values on open edges),
+    returned instead of differenced — also the high-order flux of the FCT (spec 2026-10-14 §4).
     """
     nt, n, ny, nx = c.shape
     fx = np.zeros((nt, n, ny, nx + 1))
     fy = np.zeros((nt, n, ny + 1, nx))
-    fz = np.zeros((nt, n + 1, ny, nx)) if vert else np.zeros((nt, 1, 1, 1))   # ALE (Fz ≡ 0): no vertical pass
     for p in prange(nt * n):
         t, k = p // n, p % n
         for j in range(ny):
@@ -292,6 +289,20 @@ def _advect_div(c, Qx, Qy, Fz, ok, ext, open_w, open_e, open_s, open_n, z_varian
             q = Qy[k, ny, i]
             if open_n:
                 fy[t, k, ny, i] = q * (ext[t, k, ny - 1, i] if q < 0.0 else c[t, k, ny - 1, i])
+    return fx, fy
+
+
+@njit(cache=True, parallel=True)
+def _advect_div(c, Qx, Qy, Fz, ok, ext, open_w, open_e, open_s, open_n, z_variant, vert):  # pragma: no cover
+    """
+    Fused flux-form advection RHS −∇·(Q c) of the tracer stack c (ntr, N, ny, nx) with WENO5 face
+    values in x, y and z (same rules as ``_weno5_rows``) and upstream values on the open edges
+    (``ext`` on inflow, the boundary cell on outflow; ``SigmaBaroclinic._open_faces``).  Face
+    fluxes are computed once, in parallel over (tracer, layer) or (tracer, row), then differenced.
+    """
+    nt, n, ny, nx = c.shape
+    fx, fy = _advect_faces_h(c, Qx, Qy, ok, ext, open_w, open_e, open_s, open_n, z_variant)
+    fz = np.zeros((nt, n + 1, ny, nx)) if vert else np.zeros((nt, 1, 1, 1))   # ALE (Fz ≡ 0): no vertical pass
     if vert:
         for p in prange(nt * ny):
             t, j = p // ny, p % ny
@@ -322,6 +333,87 @@ def _advect_div(c, Qx, Qy, Fz, ok, ext, open_w, open_e, open_s, open_n, z_varian
                 else:
                     out[t, k, j, i] = -(fx[t, k, j, i + 1] - fx[t, k, j, i] + fy[t, k, j + 1, i] - fy[t, k, j, i])
     return out
+
+
+def fct_coefficients_numpy(c0: np.ndarray, cL: np.ndarray, V1: np.ndarray, Ax: np.ndarray, Ay: np.ndarray,
+                           ok: np.ndarray, dt: float) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Zalesak (1979, eqs. 7–13) flux-limiting coefficients C ∈ [0, 1] of the antidiffusive fluxes A = F_H − F_L
+    (stack (nt, N, ny, nx); Ax (nt, N, ny, nx+1), Ay (nt, N, ny+1, nx) [tracer m³ s⁻¹]) so that
+    V1 c = V1 c_L − Δt ∇·(C A) stays inside [c_min, c_max] = the extremes of c0 and c_L over the cell and its x, y
+    neighbours of the same layer (eq. 15, ``ok`` cells only).  Cells not ``ok`` (dry, V1 = 0) get R± = 0, so the
+    faces of a vanishing cell are upwind.  NumPy oracle of _fct_coeff_kernel.
+    """
+    big = np.inf
+    okb = np.broadcast_to(ok, c0.shape)
+    hi = np.where(okb, np.maximum(c0, cL), -big)
+    lo = np.where(okb, np.minimum(c0, cL), big)
+
+    def neigh(a, f):
+        out = a.copy()
+        out[..., 1:] = f(out[..., 1:], a[..., :-1]); out[..., :-1] = f(out[..., :-1], a[..., 1:])
+        out[..., 1:, :] = f(out[..., 1:, :], a[..., :-1, :]); out[..., :-1, :] = f(out[..., :-1, :], a[..., 1:, :])
+        return out
+
+    cmax, cmin = neigh(hi, np.maximum), neigh(lo, np.minimum)
+    p_in = dt * (np.maximum(Ax[..., :-1], 0) - np.minimum(Ax[..., 1:], 0)
+                 + np.maximum(Ay[..., :-1, :], 0) - np.minimum(Ay[..., 1:, :], 0))
+    p_out = dt * (np.maximum(Ax[..., 1:], 0) - np.minimum(Ax[..., :-1], 0)
+                  + np.maximum(Ay[..., 1:, :], 0) - np.minimum(Ay[..., :-1, :], 0))
+    q_in = np.maximum(V1[None] * (cmax - cL), 0.0)
+    q_out = np.maximum(V1[None] * (cL - cmin), 0.0)
+    r_in = np.where(okb & (p_in > 0), np.minimum(1.0, q_in / np.where(p_in > 0, p_in, 1.0)), 0.0)
+    r_out = np.where(okb & (p_out > 0), np.minimum(1.0, q_out / np.where(p_out > 0, p_out, 1.0)), 0.0)
+    Cx = np.zeros_like(Ax); Cy = np.zeros_like(Ay)
+    Cx[..., 1:-1] = np.where(Ax[..., 1:-1] >= 0, np.minimum(r_in[..., 1:], r_out[..., :-1]),
+                             np.minimum(r_in[..., :-1], r_out[..., 1:]))
+    Cy[..., 1:-1, :] = np.where(Ay[..., 1:-1, :] >= 0, np.minimum(r_in[..., 1:, :], r_out[..., :-1, :]),
+                                np.minimum(r_in[..., :-1, :], r_out[..., 1:, :]))
+    return Cx, Cy
+
+
+@njit(cache=True, parallel=True)
+def _fct_coeff_kernel(c0, cL, V1, Ax, Ay, ok, dt):  # pragma: no cover
+    """fct_coefficients_numpy with the same arithmetic, parallel over (tracer, layer)."""
+    nt, n, ny, nx = c0.shape
+    r_in = np.zeros((nt, n, ny, nx))
+    r_out = np.zeros((nt, n, ny, nx))
+    for p in prange(nt * n):
+        t, k = p // n, p % n
+        for j in range(ny):
+            for i in range(nx):
+                if not ok[k, j, i]:
+                    continue
+                cmax, cmin = -np.inf, np.inf
+                for jj, ii in ((j, i), (j, i - 1), (j, i + 1), (j - 1, i), (j + 1, i)):
+                    if 0 <= jj < ny and 0 <= ii < nx and ok[k, jj, ii]:
+                        cmax = max(cmax, c0[t, k, jj, ii], cL[t, k, jj, ii])
+                        cmin = min(cmin, c0[t, k, jj, ii], cL[t, k, jj, ii])
+                p_in = dt * (max(Ax[t, k, j, i], 0.0) - min(Ax[t, k, j, i + 1], 0.0)
+                             + max(Ay[t, k, j, i], 0.0) - min(Ay[t, k, j + 1, i], 0.0))
+                p_out = dt * (max(Ax[t, k, j, i + 1], 0.0) - min(Ax[t, k, j, i], 0.0)
+                              + max(Ay[t, k, j + 1, i], 0.0) - min(Ay[t, k, j, i], 0.0))
+                q_in = max(V1[k, j, i] * (cmax - cL[t, k, j, i]), 0.0)
+                q_out = max(V1[k, j, i] * (cL[t, k, j, i] - cmin), 0.0)
+                r_in[t, k, j, i] = min(1.0, q_in / p_in) if p_in > 0.0 else 0.0
+                r_out[t, k, j, i] = min(1.0, q_out / p_out) if p_out > 0.0 else 0.0
+    Cx = np.zeros(Ax.shape)
+    Cy = np.zeros(Ay.shape)
+    for p in prange(nt * n):
+        t, k = p // n, p % n
+        for j in range(ny):
+            for f in range(1, nx):
+                if Ax[t, k, j, f] >= 0.0:
+                    Cx[t, k, j, f] = min(r_in[t, k, j, f], r_out[t, k, j, f - 1])
+                else:
+                    Cx[t, k, j, f] = min(r_in[t, k, j, f - 1], r_out[t, k, j, f])
+        for f in range(1, ny):
+            for i in range(nx):
+                if Ay[t, k, f, i] >= 0.0:
+                    Cy[t, k, f, i] = min(r_in[t, k, f, i], r_out[t, k, f - 1, i])
+                else:
+                    Cy[t, k, f, i] = min(r_in[t, k, f - 1, i], r_out[t, k, f, i])
+    return Cx, Cy
 
 
 @njit(cache=True, parallel=True)
@@ -815,6 +907,9 @@ class SigmaBaroclinic:
     thin_layer_cutoff : ALE: layers thinner than this at a face [m] move partly (vanished: wholly) with the layer
         above, HYCOM's blending (mod_momtum.F90:3055-3065, cutoff 0.5 m; core.vertical.ale.blend_thin_layers);
         0 = off
+    tracer_limiter : 'fct': Zalesak (1979) flux-corrected transport around the SSP-RK3 WENO5 advection of the ALE
+        step — tracers stay inside the local extremes of the old and the donor-cell values (spec 2026-10-14 §4);
+        'none' (default for now)
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, n_layers: int = 10,
@@ -831,7 +926,8 @@ class SigmaBaroclinic:
                  ke_scheme: str = "arakawa", max_truncations: int = 1000, thickness_flux: str = "ppm",
                  mix_diagnostic: bool = True, open_boundary_state=None, open_boundary_mode: dict | None = None,
                  obc_tau_in: float = 86400.0, obc_tau_out: float = 864000.0, theta_bc: float | None = None,
-                 thin_layer_coupling: str = "none", thin_layer_cutoff: float = 0.0) -> None:
+                 thin_layer_coupling: str = "none", thin_layer_cutoff: float = 0.0,
+                 tracer_limiter: str = "none") -> None:
         if pgf not in ("twoterm", "jacobian", "fv"):
             raise ValueError(f"unknown pressure-gradient scheme {pgf!r}")
         self.pgf, self.rho_ref = pgf, rho_ref
@@ -919,6 +1015,13 @@ class SigmaBaroclinic:
         self.area = self.fs.area
         self._setup_ale(vertical_coordinate, regrid, regrid_params, remap_scheme, z0, closure, h_thin_bed,
                         init_iterations, act, momentum, ke_scheme, max_truncations, thickness_flux)
+        if tracer_limiter not in ("none", "fct"):
+            raise ValueError(f"unknown tracer_limiter {tracer_limiter!r}; use 'none' or 'fct'")
+        if tracer_limiter == "fct" and not (self.ale and self.tracer_time == "ssprk3"
+                                            and self.tracer_scheme in ("weno5", "weno5js")):
+            raise ValueError("tracer_limiter='fct' needs vertical_coordinate='ale', tracer_time='ssprk3' and a "
+                             "WENO5 tracer_scheme")
+        self.tracer_limiter = tracer_limiter
 
     def _setup_ale(self, vertical_coordinate, regrid, regrid_params, remap_scheme, z0, closure, h_thin_bed,
                    init_iterations, act, momentum=None, ke_scheme="arakawa", max_truncations=1000,
@@ -1614,6 +1717,73 @@ class SigmaBaroclinic:
                            ext, "west" in self.open, "east" in self.open, "south" in self.open,
                            "north" in self.open, self.tracer_scheme == "weno5", bool(np.any(Fz != 0.0)))
 
+    def _ext_stack(self, c: np.ndarray) -> np.ndarray:
+        """Inflow values of the stack on open edges (T_in, T_in² for the mixing diagnostic), as _rhs."""
+        T_in = self._inflow_T()
+        return c if T_in is None or not self.open else np.ascontiguousarray(np.stack([T_in, T_in**2])[: c.shape[0]])
+
+    def _faces_h(self, c: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, ok: np.ndarray):
+        """WENO5 horizontal face fluxes (fx, fy) of the stack — the terms _advect_div differences (no ω in ALE)."""
+        c = np.ascontiguousarray(c, dtype=float)
+        numba.set_num_threads(_THREADS[0])
+        return _advect_faces_h(c, np.ascontiguousarray(Qx, dtype=float), np.ascontiguousarray(Qy, dtype=float),
+                               np.ascontiguousarray(np.broadcast_to(ok, c.shape[1:])), self._ext_stack(c),
+                               "west" in self.open, "east" in self.open, "south" in self.open, "north" in self.open,
+                               self.tracer_scheme == "weno5")
+
+    def _upwind_faces_h(self, c: np.ndarray, Qx: np.ndarray, Qy: np.ndarray):
+        """Donor-cell face fluxes Q c_up (the FCT low-order flux); open edges as _advect_div (ext on inflow)."""
+        ext = self._ext_stack(c)
+        fx = np.zeros(c.shape[:3] + (c.shape[3] + 1,))
+        fy = np.zeros(c.shape[:2] + (c.shape[2] + 1, c.shape[3]))
+        fx[..., 1:-1] = Qx[None, ..., 1:-1] * np.where(Qx[None, ..., 1:-1] >= 0, c[..., :-1], c[..., 1:])
+        fy[..., 1:-1, :] = Qy[None, :, 1:-1, :] * np.where(Qy[None, :, 1:-1, :] >= 0, c[..., :-1, :], c[..., 1:, :])
+        if "west" in self.open:
+            fx[..., 0] = Qx[None, ..., 0] * np.where(Qx[None, ..., 0] > 0, ext[..., 0], c[..., 0])
+        if "east" in self.open:
+            fx[..., -1] = Qx[None, ..., -1] * np.where(Qx[None, ..., -1] < 0, ext[..., -1], c[..., -1])
+        if "south" in self.open:
+            fy[..., 0, :] = Qy[None, :, 0, :] * np.where(Qy[None, :, 0, :] > 0, ext[..., 0, :], c[..., 0, :])
+        if "north" in self.open:
+            fy[..., -1, :] = Qy[None, :, -1, :] * np.where(Qy[None, :, -1, :] < 0, ext[..., -1, :], c[..., -1, :])
+        return fx, fy
+
+    def _advect_fct(self, C: np.ndarray, V0: np.ndarray, V1: np.ndarray, Qx: np.ndarray, Qy: np.ndarray,
+                    ok: np.ndarray, unlimited: bool = False) -> np.ndarray:
+        """
+        SSP-RK3 WENO5 advection of the stack C with Zalesak (1979) FCT (spec 2026-10-14 §4).  The high-order flux
+        of the step is the RK3 combination F_H = (F(c0) + F(c1))/6 + 2F(c2)/3, so V1 c_RK3 = V0 c0 − Δt ∇·F_H;
+        the low-order flux is donor cell, V1 c_L = V0 c0 − Δt ∇·F_L, bounded because limit_outflow keeps every
+        layer's outflow ≤ its content; the antidiffusive flux A = F_H − F_L is limited by
+        fct_coefficients (_fct_coeff_kernel).  ``unlimited``: C = 1 (the RK3 result; test of the identity).
+        HYCOM mod_tsadvc.F90:877-905 does the same around its own scheme.
+        """
+        dt = self.dt
+        dV = V1 - V0
+        div = lambda fx, fy: fx[..., 1:] - fx[..., :-1] + fy[..., 1:, :] - fy[..., :-1, :]   # noqa: E731
+        safe = lambda q, v: np.where(v > 0, q / np.where(v > 0, v, 1.0), C)                  # noqa: E731
+        q0 = V0 * C
+        fx0, fy0 = self._faces_h(C, Qx, Qy, ok)
+        q1 = q0 - dt * div(fx0, fy0)
+        c1 = safe(q1, V0 + dV)
+        fx1, fy1 = self._faces_h(c1, Qx, Qy, ok)
+        q2 = 0.75 * q0 + 0.25 * (q1 - dt * div(fx1, fy1))
+        c2 = safe(q2, V0 + 0.5 * dV)
+        fx2, fy2 = self._faces_h(c2, Qx, Qy, ok)
+        FHx = (fx0 + fx1) / 6.0 + 2.0 * fx2 / 3.0
+        FHy = (fy0 + fy1) / 6.0 + 2.0 * fy2 / 3.0
+        FLx, FLy = self._upwind_faces_h(C, Qx, Qy)
+        Ax, Ay = FHx - FLx, FHy - FLy
+        if unlimited:
+            return safe(q0 - dt * div(FHx, FHy), V1)
+        cL = safe(q0 - dt * div(FLx, FLy), V1)
+        okc = np.ascontiguousarray(np.broadcast_to(ok, C.shape[1:]))
+        numba.set_num_threads(_THREADS[0])
+        Cx, Cy = _fct_coeff_kernel(np.ascontiguousarray(C, dtype=float), np.ascontiguousarray(cL),
+                                   np.ascontiguousarray(V1, dtype=float), np.ascontiguousarray(Ax),
+                                   np.ascontiguousarray(Ay), okc, float(dt))
+        return safe(q0 - dt * div(FLx + Cx * Ax, FLy + Cy * Ay), V1)
+
     def _advect_numpy(self, C: np.ndarray, V0: np.ndarray, V1: np.ndarray, Qx: np.ndarray, Qy: np.ndarray,
                 Fz: np.ndarray, ok: np.ndarray) -> np.ndarray:
         """
@@ -1727,7 +1897,9 @@ class SigmaBaroclinic:
         ok = np.broadcast_to(act[None], V1.shape) & (V1 > 0)
         self._T_in = self._exterior_T(st.h) if self.open else None        # inflow T on hⁿ (spec §3.5)
         mixd = self.mix_diagnostic
-        C = self._advect(np.stack([st.T, st.T**2]) if mixd else st.T[None], V0, V1, Qx, Qy, Fz, ok)
+        stack = np.stack([st.T, st.T**2]) if mixd else st.T[None]
+        C = (self._advect_fct(stack, V0, V1, Qx, Qy, ok) if self.tracer_limiter == "fct"
+             else self._advect(stack, V0, V1, Qx, Qy, Fz, ok))
         mix = V1 * (C[1] - C[0] ** 2) / dt if mixd else None                # advection part
         T_lag = C[0]
         if self.kh > 0:

@@ -78,6 +78,7 @@ def _config(model: SigmaBaroclinic) -> dict:
                    h_thin_bed=model.h_thin_bed, max_truncations=model.max_truncations,
                    thin_layer_coupling=model.thin_layer_coupling,
                    thin_layer_cutoff=model.thin_layer_cutoff,
+                   tracer_limiter=model.tracer_limiter,
                    mix_diagnostic=int(model.mix_diagnostic), obc_tau_in=model.obc_tau_in, obc_tau_out=model.obc_tau_out,
                    obc_mode=",".join(f"{e}:{m}" for e, m in sorted(model.obc_mode.items())) or "none",
                    obc_state="none" if model.obc_state is None else "function")

@@ -1255,3 +1255,122 @@ def test_thin_layer_cutoff_option_is_validated():
     assert _ale_box("zstar", thin_layer_cutoff=0.5).thin_layer_cutoff == 0.5
     with pytest.raises(ValueError, match="thin_layer_cutoff"):
         _ale_box("zstar", thin_layer_cutoff=-1.0)
+
+
+# ---------------------------------------------------------------- FCT (spec 2026-10-14-hybrid-robustness §4)
+def _step_box(nx=60, limiter="fct", T=None, u0=0.6, nz=4, **kw):
+    """z* box with a uniform eastward layer velocity and a T step: one advection call of the ALE step."""
+    m = _ale_box("zstar", nx=nx, nz=nz, dx=1000.0, dt=30.0, tracer_limiter=limiter, mix_diagnostic=False, **kw)
+    st = m.initial_state(np.zeros((1, nx)), np.where(np.arange(nx) < nx // 2, 1.0, 0.0)[None, None, :].repeat(nz, 0)
+                         if T is None else T)
+    return m, st
+
+
+def test_fct_keeps_a_pulse_inside_its_range_where_weno_overshoots():
+    # a two-cell square pulse at Courant 0.5: unlimited WENO5-Z overshoots by 0.10 in one step (a sharp step does not)
+    nx, dt, dx = 60, 30.0, 1000.0
+    pulse = np.where((np.arange(nx) >= 20) & (np.arange(nx) < 22), 1.0, 0.0)[None, None, :].repeat(4, 0)
+    for limiter, bounded in (("fct", True), ("none", False)):
+        m, st = _step_box(nx, limiter, T=pulse)
+        V = m.layer_volumes(st.eta, st.h)
+        Qx = np.zeros(st.u.shape); Qx[:, :, 1:-1] = 0.5 * dx / dt * st.h[:, :, 1:] * dx    # Courant 0.5 eastwards
+        Qx[:, :, -2:] = 0.0
+        Qy = np.zeros(st.v.shape)
+        div = Qx[..., 1:] - Qx[..., :-1]
+        V1 = V - dt * div
+        ok = np.broadcast_to(m.fs.active[None], V.shape) & (V1 > 0)
+        T = st.T[None]
+        out = m._advect_fct(T, V, V1, Qx, Qy, ok) if limiter == "fct" else m._advect(T, V, V1, Qx, Qy,
+                                                                                    np.zeros((m.n + 1, 1, nx)), ok)
+        inside = (out.min() >= -1e-12) and (out.max() <= 1 + 1e-12)
+        assert inside == bounded, (limiter, out.min(), out.max())
+
+
+def test_fct_with_unit_coefficients_is_the_rk3_result():
+    m, st = _step_box(40, "fct")
+    V = m.layer_volumes(st.eta, st.h)
+    rng = np.random.default_rng(0)
+    Qx = np.zeros(st.u.shape); Qx[:, :, 1:-1] = rng.uniform(-0.3, 0.3, Qx[:, :, 1:-1].shape) * 1000.0 * st.h[:, :, 1:]
+    Qy = np.zeros(st.v.shape)
+    V1 = V - m.dt * (Qx[..., 1:] - Qx[..., :-1])
+    ok = np.broadcast_to(m.fs.active[None], V.shape) & (V1 > 0)
+    T = (np.sin(np.arange(40) / 5.0)[None, None, None, :] + 2.0) * np.ones(st.T.shape)[None]
+    ref = m._advect(T, V, V1, Qx, Qy, np.zeros((m.n + 1, 1, 40)), ok)
+    got = m._advect_fct(T, V, V1, Qx, Qy, ok, unlimited=True)
+    np.testing.assert_allclose(got, ref, rtol=0, atol=1e-12)
+
+
+def test_fct_conserves_and_keeps_high_order_on_a_smooth_profile():
+    nx = 80
+    errs = {}
+    for limiter in ("fct", "none"):
+        m, st = _step_box(nx, limiter)
+        x = np.arange(nx)
+        T0 = (1.0 + 0.5 * np.sin(2 * np.pi * x / nx))[None, None, :].repeat(m.n, 0)
+        st = m.initial_state(np.zeros((1, nx)), T0)
+        V = m.layer_volumes(st.eta, st.h)
+        Qx = np.zeros(st.u.shape); Qx[:, :, 1:-1] = 0.5 * 1000.0 / m.dt * st.h[:, :, 1:] * 1000.0
+        Qx[:, :, -1] = 0.0; Qx[:, :, 1] = 0.0
+        V1 = V - m.dt * (Qx[..., 1:] - Qx[..., :-1])
+        ok = np.broadcast_to(m.fs.active[None], V.shape) & (V1 > 0)
+        out = (m._advect_fct(T0[None], V, V1, Qx, np.zeros(st.v.shape), ok) if limiter == "fct" else
+               m._advect(T0[None], V, V1, Qx, np.zeros(st.v.shape), np.zeros((m.n + 1, 1, nx)), ok))[0]
+        np.testing.assert_allclose((V1 * out).sum(), (V * T0).sum(), rtol=1e-12)
+        exact = 1.0 + 0.5 * np.sin(2 * np.pi * (x - 0.5) / nx)                            # shifted by 0.5 cell
+        errs[limiter] = np.abs(out[0, 0, 5:-5] - exact[5:-5]).max()
+    assert errs["fct"] <= 1.5 * errs["none"], errs
+
+
+def test_fct_bounds_a_thin_layer_receiving_other_water():
+    m, st = _step_box(20, "fct")
+    h = st.h.copy(); h[1, 0, 10] = 1e-3                              # 1 mm cell in layer 1
+    T = np.ones_like(st.T); T[1, 0, 10] = 0.0; T[1, 0, :10] = 5.0
+    V = m.layer_volumes(st.eta, h)
+    Qx = np.zeros(st.u.shape); Qx[1, 0, 10] = 2.0; Qx[1, 0, 11] = 1.0                 # inflow 2, outflow 1 m³/s
+    V1 = V - m.dt * (Qx[..., 1:] - Qx[..., :-1])
+    ok = np.broadcast_to(m.fs.active[None], V.shape) & (V1 > 0)
+    out = m._advect_fct(T[None], V, V1, Qx, np.zeros(st.v.shape), ok)[0]
+    assert 0.0 - 1e-12 <= out[1, 0, 10] <= 5.0 + 1e-12
+
+
+def test_fct_limits_each_tracer_of_the_stack():
+    m, st = _step_box(30, "fct")
+    V = m.layer_volumes(st.eta, st.h)
+    Qx = np.zeros(st.u.shape); Qx[:, :, 1:-1] = 0.9 * 1000.0 / m.dt * st.h[:, :, 1:] * 1000.0; Qx[:, :, -2:] = 0.0
+    V1 = V - m.dt * (Qx[..., 1:] - Qx[..., :-1])
+    ok = np.broadcast_to(m.fs.active[None], V.shape) & (V1 > 0)
+    C = np.stack([st.T, st.T ** 2 * 3.0])
+    out = m._advect_fct(C, V, V1, Qx, np.zeros(st.v.shape), ok)
+    for t, (lo, hi) in enumerate(((0.0, 1.0), (0.0, 3.0))):
+        assert out[t].min() >= lo - 1e-12 and out[t].max() <= hi + 1e-12
+
+
+def test_fct_open_edge_faces_are_upstream():
+    m, st = _ale_open_box("zstar", tracer_limiter="fct")
+    C = st.T[None]
+    Qx = np.zeros(st.u.shape); Qx[:, :, 0] = 3.0; Qx[:, :, -1] = -2.0
+    FH = m._faces_h(C, Qx, np.zeros(st.v.shape), np.ones(C.shape[1:], bool))[0]
+    FL = m._upwind_faces_h(C, Qx, np.zeros(st.v.shape))[0]
+    np.testing.assert_array_equal(FH[..., [0, -1]], FL[..., [0, -1]])
+
+
+def test_fct_numba_coefficients_match_numpy():
+    from core.dynamics.sigma_baroclinic import _fct_coeff_kernel, fct_coefficients_numpy
+    rng = np.random.default_rng(3)
+    nt, n, ny, nx = 2, 3, 4, 5
+    c0 = rng.uniform(0, 1, (nt, n, ny, nx)); cL = rng.uniform(0, 1, (nt, n, ny, nx))
+    V1 = rng.uniform(0.5, 2, (n, ny, nx)) * 1e6
+    Ax = rng.normal(0, 1e4, (nt, n, ny, nx + 1)); Ax[..., [0, -1]] = 0
+    Ay = rng.normal(0, 1e4, (nt, n, ny + 1, nx)); Ay[..., [0, -1], :] = 0
+    ok = rng.uniform(0, 1, (n, ny, nx)) > 0.1
+    ref = fct_coefficients_numpy(c0, cL, V1, Ax, Ay, ok, 30.0)
+    got = _fct_coeff_kernel(c0, cL, V1, Ax, Ay, ok, 30.0)
+    np.testing.assert_allclose(got[0], ref[0], rtol=0, atol=1e-14)
+    np.testing.assert_allclose(got[1], ref[1], rtol=0, atol=1e-14)
+
+
+def test_tracer_limiter_option_is_validated():
+    with pytest.raises(ValueError, match="tracer_limiter"):
+        _ale_box("zstar", tracer_limiter="clip")
+    with pytest.raises(ValueError, match="tracer_limiter"):
+        _ale_box("zstar", tracer_limiter="fct", tracer_time="pc")

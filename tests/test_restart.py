@@ -234,3 +234,12 @@ def test_ale_restart_refuses_another_thin_layer_cutoff(tmp_path):
     other.thin_layer_cutoff = m.thin_layer_cutoff + 0.5
     with pytest.raises(ValueError, match="thin_layer_cutoff"):
         read_restart(tmp_path / "rst.nc", other)
+
+
+def test_ale_restart_refuses_another_tracer_limiter(tmp_path):
+    m = _ale_model("zstar")
+    write_restart(tmp_path / "rst.nc", m, m.step(_initial(m)))
+    other = _ale_model("zstar")
+    other.tracer_limiter = "fct" if m.tracer_limiter == "none" else "none"
+    with pytest.raises(ValueError, match="tracer_limiter"):
+        read_restart(tmp_path / "rst.nc", other)
