@@ -83,7 +83,7 @@ Consensus (2026-10-11): dos búsquedas para el diseño ALE (`docs/superpowers/sp
 | | Silvestri et al. 2024, WENO-based momentum advection, JAMES | [10.1029/2023MS004130](https://doi.org/10.1029/2023MS004130) | `Silvestri_2024 - A New WENO-Based Momentum Advection Scheme.pdf` | ✅ |
 | | Xue & Lin 2001, Numerical equivalence of flux and advective forms, MWR | [10.1175/1520-0493(2001)129<0561:NEOAIF>2.0.CO;2](https://doi.org/10.1175/1520-0493(2001)129%3C0561:NEOAIF%3E2.0.CO;2) | `Xue_2001 - Numerical Equivalence of Advection in Flux and Advective Forms.pdf` | ✅ |
 | | Cantero et al. 2007, On the front velocity of gravity currents, JFM | [10.1017/S0022112007005769](https://doi.org/10.1017/S0022112007005769) | `Cantero_2007 - On the Front Velocity of Gravity Currents.pdf` | ✅ |
-| ★ | Zalesak 1979, Fully multidimensional flux-corrected transport algorithms for fluids, J. Comput. Phys. (FCT de la §4 del spec de robustez de la híbrida) | [10.1016/0021-9991(79)90051-2](https://doi.org/10.1016/0021-9991(79)90051-2) [verificar] | `Zalesak_1979 - Fully Multidimensional Flux-Corrected Transport Algorithms for Fluids.pdf` | ⬜ |
+| ★ | Zalesak 1979, Fully multidimensional flux-corrected transport algorithms for fluids, J. Comput. Phys. (FCT de la §4 del spec de robustez de la híbrida) | [10.1016/0021-9991(79)90051-2](https://doi.org/10.1016/0021-9991(79)90051-2) | `Zalesak_1979 - Fully Multidimensional Flux-Corrected Transport Algorithms for Fluids.pdf` | ✅ |
 
 ## 4. Mojado-secado, fricción y turbulencia (`wetting_drying.py`, `sigma_wd.py`, `gls.py`, `bottom_friction.py`)
 

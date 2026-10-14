@@ -134,7 +134,7 @@ Primero va el limitador (§2): garantiza que el modelo no se detenga mientras se
 - regresión del lock exchange híbrido (criterio 5);
 - Numba igual a NumPy si toca un kernel.
 
-## §4. T acotada: FCT sobre WENO5-Z (Zalesak 1979 [verificar])
+## §4. T acotada: FCT sobre WENO5-Z (Zalesak 1979, ec. 6–15)
 
 **Dónde.** `tracer_limiter: str = "fct" | "none"` en `_advect`, el SSP-RK3 en forma de flujo con Q congelados y volumen que va de V0 a V1. Lleva un kernel Numba y su oráculo NumPy.
 
@@ -183,7 +183,7 @@ Una corrida a la vez, con 5 hilos; las salidas van a `/Volumes/ESTEBAN_MIT/pyOCE
 **Documentación:**
 - README del benchmark: tablas, clasificación y la lista de mejoras, donde se cierran o actualizan los puntos 2, 3 y 4.
 - `vision_roadmap.md` §7, CLAUDE.md y los docstrings de `ale.py` y `sigma_baroclinic.py`.
-- `docs/literature/reading_list.md`: Zalesak (1979) ★ (no está en la biblioteca local), Hallberg & Adcroft (2009) y Higdon (2005, 2020).
+- `docs/literature/reading_list.md`: Zalesak (1979) ★, ya local; Hallberg & Adcroft (2009) y Higdon (2005, 2020), ya en la lista.
 
 ## Puntos de decisión con Esteban
 
