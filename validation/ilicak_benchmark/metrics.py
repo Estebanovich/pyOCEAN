@@ -127,6 +127,14 @@ def iw_amplitude(s: dict, x0: float = 125e3, T_iso: float | None = None) -> np.n
     return depth[0] - depth
 
 
-def max_speed(s: dict) -> np.ndarray:
-    """max |u|, |v| over faces of every record [m s⁻¹]."""
-    return np.maximum(np.abs(s["u"]).reshape(s["t"].size, -1).max(1), np.abs(s["v"]).reshape(s["t"].size, -1).max(1))
+def max_speed(s: dict, h_min: float = 0.01) -> np.ndarray:
+    """max |u|, |v| [m s⁻¹] of every record over faces whose two neighbouring cells are at least h_min [m] thick:
+    velocities in vanished layers (MOM6 keeps 1-mm layers along a z* slope) carry no mass."""
+    h = s["h"]
+    hu = np.zeros(s["u"].shape)
+    hu[..., 1:-1] = np.minimum(h[..., 1:], h[..., :-1])
+    hv = np.zeros(s["v"].shape)
+    hv[..., 1:-1, :] = np.minimum(h[..., 1:, :], h[..., :-1, :])
+    u = np.where(hu >= h_min, np.abs(s["u"]), 0.0).reshape(s["t"].size, -1).max(1)
+    v = np.where(hv >= h_min, np.abs(s["v"]), 0.0).reshape(s["t"].size, -1).max(1)
+    return np.maximum(u, v)

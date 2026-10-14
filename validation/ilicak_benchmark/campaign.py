@@ -67,8 +67,9 @@ def results(case: str | None = None, force: bool = False) -> list[Path]:
     return done
 
 
-def stable(path: Path, umax: float = 5.0) -> bool:
-    """A run is stable when every T is finite where h > 0 and max |u|, |v| < umax [m s⁻¹]."""
+def stable(path: Path, umax: float = 15.0) -> bool:
+    """A run is stable when every T is finite where h > 0 and max |u|, |v| < umax [m s⁻¹] over faces ≥ 1 cm thick
+    (the overflow reaches ~8 m s⁻¹, the free fall √(2 g′ 1500 m), in every model)."""
     s, _ = series.load(path)
     T = np.where(s["h"] > 0, s["T"], 0.0)
     return bool(np.isfinite(T).all() and np.isfinite(s["u"]).all() and metrics.max_speed(s).max() < umax)

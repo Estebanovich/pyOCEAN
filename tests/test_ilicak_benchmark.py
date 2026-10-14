@@ -425,10 +425,18 @@ def test_stable_rejects_nan_and_fast_flow(tmp_path):
     s = _flat_series([1.0], [5.0], nx=2)
     series.save(tmp_path / "ok.npz", s, {})
     assert campaign.stable(tmp_path / "ok.npz")
-    s["u"] = s["u"] + 9.0
+    s["u"] = s["u"] + 20.0
     series.save(tmp_path / "fast.npz", s, {})
     assert not campaign.stable(tmp_path / "fast.npz")
     s["u"] = s["u"] * 0
     s["T"] = s["T"] * np.nan
     series.save(tmp_path / "nan.npz", s, {})
     assert not campaign.stable(tmp_path / "nan.npz")
+
+
+def test_max_speed_ignores_vanished_layers():
+    from validation.ilicak_benchmark import metrics
+    s = _flat_series([10.0, 0.001], [5.0, 5.0], nx=2)
+    s["u"][0, 1, 0, 1] = 9.0                                   # fast flow in a 1-mm layer: carries no mass
+    s["u"][0, 0, 0, 1] = 0.5
+    assert np.isclose(metrics.max_speed(s)[0], 0.5)
