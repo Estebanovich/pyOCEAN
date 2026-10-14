@@ -340,8 +340,10 @@ def fct_coefficients_numpy(c0: np.ndarray, cL: np.ndarray, V1: np.ndarray, Ax: n
     """
     Zalesak (1979, eqs. 7–13) flux-limiting coefficients C ∈ [0, 1] of the antidiffusive fluxes A = F_H − F_L
     (stack (nt, N, ny, nx); Ax (nt, N, ny, nx+1), Ay (nt, N, ny+1, nx) [tracer m³ s⁻¹]) so that
-    V1 c = V1 c_L − Δt ∇·(C A) stays inside [c_min, c_max] = the extremes of c0 and c_L over the cell and its x, y
-    neighbours of the same layer (eq. 15, ``ok`` cells only).  Cells not ``ok`` (dry, V1 = 0) get R± = 0, so the
+    V1 c = V1 c_L − Δt ∇·(C A) stays inside [c_min, c_max] = the extremes of c0 and c_L over the cell, its x, y
+    neighbours and the layers k ± 1 of its column (eq. 15 with the multidimensional stencil, ``ok`` cells only).
+    Bounds from the layer alone clipped legitimate along-layer extrema to donor cell (Zalesak's "clipping": σ layers
+    bent over a seamount summit, 0.22 → 0.71 cm/s; hybrid internal wave 0.50 → 0.31 of the oscillation).  Cells not ``ok`` (dry, V1 = 0) get R± = 0, so the
     faces of a vanishing cell are upwind.  NumPy oracle of _fct_coeff_kernel.
     """
     big = np.inf
@@ -353,6 +355,7 @@ def fct_coefficients_numpy(c0: np.ndarray, cL: np.ndarray, V1: np.ndarray, Ax: n
         out = a.copy()
         out[..., 1:] = f(out[..., 1:], a[..., :-1]); out[..., :-1] = f(out[..., :-1], a[..., 1:])
         out[..., 1:, :] = f(out[..., 1:, :], a[..., :-1, :]); out[..., :-1, :] = f(out[..., :-1, :], a[..., 1:, :])
+        out[:, 1:] = f(out[:, 1:], a[:, :-1]); out[:, :-1] = f(out[:, :-1], a[:, 1:])      # layers k ± 1
         return out
 
     cmax, cmin = neigh(hi, np.maximum), neigh(lo, np.minimum)
@@ -385,10 +388,11 @@ def _fct_coeff_kernel(c0, cL, V1, Ax, Ay, ok, dt):  # pragma: no cover
                 if not ok[k, j, i]:
                     continue
                 cmax, cmin = -np.inf, np.inf
-                for jj, ii in ((j, i), (j, i - 1), (j, i + 1), (j - 1, i), (j + 1, i)):
-                    if 0 <= jj < ny and 0 <= ii < nx and ok[k, jj, ii]:
-                        cmax = max(cmax, c0[t, k, jj, ii], cL[t, k, jj, ii])
-                        cmin = min(cmin, c0[t, k, jj, ii], cL[t, k, jj, ii])
+                for kk, jj, ii in ((k, j, i), (k, j, i - 1), (k, j, i + 1), (k, j - 1, i), (k, j + 1, i),
+                                   (k - 1, j, i), (k + 1, j, i)):
+                    if 0 <= kk < n and 0 <= jj < ny and 0 <= ii < nx and ok[kk, jj, ii]:
+                        cmax = max(cmax, c0[t, kk, jj, ii], cL[t, kk, jj, ii])
+                        cmin = min(cmin, c0[t, kk, jj, ii], cL[t, kk, jj, ii])
                 p_in = dt * (max(Ax[t, k, j, i], 0.0) - min(Ax[t, k, j, i + 1], 0.0)
                              + max(Ay[t, k, j, i], 0.0) - min(Ay[t, k, j + 1, i], 0.0))
                 p_out = dt * (max(Ax[t, k, j, i + 1], 0.0) - min(Ax[t, k, j, i], 0.0)

@@ -1382,3 +1382,17 @@ def test_tracer_limiter_option_is_validated():
         _ale_box("zstar", tracer_limiter="clip")
     with pytest.raises(ValueError, match="tracer_limiter"):
         _ale_box("zstar", tracer_limiter="fct", tracer_time="pc")
+
+
+def test_fct_bounds_include_the_layers_above_and_below():
+    # an along-layer maximum (σ layers bent over a summit) spanned by the layer above is not clipped to donor cell
+    from core.dynamics.sigma_baroclinic import _fct_coeff_kernel, fct_coefficients_numpy
+    c0 = np.zeros((1, 3, 1, 3)); c0[0, 1, 0] = [0.5, 1.0, 0.5]; c0[0, 2, 0] = 2.0     # layers 0 (=0), 1 (bent), 2
+    cL = c0.copy()
+    V1 = np.full((3, 1, 3), 1e6)
+    Ax = np.zeros((1, 3, 1, 4)); Ax[0, 1, 0, 1] = 1e3                # antidiffusive flux into layer 1's peak
+    Ay = np.zeros((1, 3, 2, 3))
+    ok = np.ones((3, 1, 3), bool)
+    for f in (fct_coefficients_numpy, _fct_coeff_kernel):
+        Cx, _ = f(c0, cL, V1, Ax, Ay, ok, 30.0)
+        assert Cx[0, 1, 0, 1] > 0.5, f.__name__
