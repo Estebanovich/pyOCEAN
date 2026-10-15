@@ -281,3 +281,12 @@ def test_ale_restart_refuses_another_interior_sponge(tmp_path):
     m2, _ = _sponge_box(rate=2e-4)
     with pytest.raises(ValueError, match="sponge_rate"):
         read_restart(tmp_path / "rst.nc", m2)
+
+
+def test_ale_restart_refuses_another_bottom_drag(tmp_path):
+    from tests.test_sigma_ale import _drag_channel
+    m, st = _drag_channel()
+    write_restart(tmp_path / "rst.nc", m, m.step(st))
+    m2, _ = _drag_channel(cd=3e-3)
+    with pytest.raises(ValueError, match="cd"):
+        read_restart(tmp_path / "rst.nc", m2)

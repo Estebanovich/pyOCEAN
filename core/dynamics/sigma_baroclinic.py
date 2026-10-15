@@ -1009,6 +1009,11 @@ class SigmaBaroclinic:
         stretched to the column and remapped onto the current layers; passive tracers toward sponge_tr (default 0);
         r = sponge_rate (ny, nx) [s⁻¹], ignored on land; momentum is not damped (as MOM6 DOME_initialize_sponges).
         It acts after the remap, so the mixing diagnostic counts advection and remap only
+    bottom_drag, cd, drag_bg_vel, hbbl : ALE bed stress (spec 2026-10-14-dome §3): None (default, free slip) or
+        'quadratic': τ_b/ρ₀ = −r u_b, r = C_d √(ū_bbl² + v̄_bbl² + u_bg²), with ū_bbl the thickness-weighted mean of the
+        face column over the bottom ``hbbl`` metres (MOM6 HBBL, MOM_set_viscosity.F90) — a vanished bed layer does
+        not set the drag alone; applied implicitly at the bed of the coupled viscous solve (the depth-mean correction
+        δ of SigmaWetDry.column_step includes it).  Legg et al. 2006: C_d = 2e-3
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, n_layers: int = 10,
@@ -1028,7 +1033,8 @@ class SigmaBaroclinic:
                  thin_layer_coupling: str | None = None, thin_layer_cutoff: float | None = None,
                  tracer_limiter: str | None = None, n_tracers: int = 0, sponge_rate: np.ndarray | None = None,
                  sponge_T: np.ndarray | None = None, sponge_zw: np.ndarray | None = None,
-                 sponge_tr: np.ndarray | None = None) -> None:
+                 sponge_tr: np.ndarray | None = None, bottom_drag: str | None = None, cd: float = 2.5e-3,
+                 drag_bg_vel: float = 0.0, hbbl: float = 10.0) -> None:
         if pgf not in ("twoterm", "jacobian", "fv"):
             raise ValueError(f"unknown pressure-gradient scheme {pgf!r}")
         self.pgf, self.rho_ref = pgf, rho_ref
@@ -1149,6 +1155,11 @@ class SigmaBaroclinic:
             self._sp_tr = (np.zeros((self.n_tracers, Ts.size)) if sponge_tr is None
                            else np.asarray(sponge_tr, float).reshape(self.n_tracers, Ts.size))
             self._sp_cols = self.sponge_rate > 0
+        if bottom_drag not in (None, "quadratic"):
+            raise ValueError(f"unknown bottom_drag {bottom_drag!r}; use None or 'quadratic'")
+        if bottom_drag and not self.ale:
+            raise ValueError("bottom_drag='quadratic' needs vertical_coordinate='ale' (σ uses z0, the log-law)")
+        self.bottom_drag, self.cd, self.drag_bg_vel, self.hbbl = bottom_drag, float(cd), float(drag_bg_vel), float(hbbl)
 
     def _setup_ale(self, vertical_coordinate, regrid, regrid_params, remap_scheme, z0, closure, h_thin_bed,
                    init_iterations, act, momentum=None, ke_scheme="arakawa", max_truncations=1000,
@@ -1838,6 +1849,27 @@ class SigmaBaroclinic:
                         for i in range(self.n_tracers)])
         return np.where(self._ext["own"][None, None], out, rest)
 
+    def _bed_drag_rates(self, u: np.ndarray, v: np.ndarray, hu: np.ndarray, hv: np.ndarray):
+        """
+        Linear bed rates r = C_d √(ū_bbl² + v̄_bbl² + u_bg²) [m s⁻¹] at u- and v-faces (spec 2026-10-14-dome §3).
+        ū_bbl: mean of the face column over its bottom hbbl metres, weights min(h_k, hbbl − Σ_{j<k} h_j)⁺ (k = 0 at
+        the bed); the other component is the 4-point C-grid average of its own bbl means.
+        """
+        def bbl_mean(vel, h):
+            below = np.concatenate([np.zeros((1,) + h.shape[1:]), np.cumsum(h, axis=0)[:-1]])
+            w = np.clip(np.minimum(h, self.hbbl - below), 0.0, None)
+            tot = w.sum(axis=0)
+            return np.where(tot > 0, (w * vel).sum(axis=0) / np.where(tot > 0, tot, 1.0), 0.0)
+        ub, vb = bbl_mean(u, hu), bbl_mean(v, hv)
+        vc = 0.5 * (vb[:-1] + vb[1:])                       # v̄ at cell centres (ny, nx)
+        uc = 0.5 * (ub[:, :-1] + ub[:, 1:])                 # ū at cell centres (ny, nx)
+        v_at_u = np.zeros_like(ub)
+        v_at_u[:, 1:-1] = 0.5 * (vc[:, :-1] + vc[:, 1:])
+        u_at_v = np.zeros_like(vb)
+        u_at_v[1:-1, :] = 0.5 * (uc[:-1, :] + uc[1:, :])
+        bg2 = self.drag_bg_vel**2
+        return self.cd * np.sqrt(ub**2 + v_at_u**2 + bg2), self.cd * np.sqrt(vb**2 + u_at_v**2 + bg2)
+
     def _interior_sponge(self, T: np.ndarray, tr: np.ndarray | None, eta: np.ndarray, h: np.ndarray):
         """
         Implicit relaxation toward the sponge profile on the layers h (spec 2026-10-14-dome §2):
@@ -2108,6 +2140,11 @@ class SigmaBaroclinic:
                         hu_mean=hu, hv_mean=hv)                         # ū on the clipped face column
         else:
             visc = dict(hu=np.maximum(hu, DZ_FLOOR), hv=np.maximum(hv, DZ_FLOOR))
+        if self.bottom_drag == "quadratic":                            # bed stress at uⁿ (spec 2026-10-14-dome §3)
+            r_u, r_v = self._bed_drag_rates(st.u, st.v, hu, hv)
+            visc.update(r_u=r_u, r_v=r_v)
+            if "hu_mean" not in visc:                                  # δ needs the depth-mean column with drag
+                visc.update(hu_mean=hu, hv_mean=hv)
         eta_new, u_new, v_new = self.core.step(st.eta, st.u, st.v, G_u=gu_ab, G_v=gv_ab, tau_u=tu, tau_v=tv,
                                                wu=wu, wv=wv, **visc, **self._flather_args())
         self._open_velocity(st, u_new, v_new, wu, wv)                   # sponge on u′, Orlanski (spec §3.2-3.3)

@@ -1574,3 +1574,67 @@ def test_interior_sponge_relaxes_passive_tracers_toward_their_target():
         st = m.step(st)
     np.testing.assert_allclose(st.tr[0, :, 0, 0], 1.0 / (1.0 + 60.0 * 1e-4) ** 10, rtol=1e-10)
     np.testing.assert_allclose(st.tr[0, :, 0, 8:], 1.0, atol=1e-10)
+
+
+# ---------------------------------------------------------------- quadratic bed drag in ALE (DOME spec §3)
+def _drag_channel(rule="zstar", U0=0.5, cd=2e-3, nz=6, depth=50.0, **kw):
+    """Homogeneous closed channel, uniform flow U0 at t = 0 (no pressure gradient: uniform η, uniform T)."""
+    nx = 12
+    m = _ale_box(rule, nx=nx, nz=nz, depth=depth, dt=60.0, bottom_drag="quadratic", cd=cd, nu=1e-2, **kw)
+    st = m.initial_state(np.zeros((1, nx)), np.full((nz, 1, nx), 10.0))
+    u = np.zeros_like(st.u)
+    u[..., 1:-1] = U0
+    st.u = u
+    return m, st
+
+
+def _ubar(st, i=6):
+    h = 0.5 * (st.h[:, 0, i - 1] + st.h[:, 0, i])
+    return float((st.u[:, 0, i] * h).sum() / h.sum())
+
+
+def test_quadratic_drag_removes_the_bed_stress_from_the_depth_mean():
+    # closed channel: walls make the flow slosh, so the drag is isolated by differencing against cd = 0;
+    # one step: Δū = −Δt C_d |u_b| u_b / D (implicit factor 1/(1 + Δt r/D) ≈ 1 − 1e-6 here)
+    a = _drag_channel(cd=0.0)
+    b = _drag_channel(cd=2e-3)
+    ua, ub = _ubar(a[0].step(a[1])), _ubar(b[0].step(b[1]))
+    np.testing.assert_allclose(ub - ua, -60.0 * 2e-3 * 0.5 * 0.5 / 50.0, rtol=0.02)
+
+
+def test_quadratic_drag_reaches_the_flow_above_vanished_bed_layers():
+    # z* with 10 levels over 20 m in a 7-m column: the bed layers vanish; the drag must still act on the water
+    nx, nz = 12, 10
+    H = np.full((1, nx), 7.0)
+    out = []
+    for cd in (0.0, 2e-3):
+        m = _ale_box("zstar", nx=nx, nz=nz, bathy=H, params=dict(dz_top=np.full(nz, 2.0)), dt=60.0,
+                     bottom_drag="quadratic", cd=cd, nu=1e-2)
+        st = m.initial_state(np.zeros((1, nx)), np.full((nz, 1, nx), 10.0))
+        st.u = np.where(np.arange(nx + 1)[None, None] % nx == 0, 0.0, 0.3) * np.ones_like(st.u)
+        for _ in range(20):
+            st = m.step(st)
+        assert np.isfinite(st.u).all()
+        out.append(_ubar(st))
+    expected = 20 * 60.0 * 2e-3 * 0.3**2 / 7.0                           # ≈ 0.031 m/s removed by the drag
+    assert out[0] - out[1] > 0.5 * expected
+
+
+def test_bottom_drag_off_is_bit_identical_and_background_velocity_alone_does_not_accelerate():
+    m0 = _ale_box("zstar", nx=12, nz=6, depth=50.0, dt=60.0, nu=1e-2)
+    m1, _ = _drag_channel(U0=0.0, drag_bg_vel=0.05)
+    s0 = m0.initial_state(np.zeros((1, 12)), np.full((6, 1, 12), 10.0))
+    s1 = m1.initial_state(np.zeros((1, 12)), np.full((6, 1, 12), 10.0))
+    for _ in range(10):
+        s0, s1 = m0.step(s0), m1.step(s1)
+    assert np.array_equal(s1.u, s0.u)
+    with pytest.raises(ValueError, match="bottom_drag"):
+        _ale_box("zstar", nx=12, nz=6, depth=50.0, dt=60.0, bottom_drag="loglaw")
+
+
+def test_bed_drag_rates_are_finite_on_empty_faces():
+    # dry or fully vanished face columns: no bbl water → only the background velocity sets r
+    m, st = _drag_channel(drag_bg_vel=0.05)
+    ru, rv = m._bed_drag_rates(st.u, st.v, np.zeros_like(st.u), np.zeros_like(st.v))
+    np.testing.assert_allclose(ru, 2e-3 * 0.05, rtol=1e-14)
+    np.testing.assert_allclose(rv, 2e-3 * 0.05, rtol=1e-14)

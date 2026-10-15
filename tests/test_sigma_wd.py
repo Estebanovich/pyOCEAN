@@ -252,3 +252,13 @@ def test_coupled_viscous_step_keeps_the_depth_mean_physics(z0, tau):
     np.testing.assert_allclose((w * out).sum(0), expect, rtol=1e-12, atol=1e-15)
     if tau == 0.0:                                                  # the thin layer is still tied to its neighbour
         assert abs(out[-1, 0, 0] - out[1, 0, 0]) < abs(u[-1, 0, 0] - u[1, 0, 0])
+
+
+def test_column_step_with_a_given_bed_rate_matches_the_implicit_formula():
+    from core.dynamics.sigma_wd import SigmaWetDry
+    from core.grid.horizontal import create_cartesian_grid
+    hg = create_cartesian_grid(nx=3, ny=1, dx=100.0, dy=100.0)
+    m = SigmaWetDry(hg, np.full((1, 3), 10.0), dt=10.0, n_layers=1, z0=None, closure="none")
+    u = np.full((1, 4), 1.0)
+    out = m.column_step(u, None, np.full(4, 10.0), r_bed=np.full(4, 0.01))
+    np.testing.assert_allclose(out, 1.0 / (1.0 + 10.0 * 0.01 / 10.0), rtol=1e-14)   # (1 + Δt r / h)⁻¹

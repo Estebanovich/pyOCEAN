@@ -87,6 +87,8 @@ def _config(model: SigmaBaroclinic) -> dict:
         cfg.update(sponge_rate="none" if sp is None else _text(sp),
                    sponge_T="none" if sp is None else _text(model._sp_T),
                    sponge_zw="none" if sp is None else _text(model._sp_zw))
+        cfg.update(bottom_drag=str(getattr(model, "bottom_drag", None)), cd=model.cd, drag_bg_vel=model.drag_bg_vel,
+                   hbbl=model.hbbl)
         cfg.update({f"regrid_{k}": _text(v) for k, v in sorted(model.regrid_params.items())})
     return cfg
 
