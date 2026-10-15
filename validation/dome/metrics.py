@@ -5,6 +5,8 @@ x is along the slope (the plume turns west: transports westward positive), y acr
 """
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 
 from diagnostics.mixing import reference_potential_energy
@@ -35,7 +37,8 @@ def path_Y(s: dict, t0: float, t1: float):
         num = (w * s["y"][None, :, None]).sum(axis=(0, 1))
         den = w.sum(axis=(0, 1))
         ys.append(np.where(den > 0, num / np.where(den > 0, den, 1.0), np.nan))
-    with np.errstate(all="ignore"):
+    with warnings.catch_warnings():                                      # columns without dye: NaN, no warning
+        warnings.simplefilter("ignore", RuntimeWarning)
         return s["x"], np.nanmean(ys, axis=0)
 
 

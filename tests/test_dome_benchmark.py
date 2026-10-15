@@ -90,3 +90,17 @@ def test_metrics_on_a_synthetic_dye_slab():
     assert metrics.final_density(s, 0.0, 2 * 86400.0) == pytest.approx(1031.0)
     assert metrics.centroid_depth(s, 0.0) == pytest.approx(3600.0 - 450.0)
     assert metrics.ranges(s)["s"] == (0.0, 1.0)
+
+
+def test_mom6_input_has_the_common_physics_and_the_dome_configs():
+    from validation.dome import mom6
+    txt = mom6.mom_input(cases.get(10.0), "common")
+    for line in ('TOPO_CONFIG = "DOME"', 'OBC_USER_CONFIG = "DOME"', 'SPONGE_CONFIG = "DOME"', "USE_DOME_TRACER = True",
+                 "LAPLACIAN = True", "KH = 50", "BIHARMONIC = False", "KV = 0.5", "KD = 0.0",
+                 "USE_JACKSON_PARAM = False", "CDRAG = 0.002", "DRAG_BG_VEL = 0.0", "HBBL = 10.0", "DAYMAX = 50.0",
+                 "NIGLOBAL = 150", "NJGLOBAL = 70", "LAYOUT = 1, 1"):
+        assert line in txt, line
+    assert "KV = 0.0001" in mom6.mom_input(cases.get(10.0), "kv_low")
+    lines = mom6.override_lines(cases.get(10.0), "common")
+    assert "#override KV = 0.5" in lines and "KH = 50" in lines and "LAPLACIAN = True" in lines
+    assert '#override OBC_SEGMENT_001 = "J=N,I=220:200,SIMPLE"' in mom6.override_lines(cases.get(5.0), "common")
