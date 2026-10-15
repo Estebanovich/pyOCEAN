@@ -1,6 +1,6 @@
 # Visión y hoja de ruta de pyOCEAN: qué modelo necesita la comunidad
 
-Documento de diseño. Fecha: 2026-10-11.
+Documento de diseño. Fecha: 2026-10-11 (sección 9 y Etapa N agregadas el 2026-10-15).
 
 **Fuentes:**
 - cuatro revisiones: modelos existentes, foros y trackers de usuarios, adjuntos/ML y fronteras numéricas;
@@ -202,6 +202,16 @@ Reorganiza las fases del `CLAUDE.md`. Cambiar el plan del `CLAUDE.md` requiere l
 - Modo barotrópico split-explicit.
 - *Overflow* (DOME) y monte submarino como referencia de entrada. DOME corrido el 2026-10-15 (🔶: z\* ✅ contra MITgcm; abiertos la inestabilidad con θ_bc = ½ a 10 km / 1200 s, la entrada de la híbrida por frontera abierta y la mezcla por Ri). Falta el modo barotrópico split-explicit.
 
+**Etapa N, núcleo modular y experiencia de usuario (agregada el 2026-10-15; diseño en la sección 9):**
+- Va **antes de la Etapa D** (JAX necesita núcleos funcionales separados) y antes de terminar el split-explicit de la Etapa C, que debe entrar ya como componente `FreeSurface`.
+- N1. Contrato de componentes y driver con orden de pasos fijo, extraídos de `SigmaBaroclinic` sin cambiar la física.
+- N2. Salinidad, TEOS-10 y flujos de superficie completos (calor, onda corta, E − P) en el núcleo 3D, conectando `physics/eos` y `forcing/bulk.py`.
+- N3. KPP como segundo cierre con la misma interfaz que GLS.
+- N4. `Simulation`: config tipada (TOML/YAML) guardada en la salida y el restart, presets con procedencia, pre-flight (verificador de dominio, CFL, compatibilidad de componentes, balance de masa en fronteras), post-mortem, salida CF/Zarr y presupuestos término a término por defecto.
+- N5. Constructor de dominio regional integrado (GEBCO, HYCOM/GLORYS, TPXO, ERA5/WRF) con reporte del verificador.
+- N6. Paquete instalable (`pyproject.toml`, `pip`/conda-forge), API pública estable, galería de ejemplos con resultado esperado.
+- Criterio de cierre: N1 reproduce bit a bit (o a ≤ 1e-12) los 1388 tests y los benchmarks de `validation/`; N2 pasa un caso regional con calor y sal contra MITgcm o HYCOM; N4–N6 permiten correr el quickstart y un caso PAC_MEX desde una instalación limpia sin tocar `sys.path` ni métodos privados.
+
 **Etapa D, diferenciable:**
 - Backend JAX del 2DH de marea con derivadas propias en la superficie libre y en Thomas.
 - Inversión contra mareógrafos y mapas de sensibilidad del adjunto.
@@ -218,3 +228,93 @@ Reorganiza las fases del `CLAUDE.md`. Cambiar el plan del `CLAUDE.md` requiere l
 - GPU NVIDIA con JAX.
 
 Criterio de avance entre etapas: cada etapa cierra con sus filas del marcador en ✅ o con la diferencia explicada.
+
+## 9. Arquitectura del núcleo y experiencia de usuario (2026-10-15)
+
+Origen: revisión del código y del manual el 2026-10-15, comparada con la organización de MITgcm, MOM6, ROMS/CROCO, HYCOM, Oceananigans y Veros y con las quejas de la sección 3b. Pendiente antes de fijar las interfaces: leer la composición en el código de MOM6 (`src/core/MOM.F90`, `step_MOM`) y de Oceananigans (`HydrostaticFreeSurfaceModel`), con referencias `file:line`.
+
+### 9a. Diagnóstico
+
+pyOCEAN creció como varios núcleos en paralelo, cada uno con su estado y su paso de tiempo:
+
+| Núcleo | Archivo | Uso |
+|---|---|---|
+| Fase 1, niveles z | `core/state.py` (`ModelState`), `core/dynamics/momentum.py`, `pressure.py`, `core/timestepping/ab2.py` | ya no se usa en producción (ALE z\* lo cubre) |
+| 2D superficie libre implícita | `core/dynamics/free_surface.py` (`ImplicitFreeSurface`) | mareas PAC_MEX |
+| 2D mojado-secado | `core/dynamics/wetting_drying.py` (`WetDryFreeSurface`) | Alto Golfo, Thacker, TIDAL_FLAT |
+| 3D homogéneo σ | `core/dynamics/sigma_wd.py` (`SigmaWetDry`) | base del 3D estratificado |
+| 3D estratificado σ/ALE | `core/dynamics/sigma_baroclinic.py` (`SigmaBaroclinic`) | todo lo nuevo; una clase de ~1400 líneas con 56 argumentos |
+
+Huecos que esto produce:
+- **Física construida pero desconectada del 3D:** `SigmaBaroclinic` usa una EOS lineal solo en T (`sigma_baroclinic.py:1351`), no tiene salinidad (docstring, línea 57) y `step()` solo recibe `tau_x`, `tau_y` (`:2246`). TEOS-10 (`physics/eos`), los flujos bulk NCAR/Kara (`forcing/bulk.py`), KPP (`physics/mixing/kpp.py`) y la advección de la Fase 1 no se usan en el 3D. Hoy no se puede correr un caso regional realista con calor y sal en 3D.
+- **Experiencia de usuario:** sin paquete instalable (`sys.path.insert` en cada script; `environment.yml` no coincide con el entorno probado); cada caso es un script propio; los runners llaman métodos privados (`m._edge_face_depths()`, `m._mean_face_thickness()` en `validation/bayiw_cut/run_pyocean.py:31-32`) e indexan caras del C-grid a mano; el verificador de dominio y el post-mortem solo los llaman `run_tides_wd.py` y `run_bayiw.py`; los runners guardan `.npz` propios en lugar de `OutputWriter`; `ke_scheme="gudonov"` en la API pública.
+
+### 9b. Cómo se organizan los demás
+
+- **MITgcm:** núcleo en `model/src`; paquetes en `pkg/` que entran por puntos fijos del paso, configurados al compilar (CPP, `SIZE.h`).
+- **MOM6:** driver `step_MOM` en `src/core`; `src/ALE`, `src/parameterizations`, `src/equation_of_state`; drivers solo-océano o acoplado; parámetros en `MOM_input` (cientos).
+- **ROMS/CROCO:** `main3d` llama en orden fijo a `rho_eos`, `omega`, `step2d`, `step3d_uv`, `step3d_t`, `gls_mixing`/`lmd_vmix`; opciones en `cppdefs.h`.
+- **Oceananigans:** el modelo se compone de objetos (`grid`, `buoyancy`, `closure`, `free_surface`, `momentum_advection`, `boundary_conditions`, `forcing`).
+- **Veros:** `VerosState` con registro de variables, rutinas del núcleo y un `VerosSetup` por caso; `pip install`, `veros copy-setup`.
+
+Patrón común: un estado, un driver con orden de pasos documentado, piezas intercambiables con interfaces claras, y casos que solo configuran.
+
+### 9c. Diseño propuesto: tres capas con contrato
+
+```
+Capa 3 — Usuario       Simulation, presets, constructor de dominio, config, CLI/Jupyter
+Capa 2 — Componentes   EOS, Closure, Advection, PGF, Momentum, FreeSurface, OpenBoundary, WetDry, SurfaceFluxes
+                        cada uno con contrato: variables que lee y escribe (registro único), parámetros con
+                        unidades, valor por defecto y cita, requisitos y chequeos
+Capa 1 — Núcleos       funciones puras sobre arreglos (NumPy/Numba hoy, JAX en la Etapa D), sin modificar la entrada
+```
+
+- El driver arma el paso en orden fijo y valida la composición **antes del primer paso** (por ejemplo: KPP sin flujo de flotabilidad en superficie, TEOS-10 sin S, forzamiento que no cubre el dominio).
+- `SigmaBaroclinic` pasa a ser un modelo armado con componentes. Los 2D de marea siguen como modelo barotrópico que comparte grid, forzamiento y fronteras. La Fase 1 en z se retira.
+- Mismo API con `backend="numpy" | "jax"`; los tests actuales pasan a ser tests de equivalencia entre backends (sección 6).
+
+Uso objetivo:
+
+```python
+import pyocean as po
+
+domain = po.regional.build(region=(-118, -92, 12, 32), dx_km=4,
+                           bathy="gebco2024", ocean="hycom_espc", tides="tpxo10",
+                           atmosphere="era5", start="2026-02-01", days=30)
+print(domain.report())            # rx0/rx1, fosas, cobertura de fronteras, Δt sugerido
+
+model = po.Model(domain,
+    coordinate=po.vertical.Hybrid(n_layers=41),
+    eos=po.eos.TEOS10(),
+    closure=po.closures.GLS("k-epsilon"),
+    tides=po.tides.Flather(sal="hycom"),
+    preset="coastal_tidal")       # el preset cita el benchmark que lo validó
+
+sim = po.Simulation(model, dt=120, stop="30 days",
+                    output=po.Output("pacmex.zarr", every="1 h", fields="standard"),
+                    checkpoint="1 day")
+sim.run()                         # pre-flight, salud en línea, post-mortem si explota
+sim.budgets().plot()              # cierre término a término
+```
+
+### 9d. En qué seríamos mejores
+
+| Problema en los otros | Respuesta de pyOCEAN |
+|---|---|
+| MITgcm: configuración al compilar | todo al correr; Numba compila solo |
+| MOM6: cientos de parámetros, errores horas después | validación al armar el modelo, errores en lenguaje claro con la corrección sugerida |
+| ROMS/CROCO, MOM6: preparación del dominio con herramientas externas (ROMS-Tools, regional-mom6, CrocoDash) | constructor de dominio dentro del modelo, reproducible (queja nº 1 de la sección 3b) |
+| HYCOM: `blkdat.input` críptico | config legible = serialización de los parámetros tipados, guardada en salida y restart; `pyocean config diff` |
+| Oceananigans: latencia de compilación, errores de tipos opacos, OBC confusos | composición igual de limpia en Python; fronteras con benchmarks públicos de reflexión y balance de masa |
+| Todos: explota sin decir dónde; presupuestos que no cierran | presupuestos de calor, sal y volumen término a término, RPE, truncaciones y post-mortem por defecto |
+| Ninguno en Fortran | inspección en vivo: `model.tendencies(state)` devuelve cada término con nombre, en Jupyter, y se puede continuar |
+
+Principios:
+1. Un parámetro, un lugar: unidades, valor por defecto, cita y benchmark; la documentación de cada componente se genera de su contrato.
+2. Nada falla en silencio: todo chequeo posible se hace antes de correr.
+3. Lo bueno está en el camino por defecto (verificador, post-mortem, CF/Zarr, presupuestos).
+4. Presets con procedencia; nunca ajustados a un solo caso.
+5. API estable: versionado semántico y alias con aviso al renombrar (`gudonov` → `godunov`).
+6. Instalación con `pip`/conda-forge en una Mac, sin compilar.
+
+Orden de trabajo: Etapa N de la sección 8 (N1 → N6). N1–N3 cambian la calidad del modelo; N5 es lo que más atrae usuarios.
