@@ -386,3 +386,18 @@ def test_cg_exact_conservation_keeps_the_positivity_guard():
     for _ in range(int(round(2 * P / dt))):
         eta, u, v = fs.step(eta, u, v, u.copy(), v.copy())
         assert (H + eta).min() >= 0.0
+
+
+def test_flather_face_with_a_prescribed_transport_has_no_radiation_term():
+    from core.dynamics.wetting_drying import WetDryFreeSurface
+    from core.grid.horizontal import create_cartesian_grid
+    hg = create_cartesian_grid(nx=3, ny=2, dx=100.0, dy=100.0)
+    fl_v = np.zeros((3, 3), bool)
+    fl_v[-1, :] = True
+    fs = WetDryFreeSurface(hg, np.full((2, 3), 10.0), dt=10.0, theta=0.6, flather_v=fl_v)
+    eta = np.full((2, 3), 0.3)                                    # η ≠ η_ext: plain Flather would drive a flux
+    z = (np.zeros((2, 4)), np.zeros((3, 3)))
+    q = (np.full((2, 4), np.nan), np.where(fl_v, -7.0, np.nan))
+    fs.step(eta, np.zeros((2, 4)), np.zeros((3, 3)), np.zeros((2, 4)), np.zeros((3, 3)), flather_eta=z,
+            flather_ubar=np.zeros((2, 4)), flather_vbar=np.zeros((3, 3)), flather_q=q)
+    np.testing.assert_allclose(fs.last_open_Qv[-1, :], -7.0, rtol=1e-14)

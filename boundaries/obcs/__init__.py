@@ -145,6 +145,9 @@ class OBData:
         Exterior depth-mean normal velocity for Flather [m/s]; None = 0.
     tracers : np.ndarray (ntr, nz, n_bdy) or None
         Passive tracers on the same ``zw`` grid (ALE ``n_tracers``); None = 0 in the exterior.
+    transport : np.ndarray (n_bdy,) or None
+        Prescribed normal volume flux per face [m³ s⁻¹], model sign; replaces Flather there (MOM6 SIMPLE segment): the
+        free surface takes exactly this flux, with no radiation term.
     """
     side: Literal["west", "east", "south", "north"]
     T: np.ndarray | None = field(default=None)
@@ -154,6 +157,7 @@ class OBData:
     zw: np.ndarray | None = field(default=None)
     ubar: np.ndarray | None = field(default=None)
     tracers: np.ndarray | None = field(default=None)
+    transport: np.ndarray | None = field(default=None)
 
 
 # ---------------------------------------------------------------------------

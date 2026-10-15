@@ -226,7 +226,7 @@ class WetDryFreeSurface:
 
     def step(self, eta: np.ndarray, u_n: np.ndarray, v_n: np.ndarray, u_hat: np.ndarray,
              v_hat: np.ndarray, flather_eta=None, flather_ubar: np.ndarray | None = None,
-             flather_vbar: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+             flather_vbar: np.ndarray | None = None, flather_q=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Advance η and the depth-mean velocities one step.
 
@@ -234,6 +234,8 @@ class WetDryFreeSurface:
         u_hat, v_hat : velocities after all other (explicit) tendencies
         flather_eta : external η at the Flather faces (array, or tuple (eta_u, eta_v))
         flather_ubar, flather_vbar : external depth-mean velocity there (model sign)
+        flather_q : (q_u, q_v) prescribed volume flux at Flather faces [m³ s⁻¹, model sign], NaN where Flather applies:
+            those faces carry exactly q, with no radiation term (MOM6 SIMPLE segment; DOME inflow)
         Returns η^{n+1}, u^{n+1}, v^{n+1} (u = 0 on dry faces).
         """
         th, dt, g = self.theta, self.dt, self.g
@@ -260,11 +262,16 @@ class WetDryFreeSurface:
                 ub = np.zeros_like(e_ext) if vel is None else np.asarray(vel)[fl["face"]]
                 D = np.maximum(self.H[fl["cell"]] + eta[fl["cell"]], 0.0)
                 open_ = D > self.d_min
-                c = np.where(open_, fl["length"] * np.sqrt(g * D), 0.0)
-                known = np.where(open_, fl["length"] * D * fl["sign"] * ub + c * ((1 - th) * eta[fl["cell"]] - e_ext), 0.0)
+                qp = None if flather_q is None else np.asarray(flather_q[0] if fl["axis"] == "u" else flather_q[1])[fl["face"]]
+                fixed = np.zeros(e_ext.shape, bool) if qp is None else np.isfinite(qp)
+                c = np.where(open_ & ~fixed, fl["length"] * np.sqrt(g * D), 0.0)
+                out_q = fl["length"] * D * fl["sign"] * ub                                       # outward
+                if qp is not None:
+                    out_q = np.where(fixed, fl["sign"] * np.nan_to_num(qp), out_q)
+                known = np.where(open_, out_q + c * ((1 - th) * eta[fl["cell"]] - e_ext), 0.0)
                 np.add.at(rhs_full, fl["cell"], -dt * known)
                 np.add.at(extra, fl["cell"], dt * th * c)
-                fl_state.append((D, open_, c, e_ext, ub))
+                fl_state.append((D, open_, c, e_ext, ub, out_q))
         rhs = rhs_full[self.active]
         cu = g * th**2 * dt**2 * self.Lu * Du / self.du
         cv = g * th**2 * dt**2 * self.Lv * Dv / self.dv
@@ -311,11 +318,11 @@ class WetDryFreeSurface:
         # and the total depth there: the σ-layer transports must add up to exactly this flux
         self.last_open_Qu, self.last_open_Qv = np.zeros(self.H_u.shape), np.zeros(self.H_v.shape)
         self.last_open_Du, self.last_open_Dv = np.zeros(self.H_u.shape), np.zeros(self.H_v.shape)
-        for fl, (D, open_, c, e_ext, ub) in zip(self._flather, fl_state):
-            q = fl["length"] * D * fl["sign"] * ub + c * (eta_new[fl["cell"]] - e_ext)     # outward, at n+1
+        for fl, (D, open_, c, e_ext, ub, out_q) in zip(self._flather, fl_state):
+            q = out_q + c * (eta_new[fl["cell"]] - e_ext)                                  # outward, at n+1
             vel = np.where(open_, fl["sign"] * q / np.where(open_, fl["length"] * D, 1.0), 0.0)
             (u_new if fl["axis"] == "u" else v_new)[fl["face"]] = vel
-            q_th = fl["length"] * D * fl["sign"] * ub + c * ((1 - th) * eta[fl["cell"]] + th * eta_new[fl["cell"]] - e_ext)
+            q_th = out_q + c * ((1 - th) * eta[fl["cell"]] + th * eta_new[fl["cell"]] - e_ext)
             Q, Dd = (self.last_open_Qu, self.last_open_Du) if fl["axis"] == "u" else (self.last_open_Qv, self.last_open_Dv)
             Q[fl["face"]] = np.where(open_, fl["sign"] * q_th, 0.0)
             Dd[fl["face"]] = np.where(open_, D, 0.0)

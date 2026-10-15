@@ -31,7 +31,7 @@ def validate_state(state: dict[str, OBData], open_edges: tuple[str, ...], shape:
                              f"{np.shape(ob.zw)}; expected ({nz}, {n}) and ({nz + 1}, {n})")
         if not (np.diff(ob.zw, axis=0) < 0).all():
             raise ValueError(f"{edge}: zw must decrease from the surface down")
-        for name in ("eta", "ubar"):
+        for name in ("eta", "ubar", "transport"):
             a = getattr(ob, name)
             if a is not None and np.shape(a) != (n,):
                 raise ValueError(f"{edge}: {name} shape {np.shape(a)}, expected ({n},)")
@@ -206,15 +206,17 @@ def exterior_velocity(state: dict[str, OBData], kind: str, Hf: np.ndarray, hf: n
 def flather_targets(state: dict[str, OBData], shape_u: tuple[int, int], shape_v: tuple[int, int]) -> dict:
     """Flather exterior (η, normal ū) at the open faces, zero elsewhere, in the free-surface argument layout."""
     zu, zv, ubar, vbar = np.zeros(shape_u), np.zeros(shape_v), np.zeros(shape_u), np.zeros(shape_v)
+    qu, qv = np.full(shape_u, np.nan), np.full(shape_v, np.nan)            # prescribed transports (NaN: Flather)
     for e, ob in state.items():
         eta = np.zeros(np.shape(ob.T)[1]) if ob.eta is None else np.asarray(ob.eta, float)
         ub = np.zeros_like(eta) if ob.ubar is None else np.asarray(ob.ubar, float)
+        q = np.full_like(eta, np.nan) if ob.transport is None else np.asarray(ob.transport, float)
         if e == "west":
-            zu[:, 0], ubar[:, 0] = eta, ub
+            zu[:, 0], ubar[:, 0], qu[:, 0] = eta, ub, q
         elif e == "east":
-            zu[:, -1], ubar[:, -1] = eta, ub
+            zu[:, -1], ubar[:, -1], qu[:, -1] = eta, ub, q
         elif e == "south":
-            zv[0, :], vbar[0, :] = eta, ub
+            zv[0, :], vbar[0, :], qv[0, :] = eta, ub, q
         else:
-            zv[-1, :], vbar[-1, :] = eta, ub
-    return dict(flather_eta=(zu, zv), flather_ubar=ubar, flather_vbar=vbar)
+            zv[-1, :], vbar[-1, :], qv[-1, :] = eta, ub, q
+    return dict(flather_eta=(zu, zv), flather_ubar=ubar, flather_vbar=vbar, flather_q=(qu, qv))

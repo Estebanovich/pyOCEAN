@@ -1638,3 +1638,43 @@ def test_bed_drag_rates_are_finite_on_empty_faces():
     ru, rv = m._bed_drag_rates(st.u, st.v, np.zeros_like(st.u), np.zeros_like(st.v))
     np.testing.assert_allclose(ru, 2e-3 * 0.05, rtol=1e-14)
     np.testing.assert_allclose(rv, 2e-3 * 0.05, rtol=1e-14)
+
+
+# ---------------------------------------------------------------- prescribed inflow transport (DOME spec §4)
+def _inflow_box(Q=-50.0, H=None):
+    """Closed 2-D box (x, y = 3 rows) fed through its north edge: 'clamped' with an exact transport."""
+    from boundaries.obcs import OBData
+    nx, ny, nz = 6, 3, 4
+    hg = create_cartesian_grid(nx=nx, ny=ny, dx=1000.0, dy=1000.0, f0=0.0)
+    H = np.full((ny, nx), 20.0) if H is None else H
+    zw = np.linspace(0.0, -20.0, nz + 1)[:, None] * np.ones((1, nx))
+
+    def state(t):
+        q = np.full(nx, Q)
+        return {"north": OBData(side="north", T=np.full((nz, nx), 9.0), u_normal=np.full((nz, nx), Q / 20000.0),
+                                zw=zw, transport=q)}
+    m = SigmaBaroclinic(hg, H, dt=30.0, n_layers=nz, rho0=RHO0, t_coef=TCOEF, z0=None, closure="constant",
+                        nu_const=1e-4, vertical_coordinate="ale", regrid="zstar",
+                        regrid_params=dict(dz_top=np.full(nz, 5.0)), open_boundaries=("north",),
+                        open_boundary_mode={"north": "clamped"}, open_boundary_state=state)
+    return m, m.initial_state(np.zeros((ny, nx)), np.full((nz, ny, nx), 10.0))
+
+
+def test_prescribed_transport_enters_exactly_and_the_volume_grows_by_it():
+    m, st = _inflow_box()
+    V0 = float(np.nansum((m.H + st.eta) * m.area))
+    for _ in range(20):
+        st = m.step(st)
+        np.testing.assert_allclose(st.Qy[:, -1, :].sum(axis=0), -50.0, rtol=1e-12)
+    V1 = float(np.nansum((m.H + st.eta) * m.area))
+    np.testing.assert_allclose(V1 - V0, 20 * 30.0 * 6 * 50.0, rtol=1e-10)
+
+
+def test_prescribed_transport_skips_faces_next_to_land():
+    H = np.full((3, 6), 20.0)
+    H[-1, :2] = np.nan
+    m, st = _inflow_box(H=H)
+    for _ in range(5):
+        st = m.step(st)
+    assert np.all(st.Qy[:, -1, :2] == 0.0)
+    np.testing.assert_allclose(st.Qy[:, -1, 2:].sum(axis=0), -50.0, rtol=1e-12)
