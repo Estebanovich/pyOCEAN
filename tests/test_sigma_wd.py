@@ -246,7 +246,7 @@ def test_coupled_viscous_step_keeps_the_depth_mean_physics(z0, tau):
     m, dz_mean, dz_visc, w, D = _coupled_columns(z0)
     u = np.zeros((3, 1, 4)); u[-1] = 0.5; u[0] = 0.1                # sheared column
     taus = np.full((1, 4), tau)
-    out = m.column_step(u, None, D, tau=taus, dz=dz_visc, dz_drag=dz_mean[0], w=w)
+    out = m.column_step(u, None, D, tau=taus, dz=dz_visc, dz_drag=dz_mean[0], dz_mean=dz_mean)
     r = 0.0 if z0 is None else first_layer_cd(dz_mean[0, 0, 0], z0, cd_max=m.cd_max) * abs(u[0, 0, 0])
     expect = (w * u).sum(0) + m.dt * (tau - r * out[0]) / D
     np.testing.assert_allclose((w * out).sum(0), expect, rtol=1e-12, atol=1e-15)

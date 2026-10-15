@@ -1440,3 +1440,18 @@ def test_thin_layer_coupling_keeps_the_wind_driven_depth_mean():
         out[cpl] = m.step(st, tau_x=tau)
     eta_none, eta_mom6 = np.abs(out["none"].eta).max(), np.abs(out["mom6"].eta).max()
     assert eta_mom6 < 1.2 * eta_none, (eta_none, eta_mom6)
+
+
+def test_thin_layer_coupling_forces_the_depth_mean_on_the_clipped_face_column():
+    # a 20 → 12 m step with no thin layer: the coupling thickness equals the mean one, so both couplings must give
+    # the same step; the depth-mean correction first divided τ by the mean cell depth (16 m) instead of the face
+    # column clipped at the shallower bed (12 m) that the free surface uses (BayIW seiche range −2.5 %, 2026-10-14)
+    nx, out = 32, {}
+    H = np.where(np.arange(nx) < 16, 20.0, 12.0)[None, :]
+    for cpl in ("none", "mom6"):
+        m = _ale_box("zstar", nx=nx, nz=10, bathy=H, dt=30.0, nu=1e-4, thin_layer_coupling=cpl,
+                     mix_diagnostic=False)
+        st = m.initial_state(np.zeros((1, nx)), np.full((10, 1, nx), 7.0))
+        tau = np.zeros((1, nx + 1)); tau[:, 1:-1] = 0.1
+        out[cpl] = m.step(st, tau_x=tau)
+    np.testing.assert_allclose(out["mom6"].eta, out["none"].eta, rtol=0, atol=1e-12 * np.abs(out["none"].eta).max())

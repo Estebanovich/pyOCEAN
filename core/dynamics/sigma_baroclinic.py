@@ -1998,7 +1998,8 @@ class SigmaBaroclinic:
             hu_v = viscous_face_thickness(qe, qw, st.u)                 # upwind-biased (MOM6, Hallberg & Rhines)
             hv_v = viscous_face_thickness(qn, qs, st.v.swapaxes(1, 2)).swapaxes(1, 2)
             visc = dict(hu=np.maximum(hu_v, DZ_FLOOR), hv=np.maximum(hv_v, DZ_FLOOR),
-                        hu_drag=np.maximum(hu[0], DZ_FLOOR), hv_drag=np.maximum(hv[0], DZ_FLOOR))
+                        hu_drag=np.maximum(hu[0], DZ_FLOOR), hv_drag=np.maximum(hv[0], DZ_FLOOR),
+                        hu_mean=hu, hv_mean=hv)                         # ū on the clipped face column
         else:
             visc = dict(hu=np.maximum(hu, DZ_FLOOR), hv=np.maximum(hv, DZ_FLOOR))
         eta_new, u_new, v_new = self.core.step(st.eta, st.u, st.v, G_u=gu_ab, G_v=gv_ab, tau_u=tu, tau_v=tv,

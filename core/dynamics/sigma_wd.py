@@ -187,7 +187,7 @@ class SigmaWetDry:
     def column_step(self, u: np.ndarray, G_k: np.ndarray | None, depth: np.ndarray,
                     nu: np.ndarray | None = None, tau: np.ndarray | None = None,
                     dz: np.ndarray | None = None, dz_drag: np.ndarray | None = None,
-                    w: np.ndarray | None = None) -> np.ndarray:
+                    dz_mean: np.ndarray | None = None) -> np.ndarray:
         """
         Step 1 for the columns of one velocity component: û = (vertical viscosity
         + bed stress)⁻¹ (u + Δt G).  u, G_k : (N, ...); depth : (...) total depth [m];
@@ -196,10 +196,12 @@ class SigmaWetDry:
         dz : (N, ...) layer thickness at the faces [m] (default D Δσ_k).
         dz_drag : (...) bed-layer thickness for the log-law drag C_d(dz_drag) [m] (default dz[0]); the ALE step
             passes the mean bed-layer thickness when dz is the viscous coupling thickness (spec 2026-10-14 §3).
-        w : (N, ...) layer fractions of the depth mean ū = Σ w_k u_k, given when dz is not their thickness (the ALE
-            thin-layer coupling).  The solve conserves Σ dz_k u_k, so internal friction would change ū and the wind
-            would enter it as Δt τ / dz_top; a uniform correction δ then restores the depth-mean balance
-            Σ w û = Σ w (u + Δt G) + Δt (τ_s − r û₀) / D (implicit bed stress included), keeping the shear.
+        dz_mean : (N, ...) layer thickness of the depth mean ū = Σ w_k u_k, w_k = dz_mean_k / D_f, D_f = Σ dz_mean
+            (the face column of the free surface; in ALE clipped at the shallower bed), given when dz is not that
+            thickness (the ALE thin-layer coupling).  The solve conserves Σ dz_k u_k, so internal friction would
+            change ū and the wind would enter it as Δt τ / dz_top; a uniform correction δ then restores the
+            depth-mean balance Σ w û = Σ w (u + Δt G) + Δt (τ_s − r û₀) / D_f (implicit bed stress included),
+            keeping the shear.
         """
         shape = u.shape
         n = shape[0]
@@ -232,12 +234,13 @@ class SigmaWetDry:
                 out[-1] += self.dt * tau / dz[-1]
         else:
             out = vertical_implicit(uu, dz, nu, r, self.dt, tau_top=tau)
-        if w is not None:
-            w = np.asarray(w, float).reshape(n, -1)
-            sw = w.sum(0)
-            rhs = (w * uu).sum(0) + self.dt * (0.0 if tau is None else tau) / D - (w * out).sum(0) \
-                - self.dt * r * out[0] / D
-            out = out + rhs / (sw + self.dt * r / D)                     # δ with the bed stress at û₀ + δ
+        if dz_mean is not None:
+            hm = np.asarray(dz_mean, float).reshape(n, -1)
+            Df = np.maximum(hm.sum(0), self.d_min)
+            w = hm / Df
+            rhs = (w * uu).sum(0) + self.dt * (0.0 if tau is None else tau) / Df - (w * out).sum(0) \
+                - self.dt * r * out[0] / Df
+            out = out + rhs / (w.sum(0) + self.dt * r / Df)              # δ with the bed stress at û₀ + δ
         return out.reshape(shape)
 
     def face_depths(self, eta: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -257,7 +260,8 @@ class SigmaWetDry:
              flather_vbar: np.ndarray | None = None, tau_u: np.ndarray | None = None,
              tau_v: np.ndarray | None = None, wu: np.ndarray | None = None, wv: np.ndarray | None = None,
              hu: np.ndarray | None = None, hv: np.ndarray | None = None, hu_drag: np.ndarray | None = None,
-             hv_drag: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+             hv_drag: np.ndarray | None = None, hu_mean: np.ndarray | None = None,
+             hv_mean: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Advance η and the layer velocities u (N, ny, nx+1), v (N, ny+1, nx) one step.
         G_u, G_v : explicit tendencies per layer [m s⁻²] (advection, Coriolis, body force).
@@ -266,7 +270,10 @@ class SigmaWetDry:
             ALE: core.vertical.ale.face_fractions).
         hu, hv : layer thickness at the faces for the implicit vertical viscosity [m] (default D Δσ_k).
         hu_drag, hv_drag : bed-layer thickness at the faces for the log-law drag [m] (default hu[0], hv[0]); given
-            when hu, hv are the ALE coupling thickness, which also makes column_step restore the depth-mean balance.
+            when hu, hv are the ALE coupling thickness.
+        hu_mean, hv_mean : layer thickness at the faces whose fractions are wu, wv [m] (ALE: clipped at the
+            shallower bed, so Σ is the free-surface face column); given when hu, hv are the coupling thickness,
+            so column_step restores the depth-mean balance (``dz_mean``).
         Returns η^{n+1}, u^{n+1}, v^{n+1}.
         """
         ds = self.dsigma[:, None, None]
@@ -277,9 +284,8 @@ class SigmaWetDry:
         wu_ = ds if wu is None else wu
         wv_ = ds if wv is None else wv
         u_hat = self.column_step(u, G_u, Du, nu_u, tau=tau_u, dz=hu, dz_drag=hu_drag,
-                                 w=None if hu_drag is None else wu_)          # coupling thickness ≠ the weights'
-        v_hat = self.column_step(v, G_v, Dv, nu_v, tau=tau_v, dz=hv, dz_drag=hv_drag,
-                                 w=None if hv_drag is None else wv_)
+                                 dz_mean=hu_mean)                              # coupling thickness ≠ the weights'
+        v_hat = self.column_step(v, G_v, Dv, nu_v, tau=tau_v, dz=hv, dz_drag=hv_drag, dz_mean=hv_mean)
         ubar_n, vbar_n = (wu_ * u).sum(0), (wv_ * v).sum(0)
         ubar_hat, vbar_hat = (wu_ * u_hat).sum(0), (wv_ * v_hat).sum(0)
         eta_new, ubar_new, vbar_new = self.fs.step(eta, ubar_n, vbar_n, ubar_hat, vbar_hat, flather_eta=flather_eta,
