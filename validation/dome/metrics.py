@@ -96,7 +96,7 @@ def ranges(s: dict) -> dict:
 
 def rpe_series(s: dict) -> np.ndarray:
     """RPE [J] of every record (Ilicak's exact hypsometry; validation/ilicak_benchmark/metrics.py)."""
-    zA = hypsometry(s["H"], s["dx"], s["dy"])
+    zA = hypsometry(s["H"], s["dx"], s["dy"], top=60.0)                   # the sea level rises ~35 m in 50 days
     vol = _vol(s)
     rho = _rho(s["T"])
     return np.array([reference_potential_energy(np.where(vol[n] > 0, rho[n], np.nan), vol[n], hypsometry=zA)

@@ -4,7 +4,7 @@ with partial cells (hFacMin = 0.1), z* (select_rStar = 2, nonlinFreeSurf = 4: th
 linear EOS ρ = 1031 − 0.2 T (tAlpha = 0.2/1031), flux-limited tracers (tempAdvScheme = 77, as Legg et al. 2006,
 GAD.h:41 ENUM_FLUX_LIMIT), vector-invariant momentum, Laplacian viscAh, viscAr = ν_v, quadratic bottom drag 2e-3,
 no tracer diffusion.  Variant 'legg': no-slip bed and sides (Legg eq. 10, the MITgcm defaults of their runs);
-'common': free slip + drag, as pyOCEAN.  Inflow: OBCS prescribed on the north row (OBNv/OBNt/OBNptr from
+'common': free slip + drag, as pyOCEAN; 'kv_low': 'common' with viscAr = 1e-4 (informative, spec §5).  Inflow: OBCS prescribed on the north row (OBNv/OBNt/OBNptr from
 cases.inflow_profile, averaged onto the levels so that Σ v dz dx is the case transport); the dye is ptracer 1;
 sponges: rbcs relaxation of T and the dye toward the ambient profile / 0 with MOM6 DOME's rates.
 Grid: one land row south and one land column east (periodic exchanges) and the OBCS row north (MITgcm sets the
@@ -98,11 +98,12 @@ def data_text(c: cases.Case, variant: str, days: float | None = None) -> str:
     nx, ny = _shape(c)
     days = c.days if days is None else days
     dt = 600.0 * c.dx / 10e3
-    noslip = {"legg": ".TRUE.", "common": ".FALSE."}[variant]
+    noslip = {"legg": ".TRUE.", "common": ".FALSE.", "kv_low": ".FALSE."}[variant]
+    nu_v = 1e-4 if variant == "kv_low" else c.nu_v
     return f""" &PARM01
  tRef={NR}*{cases.T_REF}, sRef={NR}*35., eosType='LINEAR', tAlpha={cases.ALPHA / cases.RHO0:.10g}, sBeta=0.,
  rhoNil={cases.RHO0}, rhoConst={cases.RHO0}, gravity={cases.G},
- viscAh={c.nu_h:g}., viscAr={c.nu_v:g}, implicitViscosity=.TRUE., vectorInvariantMomentum=.TRUE.,
+ viscAh={c.nu_h:g}., viscAr={nu_v:g}, implicitViscosity=.TRUE., vectorInvariantMomentum=.TRUE.,
  no_slip_sides={noslip}, no_slip_bottom={noslip}, bottomDragLinear=0., bottomDragQuadratic={c.cd:g},
  diffKhT=0., diffKrT=0., saltStepping=.FALSE.,
  tempAdvScheme=77, staggerTimeStep=.TRUE., f0={c.f0:g}, beta=0.,
@@ -150,9 +151,10 @@ def write_run(res_km: float, run_dir: Path, variant: str = "common", days: float
                                 " useDiagnostics=.TRUE., useMNC=.TRUE.,\n &\n")
     (d / "eedata").write_text(" &EEPARMS\n nTx=1, nTy=1,\n &\n")
     (d / "data.obcs").write_text(obcs_text(c))
-    peak = 10.0 / 86400.0
+    peak = 10.0 / 86400.0                     # mask 1 = T, 2 = S, 3 = ptracer 1 (rbcs_init_fixed.F)
     (d / "data.rbcs").write_text(f""" &RBCS_PARM01
  tauRelaxT={1.0 / peak:g}, relaxMaskFile(1)='rbcs_mask.bin', relaxTFile='rbcs_T.bin',
+ relaxMaskFile(3)='rbcs_mask.bin',
  rbcsForcingPeriod=0., rbcsForcingCycle=0.,
  &
  &RBCS_PARM02
@@ -193,11 +195,19 @@ def write_run(res_km: float, run_dir: Path, variant: str = "common", days: float
 
 
 def _join(pattern: str, name: str) -> np.ndarray:
+    """``name`` from every file matching ``pattern``, joined in time: mnc starts a new file (named by its first
+    iteration) when one reaches mnc_max_fsize; time-independent fields come from the first file."""
     files = sorted(glob.glob(pattern))
     if not files:
         raise FileNotFoundError(pattern)
-    with netCDF4.Dataset(files[0]) as ds:
-        return np.asarray(ds[name][:], float)
+    parts = []
+    for f in files:
+        with netCDF4.Dataset(f) as ds:
+            var = ds[name]
+            parts.append(np.asarray(var[:], float))
+            if not var.dimensions or var.dimensions[0] != "T":
+                return parts[0]
+    return np.concatenate(parts)
 
 
 def read(run_dir: Path, res_km: float) -> dict:

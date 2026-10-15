@@ -124,3 +124,26 @@ def test_mitgcm_inflow_files_carry_the_case_transport():
     dz = mitgcm.wet_levels(c)                                        # (Nr,) wet thickness of the 600-m channel column
     q = (v * dz[:, None]).sum(axis=0) * c.dx
     np.testing.assert_allclose(q[:c.nx], cases.inflow_profile(c)["transport"], rtol=1e-12, atol=1e-6)
+
+
+def test_mitgcm_reader_joins_mnc_files_split_at_the_size_limit(tmp_path):
+    """mnc starts a new diag file when one reaches mnc_max_fsize (the 5-km diag3d): the reader joins them in time."""
+    import netCDF4
+    from validation.dome import mitgcm
+    for it, times in ((0, [0.0, 86400.0]), (14113, [172800.0])):
+        with netCDF4.Dataset(tmp_path / f"diag3d.{it:010d}.t001.nc", "w") as ds:
+            ds.createDimension("T", None)
+            ds.createDimension("Z", 2)
+            ds.createVariable("T", "f8", ("T",))[:] = times
+            ds.createVariable("THETA", "f8", ("T", "Z"))[:] = np.array(times)[:, None] * np.ones(2)
+    f = str(tmp_path / "diag3d.*.t001.nc")
+    np.testing.assert_array_equal(mitgcm._join(f, "T"), [0.0, 86400.0, 172800.0])
+    assert mitgcm._join(f, "THETA").shape == (3, 2)
+
+
+def test_mitgcm_sponge_relaxes_the_dye(tmp_path):
+    """rbcs relaxes ptracer 1 only with its own mask, relaxMaskFile(3) (1 = T, 2 = S; rbcs_init_fixed.F): without it
+    MITgcm warns 'No relaxation for pTr = 1' and the dye piles up in the west sponge."""
+    from validation.dome import mitgcm
+    txt = (mitgcm.write_run(10.0, tmp_path, "common", days=1.0) / "data.rbcs").read_text()
+    assert "relaxMaskFile(3)='rbcs_mask.bin'" in txt
