@@ -61,3 +61,32 @@ def test_pyocean_dome_builds_and_takes_steps_with_inflow_tracer_and_sponge(coord
     assert np.isfinite(st.u).all() and st.tr.max() > 0.0               # dye entered through the channel
     q = st.Qy[:, -1, :].sum()
     np.testing.assert_allclose(q, cases.inflow_profile(c)["transport"].sum(), rtol=1e-10)
+
+
+def _synthetic_series(nt=3):
+    """A uniform-layer box with a dye slab at y ∈ [200, 300] km, 1 m/s westward flow inside it."""
+    c = cases.get(50.0)
+    nz = 4
+    h = np.full((nt, nz, c.ny, c.nx), 900.0)
+    s_ = np.zeros_like(h)
+    in_slab = (c.y >= 200e3) & (c.y <= 300e3)
+    s_[:, -1][:, in_slab, :] = 1.0                                     # bottom layer (surface-first index −1)
+    u = np.zeros((nt, nz, c.ny, c.nx + 1))
+    u[:, -1][:, in_slab, :] = -1.0
+    T = np.full_like(h, cases.T_of_rho(1031.0))
+    return dict(t=np.arange(nt) * 86400.0, x=c.x, y=c.y, dx=np.full(c.nx, c.dx), dy=np.full(c.ny, c.dx),
+                H=np.full((c.ny, c.nx), 3600.0), h=h, T=T, s=s_, u=u, v=np.zeros((nt, nz, c.ny + 1, c.nx)),
+                eta=np.zeros((nt, c.ny, c.nx)))
+
+
+def test_metrics_on_a_synthetic_dye_slab():
+    from validation.dome import metrics
+    s = _synthetic_series()
+    x, Y = metrics.path_Y(s, 0.0, 2 * 86400.0)
+    np.testing.assert_allclose(Y, 250e3, rtol=0.05)                    # slab centre (cell-centred quadrature)
+    x, T = metrics.plume_transport(s, 0.0, 2 * 86400.0)
+    n_slab = ((s["y"] >= 200e3) & (s["y"] <= 300e3)).sum()
+    np.testing.assert_allclose(T[1:-1], 1.0 * 900.0 * n_slab * s["dy"][0], rtol=1e-12)
+    assert metrics.final_density(s, 0.0, 2 * 86400.0) == pytest.approx(1031.0)
+    assert metrics.centroid_depth(s, 0.0) == pytest.approx(3600.0 - 450.0)
+    assert metrics.ranges(s)["s"] == (0.0, 1.0)
