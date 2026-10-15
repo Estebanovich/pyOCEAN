@@ -78,14 +78,18 @@ python validation/dome/figures.py 10                                            
 |---|---|---|---|---|---|---|---|---|---|
 | MITgcm z legg | −52 / −72 / −107 / −204 | 20.4 / 22.1 / 25.9 / 21.0 | 1.94e-3 | 1031.142 / −10.85 | 883 / 1176 / 1337 / 1433 | — / 2.04 | — | 600 | 4.7 |
 | MITgcm z common | −40 / −55 / −75 / −91 | 21.4 / 24.8 / 27.8 / 32.1 | 1.83e-3 | 1031.077 / −10.23 | 858 / 1088 / 1079 / 1064 | — / 2.24 | — | 600 | 4.6 |
-| **pyOCEAN z\*** | −49 / −74 / −86 / −120 | 23.6 / 27.2 / 30.8 / 32.8 | 2.70e-3 | 1031.044 / −9.92 | 827 / 1064 / 1118 / 1137 | — / 2.05 | 0 / 0 | 600 | 14.1 |
-| **pyOCEAN σ** | −89 / −117 / −150 / −202 | 23.8 / 27.6 / 33.5 / 40.3 | 2.14e-3 | 1031.391 / −13.22 | 1221 / 1615 / 1798 / 1717 | — / 2.63 | 0 / 0 | 600 | 14.1 |
-| **pyOCEAN híbrida** | −116 / −151 / −192 / −222 | 11.7 / 15.5 / 19.4 / 18.9 | 1.41e-3 | 1031.702 / −16.18 | 1338 / 1848 / 2073 / 2222 | 2.59 / 2.96 | 0 / 0 | 600 | 14.6 |
+| **pyOCEAN z\*** | −49 / −72 / −99 / −126 | 22.6 / 26.4 / 30.4 / 33.3 | 2.69e-3 | 1031.060 / −10.07 | 835 / 1088 / 1151 / 1174 | — / 2.04 | 0 / 0 | 600 | 13.8 |
+| **pyOCEAN σ** | −89 / −117 / −150 / −202 | 23.8 / 27.6 / 33.5 / 40.3 | 2.14e-3 | 1031.391 / −13.22 | 1221 / 1615 / 1798 / 1717 | — / 2.63 | 0 / 0 | 600 | 13.8 |
+| **pyOCEAN híbrida** | −115 / −150 / −192 / −224 | 11.2 / 15.4 / 19.7 / 19.4 | 1.37e-3 | 1031.702 / −16.18 | 1309 / 1823 / 2080 / 2179 | 3.10 / 3.21 | 0 / 0 | 600 | 14.9 |
 | MOM6 ρ (proxy) | −416 / −417 / −437 / −446 | 0.0 / 0.0 / −0.2 / −0.4 | — | 1031.917 / −18.22 | 1438 / 2099 / 2473 / 2808 | 0.46 / 2.03 | — | 1200 | 12.0 |
+
+Las filas de pyOCEAN a 10 km son posteriores a la corrección de la fricción de la revisión final (2026-10-15: el esfuerzo se reparte sobre los `hbbl` de fondo; antes solo actuaba en la capa 0, a veces evanescente). σ no cambia. En z\* la trayectoria se movió ≤ 13 km, el transporte ≤ 4 % y b_f 1.5 % (−9.92 → −10.07); en la híbrida, ≤ 2 km, ≤ 4 % y b_f igual.
 
 Legg 2006 a 10 km (Figs. 15–17), Y′ en x′ = −200 / −300 / −500 / −700 / −900 km: z −80 / −105 / −150 / −170 / −250; isopicnal −90 / −95 / −100 / −120; isopicnal con ν_v = 0.5 −95 / −110 / −130 / −145. b_f: z −11.7, isopicnal −11.0, isopicnal con ν_v = 0.5 −12.0 (1e-3 m s⁻²).
 
 ### 5 km (días 30–50)
+
+Las filas de pyOCEAN a 5 km son anteriores a la corrección de la fricción; por lo medido a 10 km, el cambio esperado es del mismo orden (≤ 13 km en la trayectoria, ≤ 4 % en el transporte, ~1.5 % en b_f de z\*).
 
 | corrida | Y′(x′ = −200/−300/−500/−800 km) [km] | T(x′) [Sv] | α_E | ρ_f / b_f [1e-3 m s⁻²] | centroide 10/20/30/50 d [m] | \|u\| delgadas/gruesas [m/s] | trunc / lim | Δt [s] | s por día |
 |---|---|---|---|---|---|---|---|---|---|
@@ -102,7 +106,7 @@ Legg 2006 a 10 km (Figs. 15–17), Y′ en x′ = −200 / −300 / −500 / −
 | prescrito | 8.382 / 8.572 Sv | MOM6: 7.53 Sv |
 | pyOCEAN z\* | exacto / exacto | 5.96 / 5.23 Sv (promedio en capas de 144 m) |
 | pyOCEAN σ | exacto / exacto | 7.70 / 7.93 Sv (+2.2 / +5.3 %) |
-| pyOCEAN híbrida | exacto / exacto | **3.55** / 7.35 Sv (−53 / −2.4 %), ver punto 6 |
+| pyOCEAN híbrida | exacto / exacto | **5.34** / 7.35 Sv (−29 / −2.4 %; −53 % antes de la corrección de la fricción), ver punto 6 |
 | MITgcm z | exacto / exacto | 4.25 / 5.33 Sv (promedio en niveles de 144 m) |
 | MOM6 ρ | 8.797 Sv (su Σ tr_k, +2.6–5 % sobre Legg) | — (v·h en la cara no es el transporte `SIMPLE`) |
 
@@ -113,11 +117,11 @@ Legg 2006 a 10 km (Figs. 15–17), Y′ en x′ = −200 / −300 / −500 / −
 1. **El caso está bien definido: ancla de Legg ✅ (criterio 1, punto de decisión 1).** MITgcm "legg" a 10 km queda a 7 % de Legg en la flotabilidad final (−10.85 contra −11.7e-3 m s⁻²) y a 5 % en la trayectoria lejana (−204 km en x′ = −800 contra ≈ −215). Cerca de la entrada la pluma baja 25–35 % menos (−52 / −72 / −107 contra −80 / −105 / −150 km). Las causas probables son de configuración, todas (c): el canal de 100 km (Legg usó 50 en sus corridas z), la pared oeste cerrada con esponja (Legg: Orlanski abierto) y la malla C (Legg: C–D a 10 km). Esteban eligió seguir con esta diferencia documentada (2026-10-14).
 
 2. **pyOCEAN z\* ≈ MITgcm z (criterio 2): ✅ en T y b_f, 🔶 en la trayectoria lejana.**
-   - **Flotabilidad final:** a 3 % en las dos resoluciones (−9.92 contra −10.23; −10.49 contra −10.79).
-   - **Transporte de la pluma:** a ≤ 11 % a 10 km y a ≤ 18 % a 5 km (solo x′ = −200 pasa de 15 %).
-   - **Trayectoria:** pyOCEAN baja 9–29 km más a 10 km (1–3 celdas) y 4–33 km más a 5 km. En x′ = −300 y −500 queda a 4 % con 5 km; en x′ = −800, a 31–32 % en las dos resoluciones.
-   - **Entrainment:** α_E es 29–48 % mayor, pero la pluma no sale más ligera.
-   - **Clase (c) probable:** el esquema de trazadores (WENO5 + FCT contra el limitador `77`, más compresivo) y la fricción (sobre 10 m de fondo contra la celda de fondo de 144 m). No se separaron; queda como estudio (punto 5 de la lista).
+   - **Flotabilidad final:** a 1.6 % a 10 km (−10.07 contra −10.23) y a 3 % a 5 km (−10.49 contra −10.79).
+   - **Transporte de la pluma:** a ≤ 9 % a 10 km y a ≤ 18 % a 5 km (solo x′ = −200 pasa de 15 %).
+   - **Trayectoria:** pyOCEAN baja 9–35 km más a 10 km (1–3.5 celdas) y 3–33 km más a 5 km. En x′ = −300 y −500 queda a 4 % con 5 km; en x′ = −800, a 31–38 % en las dos resoluciones.
+   - **Entrainment:** α_E es 29–47 % mayor, pero la pluma no sale más ligera.
+   - **Clase (c) probable:** el esquema de trazadores (WENO5 + FCT contra el limitador `77`, más compresivo) y la fricción (sobre 10 m de fondo contra la celda de fondo de 144 m). La parte (a) de la fricción, que no llegaba al agua sobre capas evanescentes, se corrigió en la revisión final: acercó b_f y el transporte a MITgcm, pero no la trayectoria. El resto no se separó; queda como estudio (punto 5 de la lista).
    - **Corrección del arnés (a), 2026-10-15:** `rbcs` de MITgcm no relajaba el tinte. Faltaba `relaxMaskFile(3)` (1 = T, 2 = S, 3 = ptracer 1; MITgcm avisaba "No relaxation for pTr = 1"). El tinte se acumulaba en la esponja oeste (10.7e12 m³) y volvía al este por el fondo. La trayectoria de MITgcm common en x′ = −500 pasó de −117 a −75 km, y su transporte, que decaía aguas abajo (15.6 / 7.7 Sv), ahora crece como el de pyOCEAN. Prueba: `test_mitgcm_sponge_relaxes_the_dye`.
 
 3. **Híbrida ≈ MOM6 ρ (criterio 3): no evaluable con el tinte de MOM6 (d + c).**
@@ -129,16 +133,16 @@ Legg 2006 a 10 km (Figs. 15–17), Y′ en x′ = −200 / −300 / −500 / −
    - **Contra el isopicnal de Legg** (HIM con la mezcla por Ri de Hallberg 2000, ν_v = 0.5), la híbrida baja 22–48 % más (−116 / −151 / −192 contra −95 / −110 / −130 km) y sale más densa (b_f −16.2 contra −12.0). Sin mezcla por Ri, la capa densa casi no se diluye: el tinte de fondo es 1 en casi todo el talud (figura). Esto es **(b): falta la mezcla por cizalla dependiente de Ri** (punto 3 de la lista).
 
 4. **Tendencia con la resolución (criterio 4): ✅, en la dirección de Legg.** De 10 a 5 km, todas las coordenadas y MITgcm dan una pluma más densa y más abajo del talud:
-   - z\*: b_f −9.92 → −10.49; Y′ en x′ = −200, −49 → −67 km;
+   - z\*: b_f −10.07 → −10.49; Y′ en x′ = −200, −49 → −67 km;
    - σ: −13.22 → −13.83; −89 → −95 km;
-   - híbrida: −16.18 → −17.47; −116 → −138 km;
+   - híbrida: −16.18 → −17.47; −115 → −138 km;
    - MITgcm: −10.23 → −10.79; −40 → −58 km.
 
-   El entrainment baja en z\* (2.70 → 2.34e-3) y en la híbrida. En σ sube un poco (2.14 → 2.29e-3).
+   El entrainment baja en z\* (2.69 → 2.34e-3) y en la híbrida. En σ sube un poco (2.14 → 2.29e-3).
 
 5. **Rangos y robustez (criterio 5): ✅ con Δt = 600 s; ❌ con 1200 s a 10 km.**
    - **Rangos:** s ∈ [−5.5e-19, 1] y T dentro de sus fuentes (−5 °C de la entrada; 4.8–4.99 °C del perfil inicial o del objetivo de la esponja según la coordenada) en todas las corridas. Sin truncaciones; `n_limited` 0 a 10 km y 2323 en la híbrida a 5 km.
-   - **Pendientes de capas delgadas:** las caras delgadas de la híbrida van más lentas que las gruesas (2.59 / 2.96 y 2.75 / 3.00 m/s), así que 4b no aparece en DOME. La lámina de 4d tampoco aparece.
+   - **Pendientes de capas delgadas:** las caras delgadas de la híbrida van más lentas que las gruesas (3.10 / 3.21 y 2.75 / 3.00 m/s), así que 4b no aparece en DOME. La lámina de 4d tampoco aparece.
    - **Con Δt = 1200 s (el de MOM6) a 10 km, las tres coordenadas se detienen** en el día 36 por truncaciones CFL. Un modo de la parte alta de la cuenca crece desde el día ~28: η con desviación de 0.19 m contra 0.07 y \|u\| de superficie rms de 1 m/s. Se diagnosticó con dos corridas en lugar de semillas, porque la falla es determinista: con 600 s, o con θ_bc = 1 a 1200 s, llega estable a 50 y 40 días.
    - **Causa:** el transporte baroclínico centrado (θ_bc = ½, neutro) deja crecer el modo con fΔt = 0.12. A 5 km con Δt = 600 s (mismo Courant, fΔt = 0.06) no aparece. **(a), punto de decisión 3:** cambiar θ_bc reabre el amortiguamiento de la onda interna de Ilicak, así que va como plan aparte (punto 1 de la lista).
    - **La variante `kv_low` (ν_v = 1e-4) se descartó para todos los modelos:** MOM6 se detiene en el día 3 (truncaciones) y MITgcm en el día ~4 (cg2d). Sin la viscosidad Smagorinsky biarmónica ni la mezcla de Jackson del DOME propio de MOM6, el caso no está bien planteado (c/b).
@@ -146,7 +150,7 @@ Legg 2006 a 10 km (Figs. 15–17), Y′ en x′ = −200 / −300 / −500 / −
 6. **Entrada (criterio 6): ✅ en volumen; por clase ✅ en σ y en la híbrida a 5 km, (a) en la híbrida a 10 km.**
    - **Volumen:** exacto en las tres coordenadas.
    - **z\* y MITgcm:** pierden 21–44 % en la clase más densa por el promedio en capas de 144 m (c).
-   - **Híbrida a 10 km:** la fila de entrada tiene una capa de fondo de 355 m a T = −2.53 °C (la entrada trae −5). El perfil exterior se remapea a las capas interiores actuales, así que una capa interior gruesa promedia el agua de entrada con la de arriba y la clase más densa se pierde en la primera celda. Es un equilibrio que se sostiene solo: con 5 km la capa de fondo es de 177 m a −5.0 °C.
+   - **Híbrida a 10 km:** la fila de entrada alterna entre una capa de fondo gruesa y mezclada (327 m a −3.4 °C el día 40; 355 m a −2.5 °C antes de la corrección de la fricción) y una a −5.0 °C (día 50). La entrada trae −5. El perfil exterior se remapea a las capas interiores actuales, así que cuando la capa interior de fondo es gruesa promedia el agua de entrada con la de arriba y la clase más densa se pierde en la primera celda. La clase densa pierde 29 % en promedio (53 % antes de la corrección). Con 5 km la capa de fondo es de 177 m a −5.0 °C.
    - **Consecuencia:** b_f de la híbrida es −16.2 a 10 km contra −17.5 a 5 km. **(a)**, punto 2 de la lista.
 
 7. **σ queda entre z\* y la híbrida:** b_f −13.2, y la trayectoria más cercana a la z de Legg (−89 / −117 / −150 contra −80 / −105 / −150 km). Tiene más remolinos en la pluma (figura) y el mayor transporte aguas abajo (40 Sv en x′ = −800). Sin referencia σ en esta campaña, queda como observación (c).
@@ -155,7 +159,7 @@ Legg 2006 a 10 km (Figs. 15–17), Y′ en x′ = −200 / −300 / −500 / −
 
    | | pyOCEAN (z\* / σ / híbrida) | MITgcm z | MOM6 ρ |
    |---|---|---|---|
-   | 10 km | 14.1 / 14.1 / 14.6 (Δt 600 s, el máximo estable) | 4.6 (Δt 600 s) | 12.0 (Δt 1200 s) |
+   | 10 km | 13.8 / 13.8 / 14.9 (Δt 600 s, el máximo estable) | 4.6 (Δt 600 s) | 12.0 (Δt 1200 s) |
    | 5 km | 62.7 / 60.8 / 64.1 (Δt 600 s) | 33.7 (Δt 300 s) | 92.8 (Δt 600 s) |
 
    - **pyOCEAN contra MITgcm:** a 10 km es 3 veces más caro con 5 veces los núcleos, con el mismo Δt; a 5 km, 1.9 veces, con el doble de Δt.
@@ -176,7 +180,7 @@ Legg 2006 a 10 km (Figs. 15–17), Y′ en x′ = −200 / −300 / −500 / −
    - imponer en las caras de entrada la estructura de capas del exterior (`h_ext`), como el transporte por capa de MOM6 en modo capa o el anidado de interfaces de HYCOM.
 3. **(b) Mezcla por cizalla dependiente de Ri** (Hallberg 2000; Jackson et al. 2008), para la híbrida. Sin ella la pluma isopicna sale con b_f −16 a −17.5 contra −11 / −12 de Legg (punto 3). Es la parametrización que MOM6 activa en su DOME (`USE_JACKSON_PARAM`).
 4. **(b) Viscosidad Smagorinsky biarmónica,** para que ν_v bajo sea un caso bien planteado (punto 5, `kv_low`). El DOME de MOM6 la usa (`SMAG_BI_CONST = 0.06`).
-5. **Estudio (c): entrainment de z\* contra MITgcm z** (punto 2). α_E es 29–48 % mayor y la pluma va 1–3 celdas más abajo del talud. Separar el efecto del esquema de trazadores (WENO5 + FCT contra el limitador `77`) y el de la fricción (10 m de fondo contra la celda de fondo).
+5. **Estudio (c): entrainment de z\* contra MITgcm z** (punto 2). α_E es 29–47 % mayor y la pluma va 1–3 celdas más abajo del talud. Separar el efecto del esquema de trazadores (WENO5 + FCT contra el limitador `77`) y el de la fricción (10 m de fondo contra la celda de fondo).
 6. **Rendimiento del paso ALE 3-D:** 3 veces MITgcm con 5 veces los núcleos al mismo Δt (punto 8). Reducir el trabajo fijo por paso; los kernels están limitados por memoria (`validation/bayiw_cut/README.md`).
 
 **Para Esteban, fuera de pyOCEAN:**
