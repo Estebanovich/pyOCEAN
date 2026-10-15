@@ -5,7 +5,7 @@ pyOCEAN runs of the DOME benchmark (spec 2026-10-14-dome-overflow §5): ALE z*, 
 of the case (Laplacian ν_h, ν_v, no tracer diffusion, quadratic drag C_d over hbbl), one passive tracer s (the inflow
 dye), the interior sponges of MOM6 DOME and the north inflow as a 'clamped' edge with its exact transport.
 
-Usage: NUMBA_NUM_THREADS=5 python validation/dome/run_pyocean.py 10 zstar [--dt 600] [--days 50] [--tag x]
+Usage: NUMBA_NUM_THREADS=5 python validation/dome/run_pyocean.py 10 zstar [--dt 600 (default)] [--days 50] [--tag x]
 """
 from __future__ import annotations
 
@@ -25,6 +25,12 @@ from core.grid.horizontal import create_cartesian_grid  # noqa: E402
 from validation.dome import cases, series  # noqa: E402
 
 N_WARM = 5
+DT_MAX = 600.0      # [s] the 10-km campaign stops at day 36 with 1200 s (θ_bc = ½ instability, README point 5)
+
+
+def default_dt(case: cases.Case) -> float:
+    """pyOCEAN's default step: the case step (MOM6's), capped at DT_MAX."""
+    return min(case.dt, DT_MAX)
 
 
 def build(case: cases.Case, coord: str, dt: float | None = None, nu_v: float | None = None):
@@ -46,7 +52,7 @@ def build(case: cases.Case, coord: str, dt: float | None = None, nu_v: float | N
         return {"north": OBData(side="north", T=prof["T"], u_normal=prof["v"], zw=prof["zw"],
                                 tracers=prof["s"][None], transport=prof["transport"])}
     zs = -np.linspace(0.0, cases.HMAX, 361)
-    m = SigmaBaroclinic(hg, case.H.copy(), dt=case.dt if dt is None else dt, n_layers=nz, rho0=cases.RHO0,
+    m = SigmaBaroclinic(hg, case.H.copy(), dt=default_dt(case) if dt is None else dt, n_layers=nz, rho0=cases.RHO0,
                         t_coef=cases.ALPHA, t_ref=cases.T_REF, z0=None, closure="constant",
                         nu_const=case.nu_v if nu_v is None else nu_v, ah=case.nu_h, g=cases.G, pgf="fv",
                         vertical_coordinate="ale", regrid=coord, regrid_params=params, n_tracers=1,
@@ -79,7 +85,7 @@ def run(res_km: float, coord: str, dt: float | None = None, days: float | None =
     c = cases.get(res_km)
     out = cases.run_dir(res_km, "pyocean", coord, tag) / "series.npz"
     out.unlink(missing_ok=True)
-    dt = c.dt if dt is None else dt
+    dt = default_dt(c) if dt is None else dt
     days = c.days if days is None else days
     m, st = build(c, coord, dt, nu_v)
     n_steps = int(round(days * 86400.0 / dt))

@@ -147,3 +147,12 @@ def test_mitgcm_sponge_relaxes_the_dye(tmp_path):
     from validation.dome import mitgcm
     txt = (mitgcm.write_run(10.0, tmp_path, "common", days=1.0) / "data.rbcs").read_text()
     assert "relaxMaskFile(3)='rbcs_mask.bin'" in txt
+
+
+def test_pyocean_default_time_step_is_the_stable_one():
+    """At 10 km / 1200 s (MOM6's step) θ_bc = ½ grows a basin mode until the run stops at day 36 (README point 5);
+    the pyOCEAN runner defaults to 600 s, MOM6 keeps the case step."""
+    from validation.dome import run_pyocean
+    assert run_pyocean.default_dt(cases.get(10.0)) == 600.0
+    assert run_pyocean.default_dt(cases.get(5.0)) == 600.0
+    assert cases.get(10.0).dt == 1200.0

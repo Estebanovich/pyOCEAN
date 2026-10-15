@@ -1535,6 +1535,14 @@ def _sponge_box(rate=1e-4, rule="zstar", **kw):
     return m, m.initial_state(np.zeros((1, nx)), np.full((nz, 1, nx), 15.0))
 
 
+def test_interior_sponge_does_not_enter_the_mixing_diagnostic():
+    # final review (2026-10-15): mix_num counts advection and remap only; uniform T has no numerical mixing,
+    # the sponge (relaxing 15 → 10) must not show up as T_rem² − T_sponge²
+    m, st = _sponge_box()
+    st = m.step(st)
+    assert np.abs(st.mix_num).max() < 1e-6
+
+
 def test_interior_sponge_relaxes_T_at_the_implicit_rate_and_leaves_the_rest_alone():
     m, st = _sponge_box()
     for _ in range(10):
@@ -1620,6 +1628,21 @@ def test_quadratic_drag_reaches_the_flow_above_vanished_bed_layers():
     assert out[0] - out[1] > 0.5 * expected
 
 
+def test_quadratic_drag_spreads_over_hbbl_and_acts_at_low_viscosity():
+    # final review (2026-10-15): with the stress only on layer 0 a vanished bed layer passed ~7 % of it at ν = 1e-4.
+    # z* with 10 levels over 20 m in a 7-m column (bed layers vanish), one step: Δū = −Δt C_d |u_b| u_b / D
+    nx, nz = 12, 10
+    H = np.full((1, nx), 7.0)
+    out = []
+    for cd in (0.0, 2e-3):
+        m = _ale_box("zstar", nx=nx, nz=nz, bathy=H, params=dict(dz_top=np.full(nz, 2.0)), dt=60.0,
+                     bottom_drag="quadratic", cd=cd, nu=1e-4)
+        st = m.initial_state(np.zeros((1, nx)), np.full((nz, 1, nx), 10.0))
+        st.u = np.where(np.arange(nx + 1)[None, None] % nx == 0, 0.0, 0.3) * np.ones_like(st.u)
+        out.append(_ubar(m.step(st)))
+    np.testing.assert_allclose(out[0] - out[1], 60.0 * 2e-3 * 0.3**2 / 7.0, rtol=0.05)
+
+
 def test_bottom_drag_off_is_bit_identical_and_background_velocity_alone_does_not_accelerate():
     m0 = _ale_box("zstar", nx=12, nz=6, depth=50.0, dt=60.0, nu=1e-2)
     m1, _ = _drag_channel(U0=0.0, drag_bg_vel=0.05)
@@ -1635,7 +1658,7 @@ def test_bottom_drag_off_is_bit_identical_and_background_velocity_alone_does_not
 def test_bed_drag_rates_are_finite_on_empty_faces():
     # dry or fully vanished face columns: no bbl water → only the background velocity sets r
     m, st = _drag_channel(drag_bg_vel=0.05)
-    ru, rv = m._bed_drag_rates(st.u, st.v, np.zeros_like(st.u), np.zeros_like(st.v))
+    ru, rv, _, _ = m._bed_drag_rates(st.u, st.v, np.zeros_like(st.u), np.zeros_like(st.v))
     np.testing.assert_allclose(ru, 2e-3 * 0.05, rtol=1e-14)
     np.testing.assert_allclose(rv, 2e-3 * 0.05, rtol=1e-14)
 

@@ -67,8 +67,7 @@ def _thomas_columns(u, dz, nu, r_bed, tau_top, dt):  # pragma: no cover
             if k < n - 1:
                 upper = -dt * nu[k + 1, col] / (0.5 * (dz[k, col] + dz[k + 1, col]))
                 diag -= upper
-            if k == 0:
-                diag += dt * r_bed[col]
+            diag += dt * r_bed[k, col]
             rhs = dz[k, col] * u[k, col]
             if k == n - 1:
                 rhs += dt * tau_top[col]
@@ -92,8 +91,17 @@ def vertical_implicit(u: np.ndarray, dz: np.ndarray, nu: np.ndarray, r_bed: np.n
     m = u.shape[1]
     tau = np.zeros(m) if tau_top is None else np.ascontiguousarray(np.broadcast_to(tau_top, (m,)), dtype=float)
     return _thomas_columns(u, np.ascontiguousarray(np.broadcast_to(dz, u.shape), dtype=float),
-                           np.ascontiguousarray(nu, dtype=float),
-                           np.ascontiguousarray(np.broadcast_to(r_bed, (m,)), dtype=float), tau, float(dt))
+                           np.ascontiguousarray(nu, dtype=float), _layer_rates(r_bed, u.shape), tau, float(dt))
+
+
+def _layer_rates(r_bed: np.ndarray, shape: tuple) -> np.ndarray:
+    """(N, M) Rayleigh rates per layer [m s⁻¹]: a (M,) bed rate acts on layer 0 only, a (N, M) one as given."""
+    r = np.asarray(r_bed, dtype=float)
+    if r.ndim == 2:
+        return np.ascontiguousarray(np.broadcast_to(r, shape), dtype=float)
+    out = np.zeros(shape)
+    out[0] = np.broadcast_to(r, (shape[1],))
+    return out
 
 
 def _vertical_implicit_numpy(u: np.ndarray, dz: np.ndarray, nu: np.ndarray, r_bed: np.ndarray, dt: float,
@@ -103,11 +111,12 @@ def _vertical_implicit_numpy(u: np.ndarray, dz: np.ndarray, nu: np.ndarray, r_be
     (tridiagonal, Thomas algorithm; columns are independent).
 
         Δz_k (u_k' − u_k)/Δt = ν_{k+½}(u'_{k+1} − u'_k)/h_{k+½} − ν_{k−½}(u'_k − u'_{k−1})/h_{k−½}
-                               − δ_{k,0} r u'_0 + δ_{k,N−1} τ_s/ρ₀
+                               − r_k u'_k + δ_{k,N−1} τ_s/ρ₀
 
     u, dz : (N, M) layer velocity [m s⁻¹] and thickness [m], k = 0 at the bed
     nu : (N+1, M) viscosity at the interfaces [m² s⁻¹] (bed and surface values unused)
-    r_bed : (M,) bed stress rate r = C_d |u_b| [m s⁻¹] (0 = free slip)
+    r_bed : (M,) bed stress rate r = C_d |u_b| [m s⁻¹] on layer 0 (0 = free slip), or (N, M) rates r_k of a bed
+        stress spread over the bottom layers (Σ_k r_k u'_k is the stress; ALE quadratic drag over hbbl)
     tau_top : (M,) kinematic surface stress τ_s/ρ₀ [m² s⁻²], the momentum flux into the top layer
     """
     n = u.shape[0]
@@ -120,7 +129,7 @@ def _vertical_implicit_numpy(u: np.ndarray, dz: np.ndarray, nu: np.ndarray, r_be
     diag = dz.copy()
     diag[1:] += c
     diag[:-1] += c
-    diag[0] += dt * r_bed
+    diag += dt * _layer_rates(r_bed, u.shape)
     rhs = dz * u
     if tau_top is not None:
         rhs[-1] = rhs[-1] + dt * tau_top
@@ -202,8 +211,9 @@ class SigmaWetDry:
             change ū and the wind would enter it as Δt τ / dz_top; a uniform correction δ then restores the
             depth-mean balance Σ w û = Σ w (u + Δt G) + Δt (τ_s − r û₀) / D_f (implicit bed stress included),
             keeping the shear.
-        r_bed : (...) linear bed-stress rate r = C_d |u_b| [m s⁻¹] given by the caller (ALE quadratic drag); overrides
-            the log-law of ``z0``.
+        r_bed : (...) linear bed-stress rate r = C_d |u_b| [m s⁻¹] on layer 0, or (N, ...) per-layer rates r_k of a
+            stress spread over the bed layers (ALE quadratic drag over hbbl), given by the caller; overrides the
+            log-law of ``z0``.
         """
         shape = u.shape
         n = shape[0]
@@ -214,7 +224,8 @@ class SigmaWetDry:
         else:
             dz = np.asarray(dz, float).reshape(n, -1)
         if r_bed is not None:
-            r = np.nan_to_num(np.asarray(r_bed, float).reshape(-1))
+            r = np.nan_to_num(np.asarray(r_bed, float))
+            r = r.reshape(n, -1) if r.ndim == len(shape) else r.reshape(-1)
             ustar = np.zeros(D.size)
         elif self.z0 is None:
             r = np.zeros(D.size)
@@ -243,9 +254,10 @@ class SigmaWetDry:
             hm = np.asarray(dz_mean, float).reshape(n, -1)
             Df = np.maximum(hm.sum(0), self.d_min)
             w = hm / Df
+            stress, r_tot = (r * out[0], r) if r.ndim == 1 else ((r * out).sum(0), r.sum(0))   # Σ_k r_k û_k
             rhs = (w * uu).sum(0) + self.dt * (0.0 if tau is None else tau) / Df - (w * out).sum(0) \
-                - self.dt * r * out[0] / Df
-            out = out + rhs / (w.sum(0) + self.dt * r / Df)              # δ with the bed stress at û₀ + δ
+                - self.dt * stress / Df
+            out = out + rhs / (w.sum(0) + self.dt * r_tot / Df)          # δ with the bed stress at û + δ
         return out.reshape(shape)
 
     def face_depths(self, eta: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

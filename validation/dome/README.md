@@ -46,7 +46,7 @@ El caso es el Caso 1 de Legg, Hallberg & Girton (2006) en la geometría de MOM6 
 
 ```bash
 validation/dome/run_mitgcm.sh build 10; validation/dome/run_mitgcm.sh build 5
-NUMBA_NUM_THREADS=5 python validation/dome/run_pyocean.py 10 zstar --dt 600     # zstar | sigma | hybrid; 5 km: Δt 600 por defecto
+NUMBA_NUM_THREADS=5 python validation/dome/run_pyocean.py 10 zstar              # zstar | sigma | hybrid; Δt 600 s por defecto
 bash validation/dome/run_mom6.sh 10 common
 validation/dome/run_mitgcm.sh run 10 common                                     # legg | common
 python validation/dome/compare.py 10                                            # tabla → RUNS/compare_10km.txt
