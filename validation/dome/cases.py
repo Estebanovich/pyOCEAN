@@ -61,7 +61,7 @@ def get(res_km: float) -> Case:
     H = np.where(north, np.where(chan, HE, np.nan), H)
     nu_h = 50.0 * dx / 10e3                                        # Legg table 3: 50 m² s⁻¹ at 10 km, ∝ Δx
     return Case(name=f"dome{res_km:g}km", dx=dx, nx=nx, ny=ny, nz=25, x=x, y=y, H=H, f0=1e-4,
-                dt=600.0 * dx / 10e3, days=50.0, out_s=86400.0, nu_h=nu_h, nu_v=0.5, cd=2e-3, hbbl=10.0)
+                dt=1200.0 * dx / 10e3, days=50.0, out_s=86400.0, nu_h=nu_h, nu_v=0.5, cd=2e-3, hbbl=10.0)
 
 
 def targets(nz: int = 25) -> np.ndarray:

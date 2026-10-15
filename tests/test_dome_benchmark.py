@@ -49,3 +49,15 @@ def test_sponge_profile_matches_mom6():
     assert r[0, 0] == pytest.approx(peak) and r[0, 75] == 0.0
     i150 = np.argmin(np.abs(c.x - 150e3))                              # on the ramp (cell centre 145 km)
     assert r[0, i150] == pytest.approx(peak * (200e3 - c.x[i150]) / 100e3, rel=1e-12)
+
+
+@pytest.mark.parametrize("coord", ["zstar", "sigma", "hybrid"])
+def test_pyocean_dome_builds_and_takes_steps_with_inflow_tracer_and_sponge(coord):
+    from validation.dome import run_pyocean
+    c = cases.get(50.0)                                               # 30 × 14 coarse smoke grid
+    m, st = run_pyocean.build(c, coord)
+    for _ in range(6):
+        st = m.step(st)
+    assert np.isfinite(st.u).all() and st.tr.max() > 0.0               # dye entered through the channel
+    q = st.Qy[:, -1, :].sum()
+    np.testing.assert_allclose(q, cases.inflow_profile(c)["transport"].sum(), rtol=1e-10)
