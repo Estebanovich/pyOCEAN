@@ -83,6 +83,10 @@ def _config(model: SigmaBaroclinic) -> dict:
                    obc_mode=",".join(f"{e}:{m}" for e, m in sorted(model.obc_mode.items())) or "none",
                    obc_state="none" if model.obc_state is None else "function",
                    n_tracers=int(getattr(model, "n_tracers", 0)))
+        sp = getattr(model, "sponge_rate", None)
+        cfg.update(sponge_rate="none" if sp is None else _text(sp),
+                   sponge_T="none" if sp is None else _text(model._sp_T),
+                   sponge_zw="none" if sp is None else _text(model._sp_zw))
         cfg.update({f"regrid_{k}": _text(v) for k, v in sorted(model.regrid_params.items())})
     return cfg
 

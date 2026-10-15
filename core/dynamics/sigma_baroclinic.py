@@ -1003,6 +1003,12 @@ class SigmaBaroclinic:
         WENO5, 'none' otherwise
     n_tracers : ALE: number of passive tracers carried with T in the same advection stack (WENO5 + FCT with their own
         3-D bounds), remap, diffusion, open boundaries and sponges; no effect on density (spec 2026-10-14-dome §1)
+    sponge_rate, sponge_T, sponge_zw, sponge_tr : ALE interior sponge (spec 2026-10-14-dome §2), independent of the open
+        boundaries: after the regrid–remap of each step T ← (T + Δt r T*)/(1 + Δt r), implicit as MOM6 apply_sponge,
+        with T* the profile sponge_T on the interfaces sponge_zw (surface first, [m] ≤ 0) clipped at each bed,
+        stretched to the column and remapped onto the current layers; passive tracers toward sponge_tr (default 0);
+        r = sponge_rate (ny, nx) [s⁻¹], ignored on land; momentum is not damped (as MOM6 DOME_initialize_sponges).
+        It acts after the remap, so the mixing diagnostic counts advection and remap only
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, n_layers: int = 10,
@@ -1020,7 +1026,9 @@ class SigmaBaroclinic:
                  mix_diagnostic: bool = True, open_boundary_state=None, open_boundary_mode: dict | None = None,
                  obc_tau_in: float = 86400.0, obc_tau_out: float = 864000.0, theta_bc: float | None = None,
                  thin_layer_coupling: str | None = None, thin_layer_cutoff: float | None = None,
-                 tracer_limiter: str | None = None, n_tracers: int = 0) -> None:
+                 tracer_limiter: str | None = None, n_tracers: int = 0, sponge_rate: np.ndarray | None = None,
+                 sponge_T: np.ndarray | None = None, sponge_zw: np.ndarray | None = None,
+                 sponge_tr: np.ndarray | None = None) -> None:
         if pgf not in ("twoterm", "jacobian", "fv"):
             raise ValueError(f"unknown pressure-gradient scheme {pgf!r}")
         self.pgf, self.rho_ref = pgf, rho_ref
@@ -1126,6 +1134,21 @@ class SigmaBaroclinic:
         if self.n_tracers < 0 or (self.n_tracers and not self.ale):
             raise ValueError(f"n_tracers={n_tracers!r}: passive tracers need vertical_coordinate='ale' and n ≥ 0")
         self.tr_ext, self._tr_in = None, None
+        self.sponge_rate = None
+        if sponge_rate is not None:
+            if not self.ale:
+                raise ValueError("sponge_rate (interior sponge) needs vertical_coordinate='ale'")
+            r = np.asarray(sponge_rate, float)
+            if r.shape != self.H.shape:
+                raise ValueError(f"sponge_rate shape {r.shape}, expected {self.H.shape}")
+            zw, Ts = np.asarray(sponge_zw, float), np.asarray(sponge_T, float)
+            if zw.ndim != 1 or Ts.shape != (zw.size - 1,) or not (np.diff(zw) < 0).all():
+                raise ValueError("sponge_T (nz_s,) needs sponge_zw (nz_s + 1,) decreasing from the surface")
+            self.sponge_rate = np.where(self.fs.active, np.nan_to_num(r), 0.0)
+            self._sp_zw, self._sp_T = zw, Ts
+            self._sp_tr = (np.zeros((self.n_tracers, Ts.size)) if sponge_tr is None
+                           else np.asarray(sponge_tr, float).reshape(self.n_tracers, Ts.size))
+            self._sp_cols = self.sponge_rate > 0
 
     def _setup_ale(self, vertical_coordinate, regrid, regrid_params, remap_scheme, z0, closure, h_thin_bed,
                    init_iterations, act, momentum=None, ke_scheme="arakawa", max_truncations=1000,
@@ -1815,6 +1838,33 @@ class SigmaBaroclinic:
                         for i in range(self.n_tracers)])
         return np.where(self._ext["own"][None, None], out, rest)
 
+    def _interior_sponge(self, T: np.ndarray, tr: np.ndarray | None, eta: np.ndarray, h: np.ndarray):
+        """
+        Implicit relaxation toward the sponge profile on the layers h (spec 2026-10-14-dome §2):
+            T ← (T + Δt r T*)/(1 + Δt r)   (MOM6 MOM_sponge.F90 apply_sponge, implicit form)
+        T* is sponge_T on its z interfaces clipped at each bed, stretched to the column total H + η (as the exterior
+        profile, core.vertical.ale.exterior_on_layers) and remapped conservatively onto h.
+        """
+        H = np.nan_to_num(np.asarray(self.H, float))
+        ok = self._sp_cols & (H + eta > 0) & (h.sum(axis=0) > 0)
+        z = np.maximum(self._sp_zw[:, None, None], -H[None])               # surface first, clipped to each bed
+        z[-1] = -H
+        hs = (z[:-1] - z[1:])[::-1]                                         # bed first
+        tot_s, tot = hs.sum(axis=0), h.sum(axis=0)
+        scale = np.where(ok & (tot_s > 0), tot / np.where(tot_s > 0, tot_s, 1.0), 1.0)
+        hs = np.ascontiguousarray(hs * scale[None])
+        r = self.dt * self.sponge_rate[None]
+        numba.set_num_threads(_THREADS[0])
+
+        def relax(c, prof):
+            tgt = rm.remap_columns(hs, np.ascontiguousarray(prof[::-1, None, None] * np.ones((1,) + H.shape)),
+                                   np.ascontiguousarray(h), self.remap_code, ok)
+            return np.where(ok[None], (c + r * tgt) / (1.0 + r), c)
+        T = relax(T, self._sp_T)
+        if tr is not None:
+            tr = np.stack([relax(c, p) for c, p in zip(tr, self._sp_tr)])
+        return T, tr
+
     def _open_face_transports(self, Qx: np.ndarray, Qy: np.ndarray, h: np.ndarray, un: np.ndarray, vn: np.ndarray,
                               u_new: np.ndarray, v_new: np.ndarray) -> None:
         """
@@ -2120,6 +2170,8 @@ class SigmaBaroclinic:
         h_new, rem = self._regrid_remap(eta_new, h_lag, fields, T_lag)
         T_new = rem[0]
         tr_new = np.stack(rem[lead:]) if ntr else None
+        if self.sponge_rate is not None:                               # interior sponge (spec 2026-10-14-dome §2)
+            T_new, tr_new = self._interior_sponge(T_new, tr_new, eta_new, h_new)
         if mixd:
             mix = mix + self.layer_volumes(eta_new, h_new) * (rem[1] - T_new**2) / dt   # remap part
         hu_lag, hv_lag = self._mean_face_thickness(h_lag)

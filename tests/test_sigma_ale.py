@@ -1522,3 +1522,55 @@ def test_tracers_need_ale_and_matching_shapes():
 def test_no_tracers_leaves_the_state_without_tr():
     m, st = _tracer_box("zstar", ntr=0)
     assert m.step(st).tr is None
+
+
+# ---------------------------------------------------------------- interior sponge (DOME spec §2)
+def _sponge_box(rate=1e-4, rule="zstar", **kw):
+    nx, nz = 16, 6
+    zw = np.linspace(0.0, -20.0, 5)
+    target = np.full(4, 10.0)                                          # uniform: the remap of T* is exact
+    r = np.zeros((1, nx))
+    r[:, :4] = rate
+    m = _ale_box(rule, nx=nx, nz=nz, depth=20.0, dt=60.0, sponge_rate=r, sponge_T=target, sponge_zw=zw, **kw)
+    return m, m.initial_state(np.zeros((1, nx)), np.full((nz, 1, nx), 15.0))
+
+
+def test_interior_sponge_relaxes_T_at_the_implicit_rate_and_leaves_the_rest_alone():
+    m, st = _sponge_box()
+    for _ in range(10):
+        st = m.step(st)
+    expected = 10.0 + 5.0 / (1.0 + 60.0 * 1e-4) ** 10                   # (1 + Δt r)⁻ⁿ toward T* = 10
+    np.testing.assert_allclose(st.T[:, 0, 0], expected, rtol=1e-10)      # inside the band (neighbours alike)
+    np.testing.assert_allclose(st.T[:, 0, 8:], 15.0, atol=1e-10)          # outside: WENO stencils see only 15
+
+
+def test_interior_sponge_with_zero_rate_is_bit_identical_to_none():
+    m0, s0 = _sponge_box(rate=0.0)
+    m1 = _ale_box("zstar", nx=16, nz=6, depth=20.0, dt=60.0)
+    s1 = m1.initial_state(np.zeros((1, 16)), np.full((6, 1, 16), 15.0))
+    for _ in range(5):
+        s0, s1 = m0.step(s0), m1.step(s1)
+    assert np.array_equal(s0.T, s1.T) and np.array_equal(s0.h, s1.h)
+
+
+def test_interior_sponge_ignores_land_and_checks_shapes():
+    nx = 16
+    H = np.full((1, nx), 20.0)
+    H[0, :2] = np.nan
+    r = np.full((1, nx), 1e-4)
+    m = _ale_box("zstar", nx=nx, nz=6, bathy=H, dt=60.0, sponge_rate=r, sponge_T=np.full(4, 10.0),
+                 sponge_zw=np.linspace(0.0, -20.0, 5))
+    st = m.step(m.initial_state(np.zeros((1, nx)), np.full((6, 1, nx), 15.0)))
+    assert np.isfinite(st.T[:, 0, 2:]).all()
+    with pytest.raises(ValueError, match=r"sponge_rate shape"):
+        _ale_box("zstar", nx=nx, nz=6, dt=60.0, sponge_rate=np.zeros((2, nx)), sponge_T=np.full(4, 10.0),
+                 sponge_zw=np.linspace(0.0, -20.0, 5))
+
+
+def test_interior_sponge_relaxes_passive_tracers_toward_their_target():
+    m, st = _sponge_box(n_tracers=1)
+    st.tr = np.ones_like(st.tr)
+    for _ in range(10):
+        st = m.step(st)
+    np.testing.assert_allclose(st.tr[0, :, 0, 0], 1.0 / (1.0 + 60.0 * 1e-4) ** 10, rtol=1e-10)
+    np.testing.assert_allclose(st.tr[0, :, 0, 8:], 1.0, atol=1e-10)

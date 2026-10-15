@@ -272,3 +272,12 @@ def test_restart_refuses_another_tracer_count(tmp_path):
     m0, _ = _tracer_model(0)
     with pytest.raises(ValueError, match="n_tracers"):
         read_restart(tmp_path / "rst.nc", m0)
+
+
+def test_ale_restart_refuses_another_interior_sponge(tmp_path):
+    from tests.test_sigma_ale import _sponge_box
+    m, st = _sponge_box(rate=1e-4)
+    write_restart(tmp_path / "rst.nc", m, m.step(st))
+    m2, _ = _sponge_box(rate=2e-4)
+    with pytest.raises(ValueError, match="sponge_rate"):
+        read_restart(tmp_path / "rst.nc", m2)
