@@ -104,3 +104,23 @@ def test_mom6_input_has_the_common_physics_and_the_dome_configs():
     lines = mom6.override_lines(cases.get(10.0), "common")
     assert "#override KV = 0.5" in lines and "KH = 50" in lines and "LAPLACIAN = True" in lines
     assert '#override OBC_SEGMENT_001 = "J=N,I=220:200,SIMPLE"' in mom6.override_lines(cases.get(5.0), "common")
+
+
+def test_mitgcm_namelists_have_the_variant_physics():
+    from validation.dome import mitgcm
+    d = mitgcm.data_text(cases.get(10.0), "legg")
+    for s in ("viscAh=50.", "viscAr=0.5", "bottomDragQuadratic=0.002", "no_slip_bottom=.TRUE.", "diffKhT=0.",
+              "diffKrT=0.", "tempAdvScheme=77", "nonlinFreeSurf=4", "select_rStar=2", "f0=0.0001", "hFacMin=0.1"):
+        assert s in d, s
+    assert "no_slip_bottom=.FALSE." in mitgcm.data_text(cases.get(10.0), "common")
+    o = mitgcm.obcs_text(cases.get(10.0))
+    assert "useOBCSprescribe=.TRUE." in o and "OBNvFile='OBNv.bin'" in o and "OBNptrFile(1)='OBNs.bin'" in o
+
+
+def test_mitgcm_inflow_files_carry_the_case_transport():
+    from validation.dome import mitgcm
+    c = cases.get(10.0)
+    v, T, s_ = mitgcm.inflow_levels(c)
+    dz = mitgcm.wet_levels(c)                                        # (Nr,) wet thickness of the 600-m channel column
+    q = (v * dz[:, None]).sum(axis=0) * c.dx
+    np.testing.assert_allclose(q[:c.nx], cases.inflow_profile(c)["transport"], rtol=1e-12, atol=1e-6)

@@ -17,6 +17,16 @@ ALPHA, T_REF = 0.2, 0.0                     # linear EOS ρ = ρ₀ − α (T �
 DRHO, H0, HE, HMAX, RI = 2.0, 300.0, 600.0, 3600.0, 1.0 / 3.0   # Legg tables 1–2, MOM6 DOME defaults
 RHO_TOP = 1030.0                             # surface density (MOM6 LIGHTEST_DENSITY); bottom 1032
 
+# Legg et al. 2006, Case 1 (Ref) at Δx = 10 km, read from the PDF figures (±10 km in y, ±0.5e-3 m s⁻² in b_f): mean
+# path Y'(x') of the dye (Figs. 16a, 17; x' from the inlet centre, y' from the slope top, negative down-slope) and
+# final buoyancy b_f = −g(ρ − 1030)/ρ₀ (Fig. 15).  z: MITgcm, ν_v = 0.5; iso: HIM, ν_v = 1e-4 (and 0.5: Fig. 17 dotted).
+LEGG_10KM = dict(
+    x_km=np.array([-200.0, -300.0, -500.0, -700.0, -900.0]),
+    y_z_km=np.array([-80.0, -105.0, -150.0, -170.0, -250.0]),
+    y_iso_km=np.array([-90.0, -95.0, -100.0, -120.0, np.nan]),
+    y_iso_visc_km=np.array([-95.0, -110.0, -130.0, -145.0, np.nan]),
+    bf_z=-11.7e-3, bf_iso=-11.0e-3, bf_iso_visc=-12.0e-3)
+
 
 @dataclass
 class Case:
