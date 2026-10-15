@@ -143,6 +143,8 @@ class OBData:
         model with a time-varying exterior; spec 2026-10-12-baroclinic-obc-internal-wave §1.1).
     ubar : np.ndarray (n_bdy,) or None
         Exterior depth-mean normal velocity for Flather [m/s]; None = 0.
+    tracers : np.ndarray (ntr, nz, n_bdy) or None
+        Passive tracers on the same ``zw`` grid (ALE ``n_tracers``); None = 0 in the exterior.
     """
     side: Literal["west", "east", "south", "north"]
     T: np.ndarray | None = field(default=None)
@@ -151,6 +153,7 @@ class OBData:
     eta: np.ndarray | None = field(default=None)
     zw: np.ndarray | None = field(default=None)
     ubar: np.ndarray | None = field(default=None)
+    tracers: np.ndarray | None = field(default=None)
 
 
 # ---------------------------------------------------------------------------

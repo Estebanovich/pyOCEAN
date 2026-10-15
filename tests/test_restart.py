@@ -243,3 +243,32 @@ def test_ale_restart_refuses_another_tracer_limiter(tmp_path):
     other.tracer_limiter = "fct" if m.tracer_limiter == "none" else "none"
     with pytest.raises(ValueError, match="tracer_limiter"):
         read_restart(tmp_path / "rst.nc", other)
+
+
+def _tracer_model(ntr):
+    from tests.test_sigma_ale import _tracer_box
+    return _tracer_box("hybrid", ntr=ntr)
+
+
+def test_ale_restart_with_tracers_is_bit_for_bit(tmp_path):
+    m, st0 = _tracer_model(1)
+    st = st0
+    for _ in range(25):
+        st = m.step(st)
+    m1, st1 = _tracer_model(1)
+    for _ in range(10):
+        st1 = m1.step(st1)
+    write_restart(tmp_path / "rst.nc", m1, st1)
+    m2, _ = _tracer_model(1)
+    st2 = read_restart(tmp_path / "rst.nc", m2)
+    for _ in range(15):
+        st2 = m2.step(st2)
+    assert np.array_equal(st2.tr, st.tr) and np.array_equal(st2.T, st.T)
+
+
+def test_restart_refuses_another_tracer_count(tmp_path):
+    m, st = _tracer_model(1)
+    write_restart(tmp_path / "rst.nc", m, m.step(st))
+    m0, _ = _tracer_model(0)
+    with pytest.raises(ValueError, match="n_tracers"):
+        read_restart(tmp_path / "rst.nc", m0)

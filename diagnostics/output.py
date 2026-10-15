@@ -28,6 +28,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import re
+
 import numpy as np
 import xarray as xr
 
@@ -110,6 +112,8 @@ class OutputWriter:
     def _record(self, time: float, fields: dict) -> xr.Dataset:
         data = {}
         for name, arr in fields.items():
+            if name not in FIELDS and re.fullmatch(r"tr\d+", name):     # passive tracers tr0, tr1, … (ALE n_tracers)
+                FIELDS[name] = ("t3", "1", None, f"passive tracer {int(name[2:])}")
             if name not in FIELDS:
                 raise ValueError(f"unknown output field {name!r}; known: {sorted(FIELDS)}")
             stag, units, std, long = FIELDS[name]

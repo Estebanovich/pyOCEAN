@@ -120,6 +120,7 @@ class SigmaState:
     time: float = 0.0
     n_trunc: int = 0                                         # CFL velocity truncations so far (ALE, counted faces)
     n_limited: int = 0                                       # cell-layers scaled by the outflow limiter so far (ALE)
+    tr: np.ndarray | None = None                             # passive tracers (ntr, N, ny, nx), ALE only
 
 
 def _up3_faces(c: np.ndarray, flux: np.ndarray, ok: np.ndarray, axis: int, order: int = 3) -> np.ndarray:
@@ -1000,6 +1001,8 @@ class SigmaBaroclinic:
         step — tracers stay inside the local extremes of the old and the donor-cell values (spec 2026-10-14 §4;
         Ilicak overflow z* ν = 1000: new T extrema 4.74 °C → 1e-8); 'none'.  None = 'fct' in ALE with SSP-RK3
         WENO5, 'none' otherwise
+    n_tracers : ALE: number of passive tracers carried with T in the same advection stack (WENO5 + FCT with their own
+        3-D bounds), remap, diffusion, open boundaries and sponges; no effect on density (spec 2026-10-14-dome §1)
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, n_layers: int = 10,
@@ -1017,7 +1020,7 @@ class SigmaBaroclinic:
                  mix_diagnostic: bool = True, open_boundary_state=None, open_boundary_mode: dict | None = None,
                  obc_tau_in: float = 86400.0, obc_tau_out: float = 864000.0, theta_bc: float | None = None,
                  thin_layer_coupling: str | None = None, thin_layer_cutoff: float | None = None,
-                 tracer_limiter: str | None = None) -> None:
+                 tracer_limiter: str | None = None, n_tracers: int = 0) -> None:
         if pgf not in ("twoterm", "jacobian", "fv"):
             raise ValueError(f"unknown pressure-gradient scheme {pgf!r}")
         self.pgf, self.rho_ref = pgf, rho_ref
@@ -1119,6 +1122,10 @@ class SigmaBaroclinic:
             raise ValueError("tracer_limiter='fct' needs vertical_coordinate='ale', tracer_time='ssprk3' and a "
                              "WENO5 tracer_scheme")
         self.tracer_limiter = tracer_limiter
+        self.n_tracers = int(n_tracers)
+        if self.n_tracers < 0 or (self.n_tracers and not self.ale):
+            raise ValueError(f"n_tracers={n_tracers!r}: passive tracers need vertical_coordinate='ale' and n ≥ 0")
+        self.tr_ext, self._tr_in = None, None
 
     def _setup_ale(self, vertical_coordinate, regrid, regrid_params, remap_scheme, z0, closure, h_thin_bed,
                    init_iterations, act, momentum=None, ke_scheme="arakawa", max_truncations=1000,
@@ -1187,7 +1194,8 @@ class SigmaBaroclinic:
         self._vi = g                                                    # geometry of the vector-invariant terms
 
     # ------------------------------------------------------------------ helpers
-    def initial_state(self, eta: np.ndarray, T: np.ndarray, h_src: np.ndarray | None = None) -> SigmaState:
+    def initial_state(self, eta: np.ndarray, T: np.ndarray, h_src: np.ndarray | None = None,
+                      tr: np.ndarray | None = None) -> SigmaState:
         """
         Resting state; T on the layers of ``layer_heights(eta)``.  With ``rho_ref="auto"`` the reference
         profile is taken from this T.  ALE: h is the rule's grid (σ-layers for 'hybrid', followed by
@@ -1199,11 +1207,13 @@ class SigmaBaroclinic:
         (MOM_state_initialization.F90:2928-2935).  Without it the
         hybrid grid starts from T on σ-layers, which are ~H/N thick in deep water and lose the structure
         of the top metres (BayIW bay mouth: 0.5 °C spurious step across the 600 → 164 m shelf edge).
+        ``tr``: passive tracers (n_tracers, ...) on the grid of T (default 0; ALE ``n_tracers``).
         """
         ny, nx = self.H.shape
         eta = np.asarray(eta, float)
         if h_src is not None:
-            return self._initial_state_from_source(eta, np.asarray(T, float), np.asarray(h_src, float))
+            return self._initial_state_from_source(eta, np.asarray(T, float), np.asarray(h_src, float), tr)
+        tr = self._check_tracers(tr, np.shape(T))
         if isinstance(self.rho_ref, str) and self.rho_ref == "auto":
             z = self.layer_heights(eta)
             act = np.broadcast_to(self.fs.active[None], z.shape)
@@ -1211,15 +1221,33 @@ class SigmaBaroclinic:
         self.T_ext = np.array(T, float)                                # inflow / sponge target at open boundaries
         st = SigmaState(eta=np.array(eta, float), u=np.zeros((self.n, ny, nx + 1)),
                         v=np.zeros((self.n, ny + 1, nx)), T=np.array(T, float),
-                        h=self._initial_h(eta) if self.ale else None)
+                        h=self._initial_h(eta) if self.ale else None, tr=tr)
         if self.ale and self.regrid_rule == "hybrid":
             for _ in range(self.init_iterations):
-                st.h, (st.T,) = self._regrid_remap(st.eta, st.h, [st.T], st.T)
+                fields = [st.T] + ([] if st.tr is None else list(st.tr))
+                st.h, rem = self._regrid_remap(st.eta, st.h, fields, st.T)
+                st.T = rem[0]
+                st.tr = None if st.tr is None else np.stack(rem[1:])
         if self.ale:                                                    # exterior profile in z (spec §3.5)
             self.T_ext, self.h_ext = st.T.copy(), st.h.copy()
+            self.tr_ext = None if st.tr is None else st.tr.copy()
         return st
 
-    def _initial_state_from_source(self, eta: np.ndarray, T_src: np.ndarray, h_src: np.ndarray) -> SigmaState:
+    def _check_tracers(self, tr, shape: tuple) -> np.ndarray | None:
+        """Passive tracers (n_tracers,) + shape (zeros when None), or None without tracers; ValueError otherwise."""
+        if self.n_tracers == 0:
+            if tr is not None:
+                raise ValueError("tr given but the model has n_tracers=0")
+            return None
+        if tr is None:
+            return np.zeros((self.n_tracers,) + tuple(shape))
+        tr = np.array(tr, float)
+        if tr.shape != (self.n_tracers,) + tuple(shape):
+            raise ValueError(f"tr shape {tr.shape}, expected {(self.n_tracers,) + tuple(shape)}")
+        return tr
+
+    def _initial_state_from_source(self, eta: np.ndarray, T_src: np.ndarray, h_src: np.ndarray,
+                                   tr_src: np.ndarray | None = None) -> SigmaState:
         """
         ALE resting state from layer means T_src on a source grid h_src (both (N_src, ny, nx), bed first):
         the rule's grid regridded once on the source levels themselves (MOM6 MOM_state_initialization.F90:2928),
@@ -1259,9 +1287,13 @@ class SigmaBaroclinic:
             rg.snap_to_jumps(zw, zw_src, rho_src, float(np.min(np.abs(np.diff(tgt)))))
             h = np.where(wet[None], np.diff(zw, axis=0), h)
         T = from_source(h)
+        tr_src = self._check_tracers(tr_src, T_src.shape)               # passive tracers: the same remap, 0 where dry
+        tr = None if tr_src is None else np.stack(
+            [np.where(wet[None], rm.remap_columns(h_src, f, h, self.remap_code, wet), 0.0) for f in tr_src])
         st = SigmaState(eta=np.array(eta, float), u=np.zeros((self.n, ny, nx + 1)),
-                        v=np.zeros((self.n, ny + 1, nx)), T=T, h=h)
+                        v=np.zeros((self.n, ny + 1, nx)), T=T, h=h, tr=tr)
         self.T_ext, self.h_ext = T.copy(), h.copy()                    # exterior profile in z (spec §3.5)
+        self.tr_ext = None if tr is None else tr.copy()
         return st
 
     def layer_heights(self, eta: np.ndarray, h: np.ndarray | None = None) -> np.ndarray:
@@ -1293,9 +1325,11 @@ class SigmaBaroclinic:
         D = np.maximum(np.nan_to_num(self.H + eta, nan=0.0), 0.0)
         return D[None] * self.ds[:, None, None] * self.area[None]
 
-    def tracer_content(self, st: SigmaState, power: int = 1) -> float:
+    def tracer_content(self, st: SigmaState, power: int = 1, tracer: int | None = None) -> float:
+        """Σ V c^power [unit^power m³] of T (``tracer`` None) or of passive tracer ``tracer``."""
         V = self.layer_volumes(st.eta, st.h)
-        return float(np.sum(V * st.T**power))
+        c = st.T if tracer is None else st.tr[tracer]
+        return float(np.sum(V * c**power))
 
     def rpe(self, st: SigmaState) -> float:
         """Reference potential energy [J] (flat-bottom basin: area = wet area)."""
@@ -1561,8 +1595,7 @@ class SigmaBaroclinic:
         """
         if not self.open:
             return face
-        T_in = self._inflow_T()
-        ext = np.stack([T_in, T_in**2])[: c.shape[0]]
+        ext = self._ext_stack(c)
         face = np.array(face, copy=True)
         lo, hi = ("west", "east") if axis == 3 else ("south", "north")
         for edge, f_i, c_i, inflow_sign in ((lo, 0, 0, 1.0), (hi, -1, -1, -1.0)):
@@ -1575,15 +1608,16 @@ class SigmaBaroclinic:
             face[tuple(sl_f)] = np.where(inflow_sign * q > 0, ext[tuple(sl_c)], c[tuple(sl_c)])
         return face
 
-    def _diffuse_h(self, T: np.ndarray, V: np.ndarray, eta: np.ndarray, h: np.ndarray | None = None) -> np.ndarray:
+    def _diffuse_h(self, T: np.ndarray, V: np.ndarray, eta: np.ndarray, h: np.ndarray | None = None,
+                   anomaly: bool = True) -> np.ndarray:
         """
         Explicit Laplacian diffusion along the layers (see _diffuse_h_numpy).  ALE: the Numba kernel
         _diffuse_ale_kernel with the same per-element arithmetic (performance task 5.6); σ: the NumPy version.
         """
         if h is None:
-            return self._diffuse_h_numpy(T, V, eta, h)
+            return self._diffuse_h_numpy(T, V, eta, h, anomaly)
         Tw = T
-        if self.rho_ref is not None and not isinstance(self.rho_ref, str) and self.t_coef != 0:
+        if anomaly and self.rho_ref is not None and not isinstance(self.rho_ref, str) and self.t_coef != 0:
             Tw = T - (self.t_ref + (self.rho0 - self.rho_ref(self.layer_heights(eta, h))) / self.t_coef)
         Du, Dv = self.core.face_depths(eta)
         okx = np.isfinite(self.fs.H_u) & np.isfinite(Du) & (Du > self.fs.d_min)
@@ -1597,7 +1631,8 @@ class SigmaBaroclinic:
                             c(V, dtype=float), float(self.kh), float(self.dt), out)
         return out
 
-    def _diffuse_h_numpy(self, T: np.ndarray, V: np.ndarray, eta: np.ndarray, h: np.ndarray | None = None) -> np.ndarray:
+    def _diffuse_h_numpy(self, T: np.ndarray, V: np.ndarray, eta: np.ndarray, h: np.ndarray | None = None,
+                         anomaly: bool = True) -> np.ndarray:
         """
         NumPy reference of _diffuse_h (test oracle; used for σ).
         Explicit Laplacian diffusion along σ-surfaces in flux form (MITgcm diffKhT):
@@ -1605,10 +1640,11 @@ class SigmaBaroclinic:
         with h_{u,k} = D_u Δσ_k (σ) or the face layer thickness min(h_L, h_R) (ALE); conservative, and a uniform
         T stays uniform.  With a reference profile the anomaly T − T_ref(z) is diffused instead
         (Mellor & Blumberg 1985 [verificar]), so a resting stratification is not mixed across
-        sloping σ-surfaces (e.g. a shelf step).
+        sloping σ-surfaces (e.g. a shelf step).  ``anomaly`` False (passive tracers, which have no reference
+        profile): the field itself is diffused.
         """
         Tw = T
-        if self.rho_ref is not None and not isinstance(self.rho_ref, str) and self.t_coef != 0:
+        if anomaly and self.rho_ref is not None and not isinstance(self.rho_ref, str) and self.t_coef != 0:
             Tw = T - (self.t_ref + (self.rho0 - self.rho_ref(self.layer_heights(eta, h))) / self.t_coef)
         Du, Dv = self.core.face_depths(eta)
         okx = np.isfinite(self.fs.H_u) & np.isfinite(Du) & (Du > self.fs.d_min)
@@ -1767,6 +1803,18 @@ class SigmaBaroclinic:
         numba.set_num_threads(_THREADS[0])                                 # parallel remap kernel
         return exterior_on_layers(self.h_ext, self.T_ext, h, self._ext_cols, self.remap_code)
 
+    def _exterior_tr(self, h: np.ndarray) -> np.ndarray:
+        """Exterior passive tracers (n_tracers, N, ny, nx) on layers h in the boundary/sponge columns: the
+        provider's OBData.tracers where it owns the column (0 when it gives none), else the resting tr_ext in z."""
+        numba.set_num_threads(_THREADS[0])
+        rest = np.stack([exterior_on_layers(self.h_ext, f, h, self._ext_cols, self.remap_code) for f in self.tr_ext])
+        if self._ext is None:
+            return rest
+        st, code = self._ext["state"], self.remap_code
+        out = np.stack([obc.exterior_tracer(st, self.H, h, self._ext_cols, code, self.open, field=i)
+                        for i in range(self.n_tracers)])
+        return np.where(self._ext["own"][None, None], out, rest)
+
     def _open_face_transports(self, Qx: np.ndarray, Qy: np.ndarray, h: np.ndarray, un: np.ndarray, vn: np.ndarray,
                               u_new: np.ndarray, v_new: np.ndarray) -> None:
         """
@@ -1806,8 +1854,7 @@ class SigmaBaroclinic:
         if centred or not self.tracer_scheme.startswith("weno5"):
             return self._rhs_numpy(c, Qx, Qy, Fz, ok, centred)
         c = np.ascontiguousarray(c, dtype=float)
-        T_in = self._inflow_T()
-        ext = c if T_in is None or not self.open else np.ascontiguousarray(np.stack([T_in, T_in**2])[: c.shape[0]])
+        ext = self._ext_stack(c)
         numba.set_num_threads(_THREADS[0])
         return _advect_div(c, np.ascontiguousarray(Qx, dtype=float), np.ascontiguousarray(Qy, dtype=float),
                            np.ascontiguousarray(Fz, dtype=float), np.ascontiguousarray(np.broadcast_to(ok, c.shape[1:])),
@@ -1815,9 +1862,18 @@ class SigmaBaroclinic:
                            "north" in self.open, self.tracer_scheme == "weno5", bool(np.any(Fz != 0.0)))
 
     def _ext_stack(self, c: np.ndarray) -> np.ndarray:
-        """Inflow values of the stack on open edges (T_in, T_in² for the mixing diagnostic), as _rhs."""
+        """
+        Inflow values of the advected stack on open edges: T_in (and T_in² when the stack carries the mixing
+        diagnostic) followed by the passive tracers' inflow values; ``c`` itself without open edges or exterior.
+        """
         T_in = self._inflow_T()
-        return c if T_in is None or not self.open else np.ascontiguousarray(np.stack([T_in, T_in**2])[: c.shape[0]])
+        if T_in is None or not self.open:
+            return c
+        lead = c.shape[0] - (self.n_tracers if self.ale else 0)        # [T] or [T, T²] before the tracers
+        parts = [T_in, T_in**2][:lead]
+        if self.ale and self.n_tracers:
+            parts += list(self._tr_in)
+        return np.ascontiguousarray(np.stack(parts))
 
     def _faces_h(self, c: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, ok: np.ndarray, ext: np.ndarray | None = None):
         """WENO5 horizontal face fluxes (fx, fy) of the stack — the terms _advect_div differences (no ω in ALE).
@@ -2036,23 +2092,34 @@ class SigmaBaroclinic:
         Fz = np.zeros((n + 1,) + self.H.shape)                              # Lagrangian: no flux through interfaces
         ok = np.broadcast_to(act[None], V1.shape) & (V1 > 0)
         self._T_in = self._exterior_T(st.h) if self.open else None        # inflow T on hⁿ (spec §3.5)
+        ntr = self.n_tracers
+        self._tr_in = self._exterior_tr(st.h) if (self.open and ntr) else None
         mixd = self.mix_diagnostic
-        stack = np.stack([st.T, st.T**2]) if mixd else st.T[None]
+        lead = 2 if mixd else 1                                         # [T, T²] or [T], then the passive tracers
+        parts = [st.T, st.T**2] if mixd else [st.T]
+        stack = np.stack(parts + ([] if st.tr is None else list(st.tr)))
         C = (self._advect_fct(stack, V0, V1, Qx, Qy, ok) if self.tracer_limiter == "fct"
              else self._advect(stack, V0, V1, Qx, Qy, Fz, ok))
         mix = V1 * (C[1] - C[0] ** 2) / dt if mixd else None                # advection part
         T_lag = C[0]
+        tr_lag = [C[lead + i] for i in range(ntr)]
         if self.kh > 0:
             T_lag = self._diffuse_h(T_lag, V1, eta_new, h_lag)
+            tr_lag = [self._diffuse_h(c, V1, eta_new, h_lag, anomaly=False) for c in tr_lag]
         if self.kv > 0:
             dz = np.maximum(h_lag, DZ_FLOOR).reshape(n, -1)
-            T_lag = vertical_implicit(T_lag.reshape(n, -1), dz, np.full((n + 1, dz.shape[1]), self.kv),
-                                      np.zeros(dz.shape[1]), dt).reshape(T_lag.shape)
+            kvz, zero = np.full((n + 1, dz.shape[1]), self.kv), np.zeros(dz.shape[1])
+            T_lag = vertical_implicit(T_lag.reshape(n, -1), dz, kvz, zero, dt).reshape(T_lag.shape)
+            tr_lag = [vertical_implicit(c.reshape(n, -1), dz, kvz, zero, dt).reshape(c.shape) for c in tr_lag]
         if self._sp_c is not None and self.sponge_tracer:                 # tracer sponge toward the exterior on h†
             r = dt * self._sp_c[None]
             T_lag = (T_lag + r * self._exterior_T(h_lag)) / (1.0 + r)
-        h_new, rem = self._regrid_remap(eta_new, h_lag, [T_lag, T_lag**2] if mixd else [T_lag], T_lag)
+            if ntr:
+                tr_lag = [(c + r * e) / (1.0 + r) for c, e in zip(tr_lag, self._exterior_tr(h_lag))]
+        fields = ([T_lag, T_lag**2] if mixd else [T_lag]) + tr_lag
+        h_new, rem = self._regrid_remap(eta_new, h_lag, fields, T_lag)
         T_new = rem[0]
+        tr_new = np.stack(rem[lead:]) if ntr else None
         if mixd:
             mix = mix + self.layer_volumes(eta_new, h_new) * (rem[1] - T_new**2) / dt   # remap part
         hu_lag, hv_lag = self._mean_face_thickness(h_lag)
@@ -2078,7 +2145,8 @@ class SigmaBaroclinic:
             raise RuntimeError(f"{n_trunc} CFL velocity truncations exceed max_truncations={self.max_truncations}; "
                                f"first this step: {where}")
         return SigmaState(eta=eta_new, u=u_new, v=v_new, T=T_new, h=h_new, g_hist=hist, omega=None, mix_num=mix,
-                          Qx=Qx, Qy=Qy, Fz=Fz, time=st.time + dt, n_trunc=n_trunc, n_limited=st.n_limited + n_lim)
+                          Qx=Qx, Qy=Qy, Fz=Fz, time=st.time + dt, n_trunc=n_trunc, n_limited=st.n_limited + n_lim,
+                          tr=tr_new)
 
     # ------------------------------------------------------------------ step
     def step(self, st: SigmaState, tau_x: np.ndarray | None = None, tau_y: np.ndarray | None = None) -> SigmaState:

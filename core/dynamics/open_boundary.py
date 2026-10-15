@@ -35,6 +35,15 @@ def validate_state(state: dict[str, OBData], open_edges: tuple[str, ...], shape:
             a = getattr(ob, name)
             if a is not None and np.shape(a) != (n,):
                 raise ValueError(f"{edge}: {name} shape {np.shape(a)}, expected ({n},)")
+        if ob.tracers is not None and (np.ndim(ob.tracers) != 3 or np.shape(ob.tracers)[1:] != (nz, n)):
+            raise ValueError(f"{edge}: tracers shape {np.shape(ob.tracers)}, expected (ntr, {nz}, {n})")
+
+
+def _values(ob: OBData, field) -> np.ndarray:
+    """The (nz, n) profile of T (``field`` None) or of passive tracer ``field`` (zeros when OBData has none)."""
+    if field is None:
+        return np.asarray(ob.T, float)
+    return np.zeros(np.shape(ob.T)) if ob.tracers is None else np.asarray(ob.tracers, float)[field]
 
 
 def _along(edge: str, shape: tuple[int, int]) -> tuple[np.ndarray, np.ndarray]:
@@ -61,7 +70,8 @@ def owned_by_state(state: dict[str, OBData], open_edges, shape: tuple[int, int])
     return np.isin(near, [EDGES.index(e) for e in state])
 
 
-def _source_columns(ob: OBData, edge: str, depth: np.ndarray, check: np.ndarray) -> tuple[np.ndarray, ...]:
+def _source_columns(ob: OBData, edge: str, depth: np.ndarray, check: np.ndarray,
+                    field=None) -> tuple[np.ndarray, ...]:
     """
     Bed-first source thicknesses and fields (nz, ny, nx) at every point, from the edge profile at the same
     along-edge index, clipped to each point's own bed ``depth`` [m] (the deepest layer extended when the point
@@ -74,7 +84,7 @@ def _source_columns(ob: OBData, edge: str, depth: np.ndarray, check: np.ndarray)
     z = np.maximum(zw, -depth[None])
     z[-1] = -depth
     h = (z[:-1] - z[1:])[::-1]
-    return h, np.asarray(ob.T, float)[:, a][::-1], np.asarray(ob.u_normal, float)[:, a][::-1]
+    return h, _values(ob, field)[:, a][::-1], np.asarray(ob.u_normal, float)[:, a][::-1]
 
 
 def _remap_stretched(h_src: np.ndarray, f_src: np.ndarray, h: np.ndarray, wet: np.ndarray, scheme: int) -> np.ndarray:
@@ -88,7 +98,7 @@ def _remap_stretched(h_src: np.ndarray, f_src: np.ndarray, h: np.ndarray, wet: n
 
 
 def _exterior_tracer_full(state: dict[str, OBData], H: np.ndarray, h: np.ndarray, mask: np.ndarray,
-                          scheme: int, open_edges=None) -> np.ndarray:
+                          scheme: int, open_edges=None, field=None) -> np.ndarray:
     """Reference of exterior_tracer (test oracle): source columns built on the whole domain."""
     H = np.nan_to_num(np.asarray(H, float))
     near = _nearest(state if open_edges is None else open_edges, H.shape)
@@ -97,27 +107,28 @@ def _exterior_tracer_full(state: dict[str, OBData], H: np.ndarray, h: np.ndarray
         sel = mask & (near == EDGES.index(e))
         if not sel.any():
             continue
-        h_src, T_src, _ = _source_columns(ob, e, H, sel & (_along(e, H.shape)[1] == 0))
+        h_src, T_src, _ = _source_columns(ob, e, H, sel & (_along(e, H.shape)[1] == 0), field)
         out = np.where(sel[None], _remap_stretched(h_src, T_src, h, sel, scheme), out)
     return out
 
 
 def _source_columns_at(ob: OBData, edge: str, depth: np.ndarray, a: np.ndarray,
-                       check: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """_source_columns at a list of points (npts,) only: bed-first thicknesses, T and u (nz, npts), same arithmetic."""
+                       check: np.ndarray, field=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """_source_columns at a list of points (npts,) only: bed-first thicknesses, T (or passive tracer ``field``) and u
+    (nz, npts), same arithmetic."""
     zw = np.asarray(ob.zw, float)[:, a]                                 # (nz+1, npts), surface first
     if (check & (zw[-1] > -depth + 1e-6)).any():
         raise ValueError(f"{edge}: exterior data do not reach the bed of the boundary column (zw[-1] > −H)")
     z = np.maximum(zw, -depth[None])
     z[-1] = -depth
-    return (z[:-1] - z[1:])[::-1], np.asarray(ob.T, float)[:, a][::-1], np.asarray(ob.u_normal, float)[:, a][::-1]
+    return (z[:-1] - z[1:])[::-1], _values(ob, field)[:, a][::-1], np.asarray(ob.u_normal, float)[:, a][::-1]
 
 
 def exterior_tracer(state: dict[str, OBData], H: np.ndarray, h: np.ndarray, mask: np.ndarray,
-                    scheme: int, open_edges=None) -> np.ndarray:
+                    scheme: int, open_edges=None, field=None) -> np.ndarray:
     """
     Tₑₓₜ on the layers h (N, ny, nx) in the ``mask`` columns whose nearest open edge (``open_edges``, default
-    the edges of ``state``) has data; 0 elsewhere.  Source columns are built and remapped only at the mask
+    the edges of ``state``) has data; 0 elsewhere.  ``field``: None = T, i = passive tracer i (OBData.tracers).  Source columns are built and remapped only at the mask
     points (gather–scatter; _exterior_tracer_full is the whole-domain reference with the same arithmetic).
     """
     H = np.nan_to_num(np.asarray(H, float))
@@ -128,7 +139,7 @@ def exterior_tracer(state: dict[str, OBData], H: np.ndarray, h: np.ndarray, mask
         if jj.size == 0:
             continue
         a, d = (x[jj, ii] for x in _along(e, H.shape))
-        h_src, T_src, _ = _source_columns_at(ob, e, H[jj, ii], a, d == 0)
+        h_src, T_src, _ = _source_columns_at(ob, e, H[jj, ii], a, d == 0, field)
         res = _remap_stretched(h_src[:, :, None], T_src[:, :, None], np.ascontiguousarray(h[:, jj, ii])[:, :, None],
                                np.ones((jj.size, 1), bool), scheme)
         out[:, jj, ii] = res[:, :, 0]

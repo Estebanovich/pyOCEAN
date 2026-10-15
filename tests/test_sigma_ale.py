@@ -1455,3 +1455,70 @@ def test_thin_layer_coupling_forces_the_depth_mean_on_the_clipped_face_column():
         tau = np.zeros((1, nx + 1)); tau[:, 1:-1] = 0.1
         out[cpl] = m.step(st, tau_x=tau)
     np.testing.assert_allclose(out["mom6"].eta, out["none"].eta, rtol=0, atol=1e-12 * np.abs(out["none"].eta).max())
+
+
+# ---------------------------------------------------------------- passive tracers (DOME spec §1)
+def _tracer_box(rule, ntr=1, open_=False, **kw):
+    """Sloping 2-D channel with stratification and a sloshing surface; tracer 0 = T at t = 0."""
+    nx, nz = 24, 8
+    H = np.linspace(30.0, 12.0, nx)[None]
+    params = dict(dz_top=np.full(nz, 30.0 / nz))
+    if rule == "hybrid":
+        params["rho_target"] = np.linspace(996.0, 999.5, nz + 1)
+    extra = {}
+    if open_:
+        from boundaries.obcs import OBData
+        zw = np.linspace(0.0, -30.0, 4)[:, None]
+
+        def state(t):
+            return {"west": OBData(side="west", T=np.full((3, 1), 14.0), u_normal=np.full((3, 1), 0.02), zw=zw,
+                                   ubar=np.full(1, 0.02))}
+        extra = dict(open_boundaries=("west",), open_boundary_mode={"west": "clamped"}, open_boundary_state=state)
+    m = _ale_box(rule, nx=nx, nz=nz, bathy=H, params=params, dt=20.0, n_tracers=ntr, **extra, **kw)
+    zc = m.layer_heights(np.zeros((1, nx)))
+    T = 10.0 + 0.2 * (zc + 30.0)
+    eta = 0.05 * np.cos(np.pi * np.arange(nx) / (nx - 1))[None]
+    return m, m.initial_state(eta, T, tr=np.stack([T] * ntr) if ntr else None)
+
+
+@pytest.mark.parametrize("rule", ["zstar", "sigma", "hybrid"])
+def test_a_passive_tracer_started_as_T_stays_identical_to_T(rule):
+    # oracle: same stack, same kernels, same remap — any special-casing of tracers breaks bit-identity
+    m, st = _tracer_box(rule)
+    for _ in range(40):
+        st = m.step(st)
+    assert st.tr.shape == (1,) + st.T.shape
+    assert np.array_equal(st.tr[0], st.T)
+
+
+def test_passive_tracer_is_conserved_and_stays_in_0_1_in_a_closed_box():
+    m, st = _tracer_box("hybrid")
+    x = np.arange(24)[None, None, :]
+    st.tr = np.where((x > 8) & (x < 14), 1.0, 0.0) * np.ones_like(st.T)[None]
+    c0 = m.tracer_content(st, tracer=0)
+    for _ in range(60):
+        st = m.step(st)
+    assert abs(m.tracer_content(st, tracer=0) - c0) <= 1e-12 * abs(c0)
+    assert st.tr.min() >= -1e-12 and st.tr.max() <= 1.0 + 1e-12          # FCT + PPM remap: round-off only
+
+
+def test_inflow_tracer_is_zero_when_the_exterior_gives_no_tracers():
+    m, st = _tracer_box("zstar", open_=True)
+    st.tr = np.zeros_like(st.tr)
+    for _ in range(30):
+        st = m.step(st)
+    assert np.abs(st.tr).max() == 0.0
+
+
+def test_tracers_need_ale_and_matching_shapes():
+    hg = create_cartesian_grid(nx=8, ny=1, dx=1000.0, dy=1000.0, f0=0.0)
+    with pytest.raises(ValueError, match="n_tracers"):
+        SigmaBaroclinic(hg, np.full((1, 8), 20.0), dt=10.0, n_layers=4, z0=None, n_tracers=1)
+    m, _ = _tracer_box("zstar", ntr=2)
+    with pytest.raises(ValueError, match="tr"):
+        m.initial_state(np.zeros((1, 24)), np.full((8, 1, 24), 10.0), tr=np.zeros((1, 8, 1, 24)))
+
+
+def test_no_tracers_leaves_the_state_without_tr():
+    m, st = _tracer_box("zstar", ntr=0)
+    assert m.step(st).tr is None

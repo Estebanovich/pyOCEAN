@@ -84,3 +84,15 @@ def test_stretched_sigma_coordinates_are_written(tmp_path):
     ds = xr.open_dataset(tmp_path / "out.nc")
     np.testing.assert_allclose(ds["s_w"].values, [-1.0, -0.5, -0.2, 0.0])
     np.testing.assert_allclose(ds["s_rho"].values, [-0.75, -0.35, -0.1])
+
+
+def test_output_accepts_numbered_passive_tracers(tmp_path):
+    from core.grid.horizontal import create_cartesian_grid
+    from diagnostics.output import OutputWriter
+    hg = create_cartesian_grid(nx=4, ny=3, dx=1.0, dy=1.0)
+    w = OutputWriter(tmp_path / "o.nc", hg, np.full((3, 4), 10.0), n_layers=2, fmt="netcdf")
+    w.write(0.0, tr0=np.zeros((2, 3, 4)), tr1=np.ones((2, 3, 4)))
+    w.close()
+    import xarray as xr
+    with xr.open_dataset(tmp_path / "o.nc") as ds:
+        assert ds["tr1"].attrs["long_name"] == "passive tracer 1" and float(ds["tr1"].max()) == 1.0

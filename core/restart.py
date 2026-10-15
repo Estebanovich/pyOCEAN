@@ -81,7 +81,8 @@ def _config(model: SigmaBaroclinic) -> dict:
                    tracer_limiter=model.tracer_limiter,
                    mix_diagnostic=int(model.mix_diagnostic), obc_tau_in=model.obc_tau_in, obc_tau_out=model.obc_tau_out,
                    obc_mode=",".join(f"{e}:{m}" for e, m in sorted(model.obc_mode.items())) or "none",
-                   obc_state="none" if model.obc_state is None else "function")
+                   obc_state="none" if model.obc_state is None else "function",
+                   n_tracers=int(getattr(model, "n_tracers", 0)))
         cfg.update({f"regrid_{k}": _text(v) for k, v in sorted(model.regrid_params.items())})
     return cfg
 
@@ -113,6 +114,12 @@ def write_restart(path: str | Path, model: SigmaBaroclinic, state: SigmaState) -
     if getattr(model, "ale", False) and getattr(model, "h_ext", None) is not None:
         data["h_ext"] = xr.Variable(("layer", "y", "x"), np.asarray(model.h_ext, np.float64),
                                     {"units": "m", "long_name": "layers of the external temperature (kept in z)"})
+    if getattr(state, "tr", None) is not None:
+        data["tr"] = xr.Variable(("tracer", "layer", "y", "x"), np.asarray(state.tr, np.float64),
+                                 {"units": "1", "long_name": "passive tracers (ALE)"})
+    if getattr(model, "tr_ext", None) is not None:
+        data["tr_ext"] = xr.Variable(("tracer", "layer", "y", "x"), np.asarray(model.tr_ext, np.float64),
+                                     {"units": "1", "long_name": "external passive tracers (kept in z with h_ext)"})
     pre = model.fs.preconditioner_state() if hasattr(model.fs, "preconditioner_state") else None
     if pre is not None:
         data["fs_lu_data"] = xr.Variable(("lu_nnz",), pre["data"], {"long_name": "lagged CG preconditioner matrix (CSC data)"})
@@ -170,6 +177,8 @@ def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
             model.T_ext = ds["T_ext"].values.copy()
         if "h_ext" in ds:
             model.h_ext = ds["h_ext"].values.copy()
+        if "tr_ext" in ds:
+            model.tr_ext = ds["tr_ext"].values.copy()
     if hasattr(model.fs, "set_preconditioner_state"):
         model.fs.set_preconditioner_state(
             dict(data=ds["fs_lu_data"].values.copy(), indices=ds["fs_lu_indices"].values.astype(np.int32),
@@ -181,4 +190,5 @@ def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
             raise ValueError("restart has no reference density profile but the model uses rho_ref='auto'")
         model.rho_ref = ReferenceProfile(ds["rho_ref_z"].values.copy(), ds["rho_ref_rho"].values.copy())
     return SigmaState(g_hist=hist, time=float(ds.attrs["time"]), n_trunc=int(ds.attrs.get("n_trunc", 0)),
-                      n_limited=int(ds.attrs.get("n_limited", 0)), **kw)
+                      n_limited=int(ds.attrs.get("n_limited", 0)),
+                      tr=ds["tr"].values.copy() if "tr" in ds else None, **kw)
