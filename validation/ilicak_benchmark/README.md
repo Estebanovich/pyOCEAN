@@ -71,19 +71,19 @@ python validation/ilicak_benchmark/compare.py [caso]              # tablas
 | ν_h | Modelo | ΔRPE/RPE₀ | dRPE/dt [W m⁻²] | Rango de T | Frentes / U (punta densa, punta ligera, cuerpo denso, cuerpo ligero) |
 |---|---|---|---|---|---|
 | 0.1 | pyOCEAN z\* (= σ) | 6.67e-5 | 3.86e-3 | 5–30 | 0.88, 0.87, 0.88, 0.86 |
-| 0.1 | pyOCEAN híbrida | 5.7e-8 | 3.9e-6 | 5–30 | 0.94, 0.95, 0.95, 0.96 |
+| 0.1 | pyOCEAN híbrida | 6.2e-8 | 4.2e-6 | 5–30 | 0.95, 0.96, 0.94, 0.96 |
 | 0.1 | MOM6 z\* | 6.75e-5 | 3.91e-3 | 5–30 | 0.87, 0.87, 0.88, 0.86 |
 | 0.1 | MOM6 ρ | 1.46e-5 | 9.4e-4 | 5–30 | 0.85, 0.96, 0.68, 0.94 |
 | 0.1 | CROCO σ | 1.91e-5 | 2.13e-3 | **−9.3–39.1** | 0.95, 0.96, 0.96, 0.95 |
 | 0.1 | MITgcm z\* | 6.89e-5 | 4.28e-3 | 4.93–30.1 | 0.92, 0.91, 0.91, 0.90 |
 | 10 | pyOCEAN z\* (= σ) | 5.73e-5 | 3.29e-3 | 5–30 | 0.89, 0.89, 0.89, 0.89 |
-| 10 | pyOCEAN híbrida | 6.9e-8 | 4.3e-6 | 5–30 | 1.01, 0.98, 1.00, 0.99 |
+| 10 | pyOCEAN híbrida | 6.8e-8 | 4.3e-6 | 5–30 | 1.01, 0.97, 1.00, 0.98 |
 | 10 | MOM6 z\* | 5.81e-5 | 3.36e-3 | 5–30 | 0.88, 0.89, 0.89, 0.89 |
 | 10 | MOM6 ρ | 1.57e-5 | 8.9e-4 | 5–30 | 0.96, 0.88, 0.90, 0.71 |
 | 10 | CROCO σ | 1.71e-5 | 1.71e-3 | **−8.8–38.9** | 0.96, 0.96, 0.96, 0.96 |
 | 10 | MITgcm z\* | 5.14e-5 | 2.88e-3 | 4.99–30.0 | 0.93, 0.93, 0.93, 0.93 |
 | 100 | pyOCEAN z\* (= σ) | 1.90e-5 | 1.08e-3 | 5–30 | 0.95, 0.95, 0.94, 0.96 |
-| 100 | pyOCEAN híbrida | 7.5e-8 | 4.5e-6 | 5–30 | 1.05, 1.06, 1.03, 1.03 |
+| 100 | pyOCEAN híbrida | 7.5e-8 | 4.3e-6 | 5–30 | 1.04, 1.06, 1.03, 1.03 |
 | 100 | MOM6 z\* | 1.87e-5 | 1.07e-3 | 5–30 | 0.95, 0.95, 0.95, 0.96 |
 | 100 | MOM6 ρ | 1.41e-5 | 9.2e-4 | 5–30 | 0.96, 0.84, 0.44, 0.53 |
 | 100 | CROCO σ | 4.0e-6 | 4.8e-4 | **−7.3–37.0** | 0.99, 0.99, 0.98, 0.98 |
@@ -93,23 +93,23 @@ python validation/ilicak_benchmark/compare.py [caso]              # tablas
 
 | ν_h | Modelo | ΔRPE/RPE₀ | dRPE/dt [W m⁻²] | Rango de T | Centroide frío: x [km], profundidad [m] |
 |---|---|---|---|---|---|
-| 1 | pyOCEAN z\* | 3.42e-5 | 4.91 | 10–20 | 119, 1300 |
+| 1 | pyOCEAN z\* | 3.48e-5 | 5.02 | 10–20 | 118, 1290 |
 | 1 | pyOCEAN σ | 3.44e-5 | 4.64 | 10–20 | 135, 1180 |
-| 1 | pyOCEAN híbrida | 3.0e-10 | 5.3e-5 | 10–20 | 121, 1940 |
+| 1 | pyOCEAN híbrida | — se detiene a las 20–23 h en 4 de 5 trayectorias: capas evanescentes junto a la pared este (punto 7, pendiente 4d) | | | |
 | 1 | MOM6 z\* | 3.14e-5 | 2.12 | 10–20 | 83, 980 |
 | 1 | MOM6 ρ | — se detiene: velocidad truncada demasiadas veces (~16 h) | | | |
 | 1 | CROCO σ | 3.0e-6 | 0.94 | **3.2–25.8** | 146, 1600 |
 | 1 | MITgcm z\* | — se detiene: `CALC_R_STAR`, rStarFac demasiado pequeño (~11 h, u hasta 13 m/s) | | | |
 | 100 | pyOCEAN z\* | 1.44e-5 | 1.86 | 10–20 | 154, 1450 |
 | 100 | pyOCEAN σ | 1.48e-5 | 1.66 | 10–20 | 155, 1400 |
-| 100 | pyOCEAN híbrida | 1.6e-10 | 2.6e-5 | 10–20 | 99, 1920 |
+| 100 | pyOCEAN híbrida | 1.0e-10 | 1.3e-5 | 10–20 | 117, 1920 |
 | 100 | MOM6 z\* | 3.24e-5 | 4.36 | 10–20 | 137, 944 |
 | 100 | MOM6 ρ | — se detiene: velocidad truncada demasiadas veces | | | |
 | 100 | CROCO σ | 8.1e-7 | 0.59 | **1.3–25.4** | 148, 1670 |
 | 100 | MITgcm z\* | 1.34e-5 | 1.44 | 9.59–20.1 | 124, 1370 |
 | 1000 | pyOCEAN z\* | 5.3e-6 | 0.61 | 10–20 | 150, 1760 |
 | 1000 | pyOCEAN σ | 5.8e-6 | 0.68 | 10–20 | 153, 1740 |
-| 1000 | pyOCEAN híbrida | 7.0e-11 | 9.3e-6 | 10–20 (max\|u\| 13 m/s) | 107, 1940 |
+| 1000 | pyOCEAN híbrida | 6.7e-11 | 8.7e-6 | 10–20 (max\|u\| 17 m/s) | 112, 1940 |
 | 1000 | MOM6 z\* | 1.34e-5 | 1.66 | 10–20 | 154, 1330 |
 | 1000 | MOM6 ρ | 1.2e-6 | 0.19 | 10–20 | 101, 1770 |
 | 1000 | CROCO σ | −5.3e-6 | −0.25 | **2.9–25.7** | 150, 1800 |
@@ -204,15 +204,16 @@ Notas:
 6. **T fuera de rango en la híbrida: (a), corregido el 2026-10-14.** Antes llegaba a 3.2–31 °C en capas de ~1 mm en el lock exchange y a 33.1 °C en el overflow con ν = 1000. Ahora el rango es exactamente el inicial en los cuatro casos, con una excursión ≤ 1.5e-8 °C en todas las coordenadas.
    - **FCT de Zalesak (1979)** alrededor del paso SSP-RK3 WENO5 (`tracer_limiter`, por defecto en ALE): el flujo de alto orden de las tres etapas se limita contra el donor cell. Las cotas usan los vecinos en x, y y las capas k ± 1. Con cotas solo a lo largo de la capa, el limitador recortaba máximos legítimos: el seamount σ subía de 0.22 a 0.71 cm/s y la onda interna híbrida bajaba de 0.50 a 0.31. HYCOM hace lo mismo alrededor de su esquema (`mod_tsadvc.F90:877-905`).
    - **El donor cell está acotado** porque el limitador de flujo saliente (punto 7) no deja que una capa saque más de lo que tiene.
-7. **Robustez de la híbrida en el overflow: (a), corregido el 2026-10-14.** Antes se detenía con ν ≤ 100 porque una capa se vaciaba en el paso lagrangiano. Ahora termina con ν = 1, 100 y 1000 (Re_Δ hasta 1570). MOM6 ρ se detiene con ν = 1 y 100 por truncación de velocidad, y HYCOM con ν = 100 por grosores negativos.
+7. **Robustez de la híbrida en el overflow: (a), corregido el 2026-10-14.** Antes se detenía con ν ≤ 100 porque una capa se vaciaba en el paso lagrangiano. Ahora termina siempre con ν = 100 y 1000; con ν = 1 solo en algunas trayectorias (abajo). MOM6 ρ se detiene con ν = 1 y 100 por truncación de velocidad, y HYCOM con ν = 100 por grosores negativos.
    - **Limitador de flujo saliente** (`limit_outflow`): reduce los flujos que salen de una capa a lo que contiene (MOM6 y HYCOM limitan el flujo a la masa disponible). El flujo recortado pasa a las otras capas de la misma cara, así que Σ_k Q_k sigue siendo el flujo de la superficie libre. Con él, la híbrida usa θ_bc = ½ (punto 9).
-   - **Acoplamiento viscoso de capas delgadas** (`thin_layer_coupling = "mom6"`): la viscosidad vertical usa el grosor de cara sesgado aguas arriba de MOM6 (`MOM_vert_friction.F90:1519-1533`; Hallberg & Rhines 1996). Es armónico donde el agua sale del lado delgado y aritmético donde el agua gruesa avanza, para no frenar la punta. Una capa que se drena se ata a sus vecinas (Higdon 2005 §3.1): en las caras con un lado de menos de 1 cm, max\|u\| bajó de 24 a 2 m/s con ν = 100.
-   - **Lo que queda:** con ν = 1000 la velocidad en caras delgadas llega a 1.55 veces la de las gruesas (picos de 13.4 contra 13.0 m/s; antes 47 m/s).
+   - **Acoplamiento viscoso de capas delgadas** (`thin_layer_coupling = "mom6"`): la viscosidad vertical usa el grosor de cara sesgado aguas arriba de MOM6 (`MOM_vert_friction.F90:1519-1533`; Hallberg & Rhines 1996). Es armónico donde el agua sale del lado delgado y aritmético donde el agua gruesa avanza, para no frenar la punta. Una capa que se drena se ata a sus vecinas (Higdon 2005 §3.1): en las caras con un lado de menos de 1 cm, max\|u\| bajó de 24 a 2 m/s con ν = 100. La revisión final encontró que el paso acoplado movía la media vertical (el viento entraba ×100 en ū con una capa superior delgada): ahora una corrección uniforme δ devuelve Σ w û al balance sin acoplamiento, con w sobre la columna de cara recortada que usa la superficie libre y la fricción de fondo implícita (`SigmaWetDry.column_step(dz_mean=...)`).
+   - **Lo que queda: velocidad en caras delgadas.** Con ν = 1000 llega a 1.9 veces la de las gruesas (picos de 17.0 contra 10.9 m/s, muestreo horario; antes del plan 47 m/s); con ν = 100, a 2.0 veces. Antes de la corrección de la media vertical de la revisión final era ≤ 1.55 y 1.77: la corrección δ, uniforme en la columna, también empuja las capas evanescentes (pendiente 4b).
+   - **Lo que queda: ν = 1 no es robusto.** Se detiene a las 20–23 h en 4 de 5 trayectorias (T perturbada con ruido de 1e-10; sin la corrección δ, 2 de 5), siempre en la cara junto a la pared este (i = 199) con 50 m/s. Unas 98 capas de ~1 mm entre las dos capas gruesas se mueven juntas como una lámina: el acoplamiento armónico las ata entre sí pero apenas a las gruesas, el agua sale de la celda donde están vacías (ningún transporte las frena) y el salto de ~600 m de la interfaz entre las celdas 198 y 199 las acelera a g′Δη/dx ≈ 0.012 m/s², 50 m/s en ~1 h. Que terminara antes era suerte de la trayectoria (pendiente 4d). MOM6 ρ se detiene con ν ≤ 100.
    - **La mezcla de HYCOM (blending) de capas de menos de 0.5 m** (`mod_momtum.F90:3055-3065`) se probó y queda como opción apagada (`thin_layer_cutoff`): mezcla la capa vacía de delante de la punta con la capa de arriba, que va en sentido contrario, y frena la punta del lock exchange (0.70 U con cualquier corte ≥ 1 cm).
-   - **Descenso:** el agua densa baja casi sin mezclarse (ΔRPE/RPE₀ ≤ 3e-10, cinco órdenes menos que z\*). Llega al fondo de la pendiente: el centroide del déficit de calor queda a 1920–1940 m (z\* 1300–1760 m). Con ν = 1000 su punta llega al final del dominio (200 km) a las 20 h; la de z\* va en 144 km a las 20 h y en 186 km a las 40 h. El centroide queda atrás en x (99–121 km contra 119–154) porque el agua densa sin mezclar se acumula en una capa gruesa al pie del talud. **(c)**: es la diferencia esperada entre coordenadas isopicnas y z (Ilicak 2012, §4).
+   - **Descenso:** el agua densa baja casi sin mezclarse (ΔRPE/RPE₀ ≤ 1e-10, cinco órdenes menos que z\*). Llega al fondo de la pendiente: el centroide del déficit de calor queda a 1920–1940 m (z\* 1300–1760 m). Con ν = 1000 su punta llega al final del dominio (200 km) a las 20 h; la de z\* va en 144 km a las 20 h y en 186 km a las 40 h. El centroide queda atrás en x (112–117 km contra 150–154 de z\*) porque el agua densa sin mezclar se acumula en una capa gruesa al pie del talud. **(c)**: es la diferencia esperada entre coordenadas isopicnas y z (Ilicak 2012, §4).
 8. **Overflow en z\*:**
    - **Mezcla y descenso:** pyOCEAN z\* ≈ MITgcm z\*. Con ν = 100, dRPE/dt es 1.86 contra 1.44 W m⁻²; con ν = 1000, 0.61 contra 0.52, y el centroide frío 150 km / 1760 m contra 148 km / 1720 m.
-   - **MOM6 z\*** mezcla 2.3–2.7 veces más con ν = 100 y 1000, y no le queda agua bajo 15 °C. Con ν = 1 mezcla menos de la mitad que pyOCEAN (2.12 contra 4.91).
+   - **MOM6 z\*** mezcla 2.3–2.7 veces más con ν = 100 y 1000, y no le queda agua bajo 15 °C. Con ν = 1 mezcla menos de la mitad que pyOCEAN (2.12 contra 5.02).
    - **Con ν = 1** terminan pyOCEAN z\*, σ e híbrida, MOM6 z\* y CROCO; MITgcm se rompe a las ~11 h.
    - **Extremos nuevos de T con WENO5-Z: (a), corregido el 2026-10-14 con el FCT** (punto 6). Antes, pyOCEAN z\* llegaba hasta 5.26 °C con un rango inicial de 10–20 °C (2.9–4.7 °C en celdas de al menos 1 m, en el 0.1–0.25 % del volumen), y σ hasta 1.6 °C. Ahora la excursión es ≤ 1.5e-8 °C. La RPE apenas cambia: dRPE/dt +5 % con ν = 1000 (0.58 → 0.61), igual con ν = 100 y −7 % con ν = 1 (5.26 → 4.91). Ilicak (2012) espera que un limitador añada algo de mezcla.
    - MOM6 z\*: **(c)/(d)**, sin explicar; no afecta a pyOCEAN.
@@ -249,10 +250,11 @@ Notas:
 1. ~~**(a) Amortiguamiento de la onda interna con viscosidad baja.**~~ Corregido el 2026-10-14 en z\* y σ (`theta_bc`, punto 9); en la híbrida va con el punto 4.
 2. ~~**(a) Extremos nuevos de T con WENO5-Z.**~~ Corregido el 2026-10-14 con el FCT de Zalesak (`tracer_limiter`): excursión ≤ 1.5e-8 °C en el overflow (antes 4.7 °C), puntos 6 y 8.
 3. ~~**(a) Híbrida, T fuera de rango en capas delgadas.**~~ Corregido el 2026-10-14: rango exacto en los cuatro casos (antes 3.2–33 °C con 5–30 °C), punto 6.
-4. ~~**(a) Híbrida, robustez en el overflow y onda interna.**~~ Corregido el 2026-10-14 con el limitador de flujo saliente y el acoplamiento viscoso: el overflow híbrido termina con ν = 1, 100 y 1000 (max\|u\| 13 m/s, antes 47), y la híbrida usa θ_bc = ½ (punto 7).
+4. ~~**(a) Híbrida, robustez en el overflow y onda interna.**~~ Corregido el 2026-10-14 con el limitador de flujo saliente y el acoplamiento viscoso: el overflow híbrido termina con ν = 100 y 1000 (max\|u\| 17 m/s, antes 47), y la híbrida usa θ_bc = ½ (punto 7). Con ν = 1, ver 4d.
 4a. **(a) Híbrida, onda interna con ν = 0.01:** oscilación 0.50 contra 0.65–0.72. Una capa delgada se drena después del día 120. Diagnosticarlo con el mismo método del punto 9.
-4b. **(a) Híbrida, velocidad de capas delgadas en el overflow:** hasta 1.55 veces la de las gruesas con ν = 1000. En las caras delgadas dominan la solución implícita y la corrección barotrópica, así que el candidato es repartir la corrección barotrópica ∝ visc_rem, como sugieren Hallberg & Adcroft (2009).
+4b. **(a) Híbrida, velocidad de capas delgadas en el overflow:** hasta 1.9 veces la de las gruesas con ν = 1000 y 2.0 con ν = 100 (1.55 y 1.77 antes de la corrección δ de la media vertical, que es uniforme en la columna). En las caras delgadas dominan la solución implícita y las correcciones barotrópicas, así que el candidato es repartir δ y la corrección barotrópica ∝ visc_rem, como MOM6 y Hallberg & Adcroft (2009).
 4c. **Híbrida, frentes del lock exchange con ν = 0.1:** el acoplamiento los frena 2–5 % (0.94 U). Probar el acoplamiento solo cerca del fondo, que es el valor por defecto de MOM6 (`MOM_vert_friction.F90:1446-1535`).
+4d. **(a) Híbrida, lámina de capas evanescentes junto a la pared (overflow con ν = 1):** se detiene en 4 de 5 trayectorias (punto 7). Necesita su propio diseño: PGF en capas evanescentes y su acoplamiento a las capas gruesas.
 5. **(a) Diagnóstico de RPE:** integrar exactamente ∫ z A dz por tramo en `reference_potential_energy`, para que sea exacto con cualquier hipsometría.
 6. **Rendimiento:**
    - reducir el trabajo fijo por paso y elegir el número de hilos según el tamaño de la malla (CROCO es 3–5.5 veces más rápido al mismo Δt en 2-D);
