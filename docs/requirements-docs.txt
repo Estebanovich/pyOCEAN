@@ -1,0 +1,8 @@
+# Build the manual in a separate virtual environment (never in the base env, which pins numpy 1.26.4):
+#   python -m venv .venv-docs && .venv-docs/bin/pip install -r docs/requirements-docs.txt
+#   .venv-docs/bin/mkdocs serve      # http://127.0.0.1:8000
+#   .venv-docs/bin/mkdocs build      # → site/
+mkdocs==1.6.1
+mkdocs-material==9.5.39
+pymdown-extensions==10.11.2
+mkdocs-print-site-plugin==2.6.0   # PDF build: scripts/build_manual_pdf.sh

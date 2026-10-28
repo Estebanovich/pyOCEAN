@@ -2,9 +2,10 @@
 """
 Figures of the DOME benchmark (spec 2026-10-14-dome-overflow §8), written to cases.RUNS/figs/ (never to the repo):
 the bottom dye of every 50-day run at days 10, 20, 30 and 50, and the time-mean path Y'(x') and plume transport T(x')
-(days 30–50) against Legg et al. (2006) at 10 km.
+(days 30–50) against Legg et al. (2006) at 10 km; dome_<res>km_bottom_dye.mp4/.gif, the bottom dye of every 50-day
+run day by day.
 
-Usage: python validation/dome/figures.py 10
+Usage: python validation/dome/figures.py 10 [--no-anim]
 """
 from __future__ import annotations
 
@@ -17,11 +18,16 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "docs" / "manual" / "figures"))
 
 from validation.dome import cases, metrics, series  # noqa: E402
 
 DAYS = (10, 20, 30, 50)
+LABELS = {"mitgcm_z_legg": "MITgcm z (Legg physics)", "mitgcm_z_common": "MITgcm z (common physics)",
+          "mom6_rho_common": "MOM6 ρ", "pyocean_zstar": "pyOCEAN z*", "pyocean_sigma": "pyOCEAN σ",
+          "pyocean_hybrid": "pyOCEAN hybrid"}
 
 
 def bottom_dye(s: dict, n: int) -> np.ndarray:
@@ -32,7 +38,46 @@ def bottom_dye(s: dict, n: int) -> np.ndarray:
     return np.where((k >= 0) & np.isfinite(s["H"]), out, np.nan)
 
 
-def main(res_km: float) -> None:
+def anim_bottom_dye(res_km: float, data: list) -> None:
+    """Bottom dye of every 50-day run, one frame per daily record, 2 rows × 3 panels."""
+    import pyocean_style as ps
+
+    ps.use()
+    ncol = 3
+    nrow = int(np.ceil(len(data) / ncol))
+    fig, axs = plt.subplots(nrow, ncol, figsize=(11.0, 2.1 * nrow + 0.5), sharex=True, sharey=True,
+                            squeeze=False, constrained_layout=True)
+    meshes = []
+    for ax, (name, s) in zip(axs.flat, data):
+        ax.set_facecolor(ps.LAND)
+        ax.grid(False)
+        meshes.append(ax.pcolormesh(s["x"] / 1e3, s["y"] / 1e3, np.ma.masked_invalid(bottom_dye(s, 0)), vmin=0,
+                                    vmax=1, cmap=ps.CMAPS["fraction"].reversed(), rasterized=True))
+        ax.contour(s["x"] / 1e3, s["y"] / 1e3, np.nan_to_num(s["H"]), [1000, 2000, 3000], colors=ps.MUTED,
+                   linewidths=0.5)
+        ax.set_aspect("equal")
+        ax.set_title(LABELS.get(name, name), fontsize=9)
+    for ax in axs.flat[len(data):]:
+        ax.set_visible(False)
+    for ax in axs[-1]:
+        ax.set_xlabel("x [km]")
+    for ax in axs[:, 0]:
+        ax.set_ylabel("y [km]")
+    ps.colorbar(fig, meshes[0], axs, "bottom dye s", shrink=0.7)
+    t = data[0][1]["t"]
+    head = f"DOME {res_km:g} km (Legg et al. 2006, case 1): bottom dye, isobaths 1000/2000/3000 m"
+    title = fig.suptitle(f"{head} — day {t[0] / 86400:4.1f}", x=0.02, ha="left", fontsize=11)
+    ps.freeze_layout(fig)
+
+    def update(n: int):
+        title.set_text(f"{head} — day {t[n] / 86400:4.1f}")
+        for m, (_, s) in zip(meshes, data):
+            m.set_array(np.ma.masked_invalid(bottom_dye(s, min(n, s["t"].size - 1))))
+
+    ps.save_animation(fig, update, t.size, cases.RUNS / "figs" / f"dome_{res_km:g}km_bottom_dye", fps=6)
+
+
+def main(res_km: float, anim: bool = True) -> None:
     runs = [p for p in sorted((cases.RUNS / f"{res_km:g}km").glob("*/series.npz"))]
     data = []
     for p in runs:
@@ -71,7 +116,10 @@ def main(res_km: float) -> None:
     fig.savefig(out / f"dome_{res_km:g}km_path_transport.png", dpi=110)
     plt.close(fig)
     print(out)
+    if anim:
+        order = list(LABELS)
+        anim_bottom_dye(res_km, sorted(data, key=lambda d: order.index(d[0]) if d[0] in order else len(order)))
 
 
 if __name__ == "__main__":
-    main(float(sys.argv[1]))
+    main(float(sys.argv[1]), "--no-anim" not in sys.argv)

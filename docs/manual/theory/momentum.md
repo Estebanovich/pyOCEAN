@@ -1,0 +1,508 @@
+# Momentum equations
+
+This page describes how pyOCEAN advances the horizontal velocity of each layer: the advection of momentum, the
+Coriolis force, the horizontal viscosity, and the implicit vertical viscosity with its two boundary fluxes (bed
+drag and wind stress). The stratified model `SigmaBaroclinic` has two forms of the momentum equation:
+
+- the **flux form** (momentum-conserving, WENO5-Z, as CROCO), the default with Eulerian σ-layers
+    (`vertical_coordinate="sigma_eulerian"`);
+- the **vector-invariant form** (potential-vorticity flux plus kinetic-energy gradient, as MOM6), the default
+    in ALE mode (`vertical_coordinate="ale"`).
+
+The pressure-gradient force is on its own page ([Pressure gradient](pressure-gradient.md)). The free surface,
+the Adams–Bashforth extrapolation and the coupling between the depth mean and the layers are on
+[Free surface and time stepping](free-surface-time-stepping.md). You need this page to choose `momentum`,
+`ke_scheme`, `adv`, `ah`, `nu_const`, `thin_layer_coupling` and `max_truncations`, and to know what each one does.
+
+## Physics
+
+For each layer $k$ (thickness $h_k$, $k = 0$ at the bed) the hydrostatic Boussinesq momentum equation is
+
+$$
+\frac{\partial \mathbf{u}_k}{\partial t}
+= \underbrace{-(\mathbf{u}\cdot\nabla)\mathbf{u}_k - \frac{\omega}{h}\frac{\partial \mathbf{u}}{\partial k}}_{\text{advection}}
+\;-\; f\,\hat{\mathbf{z}}\times\mathbf{u}_k
+\;-\; g\nabla\eta \;+\; \mathbf{PGF}_{bc,k}
+\;+\; A_h\nabla^2\mathbf{u}_k
+\;+\; \frac{\partial}{\partial z}\left(\nu\frac{\partial \mathbf{u}}{\partial z}\right),
+$$
+
+with the surface and bed boundary conditions
+
+$$
+\nu\frac{\partial \mathbf{u}}{\partial z}\Big|_{\eta} = \frac{\boldsymbol{\tau}_s}{\rho_0},
+\qquad
+\nu\frac{\partial \mathbf{u}}{\partial z}\Big|_{-H} = C_d\,|\mathbf{u}_b|\,\mathbf{u}_b .
+$$
+
+In the vector-invariant form the advection and Coriolis terms are rewritten with the identity
+$(\mathbf{u}\cdot\nabla)\mathbf{u} = (\zeta\,\hat{\mathbf z})\times\mathbf{u} + \nabla K$, $K = \tfrac12|\mathbf u|^2$:
+
+$$
+\frac{\partial u}{\partial t} = q\,(vh) - \frac{\partial K}{\partial x} + \dots,\qquad
+\frac{\partial v}{\partial t} = -q\,(uh) - \frac{\partial K}{\partial y} + \dots,\qquad
+q = \frac{f+\zeta}{h}.
+$$
+
+In ALE mode there is no vertical advection term: the layers move with the flow during the Lagrangian step and
+the velocity is then remapped onto the new grid ([Vertical coordinates and ALE](vertical-ale.md)).
+
+### Which terms go where in the time step
+
+| Term | Treatment | Where |
+|---|---|---|
+| Advection, Coriolis, baroclinic PGF, $A_h\nabla^2\mathbf u$ | explicit, collected in $G_k$, extrapolated with AB3 | `SigmaBaroclinic._tendencies` (`core/dynamics/sigma_baroclinic.py:1511`) |
+| $-g\nabla\eta$ | θ-implicit, on the depth mean | `WetDryFreeSurface.step` (`core/dynamics/wetting_drying.py:227`) |
+| Vertical viscosity, bed drag, wind stress | implicit (backward Euler) per column | `SigmaWetDry.column_step` (`core/dynamics/sigma_wd.py:187`) |
+
+The wind stress and the bed drag are boundary fluxes of the implicit vertical viscosity. They do not pass through
+the AB3 extrapolation (`SigmaBaroclinic.step`, `core/dynamics/sigma_baroclinic.py:2084-2101`; as ROMS/CROCO
+`sustr`/`svstr`).
+
+## Grid and notation
+
+The grid is an Arakawa C grid ([Grids and bathymetry](grids.md)). Arrays are (k, j, i) with $k = 0$ at the bed:
+
+| Symbol | Code | Shape | Location |
+|---|---|---|---|
+| $u$ | `st.u` | (N, ny, nx+1) | u-faces |
+| $v$ | `st.v` | (N, ny+1, nx) | v-faces |
+| $h$ | `st.h` (ALE) or $D\,\Delta\sigma_k$ (σ) | (N, ny, nx) | cells |
+| $Q^x, Q^y$ | `st.Qx`, `st.Qy` | as $u$, $v$ | layer volume transports [m³ s⁻¹] of the last step |
+| $F^z$ | `st.Fz` | (N+1, ny, nx) | volume flux through interface $k$ [m³ s⁻¹] (0 at bed and surface; ≡ 0 in ALE) |
+| $f_q$ | `h_grid["f_q"]` | (ny+1, nx+1) | cell corners |
+| $\Delta x_u, \Delta y_v$ | `dx_u`, `dy_v` | faces | centre-to-centre distances across the face |
+| $L_u, L_v$ | `dy_u`, `dx_v` | faces | face lengths |
+| $A_t, A_u, A_v$ | `area_t`, `area_u`, `area_v` | | cell and face areas |
+
+Corner $[J, I]$ is shared by cells $(J-1, J)\times(I-1, I)$ (`core/dynamics/vector_invariant.py:12-13`).
+
+## (a) Flux form (σ default)
+
+### Momentum-conserving advection with WENO5-Z
+
+`_flux_form_u` (`core/dynamics/sigma_baroclinic.py:706`, kernel `_flux_form_u_kernel` at `:627`, NumPy oracle
+`_flux_form_u_numpy` at `:714`) computes the advection of $u$ by the layer transports, as ROMS/CROCO
+(Shchepetkin & McWilliams 2005):
+
+$$
+\left.\frac{\partial u}{\partial t}\right|_{adv}
+= -\frac{1}{V_u}\Big[\delta_x(\mathcal U\,\tilde u) + \delta_y(\mathcal V\,\tilde u) + \delta_k(\mathcal W\,\tilde u)
+- u\,\big(\delta_x\mathcal U + \delta_y\mathcal V + \delta_k\mathcal W\big)\Big].
+$$
+
+The control volume is the u-cell, from the centre of cell $i-1$ to the centre of cell $i$. Its transports are
+averages of the layer transports of the tracer cells:
+
+| Transport | Through | Stencil (u-face $(k,j,i)$) |
+|---|---|---|
+| $\mathcal U_c = \tfrac12(Q^x_{k,j,c} + Q^x_{k,j,c+1})$ | cell centre $c$ (between u-faces $c$ and $c+1$) | $c = i-1, i$ |
+| $\mathcal V_{J} = \tfrac12(Q^y_{k,J,i-1} + Q^y_{k,J,i})$ | corner $(J, i)$ | $J = j, j+1$ |
+| $\mathcal W_{kk} = \tfrac12(F^z_{kk,j,i-1} + F^z_{kk,j,i})$ | interface $kk$ at the u-face | $kk = k, k+1$ |
+| $V_u = \tfrac12(V_{k,j,i-1} + V_{k,j,i})$ | volume of the u-cell | $V = h A_t$ |
+
+$\tilde u$ is the WENO5-Z value of $u$ at each control-volume face, taken upwind of the transport through it
+(same reconstruction as for tracers, see [Tracers](tracers.md#horizontal-schemes); momentum always uses the Z
+variant, `True` in `_wval`). The stencil is five u-points along the flux direction; it drops to WENO3 when only
+three are wet and to first-order upwind next to walls (`_wval`, `:176`).
+
+Subtracting $u$ times the mass divergence of the u-cell turns the conservative flux divergence into a velocity
+tendency, while the momentum flux itself stays conservative. That flux balance sets the speed of fronts and
+bores (Borden & Meiburg 2013; Ungarish et al. 2018, cited in the docstring at `:726`): in the lock exchange the
+advective form gave a front 16 % slow, the flux form gives the CROCO front positions within one cell
+(`validation/lock_exchange/README.md`).
+
+The $v$ tendency is the same function on swapped axes (`_tendencies`, `:1526-1528`). In the σ mode the term is
+skipped on the very first step, because the transports of a previous step do not exist yet (`st.Qx is None`,
+`:1522`).
+
+!!! note "Vanished-cell limiter (flux form in ALE only)"
+    With `momentum="flux"` in ALE mode a u-cell can be nearly empty, and $Q\,\Delta t/V_u \gg 1$. The code then
+    replaces the volume by
+
+    $$
+    V_u \leftarrow \max\big(V_u,\; 2\Delta t\,\max(Q_{in}, Q_{out})\big),
+    $$
+
+    with $Q_{in}$, $Q_{out}$ the transports into and out of the u-cell (`:696-701`). A vanished cell flooded by a
+    current then relaxes to the current's velocity at a rate of at most $1/(2\Delta t)$, inside the AB3 stability
+    limit; cells with $u\Delta t/\Delta x \le \tfrac12$ are unchanged. It has the purpose of MOM6's CFL truncation
+    (`MOM_vert_friction.F90:2555`) but is continuous (docstring at `:727-735`).
+
+### Advective forms `adv="upwind3"` and `adv="centred"`
+
+`adv` selects the advection of the flux-form branch. With `adv="upwind3"` or `"centred"` the model uses the
+advective operators of the 2-D nonlinear module, layer by layer (`_tendencies`, `:1529-1532`):
+
+$$
+(\mathbf u\cdot\nabla)u = u\,\partial_x u + \bar v\,\partial_y u,
+\qquad \bar v = \tfrac14\,(v_{j,i-1} + v_{j+1,i-1} + v_{j,i} + v_{j+1,i}),
+$$
+
+(`advection_u`, `core/dynamics/nonlinear.py:165`; `advection_v`, `:178`). The derivative is
+
+- `"centred"`: $(u_{+1} - u_{-1})/(h_- + h_+)$ (`_centred`, `:125`), zero where a neighbour is dry;
+- `"upwind3"`: third-order upwind-biased (Leonard 1979, `_upwind3`, `:132`),
+
+    $$
+    c>0:\ \frac{2u_{+1} + 3u_0 - 6u_{-1} + u_{-2}}{6h},\qquad
+    c<0:\ \frac{-u_{+2} + 6u_{+1} - 3u_0 - 2u_{-1}}{6h},
+    $$
+
+    that is the centred derivative plus a hyperdiffusion $|c|h^3/12\,\partial^4 u$. Where the 4-point stencil
+    reaches land it falls back to first-order upwind, which stays dissipative.
+
+Vertical advection is then added separately, centred in layer index (`_vertical_advection`, `:1503`):
+
+$$
+\frac{\omega}{h}\frac{\partial u}{\partial k}\Big|_k
+= \frac{\omega_{k+\frac12}(u_{k+1} - u_k) + \omega_{k-\frac12}(u_k - u_{k-1})}{2\,h_k},
+$$
+
+with $\omega$ of the last step averaged to the face and $h_k = D_u\,\Delta\sigma_k$. Metric terms
+$uv\tan\varphi/R$ are neglected (`core/dynamics/nonlinear.py:16-18`).
+
+### Energy-conserving Coriolis
+
+`_coriolis` (`core/dynamics/sigma_baroclinic.py:1467`) computes $+f\bar v$ at u-faces and $-f\bar u$ at
+v-faces with $f$ at the corners. Each adjacent (u, v) pair shares one corner $q$ and is weighted by
+$\tfrac14 f_q$:
+
+$$
+\mathrm{Cor}^u_{k,j,I} = \tfrac14\Big[f_{q;\,j,I}\,(v_{k,j,I-1} + v_{k,j,I}) + f_{q;\,j+1,I}\,(v_{k,j+1,I-1} + v_{k,j+1,I})\Big],
+$$
+
+$$
+\mathrm{Cor}^v_{k,J,i} = -\tfrac14\Big[f_{q;\,J,i}\,(u_{k,J-1,i} + u_{k,J,i}) + f_{q;\,J,i+1}\,(u_{k,J-1,i+1} + u_{k,J,i+1})\Big].
+$$
+
+The operator is antisymmetric, so it does no work (Sadourny 1975; Arakawa & Lamb 1977, as cited in the
+docstring). Strictly, the antisymmetry holds for the unweighted sum $\sum u\,\mathrm{Cor}^u + \sum v\,\mathrm{Cor}^v$;
+the kinetic energy $\sum h u^2$ is conserved exactly only when the face areas and thicknesses are uniform.
+
+## (b) Vector-invariant form (ALE default)
+
+`momentum="vector_invariant"` is the default when `vertical_coordinate="ale"` and is not allowed with Eulerian σ
+(`_setup_ale`, `:1130-1135`). `_vector_invariant` (`:1483`) calls the kernels of
+`core/dynamics/vector_invariant.py`, a port of MOM6 `MOM_CoriolisAdv.F90` (commit 0e9a561). Why: the flux form
+divides by the volume of the momentum cell and accelerates the nose of a gravity current in a layer that thins
+(hybrid lock exchange, `validation/mom6_lock_exchange`); Bleck & Smith (1990, app. B) and Higdon (2005) describe
+the problem, and MOM6 and HYCOM use this form (`core/dynamics/vector_invariant.py:7-10`).
+
+### Relative vorticity and potential vorticity at the corners
+
+`vorticity_and_pv` (`core/dynamics/vector_invariant.py:257`, oracles `vorticity_q_numpy` `:40` and `pv_q_numpy`
+`:63`):
+
+$$
+\zeta_{J,I} = \frac{\big(v_{J,I}\,\Delta y_{v;J,I} - v_{J,I-1}\,\Delta y_{v;J,I-1}\big) - \big(u_{J,I}\,\Delta x_{u;J,I} - u_{J-1,I}\,\Delta x_{u;J-1,I}\big)}{A_{q;J,I}}
+$$
+
+in circulation form. **Free slip:** $\zeta = 0$ at every corner that is not surrounded by four wet cells
+(`corner_mask`, `:27`; MOM6 `mask2dBu`, `MOM_CoriolisAdv.F90:595-610`). The corner area is
+$A_q = \overline{\Delta x_u}^{\,y}\;\overline{\Delta y_v}^{\,x}$ (`corner_area`, `:33`).
+
+$$
+q_{J,I} = \frac{(f_{q;J,I} + \zeta_{J,I})\;\sum A_t}{\sum A_t\,h + V_{neglect}},
+\qquad V_{neglect} = 10^{-28}\ \mathrm{m^3},
+$$
+
+with the sums over the wet cells around the corner (`MOM_CoriolisAdv.F90:337, 364-367, 429-437, 625-629`;
+`V_NEGLECT` at `core/dynamics/vector_invariant.py:24`).
+
+### Sadourny (1975) energy-conserving PV flux
+
+`coriolis_pv` (`:338`, oracle `coriolis_pv_numpy` `:74`; `MOM_CoriolisAdv.F90:818-823, 1071-1076`):
+
+$$
+CA^u_{j,I} = \frac{1}{4\,\Delta x_{u;j,I}}\Big[q_{j+1,I}\big(Q^y_{j+1,I-1} + Q^y_{j+1,I}\big) + q_{j,I}\big(Q^y_{j,I-1} + Q^y_{j,I}\big)\Big],
+$$
+
+$$
+CA^v_{J,i} = -\frac{1}{4\,\Delta y_{v;J,i}}\Big[q_{J,i}\big(Q^x_{J-1,i} + Q^x_{J,i}\big) + q_{J,i+1}\big(Q^x_{J-1,i+1} + Q^x_{J,i+1}\big)\Big],
+$$
+
+in each layer, with $Q^x, Q^y$ the layer volume transports [m³ s⁻¹]. These are the transports of the last
+Lagrangian step (after the outflow limiter), as MOM6 uses the `uh` of its last continuity call; on the first step,
+or after a restart without them, $Q^x = L_u\,u\,\bar h_u$ with the mean face thickness
+(`_vector_invariant`, `core/dynamics/sigma_baroclinic.py:1494-1497`). Domain-edge faces get 0.
+
+**BOUND_CORIOLIS** (always on, `bound=True` at `:1498`; MOM6 `:1008-1023, 1260-1275`): $CA^u$ is clipped to the
+range of the four products
+
+$$
+(f+\zeta)_{j+1,I}\,v_{j+1,I},\quad (f+\zeta)_{j+1,I}\,v_{j+1,I-1},\quad (f+\zeta)_{j,I}\,v_{j,I},\quad (f+\zeta)_{j,I}\,v_{j,I-1},
+$$
+
+and $CA^v$ to the range of $-(f+\zeta)\,u$ at its four neighbours. Reason: $q\,vh \approx (f+\zeta)\,v\,h_{face}/h_q$
+grows without bound when the corner thickness $h_q$ is much smaller than the face thickness (a vanished layer).
+
+### Kinetic energy and its gradient
+
+`kinetic_energy` (`:371`, oracle `kinetic_energy_numpy` `:106`; MOM6 `gradKE`, `MOM_CoriolisAdv.F90:1377-1535`):
+
+=== "ke_scheme = 'arakawa' (default)"
+
+    $$
+    K_{j,i} = \frac{A_{u,E}\,u_E^2 + A_{u,W}\,u_W^2 + A_{v,N}\,v_N^2 + A_{v,S}\,v_S^2}{4\,A_{t;j,i}}
+    $$
+
+    Energy conserving; the MOM6 production choice (OM4/OM5 and every MOM6 example except three,
+    `validation/mom6_ke_schemes/README.md`).
+
+=== "ke_scheme = 'gudonov'"
+
+    $$
+    K_{j,i} = \frac{\max\big(u_m^2 A_{u,E},\; u_p^2 A_{u,W}\big) + \max\big(v_m^2 A_{v,N},\; v_p^2 A_{v,S}\big)}{2\,A_{t;j,i}},
+    \quad u_p = \max(u_W, 0),\ u_m = \min(u_E, 0)
+    $$
+
+    (and the same for $v$): only the velocities that **enter** the cell count (upwind). The spelling
+    `'gudonov'` follows MOM6's `KE_GUDONOV` and is the one the code accepts.
+
+The gradient is $-\partial K/\partial x = -(K_{j,i} - K_{j,i-1})/\Delta x_{u;j,i}$ at u-faces and the same in $y$
+(`ke_gradient`, `:204`); domain-edge faces get 0.
+
+!!! tip "Which kinetic-energy scheme"
+    | Use | Scheme | Evidence |
+    |---|---|---|
+    | Internal waves, tides, general use | `'arakawa'` (default since 2026-10-12) | `'gudonov'` damps progressive internal waves by ~9 % of amplitude per 5 km at $\Delta x$ = 100 m (8 % at 50 m: first order in $\Delta x$). With Arakawa, mode-1 $u$ is 0.91–1.01 of MITgcm's (`validation/internal_wave/README.md`). |
+    | Density currents, bores, lock exchange | `'gudonov'` | ALE-σ lock exchange (20 layers) fronts 0.98 / 0.98 $U$ with Godunov against 0.91 / 0.84 $U$ with Arakawa (`validation/mom6_lock_exchange/README.md`); MOM6 itself uses Godunov only in `lock_exchange`, `adjustment2d` and `external_gwave`. |
+
+    In the Ilicak internal wave, with the old transport weighting, switching to Godunov dropped the kinetic energy
+    left at days 40–60 from 0.58 to 0.35 (`validation/ilicak_benchmark/README.md`, item 9).
+
+### CFL velocity truncation (backstop)
+
+After the remap of the face velocities, `truncate_cfl` (`core/dynamics/vector_invariant.py:172`, oracle
+`truncate_cfl_numpy` `:136`; MOM6 `vertvisc_limit_vel`, `MOM_vert_friction.F90:2555-2715`) clips any layer
+velocity whose donor-cell Courant number exceeds ½:
+
+$$
+\frac{|u|\,\Delta t}{\Delta x_{donor}} > \tfrac12
+\;\Rightarrow\;
+u \leftarrow \operatorname{sign}(u)\;0.9\cdot\tfrac12\,\frac{\Delta x_{donor}}{\Delta t},
+$$
+
+with $\Delta x_{donor}$ the width of the cell the water comes from (west cell for $u \ge 0$). Truncations at faces
+thicker than `h_thin_bed` (default 0.01 m) are counted in `SigmaState.n_trunc` (MOM6 counts faces thicker than
+3 Å). When the running count exceeds `max_truncations` (default 1000) the step raises `RuntimeError` naming the
+first layer and face (`_step_ale`, `core/dynamics/sigma_baroclinic.py:2063-2079`). The truncation should never
+act in a healthy run; a growing `n_trunc` signals a time step too long or a layer that has lost its dynamics.
+
+### Vertical advection in ALE
+
+None. In the Lagrangian step the interfaces move with the flow ($F^z \equiv 0$, `:2036`). The vertical
+redistribution of momentum is done by the conservative remap of $u$, $v$ in face-fraction space, which keeps
+$\sum_k w_k u_k$ exact (`_remap_faces`, `:1367`). See [Vertical coordinates and ALE](vertical-ale.md).
+
+## (c) Viscosity, bed drag and surface stress
+
+### Horizontal Laplacian viscosity `ah`
+
+`ah` [m² s⁻¹] adds $A_h\nabla^2 u$ to $G$ in both momentum forms (`_tendencies`, `:1533-1538`; kernel
+`laplacian_3d`, `core/dynamics/nonlinear.py:224`):
+
+$$
+\nabla^2 u\big|_{j,i} = \sum_{\text{axis}}\frac{2}{h_- + h_+}\left(\frac{u_+ - u_0}{h_+} - \frac{u_0 - u_-}{h_-}\right),
+$$
+
+a non-uniform 3-point stencil per direction, with the u-to-u spacings of `_spacings_u` (`:99`: $\Delta x_t$ in $x$,
+the mean of $\Delta y_u$ in $y$). **Free slip:** a dry or missing neighbour is replaced by $u_0$, so there is no
+gradient towards land. The operator acts on $u$ itself, not thickness-weighted ($\nabla\cdot(h\nabla u)/h$).
+Default `ah = 0`.
+
+Guide: the grid Reynolds number $Re_\Delta = U\Delta x/A_h$ controls both the noise and the spurious mixing
+(Ilicak et al. 2012). In the lock exchange the RPE gain fell from 3.22e-5 ($A_h = 0$) to 1.26e-5
+($A_h = 100$, $Re_\Delta = 2.5$) (`validation/lock_exchange/README.md`).
+
+### Vertical viscosity: implicit, one tridiagonal per column
+
+`SigmaWetDry.column_step` (`core/dynamics/sigma_wd.py:187`) solves, for each face column, the backward-Euler
+problem (`vertical_implicit`, `:88`; Numba Thomas solver `_thomas_columns`, `:53`; NumPy reference
+`_vertical_implicit_numpy`, `:99`):
+
+$$
+\Delta z_k\,\frac{\hat u_k - u^*_k}{\Delta t}
+= \nu_{k+\frac12}\frac{\hat u_{k+1} - \hat u_k}{h_{k+\frac12}}
+- \nu_{k-\frac12}\frac{\hat u_k - \hat u_{k-1}}{h_{k-\frac12}}
+- \delta_{k,0}\; r\,\hat u_0
++ \delta_{k,N-1}\,\frac{\tau_s}{\rho_0},
+$$
+
+$$
+u^*_k = u^n_k + \Delta t\,G_k^{AB3},\qquad h_{k+\frac12} = \tfrac12(\Delta z_k + \Delta z_{k+1}).
+$$
+
+As a matrix: lower and upper diagonals $-\Delta t\,\nu_{k\pm\frac12}/h_{k\pm\frac12}$, main diagonal
+$\Delta z_k$ + the two couplings + $\Delta t\,r$ in the bed layer; right-hand side $\Delta z_k u^*_k$ +
+$\Delta t\,\tau_s/\rho_0$ in the top layer. Columns are independent and solved in parallel. The solve conserves
+$\sum_k \Delta z_k\,u_k$ apart from the two boundary fluxes.
+
+- $\Delta z_k$: $D_f\,\Delta\sigma_k$ in σ ($D_f$ the face total depth, mean of the two cells,
+    `face_depths`, `:246`); in ALE the face thickness `hu` passed by `_step_ale` (below).
+- $\nu$: `closure="constant"` (`nu_const`, default 1e-4 m² s⁻¹ in `SigmaBaroclinic`), `"none"`, or in σ mode
+    `"gls"` / `"parabolic"` ([Turbulence closures and bottom friction](turbulence-friction.md)). ALE allows only
+    `"constant"` and `"none"` (`_setup_ale`, `:1151-1153`).
+- With `closure="none"` and no bed drag the solve is skipped and the wind enters the top layer as
+    $\Delta t\,\tau_s/(\rho_0\Delta z_{N-1})$ (`:231-234`).
+
+### Bed drag and surface stress as boundary fluxes
+
+- **Bed drag** (σ mode only): $r = C_d\,|u^*_0|$, explicit speed, implicit velocity, with the first-layer
+    law of the wall $C_d = [\kappa/\ln(\Delta z_0/2z_0)]^2$ capped at `cd_max` (`first_layer_cd`,
+    `physics/bottom_friction.py`; `:214-221`). It needs `z0` (default `None` in `SigmaBaroclinic` = no drag).
+    **ALE refuses `z0`** because the bed layer can vanish under z* (`_setup_ale`, `:1148-1150`). Details on
+    [Turbulence closures and bottom friction](turbulence-friction.md).
+- **Surface stress:** `step(st, tau_x, tau_y)` takes $\tau$ [N m⁻²] at u- and v-faces; $\tau/\rho_0$ is the flux
+    into the top layer (`:2100-2101`). An Ekman-transport test gives $\tau/\rho_0 f$ to 0.05 % (module docstring,
+    `:36-37`). Bulk formulae: [Air–sea fluxes](air-sea-fluxes.md).
+
+### Thin-layer coupling in the ALE viscous step
+
+In ALE a layer can be nearly massless on one side of a face. With the mean face thickness
+$\bar h = \tfrac12(q_W + q_E)$, a layer that has vanished on one side still looks thick in the viscous solve and is
+barely coupled to its neighbours, so it can accelerate alone. `thin_layer_coupling` (default `"mom6"` in ALE,
+`"none"` in σ; `:1049-1050`) passes instead MOM6's upwind-biased thickness to the viscous solve
+(`viscous_face_thickness`, `core/vertical/ale.py:82`; `MOM_vert_friction.F90:1519-1533`; Hallberg & Rhines 1996):
+
+$$
+h^{visc}_k =
+\begin{cases}
+\dfrac{2\,q_a q_b}{q_a + q_b + h_{neglect}} & \text{if } u_k\,(q_b - q_a) > 0 \quad\text{(water leaves the thinner side)}\\[2ex]
+\tfrac12\,(q_a + q_b) & \text{otherwise (thick water advances over thin)}
+\end{cases}
+$$
+
+with $q_a$, $q_b$ the transport thicknesses of the west (south) and east (north) cells and
+$h_{neglect} = 10^{-10}$ m. The harmonic mean ties a draining, nearly vanished layer to its neighbours (tie time
+$\approx h_{thin}\,h_{interface}/\nu$, Higdon 2005 §3.1); the arithmetic mean where thick water advances does not
+hold back a gravity-current nose (harmonic everywhere slowed the overflow plume from 10 to 2 m s⁻¹ at 4 h,
+docstring `:96-98`). The docstring names the case it was built for as "overflow ν = 100: 2 → 24 m/s on faces
+with a side < 1 cm" (`:93-95`); together with the outflow limiter it let the hybrid overflow finish at $\nu$ = 100
+and 1000 (max $|u|$ 17 m s⁻¹, before 47; `validation/ilicak_benchmark/README.md`, item 4). The solver receives $\max(h^{visc}, 10^{-6}\ \mathrm{m})$ (`DZ_FLOOR`, `:63`). The bed drag would
+keep the mean bed-layer thickness (`hu_drag`), but ALE has no bed drag today (`z0=None`).
+
+`_step_ale` (`core/dynamics/sigma_baroclinic.py:1997-2006`) passes `hu=max(h^visc, DZ_FLOOR)`,
+`hu_drag=max(h̄_0, DZ_FLOOR)` and `hu_mean = h̄` to `SigmaWetDry.step`.
+
+### Depth-mean correction δ of the coupled viscous step
+
+The implicit solve conserves $\sum_k h^{visc}_k u_k$, but the free surface uses the depth mean
+$\bar u = \sum_k w_k u_k$ with the fractions $w_k = \bar h_k/D_f$ of the mean thickness clipped at the shallower
+bed (the "face column" of the free surface). With $h^{visc} \ne \bar h$, internal friction would change $\bar u$,
+and the wind would enter $\bar u$ as $\Delta t\,\tau/h^{visc}_{top}$ instead of $\Delta t\,\tau/D_f$. The review
+fix of 2026-10-14 (`column_step`, `core/dynamics/sigma_wd.py:237-243`) adds a uniform correction $\delta$ to the
+solved column so that the depth mean obeys its own balance:
+
+$$
+\sum_k w_k(\hat u_k + \delta) = \sum_k w_k u^*_k + \frac{\Delta t}{D_f}\Big(\frac{\tau_s}{\rho_0} - r\,(\hat u_0 + \delta)\Big),
+$$
+
+$$
+\delta = \frac{\sum_k w_k u^*_k + \Delta t\,\tau_s/(\rho_0 D_f) - \sum_k w_k \hat u_k - \Delta t\,r\,\hat u_0/D_f}{\sum_k w_k + \Delta t\,r/D_f},
+\qquad D_f = \max\Big(\sum_k \bar h_k,\ d_{min}\Big).
+$$
+
+The shear $\hat u_k - \hat u_{k'}$ is kept; the bed stress is implicit at $\hat u_0 + \delta$. It is applied only
+when `hu_mean` is passed (ALE with `thin_layer_coupling="mom6"`). Tests: a 1 mm top layer with a 0.1 N m⁻² wind,
+where the coupling first gave η = 6.5e-3 m against 1.4e-4 m after one step
+(`test_thin_layer_coupling_keeps_the_wind_driven_depth_mean`), and a 20 → 12 m step where the first version
+divided τ by the mean cell depth (16 m) instead of the clipped face column (12 m), which shifted the BayIW seiche
+range by −2.5 % (`test_thin_layer_coupling_forces_the_depth_mean_on_the_clipped_face_column`,
+`tests/test_sigma_ale.py:1427-1460`). The thin overflow faces are still up to 1.9× faster than thick ones at
+$\nu$ = 1000; a candidate is $\delta \propto$ `visc_rem` as in MOM6 (`CLAUDE.md`, Ilicak benchmark row).
+
+### Other velocity rules of the ALE step
+
+- **Thin bed layers carry no velocity** (`zero_thin_bed_velocity`, `core/vertical/ale.py:950`; HYCOM
+    `hybgen.F90:1757-1764`): the run of face layers thinner than `h_thin_bed` starting at the bed gets $u = 0$ and
+    the removed $\sum w u$ is spread over the other layers in proportion to $w$, so $\bar u$ is unchanged.
+    Applied after the free surface and again after the remap (`:2008-2009, 2061-2062`).
+- **HYCOM thin-layer blending** (`thin_layer_cutoff`, default 0 = off; `blend_thin_layers`, `core/vertical/ale.py:122`;
+    HYCOM `mod_momtum.F90:3055-3065`): from the top down, $u_k \leftarrow [u_k q + u_{above}(c - q)]/c$ with
+    $q = \min(h_k, c)$ on the donor thickness, then a uniform correction restores $\sum w u$. Off by default
+    because blending the vanished layer ahead of a gravity-current nose gives it the counter-flowing velocity of
+    the layer above (hybrid lock exchange front 1.05 → 0.70 $U$ for any cutoff ≥ 0.01 m, docstring `:992-998`).
+
+## (d) Legacy z-level model
+
+The phase-1 z-level model (`core/dynamics/momentum.py`, `ModelState` with xarray fields) solves
+
+$$
+\partial_t u = +f\bar v - \frac{1}{\rho_0}\partial_x p + \nu_h\nabla^2 u,\qquad
+\partial_t v = -f\bar u - \frac{1}{\rho_0}\partial_y p + \nu_h\nabla^2 v
+$$
+
+(`momentum_tendency`, `:430`; Vallis 2006 eq. 14.12). There is no momentum advection and no vertical mixing.
+The Coriolis term averages $f$ to the face (two corners) and $v$ to the u-face (four points,
+`_v_to_u`, `coriolis_u` `:198`, `coriolis_v` `:250`); the Laplacian is a uniform-grid 5-point stencil with
+free-slip padding along the walls (`_laplacian_u`, `:146`). The free-surface tendency is
+$\partial_t\eta = -\sum_k \Delta z_k\,\nabla\cdot\mathbf u_k$ (`eta_tendency`, `:302`) and $w$ is diagnosed
+downward from $w = 0$ at the surface (`diagnose_w`, `:361`). It is advanced with AB2
+([Free surface and time stepping](free-surface-time-stepping.md#legacy-ab2)). Use it only for the phase-1 tests;
+new work uses `SigmaBaroclinic`.
+
+## Options and defaults
+
+| Option | Values | Default | Meaning | Where |
+|---|---|---|---|---|
+| `momentum` | `"flux"`, `"vector_invariant"` | `"flux"` in σ, `"vector_invariant"` in ALE | momentum form; vector-invariant needs ALE | `_setup_ale`, `:1130` |
+| `adv` | `"flux"`, `"upwind3"`, `"centred"` | `"flux"` | advection of the flux-form branch | `_tendencies`, `:1521-1532` |
+| `ke_scheme` | `"arakawa"`, `"gudonov"` | `"arakawa"` | kinetic energy of the vector-invariant form | `vi.kinetic_energy` |
+| `max_truncations` | int | 1000 | ALE: stop after this many counted CFL truncations | `_step_ale`, `:2069` |
+| `ah` | ≥ 0 [m² s⁻¹] | 0 | horizontal Laplacian viscosity, free slip | `:1533` |
+| `closure` | `"constant"`, `"none"`, `"gls"`, `"parabolic"` | `"constant"` | vertical viscosity (ALE: constant/none) | `SigmaWetDry` |
+| `nu_const` | [m² s⁻¹] | 1e-4 | constant vertical viscosity | `SigmaWetDry` |
+| `z0` | [m] or `None` | `None` | bed roughness of the log-law drag (σ only) | `column_step` |
+| `thin_layer_coupling` | `"none"`, `"mom6"` | `"mom6"` in ALE, else `"none"` | thickness of the viscous coupling | `:1049` |
+| `thin_layer_cutoff` | ≥ 0 [m] | 0 (off) | HYCOM blending of thin layers | `:1051` |
+| `h_thin_bed` | [m] | 0.01 | bed face layers thinner than this carry no velocity; truncation count threshold | `_setup_ale` |
+
+## Validation
+
+| Test | Result | Source |
+|---|---|---|
+| Lock exchange, flux form + WENO5-Z | fronts 0.463 / 0.486 m s⁻¹ = CROCO; Benjamin 0.495 | `validation/lock_exchange/README.md` |
+| Same, advective `upwind3` | front 0.42 m s⁻¹ (16 % slow) | same |
+| Hybrid lock exchange, vector-invariant, 21 layers, Godunov, PPM | 1.05 / 0.98 $U$ = MOM6 | `validation/mom6_ke_schemes/README.md` |
+| Mode-1 internal wave vs MITgcm | Arakawa 0.91–1.01; Godunov 0.83–0.99 | `validation/internal_wave/README.md` |
+| Ekman transport under wind | 0.05 % | module docstring |
+| Vanished layer tied by the coupling | `test_thin_layer_coupling_ties_a_vanished_layer_to_its_neighbours` | `tests/test_sigma_ale.py` |
+
+More on the [Idealised benchmarks](../validation/idealised.md) page.
+
+## Known limitations
+
+- No metric (curvature) terms; the WENO/UP3 interpolations of the flux form assume uniform spacing
+    (module docstring, `:55-58`).
+- Flux-form momentum is skipped on the first σ step (no transports yet).
+- ALE has no bed drag (`z0` must be `None`); the law-of-the-wall drag uses a bed layer that can vanish under z*.
+- Thin overflow faces still move up to 1.9× faster than thick ones at $\nu$ = 1000 (Ilicak overflow, open).
+- The horizontal viscosity is a plain Laplacian of $u$ (no biharmonic, no Smagorinsky, not thickness-weighted).
+
+## References
+
+- Arakawa, A. & Lamb, V.R. (1981). A potential enstrophy and energy conserving scheme for the shallow water
+    equations. *Mon. Wea. Rev.* 109, 18–36. [verify] (the σ-mode docstring cites "Arakawa & Lamb 1977").
+- Bleck, R. & Smith, L.T. (1990). A wind-driven isopycnic coordinate model of the north and equatorial Atlantic
+    Ocean. *J. Geophys. Res.* 95, 3273–3285. [verify]
+- Borden, Z. & Meiburg, E. (2013). Circulation based models for Boussinesq gravity currents. *Phys. Fluids* 25. [verify]
+- Hallberg, R. & Rhines, P. (1996). Buoyancy-driven circulation in an ocean basin with isopycnals intersecting
+    the sloping boundary. *J. Phys. Oceanogr.* 26, 913–940. [verify]
+- Higdon, R.L. (2005). A two-level time-stepping method for layered ocean circulation models: further
+    development and testing. *J. Comput. Phys.* 206. doi:[10.1016/j.jcp.2004.12.011](https://doi.org/10.1016/j.jcp.2004.12.011)
+- Ilicak, M., Adcroft, A.J., Griffies, S.M. & Hallberg, R.W. (2012). Spurious dianeutral mixing and the role of
+    momentum closure. *Ocean Modell.* 45–46, 37–58. doi:[10.1016/j.ocemod.2011.10.003](https://doi.org/10.1016/j.ocemod.2011.10.003)
+- Leonard, B.P. (1979). A stable and accurate convective modelling procedure based on quadratic upstream
+    interpolation. *Comput. Methods Appl. Mech. Eng.* 19, 59–98.
+- Sadourny, R. (1975). The dynamics of finite-difference models of the shallow-water equations.
+    *J. Atmos. Sci.* 32, 680–689.
+- Shchepetkin, A.F. & McWilliams, J.C. (2005). The Regional Oceanic Modeling System (ROMS): a split-explicit,
+    free-surface, topography-following-coordinate oceanic model. *Ocean Modell.* 9, 347–404.
+    doi:[10.1016/j.ocemod.2004.08.002](https://doi.org/10.1016/j.ocemod.2004.08.002)
+- Ungarish, M. et al. (2018). [verify] (cited in `_flux_form_u_numpy` for front speeds).
+- Vallis, G.K. (2006). *Atmospheric and Oceanic Fluid Dynamics*. Cambridge University Press.
+- MOM6 source, commit 0e9a561: `src/core/MOM_CoriolisAdv.F90`, `src/parameterizations/vertical/MOM_vert_friction.F90`
+    (local copy `~/pyOCEAN_refs/MOM6/src/`).
+- HYCOM source: `hybgen.F90`, `mod_momtum.F90` (local copy `~/pyOCEAN/HYCOM-src/`).

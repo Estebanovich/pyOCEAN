@@ -1,0 +1,104 @@
+site_name: pyOCEAN Model Manual
+site_description: Theory, numerics, usage and validation of pyOCEAN, a regional ocean model written from scratch in Python.
+site_author: Esteban Cruz Isidro
+repo_name: pyOCEAN
+docs_dir: docs/manual
+site_dir: site
+strict: false
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - toc.follow
+    - search.highlight
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle: {icon: material/brightness-7, name: Dark mode}
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle: {icon: material/brightness-4, name: Light mode}
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc: {permalink: true, toc_depth: 3}
+  - pymdownx.arithmatex: {generic: true}
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed: {alternate_style: true}
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+extra_css:
+  - stylesheets/print.css
+
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-mml-chtml.js
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Installation: getting-started/installation.md
+      - Quick start (first run): getting-started/quickstart.md
+      - Model overview in one page: getting-started/overview.md
+  - User guide:
+      - Building a model (SigmaBaroclinic): user-guide/building-a-model.md
+      - Configuration reference: user-guide/configuration-reference.md
+      - Regional setup (grid, bathymetry, initial and boundary data): user-guide/regional-setup.md
+      - Surface forcing: user-guide/surface-forcing.md
+      - Tides and the 2-D tidal model: user-guide/tidal-model.md
+      - Output, restarts and diagnostics: user-guide/output-restart-diagnostics.md
+      - Troubleshooting and FAQ: user-guide/troubleshooting.md
+  - Theory and numerics:
+      - Governing equations: theory/equations.md
+      - Grids and bathymetry: theory/grids.md
+      - Vertical coordinates and ALE: theory/vertical-ale.md
+      - Momentum equations: theory/momentum.md
+      - Pressure gradient: theory/pressure-gradient.md
+      - Free surface and time stepping: theory/free-surface-time-stepping.md
+      - Tracer transport and spurious mixing: theory/tracers.md
+      - Turbulence closures and bottom friction: theory/turbulence-friction.md
+      - Open boundaries and nesting: theory/open-boundaries.md
+      - Wetting and drying: theory/wetting-drying.md
+      - Air–sea fluxes: theory/air-sea-fluxes.md
+      - Tides: theory/tides.md
+  - Architecture:
+      - Code map: architecture/code-map.md
+      - The time step, flow diagrams: architecture/time-step.md
+      - Data structures and conventions: architecture/data-structures.md
+      - Performance and parallelism: architecture/performance.md
+  - Validation:
+      - Strategy and scorecard: validation/index.md
+      - Analytical and exact solutions: validation/analytical.md
+      - Idealised benchmarks (Ilicak, lock exchange, seamount, internal waves): validation/idealised.md
+      - BayIW (bay internal waves and seiches) vs MITgcm and MOM6: validation/bayiw.md
+      - Tides and sea level (PAC_MEX, gauges, HYCOM-IOA): validation/tides-sealevel.md
+      - Wetting and drying (Thacker, TIDAL_FLAT): validation/wetting-drying.md
+      - Forcing and column checks (bulk, HYCOM, MOM6 columns): validation/components.md
+  - Comparison with other models: comparison.md
+  - Limitations and roadmap: roadmap.md
+  - References: references.md
+
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+exclude_docs: |
+  figures/

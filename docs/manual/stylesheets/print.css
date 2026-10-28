@@ -1,0 +1,10 @@
+/* PDF / print layout: keep each diagram and figure on one page, scaled to fit. */
+@media print {
+  .mermaid, pre.mermaid, div.mermaid { break-inside: avoid; page-break-inside: avoid; text-align: center; }
+  .mermaid svg { max-height: 23cm !important; max-width: 100% !important; width: auto !important; height: auto !important; }
+  img { break-inside: avoid; page-break-inside: avoid; max-height: 23cm; }
+  .md-typeset table:not([class]) { font-size: 0.62rem; }
+  .md-typeset .admonition, .md-typeset details { break-inside: avoid; }
+}
+.mermaid-figure { break-inside: avoid; page-break-inside: avoid; text-align: center; margin: 1em 0; }
+.mermaid-figure svg { max-height: 22cm; max-width: 100% !important; height: auto; }

@@ -36,3 +36,8 @@ log_*.txt
 validation/**/out/*.npz
 validation/mitgcm_exf/input/cases.npz
 validation/tides/tpxo_real_oracle.npz
+
+# Built manual (mkdocs build)
+site/
+.venv-docs/
+docs/pyOCEAN_manual.pdf
