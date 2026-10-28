@@ -255,6 +255,21 @@ Notas:
 4b. **(a) Híbrida, velocidad de capas delgadas en el overflow:** hasta 1.9 veces la de las gruesas con ν = 1000 y 2.0 con ν = 100 (1.55 y 1.77 antes de la corrección δ de la media vertical, que es uniforme en la columna). En las caras delgadas dominan la solución implícita y las correcciones barotrópicas, así que el candidato es repartir δ y la corrección barotrópica ∝ visc_rem, como MOM6 y Hallberg & Adcroft (2009).
 4c. **Híbrida, frentes del lock exchange con ν = 0.1:** el acoplamiento los frena 2–5 % (0.94 U). Probar el acoplamiento solo cerca del fondo, que es el valor por defecto de MOM6 (`MOM_vert_friction.F90:1446-1535`).
 4d. **(a) Híbrida, lámina de capas evanescentes junto a la pared (overflow con ν = 1):** se detiene en 4 de 5 trayectorias (punto 7). Necesita su propio diseño: PGF en capas evanescentes y su acoplamiento a las capas gruesas.
+4e. **Historia de AB3 sin remapear después del regrid (abierto, 2026-10-28):** pyOCEAN aplica las tendencias de los pasos n−1 y n−2 por índice de capa aunque el regrid haya movido las capas. MOM6 sí remapea su historia (`u_av`, `CAu_pred`, `diffu`) con los mismos grosores de cara que las velocidades (`MOM.F90:1934-1952`, `MOM_dynamics_split_RK2.F90:1351-1358`). Prueba (`ab_history_remap.py <caso> <coord> <ν>`, métricas en memoria): remapear cada entrada de `g_hist` de h† a hⁿ⁺¹ en el `finalize` del driver. Es una sola trayectoria por caso (5 hilos, Δt del caso).
+
+   | Caso | Sin remapeo | Con remapeo |
+   |---|---|---|
+   | onda interna híbrida, ν = 0.01 | 0.497 | 0.497 (diferencia ~1e-9) |
+   | lock híbrido, ν = 1 | frentes 0.476–0.486 U, max\|u\| 1.64 m/s | frentes ±0.007, max\|u\| 0.75 m/s, RPE −7 % |
+   | lock z\*, ν = 1 | frentes 0.431–0.437 U | sin cambio apreciable |
+   | overflow híbrido, ν = 1 | se detiene a 21.6 h (1003 truncaciones) | completa 40 h (4 truncaciones), max\|u\| 46 m/s |
+   | overflow híbrido, ν = 100 | completa, 0 truncaciones, max\|u\| 16.6 m/s | completa, 88 truncaciones, max\|u\| 47 m/s |
+   | overflow z\*, ν = 100 | max\|u\| 3.92 m/s | 3.89 m/s, RPE −1 % |
+
+   El efecto es mixto: ayuda en el lock híbrido y deja terminar el overflow con ν = 1, pero empeora el overflow con ν = 100. En z\* no cambia casi nada. No explica el punto 4a. Hipótesis sin verificar: el remapeo reparte la historia de capas gruesas en capas casi vacías, y a la historia no se le aplica el cero en capas delgadas del fondo que sí se aplica a u y v. Plan aparte:
+   1. leer cómo trata MOM6 la historia en capas que se vacían;
+   2. probar dos variantes: (i) el cero de capas delgadas también en la historia; (ii) remapear solo donde el regrid mueve las interfaces;
+   3. repetir con las 5 trayectorias del overflow híbrido.
 5. **(a) Diagnóstico de RPE:** integrar exactamente ∫ z A dz por tramo en `reference_potential_energy`, para que sea exacto con cualquier hipsometría.
 6. **Rendimiento:**
    - reducir el trabajo fijo por paso y elegir el número de hilos según el tamaño de la malla (CROCO es 3–5.5 veces más rápido al mismo Δt en 2-D);
