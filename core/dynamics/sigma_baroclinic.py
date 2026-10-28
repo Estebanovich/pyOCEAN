@@ -101,10 +101,10 @@ from core.components.eos import LinearEOS
 from core.components.geometry import LayerGeometry
 from core.components.pgf import PressureGradient
 from core.components.momentum import Momentum, sum_terms
+from core.components.time_stepper import AB3, AB3Momentum, _ab3_kernel, ab3_combine  # noqa: F401  (re-exported)
 from core.model.threads import _THREADS, set_threads  # noqa: F401  (one shared list; re-exported)
 
 G = 9.81
-AB3 = (23.0 / 12.0, -16.0 / 12.0, 5.0 / 12.0)
 REMAP_SCHEMES = {"pcm": rm.PCM, "plm": rm.PLM, "ppm_h4": rm.PPM_H4}
 
 
@@ -852,32 +852,6 @@ def _rk_stage(qa, qb, r, dt, V, C, stage, q_out, c_out):  # pragma: no cover
         c_out[p] = q / v if v > 0 else C[p]
 
 
-@numba.njit(parallel=True, cache=True)
-def _ab3_kernel(g0, g1, g2, three, out):  # pragma: no cover
-    """AB3[0] g0 + AB3[1] g1 + AB3[2] g2 (three) or 1.5 g0 − 0.5 g1 (AB2 start-up), NumPy's evaluation order.
-    1-D arrays (flattened by the caller: ravel inside a parallel kernel may copy, losing the writes)."""
-    a0, a1, a2 = 23.0 / 12.0, -16.0 / 12.0, 5.0 / 12.0
-    for p in numba.prange(out.size):
-        if three:
-            out[p] = a0 * g0[p] + a1 * g1[p] + a2 * g2[p]
-        else:
-            out[p] = 1.5 * g0[p] - 0.5 * g1[p]
-
-
-def ab3_combine(g0: np.ndarray, g1: np.ndarray, g2: np.ndarray | None) -> np.ndarray:
-    """Adams–Bashforth extrapolation of the explicit tendencies (newest g0): AB3 with g2, AB2 without
-    (step's start-up).  Fused kernel with the same arithmetic as the NumPy expressions."""
-    if np.shape(g1) != np.shape(g0) or (g2 is not None and np.shape(g2) != np.shape(g0)):
-        raise ValueError(f"ab3_combine: tendency shapes differ {np.shape(g0)}, {np.shape(g1)}, "
-                         f"{None if g2 is None else np.shape(g2)}")       # the kernel does not check bounds
-    out = np.empty(np.shape(g0))
-    g0, g1 = np.ascontiguousarray(g0, float), np.ascontiguousarray(g1, float)
-    numba.set_num_threads(_THREADS[0])
-    g2 = g0 if g2 is None else np.ascontiguousarray(g2, float)
-    _ab3_kernel(g0.ravel(), g1.ravel(), g2.ravel(), g2 is not g0, out.ravel())
-    return out
-
-
 class ReferenceProfile:
     """ρ_ref(z) tabulated at heights z [m] (increasing) with values rho [kg m⁻³]; linear in between."""
 
@@ -1115,6 +1089,7 @@ class SigmaBaroclinic:
         self.hg, self.dt, self.n, self.g = h_grid, dt, n_layers, g
         self.rho0, self.t_coef, self.t_ref, self.ah, self.adv = rho0, t_coef, t_ref, ah, adv
         self._eos = LinearEOS(rho0=rho0, t_coef=t_coef, t_ref=t_ref)
+        self._time_stepper = AB3Momentum()
         self._pgf = PressureGradient(pgf, self._eos, g, rho_ref)
         self.fs = self.core.fs
         self._fq = np.asarray(h_grid["f_q"].values, float)           # Coriolis at cell corners [s⁻¹]
@@ -2145,14 +2120,7 @@ class SigmaBaroclinic:
         """
         dt, th, n = self.dt, self.fs.theta, self.n
         gu, gv = self._tendencies(st)
-        hist = [(gu, gv)] + st.g_hist[:2]
-        if len(hist) == 1:
-            gu_ab, gv_ab = gu, gv
-        elif len(hist) == 2:
-            gu_ab, gv_ab = ab3_combine(gu, hist[1][0], None), ab3_combine(gv, hist[1][1], None)
-        else:
-            gu_ab = ab3_combine(gu, hist[1][0], hist[2][0])
-            gv_ab = ab3_combine(gv, hist[1][1], hist[2][1])
+        gu_ab, gv_ab, hist = self._time_stepper.combine(st.g_hist, gu, gv)
         tu = None if tau_x is None else np.asarray(tau_x, float) / self.rho0
         tv = None if tau_y is None else np.asarray(tau_y, float) / self.rho0
         if self.ale:
