@@ -121,14 +121,18 @@ def test_salinity_only_arguments_need_salinity(arg):
 
 # ---------------------------------------------------------------- dynamics and restart
 def test_uniform_S_at_s_ref_leaves_dynamics_bitwise():
+    # Ruling R1 (task 3): with S the FV PGF takes the density path fv_pgf_rho, distinct arithmetic from the T path,
+    # so the dynamics equal the T-only golden run to round-off (relative 1e-12 of each field), no longer bit for bit
     warnings.simplefilter("ignore")
     m, st, wind = _salty_zstar()
+    m0, st0, _ = nc._start(nc._ale("zstar"), True)
     for n in range(10):
-        st = m.step(st, *wind(n))
+        st, st0 = m.step(st, *wind(n)), m0.step(st0, *wind(n))
     assert st.S is not None
-    got, ref = nc.state_hashes(st, m), GOLDEN["zstar_vi_arakawa"]["10"]
+    assert nc.state_hashes(st0, m0)["u"] == GOLDEN["zstar_vi_arakawa"]["10"]["u"]       # the reference is the golden
     for key in ("eta", "u", "v", "T", "h"):
-        assert got[key] == ref[key], key
+        a, b = getattr(st, key), getattr(st0, key)
+        np.testing.assert_allclose(a, b, rtol=1e-12, atol=1e-12 * np.abs(b).max(), err_msg=key)
 
 
 def test_restart_with_salinity_bit_for_bit(tmp_path):
@@ -223,15 +227,16 @@ def test_S_equals_passive_tracer_ale():
 def test_S_equals_T_ale_open_edges_and_sponges(rule):
     # S passive (s_coef 0) with S₀ = T₀ and every S source equal to T's: S = T through the inflow, the boundary
     # sponge band, K_h (both without the T_ref anomaly with salinity), K_v, the remap and the interior sponge
-    # (sponge_S = sponge_T).  T stays active (t_coef 0 is not used: the FV PGF divides by α, see task 3)
+    # (sponge_S = sponge_T).  α = β = 0: T and S both passive (the FV PGF takes the density path, no 1/α; task 3)
     warnings.simplefilter("ignore")
     nz = 8 if rule == "hybrid" else nc.NZ
     sp = nc._sponge_kw()
     m = nc._ale(rule, nz=nz, open_boundaries=("west",), sponge_cells=3,
-                open_boundary_state=_with_S(nc._west_state()), kh=5.0, kv=1e-5, salinity=True,
+                open_boundary_state=_with_S(nc._west_state()), kh=5.0, kv=1e-5, salinity=True, t_coef=0.0,
                 sponge_S=sp["sponge_T"].copy(), **sp)
     T0 = nc._T(nz)
     st = _run(m, m.initial_state(nc._eta(), T0, S=T0.copy()), nc._wind(True))
+    assert np.isfinite(st.u).all() and not np.array_equal(st.T, T0)
     assert np.array_equal(st.S, st.T)
 
 

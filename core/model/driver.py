@@ -353,7 +353,7 @@ class Driver:
         mixd, ntr, lay = m.mix_diagnostic, m.n_tracers, ctx.lay
         T_lag, eta_new = ctx.T_lag, ctx.eta_new
         fields = _stack_fields(lay, T_lag, ctx.S_lag, ctx.tr_lag)       # remapped in the stack order
-        h_new, rem = m._vertical.regrid_remap(eta_new, ctx.lf.h_dagger, fields, T_lag)
+        h_new, rem = m._vertical.regrid_remap(eta_new, ctx.lf.h_dagger, fields, T_lag, ctx.S_lag)
         T_new = rem[0]
         S_new = rem[lay["S"]] if m.salinity else None
         tr_new = np.stack(rem[lay["tr"]:]) if ntr else None

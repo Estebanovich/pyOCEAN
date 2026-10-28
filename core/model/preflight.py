@@ -149,6 +149,11 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
     if not sal and a.get("s_coef", 0.0) != 0.0:
         warn("salinity", f"s_coef={a['s_coef']!r} is ignored with salinity=False (there is no S in the density); "
                          "pass salinity=True")
+    if sal and a.get("rho_ref") is not None and a.get("kh", 0.0) > 0:
+        warn("tracer_diffusion", "salinity=True with rho_ref and kh > 0: K_h diffuses T and S themselves, not the "
+                                 "anomaly T − T_ref(z) of the reference profile (a density profile does not split "
+                                 "into T_ref and S_ref), so along sloping σ-layers it also mixes the mean "
+                                 "stratification")
     if a["sponge_rate"] is None and ({"sponge_T", "sponge_zw", "sponge_tr", "sponge_S"} & given):
         warn("interior_sponge", "sponge_T / sponge_zw / sponge_tr / sponge_S are ignored without sponge_rate")
     return out

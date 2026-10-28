@@ -27,7 +27,7 @@ from core.vertical.ale import face_fractions, face_transport_thickness
 class ALECoordinate:
     name = "ale_coordinate"
     role = Role.VERTICAL_COORDINATE
-    reads = ("h", "T", "eta")
+    reads = ("h", "T", "S", "eta")
     writes = ("h",)
 
     def __init__(self, *, H: np.ndarray, active: np.ndarray, n_layers: int, rule: str, params: dict, remap_code,
@@ -63,19 +63,28 @@ class ALECoordinate:
                 h0 = np.where(mask[None], np.diff(zw, axis=0), h0)
         return h0
 
-    def regrid_remap(self, eta: np.ndarray, h_src: np.ndarray, fields: list, T: np.ndarray):
-        """Regrid with the rule (spec §3) at surface η and remap ``fields`` (spec §4): (h_new, remapped)."""
+    def regrid_remap(self, eta: np.ndarray, h_src: np.ndarray, fields: list, T: np.ndarray,
+                     S: np.ndarray | None = None):
+        """
+        Regrid with the rule (spec §3) at surface η and remap ``fields`` (spec §4): (h_new, remapped).
+        T [°C] and S [g kg⁻¹] (None without salinity) give the layer densities of the hybrid rule.
+        """
         H = np.nan_to_num(np.asarray(self.H, float))
         wet = self.active & (H + eta > 0) & (h_src.sum(axis=0) > 0)
-        h_new = self.regrid(eta, h_src, T, wet)
+        h_new = self.regrid(eta, h_src, T, wet, S)
         return h_new, [rm.remap_columns(h_src, f, h_new, self.remap_code, wet) for f in fields]
 
-    def regrid(self, eta: np.ndarray, h: np.ndarray, T: np.ndarray, wet: np.ndarray | None = None) -> np.ndarray:
-        """New layer thicknesses of the rule (spec §3) from layers h with temperatures T; h kept where dry."""
+    def regrid(self, eta: np.ndarray, h: np.ndarray, T: np.ndarray, wet: np.ndarray | None = None,
+               S: np.ndarray | None = None) -> np.ndarray:
+        """
+        New layer thicknesses of the rule (spec §3) from layers h with temperatures T [°C] and salinities S
+        [g kg⁻¹] (None without salinity); h kept where dry.  The hybrid rule follows the isopycnals of
+        ρ(T, S) (N2a; linear EOS, Vallis 2006 eq. 1.156).
+        """
         H = np.nan_to_num(np.asarray(self.H, float))
         if wet is None:
             wet = self.active & (H + eta > 0) & (h.sum(axis=0) > 0)
-        rho = self.eos.density(T) if self.regrid_rule == "hybrid" else None
+        rho = self.eos.density(T, S) if self.regrid_rule == "hybrid" else None
         numba.set_num_threads(threads._THREADS[0])                                 # parallel regrid kernel
         zw = rg.regrid_columns(self.regrid_rule, H, eta, h, rho, self.regrid_params, wet)
         return np.where(wet[None], np.diff(zw, axis=0), h)

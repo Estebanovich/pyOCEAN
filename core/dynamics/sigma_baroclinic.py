@@ -1298,7 +1298,7 @@ class SigmaBaroclinic:
         if isinstance(self.rho_ref, str) and self.rho_ref == "auto":
             z = self.layer_heights(eta)
             act = np.broadcast_to(self.fs.active[None], z.shape)
-            self.rho_ref = reference_profile(z[act], self.density(np.asarray(T, float))[act])
+            self.rho_ref = reference_profile(z[act], self.density(np.asarray(T, float), S)[act])
         self.T_ext = np.array(T, float)                                # inflow / sponge target at open boundaries
         self.S_ext = None if S is None else S.copy()
         st = SigmaState(eta=np.array(eta, float), u=np.zeros((self.n, ny, nx + 1)),
@@ -1307,7 +1307,7 @@ class SigmaBaroclinic:
         if self.ale and self.regrid_rule == "hybrid":
             for _ in range(self.init_iterations):
                 fields = [st.T] + ([] if st.tr is None else list(st.tr)) + ([] if st.S is None else [st.S])
-                st.h, rem = self._regrid_remap(st.eta, st.h, fields, st.T)
+                st.h, rem = self._regrid_remap(st.eta, st.h, fields, st.T, st.S)
                 st.T = rem[0]
                 if st.S is not None:
                     st.S, rem = rem[-1], rem[:-1]
@@ -1368,7 +1368,7 @@ class SigmaBaroclinic:
         if isinstance(self.rho_ref, str) and self.rho_ref == "auto":
             zc = -H[None] + np.cumsum(h_src, axis=0) - 0.5 * h_src
             act = wet[None] & (h_src > 0)
-            self.rho_ref = reference_profile(zc[act], self.density(T_src)[act])
+            self.rho_ref = reference_profile(zc[act], self.density(T_src, S_src)[act])
         numba.set_num_threads(_THREADS[0])
 
         def from_source(h_tgt: np.ndarray) -> np.ndarray:
@@ -1380,7 +1380,8 @@ class SigmaBaroclinic:
             # one regrid on the source levels themselves, as MOM6 (regridding_main on the data, :2928); iterating
             # on the model grid (regrid there, remap from the source) oscillates around a sharp jump (BayIW
             # two-layer with a full-depth z* floor: 24–348 mixed layers depending on the pass count)
-            rho_src = self.density(np.where(wet[None], T_src, self.t_ref))
+            rho_src = self.density(np.where(wet[None], T_src, self.t_ref),
+                                   None if S_src is None else np.where(wet[None], S_src, self.s_ref))
             zw = rg.regrid_columns("hybrid", H, eta, h_src, rho_src, self.regrid_params, wet, n_out=self.n)
             zw_src = -H[None] + np.concatenate([np.zeros((1,) + H.shape), np.cumsum(h_src, axis=0)])
             tgt = np.asarray(self.regrid_params["rho_target"], float)
@@ -1439,20 +1440,23 @@ class SigmaBaroclinic:
         """Reference potential energy [J] (flat-bottom basin: area = wet area)."""
         V = self.layer_volumes(st.eta, st.h)
         act = np.broadcast_to(self.fs.active[None], V.shape)
-        return reference_potential_energy(self.density(st.T)[act], V[act], area=float(self.area[self.fs.active].sum()))
+        rho = self.density(st.T, st.S)                                 # ρ(T, S) with salinity (N2a)
+        return reference_potential_energy(rho[act], V[act], area=float(self.area[self.fs.active].sum()))
 
     # ------------------------------------------------------------------ ALE helpers
     def _initial_h(self, eta: np.ndarray) -> np.ndarray:
         """ALE layer thicknesses of the initial grid at η [m] (``core.components.vertical_coordinate``)."""
         return self._vertical.initial_h(eta)
 
-    def _regrid_remap(self, eta: np.ndarray, h_src: np.ndarray, fields: list, T: np.ndarray):
+    def _regrid_remap(self, eta: np.ndarray, h_src: np.ndarray, fields: list, T: np.ndarray,
+                      S: np.ndarray | None = None):
         """Regrid with the rule and remap ``fields``: (h_new, remapped) (``core.components.vertical_coordinate``)."""
-        return self._vertical.regrid_remap(eta, h_src, fields, T)
+        return self._vertical.regrid_remap(eta, h_src, fields, T, S)
 
-    def _regrid(self, eta: np.ndarray, h: np.ndarray, T: np.ndarray, wet: np.ndarray | None = None) -> np.ndarray:
+    def _regrid(self, eta: np.ndarray, h: np.ndarray, T: np.ndarray, wet: np.ndarray | None = None,
+                S: np.ndarray | None = None) -> np.ndarray:
         """New layer thicknesses of the rule (``core.components.vertical_coordinate``)."""
-        return self._vertical.regrid(eta, h, T, wet)
+        return self._vertical.regrid(eta, h, T, wet, S)
 
     def _transport_thickness(self, h: np.ndarray):
         """Upwind face thicknesses, cached by identity of h (``core.components.vertical_coordinate``)."""
@@ -1472,18 +1476,20 @@ class SigmaBaroclinic:
         return self._vertical.remap_faces(vel, hf_src, hf_tgt, w_tgt)
 
     # ------------------------------------------------------------------ explicit tendencies
-    def _baroclinic_pgf(self, eta: np.ndarray, T: np.ndarray, h: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+    def _baroclinic_pgf(self, eta: np.ndarray, T: np.ndarray, h: np.ndarray | None = None,
+                        S: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
         """Baroclinic pressure-gradient force at u- and v-faces [m s⁻²] (``core.components.pgf``)."""
-        return self._pgf(self._geometry, eta, T, h)
+        return self._pgf(self._geometry, eta, T, h, S)
 
-    def _fv_pgf(self, eta: np.ndarray, T: np.ndarray, h: np.ndarray | None) -> tuple[np.ndarray, np.ndarray]:
+    def _fv_pgf(self, eta: np.ndarray, T: np.ndarray, h: np.ndarray | None,
+                S: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
         """Finite-volume PGF (``core.components.pgf``), whatever ``pgf`` is set to."""
-        return self._pgf._fv(self._geometry, eta, T, h)
+        return self._pgf._fv(self._geometry, eta, T, h, S)
 
-    def pressure_gradient(self, eta: np.ndarray, T: np.ndarray,
-                          h: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
-        """Baroclinic pressure-gradient force at u- and v-faces [m s⁻²] of the configured scheme."""
-        return self._pgf(self._geometry, eta, T, h)
+    def pressure_gradient(self, eta: np.ndarray, T: np.ndarray, h: np.ndarray | None = None,
+                          S: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+        """Baroclinic pressure-gradient force at u- and v-faces [m s⁻²] of the configured scheme; ρ(T, S) with S."""
+        return self._pgf(self._geometry, eta, T, h, S)
 
     @property
     def rho_ref(self):
@@ -1511,7 +1517,8 @@ class SigmaBaroclinic:
         Du, Dv = self.core.face_depths(st.eta)
         wet_u = np.isfinite(self.fs.H_u) & np.isfinite(Du) & (Du > self.fs.d_min)
         wet_v = np.isfinite(self.fs.H_v) & np.isfinite(Dv) & (Dv > self.fs.d_min)
-        return self._momentum.terms(st, self._baroclinic_pgf(st.eta, st.T, st.h), Du, Dv, wet_u, wet_v), wet_u, wet_v
+        pgf_xy = self._baroclinic_pgf(st.eta, st.T, st.h, st.S)
+        return self._momentum.terms(st, pgf_xy, Du, Dv, wet_u, wet_v), wet_u, wet_v
 
     def _tendencies(self, st: SigmaState) -> tuple[np.ndarray, np.ndarray]:
         """Explicit momentum tendencies at u- and v-faces [m s⁻²]: Σ of the named terms (fixed order)."""

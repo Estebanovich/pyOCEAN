@@ -196,3 +196,42 @@ def fv_pgf(h: np.ndarray, H: np.ndarray, eta: np.ndarray, T: np.ndarray, du: np.
     gyT = np.zeros((n, nx, ny + 1))
     _fv_pgf_x(sw(e), sw(hs), sw(Tt), sw(Tb), sw(dv), sw(pa0), rho0, alpha, g, mass_weight, h_vanished, gyT)
     return gx[::-1].copy(), np.swapaxes(gyT, -1, -2)[::-1].copy()
+
+
+def fv_pgf_rho(h: np.ndarray, H: np.ndarray, eta: np.ndarray, rho: np.ndarray, du: np.ndarray, dv: np.ndarray,
+               rho0: float, rho_ref, g: float, mass_weight: bool = True,
+               h_vanished: float = H_VANISHED) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Baroclinic finite-volume pressure-gradient force [m s⁻²] from the layer densities ρ (N2a: ρ(T, S)).
+
+    Same scheme as ``fv_pgf`` (Adcroft et al. 2008; MOM6 MOM_PressureForce_FV, module docstring), in density
+    units: the anomaly ρ′ = ρ − ρ_ref(z_c) at the layer centres is reconstructed with PLM and integrated with
+    Boole's rule, instead of T′ = T − T_ref(z) with ρ′ = −α T′.  It never divides by α (a salt-only EOS has
+    α = 0) and holds for any EOS whose layer value ρ is given.  The kernel is ``_fv_pgf_x`` with α = −1, so its
+    point values −α ρ′ are ρ′ exactly.  For ρ = ρ₀ − α (T − T₀) it equals ``fv_pgf`` to round-off, not bit for bit
+    (the limiter and the quadrature see ρ′ instead of T′; tests/test_n2a_density.py).
+
+    h, rho : (N, ny, nx) layer thickness [m] and density [kg m⁻³], k = 0 at the bed
+    H, eta : (ny, nx) bed depth and surface height [m]
+    du (ny, nx+1), dv (ny+1, nx) : centre-to-centre distances across the faces [m]
+    rho_ref : callable z [m] → ρ_ref(z) [kg m⁻³], or None for ρ_ref = ρ₀
+    Returns gx (N, ny, nx+1), gy (N, ny+1, nx) with zeros on the domain-edge faces.
+    """
+    h = np.ascontiguousarray(h, float)
+    n, ny, nx = h.shape
+    eta = np.asarray(eta, float)
+    ref = (lambda z: np.full(np.shape(z), float(rho0))) if rho_ref is None else rho_ref   # noqa: E731
+    zw = -np.asarray(H, float)[None] + np.concatenate([np.zeros((1, ny, nx)), np.cumsum(h, 0)], 0)
+    zc = 0.5 * (zw[1:] + zw[:-1])
+    ra = np.ascontiguousarray(np.asarray(rho, float) - np.asarray(ref(zc), float))     # ρ′ = ρ − ρ_ref(z_c)
+    rb, rt = np.empty_like(h), np.empty_like(h)
+    _edges_columns(h, ra, rb, rt)
+    hs, Rt, Rb = h[::-1].copy(), rt[::-1].copy(), rb[::-1].copy()          # surface first
+    e = np.ascontiguousarray(zw[::-1])
+    pa0 = g * eta * (np.asarray(ref(0.5 * eta), float) - rho0)            # surface anomaly, as fv_pgf
+    gx = np.zeros((n, ny, nx + 1))
+    _fv_pgf_x(e, hs, Rt, Rb, np.ascontiguousarray(du, float), pa0, rho0, -1.0, g, mass_weight, h_vanished, gx)
+    sw = lambda a: np.swapaxes(a, -1, -2)                     # noqa: E731
+    gyT = np.zeros((n, nx, ny + 1))
+    _fv_pgf_x(sw(e), sw(hs), sw(Rt), sw(Rb), sw(dv), sw(pa0), rho0, -1.0, g, mass_weight, h_vanished, gyT)
+    return gx[::-1].copy(), np.swapaxes(gyT, -1, -2)[::-1].copy()

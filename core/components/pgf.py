@@ -4,7 +4,10 @@ Baroclinic pressure-gradient force of the 3-D core (N1, role PGF): density-Jacob
 uniform reference profile ρ_ref(z) removed first (Berntsen et al. 2015).  Moved unchanged from
 ``SigmaBaroclinic._baroclinic_pgf`` / ``_fv_pgf`` (same expressions, same order of operations).
 
-Reads η [m], T [°C], h [m] (ALE) or the σ-layers; returns the force at u- and v-faces [m s⁻²],
+With salinity (N2a) every scheme uses ρ(T, S) of the EOS; the finite-volume form then takes the density path
+``fv_pgf_rho`` (anomaly ρ − ρ_ref, no division by α), as it does for α = 0 without S.
+
+Reads η [m], T [°C], S [g kg⁻¹] (optional), h [m] (ALE) or the σ-layers; returns the force at u- and v-faces [m s⁻²],
 (N, ny, nx+1) and (N, ny+1, nx), k = 0 at the bed.
 """
 from __future__ import annotations
@@ -16,7 +19,7 @@ from core.components.eos import LinearEOS
 from core.components.geometry import LayerGeometry
 from core.model import threads
 from core.model.contract import BuildContext, Issue, Role
-from core.vertical.pgf import fv_pgf
+from core.vertical.pgf import fv_pgf, fv_pgf_rho
 
 SCHEMES = ("twoterm", "jacobian", "fv")
 
@@ -28,7 +31,7 @@ class PressureGradient:
     """
     name = "pgf"
     role = Role.PGF
-    reads = ("eta", "T", "h")
+    reads = ("eta", "T", "S", "h")
     writes = ()
 
     def __init__(self, scheme: str, eos: LinearEOS, g: float, rho_ref=None) -> None:
@@ -43,9 +46,10 @@ class PressureGradient:
         return {}
 
     def __call__(self, geom: LayerGeometry, eta: np.ndarray, T: np.ndarray,
-                 h: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+                 h: np.ndarray | None = None, S: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
         """
-        Baroclinic pressure-gradient force at u- and v-faces [m s⁻²].
+        Baroclinic pressure-gradient force at u- and v-faces [m s⁻²].  ``S`` [g kg⁻¹]: salinity (N2a), None
+        without; ρ = ρ(T, S) of the linear EOS (Vallis 2006 eq. 1.156).
 
         ρ′ = ρ − ρ_ref(z) with ρ_ref = ρ₀, or a reference profile ``rho_ref(z)``
         (Haney 1991; the "balanced" method of Berntsen et al. 2015): the pressure of
@@ -61,7 +65,7 @@ class PressureGradient:
                      top layers.  Exact for ρ linear in z over any topography.
         """
         if self.scheme == "fv":
-            return self._fv(geom, eta, T, h)
+            return self._fv(geom, eta, T, h, S)
         n = T.shape[0]
         if h is None:
             D = np.maximum(np.nan_to_num(geom.H + eta, nan=geom.d_min), geom.d_min)
@@ -69,7 +73,7 @@ class PressureGradient:
             z = -np.nan_to_num(geom.H)[None] + D[None] * geom.sigma_c[:, None, None]   # cell-centre height (z = 0 at rest)
         else:
             z = geom.layer_heights(eta, h)
-        rho = self.eos.density(T)
+        rho = self.eos.density(T, S)
         rp = rho - (self.rho_ref(z) if self.rho_ref is not None else self.eos.rho0)
         g = self.g
         # surface values for the Jacobian: z_s = η, ρ′ linearly extrapolated from the two top layers
@@ -118,14 +122,23 @@ class PressureGradient:
         return gx, gy
 
     def _fv(self, geom: LayerGeometry, eta: np.ndarray, T: np.ndarray,
-            h: np.ndarray | None) -> tuple[np.ndarray, np.ndarray]:
-        """Finite-volume PGF (core.vertical.pgf) on σ-layers (h=None) or ALE layers, with ρ_ref(z) if set."""
+            h: np.ndarray | None, S: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Finite-volume PGF (core.vertical.pgf) on σ-layers (h=None) or ALE layers, with ρ_ref(z) if set.  T only
+        with α ≠ 0: ``fv_pgf`` (the T′ anomaly, unchanged arithmetic).  With S, or α = 0 (where T′ = T − T₀ −
+        (ρ₀ − ρ_ref)/α is 0/0): ``fv_pgf_rho`` on ρ(T, S) − ρ_ref(z), which never divides by α.
+        """
         if h is None:
             D = np.maximum(np.nan_to_num(geom.H + eta, nan=geom.d_min), geom.d_min)
             h = D[None] * geom.ds[:, None, None]
         ref = None if isinstance(self.rho_ref, str) else self.rho_ref        # "auto" before initial_state: ρ₀
         numba.set_num_threads(threads._THREADS[0])
-        gx, gy = fv_pgf(h, np.nan_to_num(geom.H), np.nan_to_num(eta), np.nan_to_num(T), geom.du, geom.dv,
-                        self.eos.rho0, self.eos.t_coef, self.eos.t_ref, ref, self.g)
+        if S is None and self.eos.t_coef != 0:
+            gx, gy = fv_pgf(h, np.nan_to_num(geom.H), np.nan_to_num(eta), np.nan_to_num(T), geom.du, geom.dv,
+                            self.eos.rho0, self.eos.t_coef, self.eos.t_ref, ref, self.g)
+        else:
+            rho = self.eos.density(np.nan_to_num(T), None if S is None else np.nan_to_num(S))
+            gx, gy = fv_pgf_rho(h, np.nan_to_num(geom.H), np.nan_to_num(eta), rho, geom.du, geom.dv,
+                                self.eos.rho0, ref, self.g)
         return (np.where(np.isfinite(geom.H_u)[None], gx, 0.0),
                 np.where(np.isfinite(geom.H_v)[None], gy, 0.0))
