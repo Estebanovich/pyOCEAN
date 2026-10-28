@@ -70,6 +70,17 @@ class WetDryFreeSurface:
         total depth of the adjacent cell D = H + η_c (closed while it is dry):
         outward transport Q = L D [ū_ext,out + √(g/D)(η_c − η_ext)], θ-weighted
         between n and n+1 as in ``ImplicitFreeSurface``.
+    clamped_u, clamped_v : (ny, nx+1), (ny+1, nx) bool, optional
+        Subset of the Flather faces whose adjacent cell has a **prescribed elevation** instead (Dirichlet η,
+        "clamped" sea level; CROCO OBC_COM_ZSPECIFIED, OCEAN/zetabc.F:95-99, which sets the boundary ρ-point
+        ζ(0, j) = ζ_bry and lets the face between it and the first interior point carry what the momentum equation
+        gives; GETM's elevation boundary does the same on its boundary T-points; MOM6 has no SSH Dirichlet
+        segment, only Flather / specified velocity, MOM_open_boundary.F90:238,1807,1848).  Here the boundary cell
+        is a model cell: η^{n+1} there is the exterior η (``flather_eta``), the cell is eliminated from the
+        implicit solve (known value moved to the rhs, the system stays SPD), and the flux through its domain-edge
+        face is **diagnosed** from the cell's continuity, A (η^{n+1} − η^n)/Δt = Q_in − (outflow through its other
+        faces)^θ + A fw, so the volume budget closes exactly.  A cell on two clamped faces shares the flux by face
+        length.  None: no change (bit for bit).
     solver : {'direct', 'cg'}
         Sparse direct solve each step, or preconditioned conjugate gradients
         warm-started from η^n (the matrix changes every step with the total depth).
@@ -90,7 +101,8 @@ class WetDryFreeSurface:
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, theta: float = 0.6,
                  g: float = G, d_min: float = 0.05, flather_u: np.ndarray | None = None,
                  flather_v: np.ndarray | None = None, solver: str = "direct", cg_rtol: float = 1e-10,
-                 precond: str = "lu", refactor_iterations: int = 5) -> None:
+                 precond: str = "lu", refactor_iterations: int = 5, clamped_u: np.ndarray | None = None,
+                 clamped_v: np.ndarray | None = None) -> None:
         if not 0.5 <= theta <= 1.0:
             raise ValueError(f"theta must be in [0.5, 1], got {theta}")
         if solver not in ("direct", "cg"):
@@ -127,10 +139,15 @@ class WetDryFreeSurface:
         self.last_fw = None                                  # freshwater source of the last step [m s⁻¹] (N2a)
         # Flather faces: (axis, face indices, adjacent cell indices, outward sign, face length)
         self._flather = []
-        for mask, axis in ((flather_u, "u"), (flather_v, "v")):
+        for mask, clamp, axis in ((flather_u, clamped_u, "u"), (flather_v, clamped_v, "v")):
             if mask is None:
+                if clamp is not None and np.asarray(clamp, bool).any():
+                    raise ValueError("clamped-η faces must be Flather (open) faces")
                 continue
             mask = np.asarray(mask, bool)
+            clamp = np.zeros_like(mask) if clamp is None else np.asarray(clamp, bool)
+            if (clamp & ~mask).any():
+                raise ValueError("clamped-η faces must be Flather (open) faces")
             inner = mask.copy()
             if axis == "u":
                 inner[:, [0, -1]] = False
@@ -151,9 +168,12 @@ class WetDryFreeSurface:
                     cj, ci = (jj if edge == 0 else jj - 1), ii
                     length = self.Lv[jj, ii]
                 keep = self.active[cj, ci]
-                if keep.any():
-                    self._flather.append(dict(axis=axis, face=(jj[keep], ii[keep]), cell=(cj[keep], ci[keep]),
-                                              sign=-1.0 if edge == 0 else 1.0, length=length[keep]))
+                for cl in (False, True):                      # Flather faces, then clamped-η faces of this edge
+                    k = keep & (clamp[jj, ii] == cl)
+                    if k.any():
+                        self._flather.append(dict(axis=axis, face=(jj[k], ii[k]), cell=(cj[k], ci[k]),
+                                                  sign=-1.0 if edge == 0 else 1.0, length=length[k], clamped=cl))
+        self._clamped = [fl for fl in self._flather if fl["clamped"]]
 
     # ------------------------------------------------------------------
     def _face_depth(self, eta: np.ndarray, vel: np.ndarray, axis: int) -> tuple[np.ndarray, np.ndarray]:
@@ -225,6 +245,42 @@ class WetDryFreeSurface:
         self._lu = splu(self._lu_matrix)
         self._refactor = bool(state["refactor"])
 
+    def _clamped_fluxes(self, eta, eta_new, us, vs, un, vn, wu, wv, Du, Dv, fw_eff, fl_state, u_new, v_new) -> None:
+        """
+        Edge-face fluxes of the clamped-η cells, diagnosed from their continuity (class docstring): the inflow
+        Q_in = A (η^{n+1} − η^n)/Δt + (θ-weighted outflow through the interior faces) + (Flather outflow) − A fw.
+        Stored as the θ-weighted open flux (model sign) with the cell's depth at n, and as the face velocity.
+        """
+        th, dt, g = self.theta, self.dt, self.g
+        gx1, gy1 = self._gradient(eta_new)
+        ui = np.where(wu, us - g * th * dt * gx1, 0.0)
+        vi = np.where(wv, vs - g * th * dt * gy1, 0.0)
+        out = self._divergence(self.Lu * Du * (th * ui + (1 - th) * un), self.Lv * Dv * (th * vi + (1 - th) * vn))
+        for fl in self._flather:                                           # Flather outflow of the cells
+            if not fl["clamped"]:
+                Q = self.last_open_Qu if fl["axis"] == "u" else self.last_open_Qv
+                np.add.at(out, fl["cell"], fl["sign"] * Q[fl["face"]])
+        q_in = self.area * (eta_new - eta) / dt + out
+        if fw_eff is not None:
+            q_in = q_in - self.area * fw_eff
+        total_len = np.zeros(self.area.shape)
+        for fl in self._clamped:
+            np.add.at(total_len, fl["cell"], fl["length"])
+        for fl, (D, _, _, _, _, _) in zip(self._flather, fl_state):
+            if not fl["clamped"]:
+                continue
+            qin = q_in[fl["cell"]] * fl["length"] / total_len[fl["cell"]]
+            Qm = -fl["sign"] * qin                                           # model sign (+x / +y)
+            wet = D > self.d_min
+            (u_new if fl["axis"] == "u" else v_new)[fl["face"]] = np.where(
+                wet, Qm / np.where(wet, fl["length"] * D, 1.0), 0.0)
+            if fl["axis"] == "u":
+                Q, Dd = self.last_open_Qu, self.last_open_Du
+            else:
+                Q, Dd = self.last_open_Qv, self.last_open_Dv
+            Q[fl["face"]] = Qm
+            Dd[fl["face"]] = D
+
     def step(self, eta: np.ndarray, u_n: np.ndarray, v_n: np.ndarray, u_hat: np.ndarray,
              v_hat: np.ndarray, flather_eta=None, flather_ubar: np.ndarray | None = None,
              flather_vbar: np.ndarray | None = None, flather_q=None,
@@ -271,6 +327,10 @@ class WetDryFreeSurface:
                     if isinstance(flather_eta, tuple) else flather_eta
                 vel = flather_ubar if fl["axis"] == "u" else flather_vbar
                 e_ext = np.asarray(e_all)[fl["face"]]
+                if fl["clamped"]:                             # prescribed η: no radiation term (handled below)
+                    fl_state.append((np.maximum(self.H[fl["cell"]] + eta[fl["cell"]], 0.0), None, None, e_ext,
+                                     None, None))
+                    continue
                 ub = np.zeros_like(e_ext) if vel is None else np.asarray(vel)[fl["face"]]
                 D = np.maximum(self.H[fl["cell"]] + eta[fl["cell"]], 0.0)
                 open_ = D > self.d_min
@@ -288,6 +348,19 @@ class WetDryFreeSurface:
         cu = g * th**2 * dt**2 * self.Lu * Du / self.du
         cv = g * th**2 * dt**2 * self.Lv * Dv / self.dv
         A = self._matrix(np.where(wu, cu, 0.0), np.where(wv, cv, 0.0), extra[self.active])
+        if self._clamped:
+            # Dirichlet η at the clamped cells: x_b known, moved to the rhs; rows and columns replaced by the
+            # identity (symmetric elimination keeps A SPD for CG)
+            xb = np.zeros(A.shape[0])
+            fix = np.zeros(A.shape[0], bool)
+            for fl, st_ in zip(self._flather, fl_state):
+                if fl["clamped"]:
+                    idx = self.index[fl["cell"]]
+                    xb[idx], fix[idx] = st_[3], True
+            rhs = rhs - A @ xb
+            rhs[fix] = xb[fix]
+            P = sp.diags((~fix).astype(float))
+            A = (P @ A @ P + sp.diags(fix.astype(float))).tocsr()
         if self.solver == "direct":
             x = spsolve(A.tocsc(), rhs)
         else:
@@ -305,13 +378,18 @@ class WetDryFreeSurface:
 
             def _cb(_):
                 count[0] += 1
-            x, info = cg(A, rhs, x0=eta[self.active], rtol=self.cg_rtol, atol=0.0, M=M, maxiter=10 * rhs.size,
+            x0 = eta[self.active]
+            if self._clamped:
+                x0 = np.where(fix, xb, x0)
+            x, info = cg(A, rhs, x0=x0, rtol=self.cg_rtol, atol=0.0, M=M, maxiter=10 * rhs.size,
                          callback=_cb)
             if info != 0:
                 raise RuntimeError(f"wet-dry free-surface CG did not converge (info={info})")
             self.cg_iterations = count[0]
             if self.precond == "lu" and count[0] > self.refactor_iterations:
                 self._refactor = True                       # refresh the lagged LU for the next step
+        if self._clamped:
+            x[fix] = xb[fix]                                  # exact prescribed η (CG stops at its tolerance)
         eta_new = np.array(eta, float, copy=True)
         eta_new[self.active] = x
 
@@ -331,6 +409,8 @@ class WetDryFreeSurface:
         self.last_open_Qu, self.last_open_Qv = np.zeros(self.H_u.shape), np.zeros(self.H_v.shape)
         self.last_open_Du, self.last_open_Dv = np.zeros(self.H_u.shape), np.zeros(self.H_v.shape)
         for fl, (D, open_, c, e_ext, ub, out_q) in zip(self._flather, fl_state):
+            if fl["clamped"]:
+                continue
             q = out_q + c * (eta_new[fl["cell"]] - e_ext)                                  # outward, at n+1
             vel = np.where(open_, fl["sign"] * q / np.where(open_, fl["length"] * D, 1.0), 0.0)
             (u_new if fl["axis"] == "u" else v_new)[fl["face"]] = vel
@@ -338,6 +418,8 @@ class WetDryFreeSurface:
             Q, Dd = (self.last_open_Qu, self.last_open_Du) if fl["axis"] == "u" else (self.last_open_Qv, self.last_open_Dv)
             Q[fl["face"]] = np.where(open_, fl["sign"] * q_th, 0.0)
             Dd[fl["face"]] = np.where(open_, D, 0.0)
+        if self._clamped:
+            self._clamped_fluxes(eta, eta_new, us, vs, un, vn, wu, wv, Du, Dv, fw_eff, fl_state, u_new, v_new)
         if self.solver == "cg":
             # exact conservation (MITgcm exactConserv): η^{n+1} from the divergence of the final θ-weighted
             # transports and Flather fluxes, so the CG tolerance does not leak into the volume and tracer budgets

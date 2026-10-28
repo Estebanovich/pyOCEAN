@@ -36,6 +36,7 @@ def test_case_matches_table_1(exp):
     m, st, forcing = case.build(exp, "sigma_gls")
     # geometry (§4b): 500 × 1 cells of 200 m, bed 15 m at the ocean (west) → 5 m at the river (east), 60 σ-layers
     assert (m.n, m.H.shape) == (60, (1, 500))
+    np.testing.assert_allclose(m.ds, 1.0 / 60, rtol=1e-14)                 # uniform σ-layers
     np.testing.assert_allclose(m.area, 200.0 * 200.0, rtol=1e-14)
     assert m.H[0, 0] > m.H[0, -1] and np.all(np.diff(m.H[0]) < 0)
     np.testing.assert_allclose(np.diff(m.H[0]), -10.0 / 500, rtol=1e-12)
@@ -54,54 +55,52 @@ def test_case_matches_table_1(exp):
     if exp == "A":
         assert np.array_equal(fw[0] < 0, i >= 250) and not (fw > 0).any()
     else:
-        assert np.array_equal(fw[0] < 0, (i >= case.I_THIRD) & (i < case.I_TWO_THIRDS))
-        assert np.array_equal(fw[0] > 0, i >= case.I_TWO_THIRDS if Qp > 0 else np.zeros(500, bool))
+        assert (case.I_THIRD, case.I_TWO_THIRDS) == (167, 333)
+        assert np.array_equal(fw[0] < 0, (i >= 167) & (i < 333))
+        assert np.array_equal(fw[0] > 0, i >= 333 if Qp > 0 else np.zeros(500, bool))
     # the transect is the west edge of the evaporation zone (dashed lines of Fig. 2), outside the sponge
     face = case.TRANSECT[exp]
-    assert face == (250 if exp == "A" else case.I_THIRD) and fw[0, face] < 0 and fw[0, face - 1] == 0
+    assert face == (250 if exp == "A" else 167) and fw[0, face] < 0 and fw[0, face - 1] == 0
     reg = m.tef_region_budget.mask
     assert m.tef_face == face and m.tef.sign == 1 and reg[0, face:].all() and not reg[0, :face].any()
-    # river (east, 'clamped', S = 0) and tide (west, 'radiating', S = 30)
+    # river (east, 'clamped', S = 0) and tide (west, prescribed η = a sin ωt, 'eta', S = 30)
     ext = [m.obc_state(t) for t in np.linspace(0.0, case.T_M2, 97)]
-    eta_w = np.array([e["west"].eta[0] for e in ext])
-    assert abs(np.abs(eta_w).max() - amp) <= 1e-12 * max(amp, 1.0)
     assert all((e["west"].S == 30.0).all() for e in ext)
+    assert m.obc_mode["west"] == "eta"
+    case.check_identity_assumptions(m)                                      # kh = 0, no sponge in the region, …
+    # model side: the ocean cell follows the prescribed tide (Lorenz l. 843-845), peak at T/4
+    n_quarter = int(round(case.T_M2 / 4 / m.dt))
+    eta0 = []
+    for n in range(n_quarter + 2 if amp > 0 else 5):
+        st = m.step(st, **forcing(n))
+        eta0.append(st.eta[0, 0])
+    assert abs(max(np.abs(eta0)) - amp) <= 1e-3 * max(amp, 1.0), (max(np.abs(eta0)), amp)
     if Qr > 0:
         assert m.open == ("west", "east") and m.obc_mode["east"] == "clamped"
         assert all(abs(-e["east"].transport.sum() - Qr) <= 1e-12 * Qr for e in ext)
         assert all((e["east"].S == 0.0).all() for e in ext)
     else:
         assert m.open == ("west",)
-    case.check_identity_assumptions(m)                                      # kh = 0, no sponge in the region, …
 
 
-@pytest.mark.parametrize("config", CONFIGS)
-def test_short_run_closes_budget_and_identity(config):
+def _short_run(exp: str, config: str, S0: np.ndarray, n_step: int = 50) -> tuple[dict, dict, object]:
     """
-    Experiment A, 50 steps, from a salinity front at the transect, S = 33 + 3 tanh((x − 50 km)/2 km) uniform in
-    depth, instead of the uniform start: the front collapses into an inverse exchange flow through the transect
-    within the 50 steps (with S = 30 everywhere s_in = s_out and eq. 32 is 0/0; with a smooth x-gradient the
-    barotropic adjustment carries every face-layer the same way in the first hour).
-
-    Every step the s² content of the region east of the transect changes by Δt (S_surf − S_num_adv − S_phy_v −
-    S_phy_h − S_num_remap − S_sponge) summed over the region plus the transect's s² flux (task 6 closure, with the
-    open-boundary term supplied by the in-model TEF of task 7): to 100 ε Σ_region V S² (the round-off of one content
-    difference).  Over the run, Lorenz's Me (eq. 32) equals the region's M_model_tot.  Its round-off floor is that of
-    the storage terms, ε Σ V S²/T, amplified by the coefficients (s²)_in,out/(s_in − s_out) ~ s̄/|s_in − s_out| of
-    eq. (32) (task 7 concern 7: relative to M it grows as 1/(M T)); the tolerance is 100 × that floor (measured
-    0.04 and 0.7 of the floor in σ and ALE-σ).
+    ``n_step`` steps of ``exp`` from S0.  Every step the s² content of the region east of the transect changes by
+    Δt (S_surf − S_num_adv − S_phy_v − S_phy_h − S_num_remap − S_sponge) summed over the region plus the transect's
+    s² flux (task 6 closure, with the open-boundary term supplied by the in-model TEF of task 7; the river carries
+    S = S² = 0): to 100 ε Σ_region V S² (the round-off of one content difference).  Over the run, Lorenz's Me
+    (eq. 32) equals the region's M_model_tot.  Its round-off floor is that of the storage terms, ε Σ V S²/T,
+    amplified by the coefficients (s²)_in,out/(s_in − s_out) ~ s̄/|s_in − s_out| of eq. (32) (task 7 concern 7:
+    relative to M it grows as 1/(M T)); the tolerance is 100 × that floor.  Returns the region inputs, the TEF bulk
+    values and the model.
     """
-    warnings.simplefilter("ignore")
-    x = (np.arange(case.NX) + 0.5) * case.DX
-    S0 = (33.0 + 3.0 * np.tanh((x - 50e3) / 2e3)) * np.ones((case.NZ, case.NY, 1))
-    m, st, forcing = case.build("A", config, S_init=S0)
+    m, st, forcing = case.build(exp, config, S_init=S0)
     reg = m.tef_region_budget.mask
     eps = np.finfo(float).eps
 
     def s2_content(s) -> float:
         return (m.layer_volumes(s.eta, s.h) * s.S**2)[:, reg].sum()
 
-    n_step = 50
     for n in range(n_step):
         c0 = s2_content(st)
         f0 = m.tef.salt2.sum()
@@ -115,18 +114,49 @@ def test_short_run_closes_budget_and_identity(config):
         assert abs(lhs - rhs) <= 100 * eps * c0, (n, lhs, rhs)
     r = m.tef_region_budget.inputs()
     bulk = m.tef.bulk()
-    assert r["M_sponge"] == 0.0 and r["Qr"] == 0.0
-    assert abs(r["Qsurf"] - case.TABLE_1["A"][1]) <= 1e-12 * 5.0
+    assert r["M_sponge"] == 0.0
+    assert abs(r["Qsurf"] - (case.TABLE_1[exp][1] + case.TABLE_1[exp][2])) <= 1e-12 * 5.0
     assert r["M_tot"] > 0 and r["M_phy"] > 0
-    assert bulk["Q_in"] > 0 > bulk["Q_out"] and bulk["s_out"] > bulk["s_in"]   # inverse exchange, as in A
     Me = lorenz_mixing(bulk, r["Qr"], r["Qsurf"], r["dV"], r["dS"], r["dS2"], r["Fs2_surf"])["Me"]
     T = n_step * m.dt
     s_bar, ds = max(bulk["s_in"], bulk["s_out"]), abs(bulk["s_in"] - bulk["s_out"])
     floor = eps * m.tef_region_budget.end[2] / T * s_bar / ds
     assert abs(Me - r["M_tot"]) <= 100 * floor, (Me, r["M_tot"], floor)
-    # the runner's summary gives the same numbers
-    out = case.summary(m)
+    out = case.summary(m)                                                    # the runner's summary agrees
     assert out["Me"] == Me and out["M_model_tot"] == r["M_tot"]
+    return r, bulk, m
+
+
+@pytest.mark.parametrize("config", CONFIGS)
+def test_short_run_closes_budget_and_identity(config):
+    """
+    Experiment A, 50 steps (``_short_run``), from a salinity front at the transect, S = 33 + 3 tanh((x − 50 km)/
+    2 km) uniform in depth, instead of the uniform start: the front collapses into an inverse exchange flow through
+    the transect within the 50 steps (with S = 30 everywhere s_in = s_out and eq. 32 is 0/0; with a smooth
+    x-gradient the barotropic adjustment carries every face-layer the same way in the first hour).  Measured: step
+    closure ≤ 2.4 ε Σ V S², identity 0.04 and 0.7 of the floor in σ and ALE-σ.
+    """
+    warnings.simplefilter("ignore")
+    x = (np.arange(case.NX) + 0.5) * case.DX
+    S0 = (33.0 + 3.0 * np.tanh((x - 50e3) / 2e3)) * np.ones((case.NZ, case.NY, 1))
+    r, bulk, _ = _short_run("A", config, S0)
+    assert r["Qr"] == 0.0
+    assert bulk["Q_in"] > 0 > bulk["Q_out"] and bulk["s_out"] > bulk["s_in"]   # inverse exchange, as in A
+
+
+@pytest.mark.parametrize("config", CONFIGS)
+def test_short_run_with_river_closes_budget_and_identity(config):
+    """
+    Experiment D (river, E, P, tide), 50 steps from a classical front at the transect, S = 25 − 5 tanh((x −
+    33.4 km)/2 km): the region sees exactly the river's Qr = 5 m³ s⁻¹ through its 'clamped' east face, and the step
+    closure and Lorenz's identity hold as in A (the river path of the region's budget).
+    """
+    warnings.simplefilter("ignore")
+    x = (np.arange(case.NX) + 0.5) * case.DX
+    S0 = (25.0 - 5.0 * np.tanh((x - case.I_THIRD * case.DX) / 2e3)) * np.ones((case.NZ, case.NY, 1))
+    r, bulk, m = _short_run("D", config, S0)
+    assert r["Qr"] == pytest.approx(5.0, rel=1e-12)
+    assert bulk["Q_in"] > 0 > bulk["Q_out"] and bulk["s_in"] > bulk["s_out"]   # classical exchange
 
 
 def test_gls_config_uses_constant_tracer_kv(monkeypatch):

@@ -164,18 +164,20 @@ class SigmaWetDry:
     z0 : bed roughness length [m] for the first-layer law of the wall (None: no bed stress)
     closure : 'gls' (k-ε, Canuto A, as CROCO; state at cell centres), 'parabolic'
               (ν = κ u* z(1 − z/D)), 'constant' (ν = nu_const) or 'none'
-    theta, g, d_min, flather_u, flather_v, solver : as ``WetDryFreeSurface``
+    theta, g, d_min, flather_u, flather_v, solver, clamped_u, clamped_v : as ``WetDryFreeSurface``
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, n_layers: int = 10,
                  z0: float | None = 1e-4, closure: str = "parabolic", nu_const: float = 1e-2,
                  nu_min: float = 1e-5, theta: float = 0.6, g: float = G, d_min: float = 0.05,
                  flather_u: np.ndarray | None = None, flather_v: np.ndarray | None = None,
-                 solver: str = "direct", cd_max: float = 0.1, dsigma: np.ndarray | None = None) -> None:
+                 solver: str = "direct", cd_max: float = 0.1, dsigma: np.ndarray | None = None,
+                 clamped_u: np.ndarray | None = None, clamped_v: np.ndarray | None = None) -> None:
         if closure not in CLOSURES:
             raise ValueError(f"unknown closure {closure!r}; use one of {CLOSURES}")
         self.fs = WetDryFreeSurface(h_grid, bathy, dt=dt, theta=theta, g=g, d_min=d_min,
-                                    flather_u=flather_u, flather_v=flather_v, solver=solver)
+                                    flather_u=flather_u, flather_v=flather_v, solver=solver,
+                                    clamped_u=clamped_u, clamped_v=clamped_v)
         self.dt, self.n_layers, self.z0, self.closure = dt, n_layers, z0, closure
         self.nu_const, self.nu_min, self.d_min, self.cd_max = nu_const, nu_min, d_min, cd_max
         if dsigma is None:

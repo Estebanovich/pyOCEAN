@@ -977,7 +977,11 @@ class SigmaBaroclinic:
           layers (core.dynamics.open_boundary); None = the resting exterior above, unchanged
     open_boundary_mode : {edge: 'radiating' (default: Flather toward (η, ū)ₑₓₜ, Orlanski on u′ then nudging toward
           u′ₑₓₜ with Δt/τ_in when flowing in, Δt/τ_out when out, as CROCO u3dbc.F:111-155; sponge toward the
-          exterior) | 'clamped' (u′ = u′ₑₓₜ, Dirichlet, as MITgcm OBCS prescribe / CROCO M3_FRC_BRY)}
+          exterior) | 'clamped' (u′ = u′ₑₓₜ, Dirichlet, as MITgcm OBCS prescribe / CROCO M3_FRC_BRY) |
+          'eta' (prescribed sea level: η of the edge cells = η_ext(t), Dirichlet, as CROCO OBC_COM_ZSPECIFIED and
+          GETM's elevation boundary; the edge-face flux is diagnosed from the edge cells' continuity, so volume is
+          conserved exactly — core.dynamics.wetting_drying.WetDryFreeSurface ``clamped_u``; u′, tracers and the
+          sponge as 'radiating')}
     obc_tau_in, obc_tau_out : nudging time scales [s] of 'radiating' (CROCO typical 1 and 10 days)
     theta_bc : time weight of the baroclinic part u′ of the layer transport (None = ½ in every coordinate:
         time-centred, as the AB3 momentum tendency is centred at n + ½); the depth mean keeps the free-surface
@@ -1065,9 +1069,9 @@ class SigmaBaroclinic:
             raise ValueError("open_boundary_state needs open_boundaries")
         self.obc_state, self.obc_mode = open_boundary_state, {e: "radiating" for e in self.open}
         for e, mode in (open_boundary_mode or {}).items():
-            if e not in self.open or mode not in ("radiating", "clamped"):
+            if e not in self.open or mode not in ("radiating", "clamped", "eta"):
                 raise ValueError(f"open_boundary_mode {{{e!r}: {mode!r}}}: edges must be open and modes "
-                                 "'radiating' or 'clamped'")
+                                 "'radiating', 'clamped' or 'eta'")
             self.obc_mode[e] = mode
         if open_boundary_state is None and "clamped" in self.obc_mode.values():
             raise ValueError("a 'clamped' open_boundary_mode needs open_boundary_state (the exterior to impose)")
@@ -1108,9 +1112,17 @@ class SigmaBaroclinic:
             fl_v[-1, :] = act[-1, :]
         if solver is None:                     # ALE: CG with the lagged-LU preconditioner (1–3 iterations); the
             solver = "cg" if vertical_coordinate == "ale" else "direct"   # σ mode keeps the direct solve, bit-identical
+        cl_u = cl_v = None                     # 'eta' edges: prescribed (clamped) η at the boundary cells
+        if "eta" in self.obc_mode.values():
+            cl_u, cl_v = np.zeros_like(fl_u), np.zeros_like(fl_v)
+            for e, sl, cl in (("west", np.s_[:, 0], cl_u), ("east", np.s_[:, -1], cl_u),
+                              ("south", np.s_[0, :], cl_v), ("north", np.s_[-1, :], cl_v)):
+                if self.obc_mode.get(e) == "eta":
+                    cl[sl] = (fl_u if cl is cl_u else fl_v)[sl]
         self.core = SigmaWetDry(h_grid, bathy, dt=dt, n_layers=n_layers, z0=z0, closure=closure,
                                 nu_const=nu_const, theta=theta, g=g, d_min=d_min, dsigma=dsigma, solver=solver,
-                                flather_u=fl_u if self.open else None, flather_v=fl_v if self.open else None)
+                                flather_u=fl_u if self.open else None, flather_v=fl_v if self.open else None,
+                                clamped_u=cl_u, clamped_v=cl_v)
         sponged = tuple(e for e in self.open if self.obc_mode[e] != "clamped")  # a Dirichlet edge needs no sponge
         self._sp_c, self._sp_u, self._sp_v = _sponge_rates(act.shape, sponged, sponge_cells if sponged else 0,
                                                            *sponge_tau)

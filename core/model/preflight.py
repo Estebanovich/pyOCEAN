@@ -70,9 +70,9 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
         err("open_boundary", "open_boundary_state needs open_boundaries")
     modes = {e: "radiating" for e in open_}
     for e, mode in (a["open_boundary_mode"] or {}).items():
-        if e not in open_ or mode not in ("radiating", "clamped"):
+        if e not in open_ or mode not in ("radiating", "clamped", "eta"):
             err("open_boundary", f"open_boundary_mode {{{e!r}: {mode!r}}}: edges must be open and modes "
-                                 "'radiating' or 'clamped'")
+                                 "'radiating', 'clamped' or 'eta'")
         else:
             modes[e] = mode
     if a["open_boundary_state"] is None and "clamped" in modes.values():

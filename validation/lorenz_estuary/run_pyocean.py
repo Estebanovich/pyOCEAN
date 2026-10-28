@@ -68,11 +68,14 @@ def run(exp: str, config: str, cycles: float, avg: float, out: Path | None, dt: 
     every = max(1, int(round(steps_cycle / 4)))
     n_ckpt = max(1, int(round(checkpoint * steps_cycle)))
     rdir = None if hours else out / f"{exp}_{config}"
-    extra = dict(n=0, series=[], VS=None, Vu=None, V=None, tef=None, region=None)
+    run_id = dict(cycles=float(cycles), avg=float(avg), dt=float(dt))
+    extra = dict(n=0, series=[], VS=None, Vu=None, V=None, tef=None, region=None, run_id=run_id)
     if resume and rdir is not None and (rdir / "restart.nc").exists():
-        st = read_restart(rdir / "restart.nc", m)
         with open(rdir / "restart_extra.pkl", "rb") as fh:
             extra = pickle.load(fh)
+        if extra.get("run_id") != run_id:
+            raise SystemExit(f"--resume: checkpoint written with {extra.get('run_id')}, this run is {run_id}")
+        st = read_restart(rdir / "restart.nc", m)
         m.tef, m.tef_region_budget = extra["tef"], extra["region"]
         log(f"resumed at step {extra['n']} (t = {st.time / 3600:.2f} h)")
     if rdir is not None:
@@ -110,6 +113,9 @@ def run(exp: str, config: str, cycles: float, avg: float, out: Path | None, dt: 
                 f"wall {el / 3600:6.2f} h  {per:.3f} s/step  ETA {(n_total - n - 1) * per / 3600:6.2f} h  "
                 f"S_reg {r[5]:.3f} S_max {r[6]:.3f} |u|max {r[7]:.3f} n_lim {r[8]:.0f}")
         if rdir is not None and (n + 1) % n_ckpt == 0 and n + 1 < n_total:
+            if not (np.isfinite(st.S).all() and np.isfinite(st.u).all()):     # never overwrite a good checkpoint
+                log(f"BLOW-UP at step {n + 1}, t = {st.time / 3600:.2f} h (checkpoint not written)")
+                raise SystemExit(2)
             extra.update(n=n + 1, tef=m.tef, region=m.tef_region_budget)
             write_restart(rdir / "restart.tmp.nc", m, st)               # write, then rename: a run killed
             with open(rdir / "restart_extra.tmp.pkl", "wb") as fh:       # mid-write keeps the last checkpoint
@@ -148,7 +154,7 @@ def main() -> None:
     p.add_argument("--cycles", type=float, default=case.SPINUP_CYCLES + case.AVG_CYCLES)
     p.add_argument("--avg", type=float, default=case.AVG_CYCLES)
     p.add_argument("--out", type=Path, default=case.RUNS)
-    p.add_argument("--dt", type=float, default=None, help="time step [s] (default T_M2/373 ≈ 119.9 s)")
+    p.add_argument("--dt", type=float, default=None, help="time step [s] (default case.DT_DEFAULT[config])")
     p.add_argument("--threads", type=int, default=5)
     p.add_argument("--checkpoint", type=float, default=25.0, help="checkpoint interval [M2 cycles]")
     p.add_argument("--resume", action="store_true")

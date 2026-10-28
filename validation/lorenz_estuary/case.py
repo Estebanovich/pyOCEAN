@@ -88,13 +88,16 @@ KH = 0.0                                    # [m² s⁻¹] horizontal diffusivit
 Z0 = 1e-3                                   # [m] bed roughness, sigma_gls log law [no dado en el artículo] (brief)
 H_BBL = 20.0                                # [m] ALE: drag on the depth-mean velocity (hbbl ≥ the deepest column)
 SPONGE_CELLS = 10                           # west sponge (2 km) [no dado en el artículo]; GETM prescribes S at the
-                                            #   boundary without a sponge; pyOCEAN's tested Flather + Orlanski +
-                                            #   sponge (spec §6), far from the transects (≥ 33 km)
+                                            #   boundary without a sponge; pyOCEAN's tested Orlanski +
+                                            #   sponge (spec §6); its inner edge (x = 2 km) is
+                                            #   31.4 km west of the B–D transect (x = 33.4 km)
 INIT_S = S_OCEAN                            # initial S uniform at rest [no dado en el artículo]
-DT_DEFAULT = T_M2 / 373                     # [s] ≈ 119.88 s, both configs; a whole number of steps per M2 cycle.
-                                            #   Δt search (README): σ+GLS A blows up at 240 s (top-layer vertical
-                                            #   advection under the surface jet, ~22 h), B–D stable to 450 s; ALE-σ
-                                            #   B 240 s truncates, 200 s 7 truncations, 180 s clean
+# [s] default steps, a whole number per M2 cycle (Δt search with the prescribed-η tide, README):
+#   sigma_gls: T_M2/373 ≈ 119.9 s — A blows up at 240 s (explicit vertical advection of S in the ≈ 0.13 m top layer
+#     under the evaporation jet, ~22 h); B stable at 180 s, unstable at 240 s;
+#   ale_sigma: T_M2/498 ≈ 89.8 s — B stops at 150 s (CFL velocity truncation, |u| dt/dx > 0.5, of the 0.67 m/s ebb at
+#     the mouth face) and is stable at 120 s, where the 0.78 m/s peak already gives |u| dt/dx = 0.47
+DT_DEFAULT = {"sigma_gls": T_M2 / 373, "ale_sigma": T_M2 / 498}
 
 
 def cd_loglaw(D: float = 10.0, z0: float = Z0, kappa: float = 0.4) -> float:
@@ -135,8 +138,9 @@ def fw_field(exp: str, area: np.ndarray) -> np.ndarray:
 def open_boundary_state(exp: str, H: np.ndarray) -> Callable[[float], dict]:
     """
     Exterior state t [s] → {edge: OBData}: west, the ocean at S = 30 and η = a sin(ω t) (M2, a from Table 1; starts
-    at 0, no ramp [no dado en el artículo]), ū = 0 (Flather radiates the rest); east (Q_r > 0), the river, fresh,
-    'clamped' with its exact transport −Q_r (into the domain, model sign).  T constant.
+    at 0, no ramp [no dado en el artículo]) imposed as the sea level of the west cells (open_boundary_mode 'eta',
+    Dirichlet as GETM's elevation boundary, ruling R4; u′ and S as 'radiating', S inflow 30 + sponge); east
+    (Q_r > 0), the river, fresh, 'clamped' with its exact transport −Q_r (into the domain, model sign).  T constant.
     """
     Qr, _, _, amp = TABLE_1[exp]
     nz_e = 4
@@ -180,13 +184,17 @@ def build(exp: str, config: str, dt: float | None = None, S_init: np.ndarray | N
     region = np.zeros((NY, NX), bool)
     region[:, TRANSECT[exp]:] = True
     edges = ("west", "east") if Qr > 0 else ("west",)
+    modes = {"west": "eta"}                                           # prescribed M2 elevation (Lorenz l. 843-845)
+    modes.update(overrides.pop("open_boundary_mode", None) or {})
+    if Qr > 0:
+        modes["east"] = "clamped"                                     # the river: exact transport, never dropped
     kw = dict(rho0=RHO0, t_coef=0.0, t_ref=T_CONST, g=G, salinity=True, s_coef=S_COEF, s_ref=S_REF, ah=AH, kh=KH,
-              open_boundaries=edges, open_boundary_mode={"east": "clamped"} if Qr > 0 else None,
+              open_boundaries=edges, open_boundary_mode=modes,
               open_boundary_state=open_boundary_state(exp, H), sponge_cells=SPONGE_CELLS,
               variance_budget=True, tef_face=TRANSECT[exp], tef_sign=1, tef_region=region)
     kw.update(config_kwargs(config))
     kw.update(overrides)
-    m = SigmaBaroclinic(hg, H, dt=DT_DEFAULT if dt is None else dt, n_layers=NZ, **kw)
+    m = SigmaBaroclinic(hg, H, dt=DT_DEFAULT[config] if dt is None else dt, n_layers=NZ, **kw)
     S0 = np.full((NZ, NY, NX), INIT_S) if S_init is None else S_init
     st = m.initial_state(np.zeros((NY, NX)), np.full((NZ, NY, NX), T_CONST), S=S0)
     fw = fw_field(exp, np.asarray(m.area))
@@ -223,7 +231,8 @@ def check_identity_assumptions(m: SigmaBaroclinic) -> None:
 
 def reset_tef(m: SigmaBaroclinic) -> None:
     """Start new TEF and region sums (the averaging window begins at the next step)."""
-    m.tef = TEFTransect(m.tef_face, sign=m.tef.sign)
+    m.tef = TEFTransect(m.tef_face, sign=m.tef.sign, n_bins=m.tef.n_bins,
+                        s_range=(float(m.tef.edges[0]), float(m.tef.edges[-1])))
     m.tef_region_budget = TEFRegion(m.tef_region_budget.mask)
 
 
