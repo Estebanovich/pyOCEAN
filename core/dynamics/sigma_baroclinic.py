@@ -106,6 +106,8 @@ from core.components.bottom_drag import QuadraticBedDrag
 from core.components.free_surface import FreeSurfaceVerticalViscosity
 from core.components.layer_transport import ALELayerTransport, SigmaLayerTransport
 from core.components.tracers import TracerAdvection, TracerDiffusion
+from core.components.sponge import InteriorSponge
+from core.components.vertical_coordinate import ALECoordinate
 from core.components.time_stepper import AB3, AB3Momentum, _ab3_kernel, ab3_combine  # noqa: F401  (re-exported)
 from core.model.threads import _THREADS, set_threads  # noqa: F401  (one shared list; re-exported)
 
@@ -1109,6 +1111,10 @@ class SigmaBaroclinic:
                                        self.fs.du, self.fs.dv, self.layer_heights)
         self._setup_ale(vertical_coordinate, regrid, regrid_params, remap_scheme, z0, closure, h_thin_bed,
                         init_iterations, act, momentum, ke_scheme, max_truncations, thickness_flux)
+        self._vertical = (ALECoordinate(H=self.H, active=self.fs.active, n_layers=n_layers, rule=self.regrid_rule,
+                                        params=self.regrid_params, remap_code=self.remap_code,
+                                        h_thin_bed=self.h_thin_bed, max_truncations=self.max_truncations,
+                                        vi_geom=self._vi, eos=self._eos) if self.ale else None)
         self._momentum = Momentum(form="vector_invariant" if self.ale and self.momentum == "vector_invariant" else "flux",
                                   adv=adv, ah=ah, ke_scheme=self.ke_scheme, ale=self.ale, dt=dt, hg=h_grid, fq=self._fq,
                                   fs=self.fs, ds=self.ds, vi_geom=getattr(self, "_vi", None),
@@ -1155,6 +1161,9 @@ class SigmaBaroclinic:
             self._sp_tr = (np.zeros((self.n_tracers, Ts.size)) if sponge_tr is None
                            else np.asarray(sponge_tr, float).reshape(self.n_tracers, Ts.size))
             self._sp_cols = self.sponge_rate > 0
+        self._interior_sponge_c = (None if self.sponge_rate is None else
+                                   InteriorSponge(rate=self.sponge_rate, T=self._sp_T, zw=self._sp_zw, tr=self._sp_tr,
+                                                  cols=self._sp_cols, H=self.H, dt=dt, remap_code=self.remap_code))
         if bottom_drag not in (None, "quadratic"):
             raise ValueError(f"unknown bottom_drag {bottom_drag!r}; use None or 'quadratic'")
         if bottom_drag and not self.ale:
@@ -1382,77 +1391,33 @@ class SigmaBaroclinic:
 
     # ------------------------------------------------------------------ ALE helpers
     def _initial_h(self, eta: np.ndarray) -> np.ndarray:
-        """
-        ALE layer thicknesses of the initial grid at η [m]; 0 on dry/land.  'sigma' and 'zstar': the rule's
-        grid (σ where H ≤ 0).  'hybrid': σ-layers, on which T is sampled before ``init_iterations``
-        regrid–remap passes build the isopycnal grid, as MOM6 (THICKNESS_CONFIG = "uniform",
-        MOM_state_initialization.F90:271; REGRID_ACCELERATE_INIT, :488-507).  The z* floor of dz_top
-        (e.g. 19 × 0.5 m + one 190 m bed layer) would lose a continuous stratification.
-        """
-        H = np.nan_to_num(np.asarray(self.H, float))
-        wet = self.fs.active & (H + eta > 0)
-        h0 = np.zeros((self.n,) + H.shape)
-        rule = "sigma" if self.regrid_rule == "hybrid" else self.regrid_rule
-        sig = wet & (H <= 0) if rule == "zstar" else np.zeros_like(wet)
-        numba.set_num_threads(_THREADS[0])                                 # parallel regrid kernel
-        for r, mask in ((rule, wet & ~sig), ("sigma", sig)):
-            if mask.any():
-                zw = rg.regrid_columns(r, H, eta, h0, None, self.regrid_params, mask)
-                h0 = np.where(mask[None], np.diff(zw, axis=0), h0)
-        return h0
+        """ALE layer thicknesses of the initial grid at η [m] (``core.components.vertical_coordinate``)."""
+        return self._vertical.initial_h(eta)
 
     def _regrid_remap(self, eta: np.ndarray, h_src: np.ndarray, fields: list, T: np.ndarray):
-        """Regrid with the rule (spec §3) at surface η and remap ``fields`` (spec §4): (h_new, remapped)."""
-        H = np.nan_to_num(np.asarray(self.H, float))
-        wet = self.fs.active & (H + eta > 0) & (h_src.sum(axis=0) > 0)
-        h_new = self._regrid(eta, h_src, T, wet)
-        return h_new, [rm.remap_columns(h_src, f, h_new, self.remap_code, wet) for f in fields]
+        """Regrid with the rule and remap ``fields``: (h_new, remapped) (``core.components.vertical_coordinate``)."""
+        return self._vertical.regrid_remap(eta, h_src, fields, T)
 
     def _regrid(self, eta: np.ndarray, h: np.ndarray, T: np.ndarray, wet: np.ndarray | None = None) -> np.ndarray:
-        """New layer thicknesses of the rule (spec §3) from layers h with temperatures T; h kept where dry."""
-        H = np.nan_to_num(np.asarray(self.H, float))
-        if wet is None:
-            wet = self.fs.active & (H + eta > 0) & (h.sum(axis=0) > 0)
-        rho = self.density(T) if self.regrid_rule == "hybrid" else None
-        numba.set_num_threads(_THREADS[0])                                 # parallel regrid kernel
-        zw = rg.regrid_columns(self.regrid_rule, H, eta, h, rho, self.regrid_params, wet)
-        return np.where(wet[None], np.diff(zw, axis=0), h)
+        """New layer thicknesses of the rule (``core.components.vertical_coordinate``)."""
+        return self._vertical.regrid(eta, h, T, wet)
 
     def _transport_thickness(self, h: np.ndarray):
-        """
-        Upwind face thicknesses ((q_E, q_W) at u-faces, (q_N, q_S) at v-faces swapped to (N, nx, ny+1)):
-        clipped at the shallower bed for z* and hybrid, not for σ (core.vertical.ale).  Cached by array
-        identity for the last two thickness arrays (hⁿ is used by the tendencies and the step; h_new of one
-        step is hⁿ of the next); thickness arrays are never written in place after creation.
-        """
-        for ref, val in getattr(self, "_tt_cache", ()):
-            if ref is h:
-                return val
-        clip = self.regrid_rule != "sigma"
-        H, act = np.nan_to_num(np.asarray(self.H, float)), self.fs.active
-        x = face_transport_thickness(h, H, act, clip)
-        y = face_transport_thickness(h.swapaxes(1, 2), H.T, act.T, clip)
-        val = (x, y)
-        self._tt_cache = ((h, val),) + tuple(getattr(self, "_tt_cache", ()))[:1]
-        return val
+        """Upwind face thicknesses, cached by identity of h (``core.components.vertical_coordinate``)."""
+        return self._vertical.transport_thickness(h)
 
     def _mean_face_thickness(self, h: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Direction-independent face thickness (q_E + q_W)/2 at u- and v-faces [m]."""
-        (qe, qw), (qn, qs) = self._transport_thickness(h)
-        return 0.5 * (qe + qw), (0.5 * (qn + qs)).swapaxes(1, 2)
+        return self._vertical.mean_face_thickness(h)
+
+    def face_thickness(self, h: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """ALE layer thickness at u- and v-faces [m]: the mean of the two upwind (bed-clipped) thicknesses."""
+        return self._vertical.mean_face_thickness(h)
 
     def _remap_faces(self, vel: np.ndarray, hf_src: np.ndarray, hf_tgt: np.ndarray,
                      w_tgt: np.ndarray | None = None) -> np.ndarray:
-        """
-        Remap face velocities between two face-layer geometries in fraction space: thicknesses
-        w_src S → w_tgt S with the same column total S, so Σ w u (the depth mean of the free
-        surface) is conserved exactly (spec §2 step 4).  ``w_tgt``: face_fractions(hf_tgt) if already known.
-        """
-        tot = hf_src.sum(axis=0)
-        wet = tot > 0
-        S = np.where(wet, tot, 1.0)[None]
-        w_tgt = face_fractions(hf_tgt) if w_tgt is None else w_tgt
-        return rm.remap_columns(face_fractions(hf_src) * S, vel, w_tgt * S, self.remap_code, wet)
+        """Remap face velocities in fraction space (``core.components.vertical_coordinate``)."""
+        return self._vertical.remap_faces(vel, hf_src, hf_tgt, w_tgt)
 
     # ------------------------------------------------------------------ explicit tendencies
     def _baroclinic_pgf(self, eta: np.ndarray, T: np.ndarray, h: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
@@ -1574,31 +1539,8 @@ class SigmaBaroclinic:
         return self._bed_drag.rates(u, v, hu, hv)
 
     def _interior_sponge(self, T: np.ndarray, tr: np.ndarray | None, eta: np.ndarray, h: np.ndarray):
-        """
-        Implicit relaxation toward the sponge profile on the layers h (spec 2026-10-14-dome §2):
-            T ← (T + Δt r T*)/(1 + Δt r)   (MOM6 MOM_sponge.F90 apply_sponge, implicit form)
-        T* is sponge_T on its z interfaces clipped at each bed, stretched to the column total H + η (as the exterior
-        profile, core.vertical.ale.exterior_on_layers) and remapped conservatively onto h.
-        """
-        H = np.nan_to_num(np.asarray(self.H, float))
-        ok = self._sp_cols & (H + eta > 0) & (h.sum(axis=0) > 0)
-        z = np.maximum(self._sp_zw[:, None, None], -H[None])               # surface first, clipped to each bed
-        z[-1] = -H
-        hs = (z[:-1] - z[1:])[::-1]                                         # bed first
-        tot_s, tot = hs.sum(axis=0), h.sum(axis=0)
-        scale = np.where(ok & (tot_s > 0), tot / np.where(tot_s > 0, tot_s, 1.0), 1.0)
-        hs = np.ascontiguousarray(hs * scale[None])
-        r = self.dt * self.sponge_rate[None]
-        numba.set_num_threads(_THREADS[0])
-
-        def relax(c, prof):
-            tgt = rm.remap_columns(hs, np.ascontiguousarray(prof[::-1, None, None] * np.ones((1,) + H.shape)),
-                                   np.ascontiguousarray(h), self.remap_code, ok)
-            return np.where(ok[None], (c + r * tgt) / (1.0 + r), c)
-        T = relax(T, self._sp_T)
-        if tr is not None:
-            tr = np.stack([relax(c, p) for c, p in zip(tr, self._sp_tr)])
-        return T, tr
+        """Implicit relaxation toward the sponge profile (``core.components.sponge``)."""
+        return self._interior_sponge_c.apply(T, tr, eta, h)
 
     def _open_face_transports(self, Qx: np.ndarray, Qy: np.ndarray, h: np.ndarray, un: np.ndarray, vn: np.ndarray,
                               u_new: np.ndarray, v_new: np.ndarray) -> None:
@@ -1729,23 +1671,7 @@ class SigmaBaroclinic:
         wu1, wv1 = face_fractions(hu1), face_fractions(hv1)                # once: remap target and thin-bed rule
         u_new = zero_thin_bed_velocity(self._remap_faces(u_new, hu_lag, hu1, wu1), hu1, wu1, self.h_thin_bed)
         v_new = zero_thin_bed_velocity(self._remap_faces(v_new, hv_lag, hv1, wv1), hv1, wv1, self.h_thin_bed)
-        g = self._vi                                                    # CFL truncation backstop (MOM6 vertvisc_limit_vel)
-        u_before, v_before = u_new, v_new
-        u_new, nu_, fu = vi.truncate_cfl(u_new, dt, g["dx_t"], hu1, self.h_thin_bed)
-        v_sw, nv_, fv = vi.truncate_cfl(v_new.swapaxes(1, 2), dt, g["dy_t"].T, hv1.swapaxes(1, 2), self.h_thin_bed)
-        v_new = v_sw.swapaxes(1, 2)
-        n_trunc = st.n_trunc + nu_ + nv_
-        if n_trunc > self.max_truncations:
-            if fu is not None:
-                k, j, i = fu
-                where = (f"layer {k} at u-face (j={j}, i={i}): u = {u_before[k, j, i]:.3g} m/s, "
-                         f"face thickness {hu1[k, j, i]:.3g} m")
-            else:
-                k, i, j = fv
-                where = (f"layer {k} at v-face (j={j}, i={i}): v = {v_before[k, j, i]:.3g} m/s, "
-                         f"face thickness {hv1[k, j, i]:.3g} m")
-            raise RuntimeError(f"{n_trunc} CFL velocity truncations exceed max_truncations={self.max_truncations}; "
-                               f"first this step: {where}")
+        u_new, v_new, n_trunc = self._vertical.truncate(u_new, v_new, hu1, hv1, dt, st.n_trunc)
         return SigmaState(eta=eta_new, u=u_new, v=v_new, T=T_new, h=h_new, g_hist=hist, omega=None, mix_num=mix,
                           Qx=Qx, Qy=Qy, Fz=Fz, time=st.time + dt, n_trunc=n_trunc, n_limited=st.n_limited + n_lim,
                           tr=tr_new)
