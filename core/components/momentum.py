@@ -105,7 +105,8 @@ class Momentum:
             hu, hv = self.mean_face_thickness(st.h)
             Qx, Qy = self.fs.Lu[None] * st.u * hu, self.fs.Lv[None] * st.v * hv
         cu, cv = vi.coriolis_pv(q, self.fq[None] + zeta, Qx, Qy, st.u, st.v, g["dx_u"], g["dy_v"], bound=True)
-        K = vi.kinetic_energy(st.u, st.v, g["area_u"], g["area_v"], g["area_t"], self.ke_scheme)
+        ke = "gudonov" if self.ke_scheme == "godunov" else self.ke_scheme              # kernel spelling
+        K = vi.kinetic_energy(st.u, st.v, g["area_u"], g["area_v"], g["area_t"], ke)
         kx, ky = vi.ke_gradient(K, g["dx_u"], g["dy_v"])
         return cu + kx, cv + ky
 

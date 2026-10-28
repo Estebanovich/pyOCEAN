@@ -109,6 +109,8 @@ from core.components.tracers import TracerAdvection, TracerDiffusion
 from core.components.sponge import InteriorSponge
 from core.components.vertical_coordinate import ALECoordinate
 from core.model.driver import Driver
+from core.model.contract import raise_issues
+from core.model.preflight import preflight
 from core.components.time_stepper import AB3, AB3Momentum, _ab3_kernel, ab3_combine  # noqa: F401  (re-exported)
 from core.model.threads import _THREADS, set_threads  # noqa: F401  (one shared list; re-exported)
 
@@ -932,8 +934,8 @@ class SigmaBaroclinic:
     momentum : 'vector_invariant' (default in ALE: PV flux + KE gradient, MOM6) or 'flux' (default in
           σ: flux-form WENO5 + energy-conserving Coriolis); 'vector_invariant' needs vertical_coordinate='ale'
     ke_scheme : kinetic energy of the vector-invariant form: 'arakawa' (default, energy conserving, MOM6
-          production; Esteban 2026-10-12: 'gudonov' damps progressive internal waves ~9 % per 5 km at dx = 100 m,
-          validation/internal_wave/README.md) or 'gudonov' (upwind: only the velocities entering a cell; MOM6
+          production; Esteban 2026-10-12: Godunov damps progressive internal waves ~9 % per 5 km at dx = 100 m,
+          validation/internal_wave/README.md) or 'godunov' (upwind: only the velocities entering a cell; MOM6
           lock_exchange — gravity-current fronts and bores lose energy, ALE-σ lock exchange 0.98 U vs 0.91/0.84 U
           with 'arakawa'; use it for density currents)
     max_truncations : ALE: stop after this many CFL velocity truncations at faces thicker than h_thin_bed
@@ -1013,6 +1015,10 @@ class SigmaBaroclinic:
                  sponge_T: np.ndarray | None = None, sponge_zw: np.ndarray | None = None,
                  sponge_tr: np.ndarray | None = None, bottom_drag: str | None = None, cd: float = 2.5e-3,
                  drag_bg_vel: float = 0.0, hbbl: float = 10.0) -> None:
+        _args = {k: v for k, v in locals().items() if k != "self"}
+        raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
+        if ke_scheme == "godunov":                                      # correct spelling; the kernels use 'gudonov'
+            ke_scheme = "gudonov"
         self._ob = OpenBoundary()                                       # N1: open-boundary component
         if pgf not in ("twoterm", "jacobian", "fv"):
             raise ValueError(f"unknown pressure-gradient scheme {pgf!r}")
@@ -1624,3 +1630,24 @@ def _component_param(name: str, component: str) -> property:
 for _name, _comp in (("ke_scheme", "_momentum"), ("ah", "_momentum"), ("adv", "_momentum"),
                      ("kh", "_tracer_diffusion")):
     setattr(SigmaBaroclinic, _name, _component_param(_name, _comp))
+
+
+def _given(args: dict) -> frozenset[str]:
+    """Constructor arguments passed with a value other than their default (arrays: any array given)."""
+    import inspect
+    out = set()
+    for name, p in inspect.signature(SigmaBaroclinic.__init__).parameters.items():
+        if name == "self" or name not in args:
+            continue
+        v, d = args[name], p.default
+        if d is inspect.Parameter.empty or v is d:
+            continue
+        if isinstance(v, np.ndarray) or isinstance(d, np.ndarray):
+            out.add(name)
+            continue
+        try:
+            if v != d:
+                out.add(name)
+        except (TypeError, ValueError):
+            out.add(name)
+    return frozenset(out)

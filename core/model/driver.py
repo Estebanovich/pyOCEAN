@@ -36,6 +36,7 @@ import numpy as np
 from core.components.momentum import sum_terms
 from core.dynamics.sigma_wd import vertical_implicit
 from core.model import threads
+from core.model.contract import Issue, raise_issues
 from core.vertical.ale import (DZ_FLOOR, blend_thin_layers, face_fractions, viscous_face_thickness,
                                zero_thin_bed_velocity)
 
@@ -82,6 +83,9 @@ class Driver:
         self.dt_tracer = model.dt if dt_tracer is None else dt_tracer
         self.dt_therm = model.dt if dt_therm is None else dt_therm
         self.phase_hashes: list[dict[str, str]] = []
+        if not self.dt_dyn == self.dt_tracer == self.dt_therm:
+            raise_issues([Issue("error", "driver", f"N1 supports a single rate: dt_dyn={self.dt_dyn}, "
+                                                   f"dt_tracer={self.dt_tracer}, dt_therm={self.dt_therm} must be equal")])
         self.last_terms: dict | None = None
 
     # ------------------------------------------------------------------ driver
