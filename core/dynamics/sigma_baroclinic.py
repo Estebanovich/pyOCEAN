@@ -102,6 +102,8 @@ from core.components.geometry import LayerGeometry
 from core.components.pgf import PressureGradient
 from core.components.momentum import Momentum, sum_terms
 from core.components.open_boundary import CONFIG as _OB_CONFIG, OpenBoundary
+from core.components.bottom_drag import QuadraticBedDrag
+from core.components.free_surface import FreeSurfaceVerticalViscosity
 from core.components.time_stepper import AB3, AB3Momentum, _ab3_kernel, ab3_combine  # noqa: F401  (re-exported)
 from core.model.threads import _THREADS, set_threads  # noqa: F401  (one shared list; re-exported)
 
@@ -1094,6 +1096,8 @@ class SigmaBaroclinic:
         self._time_stepper = AB3Momentum()
         self._pgf = PressureGradient(pgf, self._eos, g, rho_ref)
         self.fs = self.core.fs
+        self._free_surface = FreeSurfaceVerticalViscosity(self.core)
+        self._fluxes = None                                             # BarotropicFluxes of the last step
         self._fq = np.asarray(h_grid["f_q"].values, float)           # Coriolis at cell corners [s⁻¹]
         self.H = self.fs.H
         self.ds = self.core.dsigma
@@ -1143,6 +1147,7 @@ class SigmaBaroclinic:
         if bottom_drag and not self.ale:
             raise ValueError("bottom_drag='quadratic' needs vertical_coordinate='ale' (σ uses z0, the log-law)")
         self.bottom_drag, self.cd, self.drag_bg_vel, self.hbbl = bottom_drag, float(cd), float(drag_bg_vel), float(hbbl)
+        self._bed_drag = QuadraticBedDrag(cd, drag_bg_vel, hbbl)
 
     def _setup_ale(self, vertical_coordinate, regrid, regrid_params, remap_scheme, z0, closure, h_thin_bed,
                    init_iterations, act, momentum=None, ke_scheme="arakawa", max_truncations=1000,
@@ -1213,14 +1218,11 @@ class SigmaBaroclinic:
     # ------------------------------------------------------------------ helpers
     def _sync_closure_in(self, st: SigmaState) -> None:
         """Load the closure state carried by ``st`` into the GLS object (by reference, no copies)."""
-        gls = self.core.gls
-        if gls is not None and st.closure is not None:
-            gls.tke, gls.eps, gls.akv = st.closure["tke"], st.closure["eps"], st.closure["akv"]
+        self._free_surface.sync_closure_in(st.closure)
 
     def _sync_closure_out(self) -> dict | None:
         """The closure state to carry to the next step (references to the GLS arrays), or None."""
-        gls = self.core.gls
-        return None if gls is None else {"tke": gls.tke, "eps": gls.eps, "akv": gls.akv}
+        return self._free_surface.closure_out()
 
     def initial_state(self, eta: np.ndarray, T: np.ndarray, h_src: np.ndarray | None = None,
                       tr: np.ndarray | None = None) -> SigmaState:
@@ -1582,7 +1584,7 @@ class SigmaBaroclinic:
     def _radiate(self, u_old: np.ndarray, u_new: np.ndarray, axis: int, edge: int,
                  w: np.ndarray | None = None, ext: np.ndarray | None = None, mode: str = "radiating") -> None:
         """Orlanski radiation of u′ at one open edge, in place (``core.components.open_boundary``)."""
-        self._ob.radiate(u_old, u_new, axis, edge, w, ext=ext, mode=mode)
+        self._ob.radiate(u_old, u_new, axis, edge, w, ext=ext, mode=mode, fluxes=self._fluxes)
 
     def _flather_args(self) -> dict:
         """Flather targets for the free-surface step of this step's exterior; {} if closed."""
@@ -1591,7 +1593,7 @@ class SigmaBaroclinic:
     def _open_velocity(self, st: SigmaState, u_new: np.ndarray, v_new: np.ndarray,
                        wu: np.ndarray | None = None, wv: np.ndarray | None = None) -> None:
         """In place: sponge on u′, then Orlanski at the open edges (``core.components.open_boundary``)."""
-        self._ob.relax_velocity(st.u, st.v, u_new, v_new, self._ext, wu, wv)
+        self._ob.relax_velocity(st.u, st.v, u_new, v_new, self._ext, self._fluxes, wu, wv)
 
     def _evaluate_exterior(self, t: float, hu: np.ndarray, hv: np.ndarray, wu, wv) -> None:
         """Exterior state at t, kept for this step in ``self._ext`` (None without a provider)."""
@@ -1622,30 +1624,8 @@ class SigmaBaroclinic:
         return self._ob.exterior_tr(h, self._ext)
 
     def _bed_drag_rates(self, u: np.ndarray, v: np.ndarray, hu: np.ndarray, hv: np.ndarray):
-        """
-        Linear bed rates r = C_d √(ū_bbl² + v̄_bbl² + u_bg²) [m s⁻¹] at u- and v-faces (spec 2026-10-14-dome §3)
-        and the bbl fractions f_k (N, ...) that spread the stress r ū_bbl = Σ_k r f_k u_k over the bottom hbbl metres
-        (a vanished bed layer would otherwise take it all; final review 2026-10-15; MOM6 couples the BBL over
-        min(dh, bbl_thick), MOM_vert_friction.F90:2266).  ū_bbl: mean of the face column over its bottom hbbl
-        metres, weights min(h_k, hbbl − Σ_{j<k} h_j)⁺ (k = 0 at the bed); the other component is the 4-point C-grid
-        average of its own bbl means.
-        """
-        def bbl_weights(h):
-            below = np.concatenate([np.zeros((1,) + h.shape[1:]), np.cumsum(h, axis=0)[:-1]])
-            w = np.clip(np.minimum(h, self.hbbl - below), 0.0, None)
-            tot = w.sum(axis=0)
-            return np.where(tot > 0, w / np.where(tot > 0, tot, 1.0), 0.0), tot > 0
-        (fu, wet_u), (fv, wet_v) = bbl_weights(hu), bbl_weights(hv)
-        ub, vb = (fu * u).sum(axis=0), (fv * v).sum(axis=0)        # 0 where the face has no bbl water
-        fu[0], fv[0] = np.where(wet_u, fu[0], 1.0), np.where(wet_v, fv[0], 1.0)   # there the stress acts on k = 0
-        vc = 0.5 * (vb[:-1] + vb[1:])                       # v̄ at cell centres (ny, nx)
-        uc = 0.5 * (ub[:, :-1] + ub[:, 1:])                 # ū at cell centres (ny, nx)
-        v_at_u = np.zeros_like(ub)
-        v_at_u[:, 1:-1] = 0.5 * (vc[:, :-1] + vc[:, 1:])
-        u_at_v = np.zeros_like(vb)
-        u_at_v[1:-1, :] = 0.5 * (uc[:-1, :] + uc[1:, :])
-        bg2 = self.drag_bg_vel**2
-        return self.cd * np.sqrt(ub**2 + v_at_u**2 + bg2), self.cd * np.sqrt(vb**2 + u_at_v**2 + bg2), fu, fv
+        """Quadratic bed rates and bbl fractions (``core.components.bottom_drag``)."""
+        return self._bed_drag.rates(u, v, hu, hv)
 
     def _interior_sponge(self, T: np.ndarray, tr: np.ndarray | None, eta: np.ndarray, h: np.ndarray):
         """
@@ -1677,7 +1657,7 @@ class SigmaBaroclinic:
     def _open_face_transports(self, Qx: np.ndarray, Qy: np.ndarray, h: np.ndarray, un: np.ndarray, vn: np.ndarray,
                               u_new: np.ndarray, v_new: np.ndarray) -> None:
         """In place: layer fluxes through the open faces (``core.components.open_boundary``)."""
-        self._ob.open_face_transports(Qx, Qy, h, un, vn, u_new, v_new)
+        self._ob.open_face_transports(Qx, Qy, h, un, vn, u_new, v_new, self._fluxes)
 
     def _rhs_numpy(self, c: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, Fz: np.ndarray, ok: np.ndarray,
                    centred: bool = False) -> np.ndarray:
@@ -1898,8 +1878,9 @@ class SigmaBaroclinic:
             visc.update(r_u=r_u[None] * f_u, r_v=r_v[None] * f_v)      # stress spread over hbbl
             if "hu_mean" not in visc:                                  # δ needs the depth-mean column with drag
                 visc.update(hu_mean=hu, hv_mean=hv)
-        eta_new, u_new, v_new = self.core.step(st.eta, st.u, st.v, G_u=gu_ab, G_v=gv_ab, tau_u=tu, tau_v=tv,
-                                               wu=wu, wv=wv, **visc, **self._flather_args())
+        eta_new, u_new, v_new, self._fluxes, _ = self._free_surface.step(st.eta, st.u, st.v, gu_ab, gv_ab, tu, tv,
+                                                                         st.closure, self._flather_args(),
+                                                                         wu=wu, wv=wv, **visc)
         self._open_velocity(st, u_new, v_new, wu, wv)                   # sponge on u′, Orlanski (spec §3.2-3.3)
         u_new = zero_thin_bed_velocity(u_new, hu, wu, self.h_thin_bed)
         v_new = zero_thin_bed_velocity(v_new, hv, wv, self.h_thin_bed)
@@ -1912,8 +1893,8 @@ class SigmaBaroclinic:
             v_new = blend_thin_layers(v_new, v_up, wv, self.thin_layer_cutoff)
         # transport velocities and free-surface volume fluxes (core.vertical.ale.transport_velocity)
         tb = self.theta_bc
-        utx, Qbx = transport_velocity(u_new, st.u, self.fs.last_wet_u, wu, self.fs.Lu, self.fs.last_Du, th, tb)
-        uty, Qby = transport_velocity(v_new, st.v, self.fs.last_wet_v, wv, self.fs.Lv, self.fs.last_Dv, th, tb)
+        utx, Qbx = transport_velocity(u_new, st.u, self._fluxes.wet_u, wu, self.fs.Lu, self._fluxes.Du, th, tb)
+        uty, Qby = transport_velocity(v_new, st.v, self._fluxes.wet_v, wv, self.fs.Lv, self._fluxes.Dv, th, tb)
         if self.thickness_flux == "ppm":
             dx_t, dy_t = self._vi["dx_t"], self._vi["dy_t"]
             Qx = ppm_transport_x(st.h, utx, self.fs.Lu, Qbx, qe, qw, act, dt, dx_t)
@@ -2010,25 +1991,24 @@ class SigmaBaroclinic:
             self._evaluate_exterior(st.time + dt, Hu_e[None] * ds, Hv_e[None] * ds, None, None)
             D0 = np.maximum(np.nan_to_num(self.H + st.eta, nan=self.fs.d_min), self.fs.d_min)
             self._T_in = self._exterior_T(D0[None] * ds)
-        self._sync_closure_in(st)
-        eta_new, u_new, v_new = self.core.step(st.eta, st.u, st.v, G_u=gu_ab, G_v=gv_ab, tau_u=tu, tau_v=tv,
-                                               **self._flather_args())
+        eta_new, u_new, v_new, self._fluxes, closure = self._free_surface.step(st.eta, st.u, st.v, gu_ab, gv_ab, tu,
+                                                                               tv, st.closure, self._flather_args())
         self._open_velocity(st, u_new, v_new)
 
-        # layer transports consistent with the free-surface flux (fs.last_Du / last_Dv: upwind face depth)
-        un = np.where(self.fs.last_wet_u[None], st.u, 0.0)
-        vn = np.where(self.fs.last_wet_v[None], st.v, 0.0)
+        # layer transports consistent with the free-surface flux (fluxes.Du / Dv: upwind face depth)
+        un = np.where(self._fluxes.wet_u[None], st.u, 0.0)
+        vn = np.where(self._fluxes.wet_v[None], st.v, 0.0)
         # depth mean with the free-surface θ, baroclinic part with θ_bc (see transport_velocity)
         tb, ds = self.theta_bc, self.ds[:, None, None]
         ux = tb * u_new + (1 - tb) * un + ((th - tb) * ((ds * u_new).sum(0) - (ds * un).sum(0)))[None]
         vy = tb * v_new + (1 - tb) * vn + ((th - tb) * ((ds * v_new).sum(0) - (ds * vn).sum(0)))[None]
-        Qx = (self.fs.Lu * self.fs.last_Du)[None] * ds * ux
-        Qy = (self.fs.Lv * self.fs.last_Dv)[None] * ds * vy
+        Qx = (self.fs.Lu * self._fluxes.Du)[None] * ds * ux
+        Qy = (self.fs.Lv * self._fluxes.Dv)[None] * ds * vy
         if self.open:
             # open faces: Δσ_k × the free-surface (Flather) flux + the baroclinic part, so Σ_k Q_k is exactly
             # the volume flux of the continuity equation
-            for Q, D, Qo, L, vo, vn1 in ((Qx, self.fs.last_open_Du, self.fs.last_open_Qu, self.fs.Lu, st.u, u_new),
-                                         (Qy, self.fs.last_open_Dv, self.fs.last_open_Qv, self.fs.Lv, st.v, v_new)):
+            for Q, D, Qo, L, vo, vn1 in ((Qx, self._fluxes.open_Du, self._fluxes.open_Qu, self.fs.Lu, st.u, u_new),
+                                         (Qy, self._fluxes.open_Dv, self._fluxes.open_Qv, self.fs.Lv, st.v, v_new)):
                 po, pn = self._baroclinic_part(vo)[1], self._baroclinic_part(vn1)[1]
                 ds = self.ds[:, None, None]
                 Q[...] = np.where((D > 0)[None], ds * Qo[None] + (L * D)[None] * ds * (tb * pn + (1 - tb) * po), Q)
@@ -2053,7 +2033,7 @@ class SigmaBaroclinic:
             T_new = (T_new + r * (self.T_ext if self._ext is None else self._T_in)) / (1.0 + r)
         omega = Fz / np.where(self.area > 0, self.area, 1.0)[None]
         return SigmaState(eta=eta_new, u=u_new, v=v_new, T=T_new, g_hist=hist, omega=omega, mix_num=mix,
-                          Qx=Qx, Qy=Qy, Fz=Fz, time=st.time + dt, closure=self._sync_closure_out())
+                          Qx=Qx, Qy=Qy, Fz=Fz, time=st.time + dt, closure=closure)
 
 
 def _delegate(name: str) -> property:

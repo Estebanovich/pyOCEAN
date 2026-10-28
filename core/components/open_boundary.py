@@ -74,7 +74,8 @@ class OpenBoundary:
         return baroclinic_split(vel, w)
 
     def radiate(self, u_old: np.ndarray, u_new: np.ndarray, axis: int, edge: int,
-                 w: np.ndarray | None = None, ext: np.ndarray | None = None, mode: str = "radiating") -> None:
+                 w: np.ndarray | None = None, ext: np.ndarray | None = None, mode: str = "radiating",
+                 fluxes=None) -> None:
         """
         Orlanski (1976) radiation of the baroclinic normal velocity at one open edge, implicit
         upstream form as ROMS u3dbc (Marchesiello et al. 2001, normal part only):
@@ -108,7 +109,7 @@ class OpenBoundary:
             pb -= np.tensordot(self.ds, pb, axes=(0, 0))[None]                        # keep Σ Δσ u′ = 0
         else:
             pb -= (take(w, edge) * pb).sum(axis=0)[None]                              # keep Σ w u′ = 0
-        open_ = take((self.fs.last_open_Du if axis == 2 else self.fs.last_open_Dv)[None], edge) > 0
+        open_ = take((fluxes.open_Du if axis == 2 else fluxes.open_Dv)[None], edge) > 0
         sl = [slice(None)] * u_new.ndim
         sl[axis] = edge
         u_new[tuple(sl)] = np.where(open_, take(bar[None], edge) + pb, take(u_new, edge))
@@ -123,7 +124,8 @@ class OpenBoundary:
         return dict(flather_eta=(zu, zv), flather_ubar=zu, flather_vbar=zv)
 
     def relax_velocity(self, u_old: np.ndarray, v_old: np.ndarray, u_new: np.ndarray, v_new: np.ndarray,
-                       ext: dict | None, wu: np.ndarray | None = None, wv: np.ndarray | None = None) -> None:
+                       ext: dict | None, fluxes, wu: np.ndarray | None = None,
+                       wv: np.ndarray | None = None) -> None:
         """
         In place: flow-relaxation sponge on the baroclinic velocity (implicit; the depth mean, and so the
         free-surface fluxes, are untouched — barotropic waves leave through Flather), then Orlanski
@@ -143,7 +145,7 @@ class OpenBoundary:
                                                   ("south", v_new, v_old, 1, 0, wv, ext_v),
                                                   ("north", v_new, v_old, 1, -1, wv, ext_v)):
             if name in self.open:
-                self.radiate(old, vel, axis, edge, w, ext=pe, mode=self.obc_mode[name])
+                self.radiate(old, vel, axis, edge, w, ext=pe, mode=self.obc_mode[name], fluxes=fluxes)
 
     def evaluate(self, t: float, hu: np.ndarray, hv: np.ndarray, wu, wv) -> dict | None:
         """Exterior state at t (spec 2026-10-12-baroclinic-obc-internal-wave §1.4): Flather targets and u′ₑₓₜ on
@@ -206,20 +208,20 @@ class OpenBoundary:
         return np.where(ext["own"][None, None], out, rest)
 
     def open_face_transports(self, Qx: np.ndarray, Qy: np.ndarray, h: np.ndarray, un: np.ndarray, vn: np.ndarray,
-                              u_new: np.ndarray, v_new: np.ndarray) -> None:
+                              u_new: np.ndarray, v_new: np.ndarray, fluxes) -> None:
         """
         In place: layer fluxes through the open faces with the interior thickness, adding up to the
         Flather flux of the free surface (spec §3.4; core.vertical.ale.open_face_transport).
         """
         th = self.fs.theta
         for edge, Q, D, Qo, L, hc, vo, vn1 in (
-                ("west", Qx[..., 0], self.fs.last_open_Du[:, 0], self.fs.last_open_Qu[:, 0], self.fs.Lu[:, 0],
+                ("west", Qx[..., 0], fluxes.open_Du[:, 0], fluxes.open_Qu[:, 0], self.fs.Lu[:, 0],
                  h[..., 0], un[..., 0], u_new[..., 0]),
-                ("east", Qx[..., -1], self.fs.last_open_Du[:, -1], self.fs.last_open_Qu[:, -1], self.fs.Lu[:, -1],
+                ("east", Qx[..., -1], fluxes.open_Du[:, -1], fluxes.open_Qu[:, -1], self.fs.Lu[:, -1],
                  h[..., -1], un[..., -1], u_new[..., -1]),
-                ("south", Qy[:, 0, :], self.fs.last_open_Dv[0, :], self.fs.last_open_Qv[0, :], self.fs.Lv[0, :],
+                ("south", Qy[:, 0, :], fluxes.open_Dv[0, :], fluxes.open_Qv[0, :], self.fs.Lv[0, :],
                  h[:, 0, :], vn[:, 0, :], v_new[:, 0, :]),
-                ("north", Qy[:, -1, :], self.fs.last_open_Dv[-1, :], self.fs.last_open_Qv[-1, :], self.fs.Lv[-1, :],
+                ("north", Qy[:, -1, :], fluxes.open_Dv[-1, :], fluxes.open_Qv[-1, :], self.fs.Lv[-1, :],
                  h[:, -1, :], vn[:, -1, :], v_new[:, -1, :])):
             if edge in self.open:
                 Q[...] = np.where((D > 0)[None], open_face_transport(hc, vn1, vo, Qo, L, th, self.theta_bc), Q)
