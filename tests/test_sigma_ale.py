@@ -711,13 +711,14 @@ def test_ale_open_face_transport_uses_the_old_boundary_velocity(monkeypatch):
     m, st = _ale_open_box("zstar")
     st.u[:, 0, 0] = np.linspace(-0.02, 0.02, st.u.shape[0])
     seen = []
-    orig = sb.open_face_transport
+    from core.components import open_boundary as ob_mod
+    orig = ob_mod.open_face_transport
 
     def spy(h, un, uo, *a):
         seen.append(uo.copy())
         return orig(h, un, uo, *a)
 
-    monkeypatch.setattr(sb, "open_face_transport", spy)
+    monkeypatch.setattr(ob_mod, "open_face_transport", spy)
     m.step(st)
     np.testing.assert_array_equal(seen[0], st.u[:, :, 0])
 
