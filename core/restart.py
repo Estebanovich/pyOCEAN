@@ -88,7 +88,9 @@ def _config(model: SigmaBaroclinic) -> dict:
         sp = getattr(model, "sponge_rate", None)
         cfg.update(sponge_rate="none" if sp is None else _text(sp),
                    sponge_T="none" if sp is None else _text(model._interior_sponge_c.T),
-                   sponge_zw="none" if sp is None else _text(model._interior_sponge_c.zw))
+                   sponge_zw="none" if sp is None else _text(model._interior_sponge_c.zw),
+                   sponge_S="none" if sp is None or model._interior_sponge_c.S is None
+                   else _text(model._interior_sponge_c.S))
         cfg.update(bottom_drag=str(getattr(model, "bottom_drag", None)), cd=model.cd, drag_bg_vel=model.drag_bg_vel,
                    hbbl=model.hbbl)
         cfg.update({f"regrid_{k}": _text(v) for k, v in sorted(model.regrid_params.items())})
@@ -96,10 +98,10 @@ def _config(model: SigmaBaroclinic) -> dict:
 
 
 # configuration entries added after files were written: a file without them was written with these values
-_CONFIG_DEFAULTS = {"salinity": 0, "s_coef": 0.0, "s_ref": 35.0}         # N2a: files before salinity
+_CONFIG_DEFAULTS = {"salinity": 0, "s_coef": 0.0, "s_ref": 35.0, "sponge_S": "none"}         # N2a: files before salinity
 
 _SECTIONS = {"ab_hist": "time_stepper", "gls_": "closure", "T_ext": "open_boundary", "h_ext": "open_boundary",
-             "tr_ext": "open_boundary", "fs_lu_": "free_surface", "rho_ref_": "pgf"}
+             "tr_ext": "open_boundary", "S_ext": "open_boundary", "fs_lu_": "free_surface", "rho_ref_": "pgf"}
 
 
 def _component_of(name: str) -> str:
@@ -140,6 +142,9 @@ def write_restart(path: str | Path, model: SigmaBaroclinic, state: SigmaState) -
     if getattr(model, "ale", False) and getattr(model, "h_ext", None) is not None:
         data["h_ext"] = xr.Variable(("layer", "y", "x"), np.asarray(model.h_ext, np.float64),
                                     {"units": "m", "long_name": "layers of the external temperature (kept in z)"})
+    if (model.open or getattr(model, "ale", False)) and getattr(model, "S_ext", None) is not None:
+        data["S_ext"] = xr.Variable(("layer", "y", "x"), np.asarray(model.S_ext, np.float64),
+                                    {"units": "1e-3", "long_name": "external salinity (open-boundary inflow, sponge)"})
     if getattr(state, "tr", None) is not None:
         data["tr"] = xr.Variable(("tracer", "layer", "y", "x"), np.asarray(state.tr, np.float64),
                                  {"units": "1", "long_name": "passive tracers (ALE)"})
@@ -205,7 +210,14 @@ def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
         if "T_ext" not in ds:
             raise ValueError("restart has no external tracer but the model has open boundaries")
         model.T_ext = ds["T_ext"].values.copy()
+        if model.salinity:
+            if "S_ext" not in ds:
+                raise ValueError("restart has no external salinity S_ext but the model has salinity=True and open "
+                                 "boundaries")
+            model.S_ext = ds["S_ext"].values.copy()
     if getattr(model, "ale", False):
+        if "S_ext" in ds:
+            model.S_ext = ds["S_ext"].values.copy()
         if "T_ext" in ds:
             model.T_ext = ds["T_ext"].values.copy()
         if "h_ext" in ds:

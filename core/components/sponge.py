@@ -1,6 +1,6 @@
 """
 Interior sponge of the 3-D core (N1, role INTERIOR_SPONGE), moved unchanged from ``SigmaBaroclinic``: implicit
-relaxation of T and the passive tracers toward a profile in z, remapped onto the current layers, after the remap
+relaxation of T, the salinity S (``salinity=True``, N2a) and the passive tracers toward a profile in z, remapped onto the current layers, after the remap
 (spec 2026-10-14-dome §2; MOM6 MOM_sponge.F90 apply_sponge, implicit form).  It stays out of the mixing
 diagnostic.  Index order (k, j, i), k = 0 at the bed.
 """
@@ -15,16 +15,18 @@ from core.vertical import remap as rm
 
 
 class InteriorSponge:
-    """r (ny, nx) [s⁻¹]; T* (nz_s,) on interfaces zw (nz_s+1,) [m] decreasing from the surface; tr* (ntr, nz_s)."""
+    """r (ny, nx) [s⁻¹]; T* (nz_s,) on interfaces zw (nz_s+1,) [m] decreasing from the surface; tr* (ntr, nz_s);
+    S* (nz_s,) [g kg⁻¹] or None (no salinity)."""
     name = "interior_sponge"
     role = Role.INTERIOR_SPONGE
-    reads = ("T", "tr", "h", "eta")
-    writes = ("T", "tr")
+    reads = ("T", "S", "tr", "h", "eta")
+    writes = ("T", "S", "tr")
 
     def __init__(self, *, rate: np.ndarray, T: np.ndarray, zw: np.ndarray, tr: np.ndarray, cols: np.ndarray,
-                 H: np.ndarray, dt: float, remap_code) -> None:
+                 H: np.ndarray, dt: float, remap_code, S: np.ndarray | None = None) -> None:
         self.rate, self.T, self.zw, self.tr, self.cols = rate, T, zw, tr, cols
         self.H, self.dt, self.remap_code = H, dt, remap_code
+        self.S = S
 
     def check(self, ctx: BuildContext) -> list[Issue]:
         return []
@@ -39,6 +41,20 @@ class InteriorSponge:
         T* is sponge_T on its z interfaces clipped at each bed, stretched to the column total H + η (as the exterior
         profile, core.vertical.ale.exterior_on_layers) and remapped conservatively onto h.
         """
+        relax = self._relaxer(eta, h)
+        T = relax(T, self.T)
+        if tr is not None:
+            tr = np.stack([relax(c, p) for c, p in zip(tr, self.tr)])
+        return T, tr
+
+    def apply_S(self, S: np.ndarray, eta: np.ndarray, h: np.ndarray) -> np.ndarray:
+        """The same implicit relaxation of the salinity toward S* (``sponge_S``; N2a), S unchanged without S*."""
+        if self.S is None:
+            return S
+        return self._relaxer(eta, h)(S, self.S)
+
+    def _relaxer(self, eta: np.ndarray, h: np.ndarray):
+        """relax(c, profile): c relaxed toward ``profile`` (nz_s,) remapped onto the layers h (see ``apply``)."""
         H = np.nan_to_num(np.asarray(self.H, float))
         ok = self.cols & (H + eta > 0) & (h.sum(axis=0) > 0)
         z = np.maximum(self.zw[:, None, None], -H[None])               # surface first, clipped to each bed
@@ -54,7 +70,4 @@ class InteriorSponge:
             tgt = rm.remap_columns(hs, np.ascontiguousarray(prof[::-1, None, None] * np.ones((1,) + H.shape)),
                                    np.ascontiguousarray(h), self.remap_code, ok)
             return np.where(ok[None], (c + r * tgt) / (1.0 + r), c)
-        T = relax(T, self.T)
-        if tr is not None:
-            tr = np.stack([relax(c, p) for c, p in zip(tr, self.tr)])
-        return T, tr
+        return relax

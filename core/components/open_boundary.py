@@ -6,7 +6,9 @@ Open boundaries of the 3-D core (N1, role OPEN_BOUNDARY), moved unchanged from `
   exterior u′ₑₓₜ;
 * Orlanski (1976) radiation of u′ at the open faces, implicit upstream form as ROMS u3dbc (Marchesiello et al.
   2001), with CROCO's in/out nudging (u3dbc.F:119-152) or a 'clamped' (Dirichlet) edge;
-* inflow tracer values (upstream, Marsaleix et al. 2006) and the exterior profiles on the current layers;
+* inflow tracer values (upstream, Marsaleix et al. 2006) and the exterior profiles on the current layers — T, the
+  salinity S (``salinity=True``, N2a: ``S_ext`` fixed by ``initial_state`` as ``T_ext``, ``OBData.S`` from a
+  provider) and the passive tracers;
 * open-face layer transports adding up to the Flather flux (``core.vertical.ale.open_face_transport``).
 
 The exterior at a time t is **returned** by ``evaluate`` (a dict: provider state, Flather targets, exterior u′ on
@@ -28,7 +30,7 @@ from core.vertical.ale import baroclinic_split, exterior_on_layers, open_face_tr
 
 # configuration shared with SigmaBaroclinic (exposed there as properties of the same name)
 CONFIG = ("open", "obc_state", "obc_mode", "obc_tau_in", "obc_tau_out", "orlanski_cmax", "sponge_tracer",
-          "theta_bc", "T_ext", "h_ext", "tr_ext", "_bc_mask", "_ext_cols", "_bc_u", "_bc_v", "_sp_c", "_sp_u",
+          "theta_bc", "T_ext", "h_ext", "tr_ext", "S_ext", "_bc_mask", "_ext_cols", "_bc_u", "_bc_v", "_sp_c", "_sp_u",
           "_sp_v")
 
 
@@ -45,23 +47,26 @@ class OpenBoundary:
         self.obc_mode: dict = {}
         self.obc_tau_in = self.obc_tau_out = 0.0
         self.orlanski_cmax, self.sponge_tracer, self.theta_bc = 1.0, True, 0.5
-        self.T_ext = self.h_ext = self.tr_ext = None
+        self.T_ext = self.h_ext = self.tr_ext = self.S_ext = None
         self._bc_mask = self._ext_cols = self._bc_u = self._bc_v = None
         self._sp_c = self._sp_u = self._sp_v = None
         self.dt, self.ds, self.fs, self.H = 0.0, None, None, None
         self.n_tracers, self.ale, self.remap_code = 0, False, rm.PPM_H4
+        self.salinity = False
 
-    def bind(self, *, dt: float, ds: np.ndarray, fs, H: np.ndarray, n_tracers: int, ale: bool, remap_code) -> None:
+    def bind(self, *, dt: float, ds: np.ndarray, fs, H: np.ndarray, n_tracers: int, ale: bool, remap_code,
+             salinity: bool = False) -> None:
         """Model geometry and sizes, fixed after construction."""
         self.dt, self.ds, self.fs, self.H = dt, ds, fs, H
         self.n_tracers, self.ale, self.remap_code = n_tracers, ale, remap_code
+        self.salinity = bool(salinity)
 
     def check(self, ctx: BuildContext) -> list[Issue]:
         return []
 
     def state_fields(self) -> dict[str, np.ndarray]:
         """Exterior profiles fixed by ``initial_state`` (written to the restart)."""
-        return {k: getattr(self, k) for k in ("T_ext", "h_ext", "tr_ext") if getattr(self, k) is not None}
+        return {k: getattr(self, k) for k in ("T_ext", "h_ext", "tr_ext", "S_ext") if getattr(self, k) is not None}
 
     def baroclinic_part(self, vel: np.ndarray, w: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
         """
@@ -153,7 +158,7 @@ class OpenBoundary:
         if self.obc_state is None:
             return None
         state = self.obc_state(t)
-        obc.validate_state(state, self.open, self.H.shape)
+        obc.validate_state(state, self.open, self.H.shape, salinity=self.salinity)
         Hu, Hv = self.edge_face_depths()
         wu_ = self.ds[:, None, None] * np.ones(hu.shape) if wu is None else wu
         wv_ = self.ds[:, None, None] * np.ones(hv.shape) if wv is None else wv
@@ -195,6 +200,24 @@ class OpenBoundary:
         numba.set_num_threads(threads._THREADS[0])                                 # parallel remap kernel
         return exterior_on_layers(self.h_ext, self.T_ext, h, self._ext_cols, self.remap_code)
 
+    def exterior_S(self, h: np.ndarray, ext: dict | None) -> np.ndarray:
+        """
+        Sₑₓₜ [g kg⁻¹] on layers h in the boundary/sponge columns, as ``exterior_T``: the provider's OBData.S where
+        it owns the column, else the resting exterior ``S_ext`` (σ: as is; ALE: kept in z on ``h_ext`` and
+        remapped onto h).
+        """
+        if self.S_ext is None:
+            raise ValueError("salinity at open boundaries needs the exterior profile S_ext (call initial_state)")
+        if self.ale:
+            numba.set_num_threads(threads._THREADS[0])                             # parallel remap kernel
+            rest = exterior_on_layers(self.h_ext, self.S_ext, h, self._ext_cols, self.remap_code)
+        else:
+            rest = self.S_ext
+        if ext is None:
+            return rest
+        S = obc.exterior_tracer(ext["state"], self.H, h, self._ext_cols, self.remap_code, self.open, field="S")
+        return np.where(ext["own"][None], S, rest)
+
     def exterior_tr(self, h: np.ndarray, ext: dict | None) -> np.ndarray:
         """Exterior passive tracers (n_tracers, N, ny, nx) on layers h in the boundary/sponge columns: the
         provider's OBData.tracers where it owns the column (0 when it gives none), else the resting tr_ext in z."""
@@ -226,14 +249,29 @@ class OpenBoundary:
             if edge in self.open:
                 Q[...] = np.where((D > 0)[None], open_face_transport(hc, vn1, vo, Qo, L, th, self.theta_bc), Q)
 
-    def inflow_stack(self, c: np.ndarray, T_in: np.ndarray | None,
-                     tr_in: np.ndarray | None) -> np.ndarray:
+    def inflow_stack(self, c: np.ndarray, T_in: np.ndarray | None, tr_in: np.ndarray | None,
+                     S_in: np.ndarray | None = None, layout: dict[str, int] | None = None) -> np.ndarray:
         """
         Inflow values of the advected stack on open edges: T_in (and T_in² when the stack carries the mixing
         diagnostic) followed by the passive tracers' inflow values; ``c`` itself without open edges or exterior.
+        ``layout`` (``core.model.driver._stack_layout``, N2a): the positions of T, T², S, S² and the tracers; the
+        salinity stack ``[T, (T²), S, (S²), tr…]`` takes S_in (and S_in²) at its slots.  Without ``layout`` the
+        stack is ``[T, (T²), tr…]`` as before N2a.
         """
         if T_in is None or not self.open:
             return c
+        if layout is not None:
+            out: list = [None] * layout["n"]
+            out[layout["T"]] = T_in
+            if "T2" in layout:
+                out[layout["T2"]] = T_in**2
+            if "S" in layout:
+                out[layout["S"]] = S_in
+            if "S2" in layout:
+                out[layout["S2"]] = S_in**2
+            if "tr" in layout:
+                out[layout["tr"]:] = list(tr_in)
+            return np.ascontiguousarray(np.stack(out))
         lead = c.shape[0] - (self.n_tracers if self.ale else 0)        # [T] or [T, T²] before the tracers
         parts = [T_in, T_in**2][:lead]
         if self.ale and self.n_tracers:

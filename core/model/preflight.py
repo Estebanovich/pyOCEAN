@@ -25,7 +25,7 @@ ALE_ONLY = ("regrid", "regrid_params", "remap_scheme", "h_thin_bed", "init_itera
             "thin_layer_cutoff", "mix_diagnostic", "thickness_flux")
 
 # arguments that act on salinity and need salinity=True (N2a)
-SALINITY_ONLY = ("fw", "variance_budget", "tef_face")
+SALINITY_ONLY = ("fw", "variance_budget", "tef_face", "sponge_S")
 
 
 def _opts(values) -> str:
@@ -149,6 +149,6 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
     if not sal and a.get("s_coef", 0.0) != 0.0:
         warn("salinity", f"s_coef={a['s_coef']!r} is ignored with salinity=False (there is no S in the density); "
                          "pass salinity=True")
-    if a["sponge_rate"] is None and ({"sponge_T", "sponge_zw", "sponge_tr"} & given):
-        warn("interior_sponge", "sponge_T / sponge_zw / sponge_tr are ignored without sponge_rate")
+    if a["sponge_rate"] is None and ({"sponge_T", "sponge_zw", "sponge_tr", "sponge_S"} & given):
+        warn("interior_sponge", "sponge_T / sponge_zw / sponge_tr / sponge_S are ignored without sponge_rate")
     return out

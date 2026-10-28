@@ -16,8 +16,12 @@ from core.vertical.ale import baroclinic_split
 EDGES = ("west", "east", "south", "north")
 
 
-def validate_state(state: dict[str, OBData], open_edges: tuple[str, ...], shape: tuple[int, int]) -> None:
-    """Edges open, shapes (nz, n) / (nz+1, n) with n the edge length, zw decreasing; ValueError otherwise."""
+def validate_state(state: dict[str, OBData], open_edges: tuple[str, ...], shape: tuple[int, int],
+                   salinity: bool = False) -> None:
+    """
+    Edges open, shapes (nz, n) / (nz+1, n) with n the edge length, zw decreasing; ValueError otherwise.
+    ``salinity`` (model ``salinity=True``, N2a): every edge with data needs OBData.S [g kg⁻¹] on its zw grid.
+    """
     ny, nx = shape
     for edge, ob in state.items():
         if edge not in open_edges:
@@ -31,6 +35,10 @@ def validate_state(state: dict[str, OBData], open_edges: tuple[str, ...], shape:
                              f"{np.shape(ob.zw)}; expected ({nz}, {n}) and ({nz + 1}, {n})")
         if not (np.diff(ob.zw, axis=0) < 0).all():
             raise ValueError(f"{edge}: zw must decrease from the surface down")
+        if salinity and ob.S is None:
+            raise ValueError(f"{edge}: OBData needs S (salinity) — the model has salinity=True")
+        if ob.S is not None and np.shape(ob.S) != (nz, n):
+            raise ValueError(f"{edge}: S shape {np.shape(ob.S)}, expected ({nz}, {n})")
         for name in ("eta", "ubar", "transport"):
             a = getattr(ob, name)
             if a is not None and np.shape(a) != (n,):
@@ -40,9 +48,14 @@ def validate_state(state: dict[str, OBData], open_edges: tuple[str, ...], shape:
 
 
 def _values(ob: OBData, field) -> np.ndarray:
-    """The (nz, n) profile of T (``field`` None) or of passive tracer ``field`` (zeros when OBData has none)."""
+    """The (nz, n) profile of T (``field`` None), of the salinity S (``field`` 'S') or of passive tracer ``field``
+    (zeros when OBData has none)."""
     if field is None:
         return np.asarray(ob.T, float)
+    if isinstance(field, str):
+        if field != "S":
+            raise ValueError(f"unknown exterior field {field!r}; use None (T), 'S' or a tracer index")
+        return np.asarray(ob.S, float)
     return np.zeros(np.shape(ob.T)) if ob.tracers is None else np.asarray(ob.tracers, float)[field]
 
 
@@ -128,7 +141,8 @@ def exterior_tracer(state: dict[str, OBData], H: np.ndarray, h: np.ndarray, mask
                     scheme: int, open_edges=None, field=None) -> np.ndarray:
     """
     Tₑₓₜ on the layers h (N, ny, nx) in the ``mask`` columns whose nearest open edge (``open_edges``, default
-    the edges of ``state``) has data; 0 elsewhere.  ``field``: None = T, i = passive tracer i (OBData.tracers).  Source columns are built and remapped only at the mask
+    the edges of ``state``) has data; 0 elsewhere.  ``field``: None = T, 'S' = salinity (OBData.S), i = passive tracer
+    i (OBData.tracers).  Source columns are built and remapped only at the mask
     points (gather–scatter; _exterior_tracer_full is the whole-domain reference with the same arithmetic).
     """
     H = np.nan_to_num(np.asarray(H, float))

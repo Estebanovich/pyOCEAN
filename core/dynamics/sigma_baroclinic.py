@@ -921,7 +921,11 @@ class SigmaBaroclinic:
     h_grid, bathy, dt, n_layers, z0, closure, nu_const, theta, d_min, g : as ``SigmaWetDry``
     rho0 : reference density [kg m⁻³];  t_coef : α [kg m⁻³ °C⁻¹];  t_ref : T₀ [°C]
     salinity : carry salinity S [g kg⁻¹] in the state (N2a, spec 2026-10-28-n2a-salinity-freshwater); the EOS is
-          then ρ = ρ₀ − α (T − T₀) + β (S − S₀) (Vallis 2006, eq. 1.156) and ``initial_state`` needs S
+          then ρ = ρ₀ − α (T − T₀) + β (S − S₀) (Vallis 2006, eq. 1.156) and ``initial_state`` needs S.  S is
+          stepped along the path of T in σ and ALE (advection in the same stack and limiter, K_h, K_v, open-edge
+          inflow from ``OBData.S`` — required on every edge with data — or the resting ``S_ext``, boundary
+          sponge, remap, interior sponge ``sponge_S``); with salinity both T and S are diffused along the layers as
+          fields, without the T − T_ref(z) anomaly of ``rho_ref``
     s_coef : β [kg m⁻³ (g kg⁻¹)⁻¹];  s_ref : S₀ [g kg⁻¹] (both fixed after construction, as t_coef)
     ah : horizontal Laplacian viscosity [m² s⁻¹] (free slip)
     adv : momentum advection: 'flux' (default; momentum-conserving flux form with WENO5,
@@ -991,6 +995,7 @@ class SigmaBaroclinic:
         boundaries: after the regrid–remap of each step T ← (T + Δt r T*)/(1 + Δt r), implicit as MOM6 apply_sponge,
         with T* the profile sponge_T on the interfaces sponge_zw (surface first, [m] ≤ 0) clipped at each bed,
         stretched to the column and remapped onto the current layers; passive tracers toward sponge_tr (default 0);
+        salinity toward sponge_S (nz_s,) [g kg⁻¹] (``salinity=True``; None: S is not relaxed);
         r = sponge_rate (ny, nx) [s⁻¹], ignored on land; momentum is not damped (as MOM6 DOME_initialize_sponges).
         It acts after the remap, so the mixing diagnostic counts advection and remap only
     bottom_drag, cd, drag_bg_vel, hbbl : ALE bed stress (spec 2026-10-14-dome §3): None (default, free slip) or
@@ -1019,7 +1024,7 @@ class SigmaBaroclinic:
                  sponge_T: np.ndarray | None = None, sponge_zw: np.ndarray | None = None,
                  sponge_tr: np.ndarray | None = None, bottom_drag: str | None = None, cd: float = 2.5e-3,
                  drag_bg_vel: float = 0.0, hbbl: float = 10.0, salinity: bool = False, s_coef: float = 0.0,
-                 s_ref: float = 35.0) -> None:
+                 s_ref: float = 35.0, sponge_S: np.ndarray | None = None) -> None:
         _args = {k: v for k, v in locals().items() if k != "self"}
         raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
         if ke_scheme == "godunov":                                      # correct spelling; the kernels use 'gudonov'
@@ -1146,8 +1151,9 @@ class SigmaBaroclinic:
         if self.n_tracers < 0 or (self.n_tracers and not self.ale):
             raise ValueError(f"n_tracers={n_tracers!r}: passive tracers need vertical_coordinate='ale' and n ≥ 0")
         self.tr_ext, self._tr_in = None, None
+        self.S_ext, self._S_in = None, None                              # salinity exterior (N2a), set by initial_state
         self._ob.bind(dt=dt, ds=self.ds, fs=self.fs, H=self.H, n_tracers=self.n_tracers, ale=self.ale,
-                      remap_code=getattr(self, "remap_code", rm.PPM_H4))
+                      remap_code=getattr(self, "remap_code", rm.PPM_H4), salinity=self.salinity)
         if self.ale:
             self._layer_transport = ALELayerTransport(fs=self.fs, H=self.H, area=self.area, dt=dt,
                                                       thickness_flux=self.thickness_flux, vi_geom=self._vi,
@@ -1175,9 +1181,15 @@ class SigmaBaroclinic:
             self._sp_tr = (np.zeros((self.n_tracers, Ts.size)) if sponge_tr is None
                            else np.asarray(sponge_tr, float).reshape(self.n_tracers, Ts.size))
             self._sp_cols = self.sponge_rate > 0
+            self._sp_S = None
+            if sponge_S is not None:
+                self._sp_S = np.asarray(sponge_S, float)
+                if self._sp_S.shape != Ts.shape:
+                    raise ValueError(f"sponge_S shape {self._sp_S.shape}, expected that of sponge_T {Ts.shape}")
         self._interior_sponge_c = (None if self.sponge_rate is None else
                                    InteriorSponge(rate=self.sponge_rate, T=self._sp_T, zw=self._sp_zw, tr=self._sp_tr,
-                                                  cols=self._sp_cols, H=self.H, dt=dt, remap_code=self.remap_code))
+                                                  cols=self._sp_cols, H=self.H, dt=dt, remap_code=self.remap_code,
+                                                  S=self._sp_S))
         if bottom_drag not in (None, "quadratic"):
             raise ValueError(f"unknown bottom_drag {bottom_drag!r}; use None or 'quadratic'")
         if bottom_drag and not self.ale:
@@ -1288,6 +1300,7 @@ class SigmaBaroclinic:
             act = np.broadcast_to(self.fs.active[None], z.shape)
             self.rho_ref = reference_profile(z[act], self.density(np.asarray(T, float))[act])
         self.T_ext = np.array(T, float)                                # inflow / sponge target at open boundaries
+        self.S_ext = None if S is None else S.copy()
         st = SigmaState(eta=np.array(eta, float), u=np.zeros((self.n, ny, nx + 1)),
                         v=np.zeros((self.n, ny + 1, nx)), T=np.array(T, float),
                         h=self._initial_h(eta) if self.ale else None, tr=tr, closure=self._sync_closure_out(), S=S)
@@ -1302,6 +1315,7 @@ class SigmaBaroclinic:
         if self.ale:                                                    # exterior profile in z (spec §3.5)
             self.T_ext, self.h_ext = st.T.copy(), st.h.copy()
             self.tr_ext = None if st.tr is None else st.tr.copy()
+            self.S_ext = None if st.S is None else st.S.copy()
         return st
 
     def _check_tracers(self, tr, shape: tuple) -> np.ndarray | None:
@@ -1382,6 +1396,7 @@ class SigmaBaroclinic:
                         v=np.zeros((self.n, ny + 1, nx)), T=T, h=h, tr=tr, closure=self._sync_closure_out(), S=S)
         self.T_ext, self.h_ext = T.copy(), h.copy()                    # exterior profile in z (spec §3.5)
         self.tr_ext = None if tr is None else tr.copy()
+        self.S_ext = None if S is None else S.copy()
         return st
 
     def layer_heights(self, eta: np.ndarray, h: np.ndarray | None = None) -> np.ndarray:
@@ -1413,10 +1428,11 @@ class SigmaBaroclinic:
         D = np.maximum(np.nan_to_num(self.H + eta, nan=0.0), 0.0)
         return D[None] * self.ds[:, None, None] * self.area[None]
 
-    def tracer_content(self, st: SigmaState, power: int = 1, tracer: int | None = None) -> float:
-        """Σ V c^power [unit^power m³] of T (``tracer`` None) or of passive tracer ``tracer``."""
+    def tracer_content(self, st: SigmaState, power: int = 1, tracer: int | str | None = None) -> float:
+        """Σ V c^power [unit^power m³] of T (``tracer`` None), of the salinity (``tracer`` 'S') or of passive tracer
+        ``tracer``."""
         V = self.layer_volumes(st.eta, st.h)
-        c = st.T if tracer is None else st.tr[tracer]
+        c = st.T if tracer is None else (st.S if tracer == "S" else st.tr[tracer])
         return float(np.sum(V * c**power))
 
     def rpe(self, st: SigmaState) -> float:
