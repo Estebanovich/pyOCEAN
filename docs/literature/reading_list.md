@@ -9,7 +9,7 @@
 2. Solo si ahí no está, buscar en Consensus, con 1–2 búsquedas enfocadas por decisión.
 3. Agregar aquí cada artículo nuevo que se use, con su DOI. Cuando esté descargado, cambiar el estado a **local** y correr `--convert`.
 
-**PDF escaneados** (sin capa de texto: la búsqueda local no los ve; se leen como imágenes): Beckmann_Haidvogel_1993, Haney_1991.
+**PDF escaneados** (sin capa de texto: la búsqueda local no los ve; se leen como imágenes): Beckmann_Haidvogel_1993, Haney_1991, Huang_1993.
 
 **Leyenda:**
 - ★ = se usa directamente en el código o en un benchmark; descargar primero.
@@ -190,11 +190,11 @@ Consensus (2026-10-11): una búsqueda; FESOM2-JAX, DJ4Earth y Veros-JAX (Meunier
 
 | | Referencia | DOI | Archivo sugerido | Estado |
 |---|---|---|---|---|
-| | Lorenz, Klingbeil & Burchard 2021, Impact of evaporation and precipitation on estuarine mixing, J. Phys. Oceanogr. (estuario 2-D idealizado con E y P; relación de mezcla exacta) | [10.1175/jpo-d-20-0158.1](https://doi.org/10.1175/jpo-d-20-0158.1) | `Lorenz_2021 - Impact of Evaporation and Precipitation on Estuarine Mixing.pdf` | ⬜ |
-| | Fofonova et al. 2021, Plume spreading test case for coastal ocean models, Geosci. Model Dev. | [10.5194/gmd-2020-438](https://doi.org/10.5194/gmd-2020-438) | `Fofonova_2021 - Plume Spreading Test Case for Coastal Ocean Models.pdf` | ⬜ |
-| | Huang 1993, Real freshwater flux as a natural boundary condition for the salinity balance and thermohaline circulation forced by evaporation and precipitation, J. Phys. Oceanogr. | [10.1175/1520-0485(1993)023<2428:rffaan>2.0.co;2](https://doi.org/10.1175/1520-0485(1993)023<2428:rffaan>2.0.co;2) | `Huang_1993 - Real Freshwater Flux as a Natural Boundary Condition.pdf` | ⬜ |
-| | López 1997, A numerical simulation of water mass formation in the northern Gulf of California during winter, Cont. Shelf Res. | [10.1016/s0278-4343(97)00027-7](https://doi.org/10.1016/s0278-4343(97)00027-7) | `Lopez_1997 - A Numerical Simulation of Water Mass Formation in the Northern Gulf of California.pdf` | ⬜ |
-| | Lavín & Organista 1988, Surface heat flux in the northern Gulf of California, J. Geophys. Res. | [10.1029/jc093ic11p14033](https://doi.org/10.1029/jc093ic11p14033) | `Lavin_1988 - Surface Heat Flux in the Northern Gulf of California.pdf` | ⬜ |
-| | Montes, Lavín & Parés-Sierra 2016, Seasonal heat and salt balance in the Upper Gulf of California, J. Coastal Res. | [10.2112/jcoastres-d-14-00192.1](https://doi.org/10.2112/jcoastres-d-14-00192.1) | `Montes_2016 - Seasonal Heat and Salt Balance in the Upper Gulf of California.pdf` | ⬜ |
-| | Marinone 2003, A three-dimensional model of the mean and seasonal circulation of the Gulf of California, J. Geophys. Res. | [10.1029/2002jc001720](https://doi.org/10.1029/2002jc001720) | `Marinone_2003 - A Three-Dimensional Model of the Mean and Seasonal Circulation of the Gulf of California.pdf` | ⬜ |
-| | Castro, Lavín & Ripa 1994, Seasonal heat balance in the Gulf of California, J. Geophys. Res. | [10.1029/93jc02861](https://doi.org/10.1029/93jc02861) | `Castro_1994 - Seasonal Heat Balance in the Gulf of California.pdf` | ⬜ |
+| | Lorenz, Klingbeil & Burchard 2021, Impact of evaporation and precipitation on estuarine mixing, J. Phys. Oceanogr. (estuario 2-D idealizado con E y P; relación de mezcla exacta) | [10.1175/jpo-d-20-0158.1](https://doi.org/10.1175/jpo-d-20-0158.1) | `Lorenz_2021 - Impact of Evaporation and Precipitation on Estuarine Mixing.pdf` | ✅ |
+| | Fofonova et al. 2021, Plume spreading test case for coastal ocean models, Geosci. Model Dev. | [10.5194/gmd-14-6945-2021](https://doi.org/10.5194/gmd-14-6945-2021) | `Fofonova_2021 - Plume Spreading Test Case for Coastal Ocean Models.pdf` | ✅ |
+| | Huang 1993, Real freshwater flux as a natural boundary condition for the salinity balance and thermohaline circulation forced by evaporation and precipitation, J. Phys. Oceanogr. | [10.1175/1520-0485(1993)023<2428:rffaan>2.0.co;2](https://doi.org/10.1175/1520-0485(1993)023<2428:rffaan>2.0.co;2) | `Huang_1993 - Real Freshwater Flux as a Natural Boundary Condition.pdf` | ✅ |
+| | López 1997, A numerical simulation of water mass formation in the northern Gulf of California during winter, Cont. Shelf Res. | [10.1016/s0278-4343(97)00027-7](https://doi.org/10.1016/s0278-4343(97)00027-7) | `Lopez_1997 - A Numerical Simulation of Water Mass Formation in the Northern Gulf of California.pdf` | ✅ |
+| | Lavín & Organista 1988, Surface heat flux in the northern Gulf of California, J. Geophys. Res. | [10.1029/jc093ic11p14033](https://doi.org/10.1029/jc093ic11p14033) | `Lavin_1988 - Surface Heat Flux in the Northern Gulf of California.pdf` | ✅ |
+| | Montes, Lavín & Parés-Sierra 2016, Seasonal heat and salt balance in the Upper Gulf of California, J. Coastal Res. | [10.2112/jcoastres-d-14-00192.1](https://doi.org/10.2112/jcoastres-d-14-00192.1) | `Montes_2016 - Seasonal Heat and Salt Balance in the Upper Gulf of California.pdf` | ✅ |
+| | Marinone 2003, A three-dimensional model of the mean and seasonal circulation of the Gulf of California, J. Geophys. Res. | [10.1029/2002jc001720](https://doi.org/10.1029/2002jc001720) | `Marinone_2003 - A Three-Dimensional Model of the Mean and Seasonal Circulation of the Gulf of California.pdf` | ✅ |
+| | Castro, Lavín & Ripa 1994, Seasonal heat balance in the Gulf of California, J. Geophys. Res. | [10.1029/93jc02861](https://doi.org/10.1029/93jc02861) | `Castro_1994 - Seasonal Heat Balance in the Gulf of California.pdf` | ✅ |
