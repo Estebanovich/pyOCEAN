@@ -100,6 +100,7 @@ from core.vertical.pgf import fv_pgf
 from core.components.eos import LinearEOS
 from core.components.geometry import LayerGeometry
 from core.components.pgf import PressureGradient
+from core.components.momentum import Momentum, sum_terms
 from core.model.threads import _THREADS, set_threads  # noqa: F401  (one shared list; re-exported)
 
 G = 9.81
@@ -1125,6 +1126,10 @@ class SigmaBaroclinic:
                                        self.fs.du, self.fs.dv, self.layer_heights)
         self._setup_ale(vertical_coordinate, regrid, regrid_params, remap_scheme, z0, closure, h_thin_bed,
                         init_iterations, act, momentum, ke_scheme, max_truncations, thickness_flux)
+        self._momentum = Momentum(form="vector_invariant" if self.ale and self.momentum == "vector_invariant" else "flux",
+                                  adv=adv, ah=ah, ke_scheme=self.ke_scheme, ale=self.ale, dt=dt, hg=h_grid, fq=self._fq,
+                                  fs=self.fs, ds=self.ds, vi_geom=getattr(self, "_vi", None),
+                                  mean_face_thickness=self._mean_face_thickness, layer_volumes=self.layer_volumes)
         if tracer_limiter is None:
             tracer_limiter = ("fct" if self.ale and self.tracer_time == "ssprk3"
                               and self.tracer_scheme in ("weno5", "weno5js") else "none")
@@ -1479,85 +1484,28 @@ class SigmaBaroclinic:
         self._pgf.rho_ref = value
 
     def _coriolis(self, u: np.ndarray, v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Energy-conserving C-grid Coriolis terms (+f v̄ at u-faces, −f ū at v-faces):
-        every adjacent (u, v) pair shares one cell corner q and is weighted by ¼ f_q,
-        so the operator is antisymmetric and does no work (Sadourny 1975; Arakawa &
-        Lamb 1977).  u (N, ny, nx+1), v (N, ny+1, nx).
-        """
-        fq = self._fq
-        cu = np.zeros_like(u)
-        cv = np.zeros_like(v)
-        cu[..., 1:-1] = 0.25 * (fq[:-1, 1:-1] * (v[:, :-1, :-1] + v[:, :-1, 1:])
-                                + fq[1:, 1:-1] * (v[:, 1:, :-1] + v[:, 1:, 1:]))
-        cv[:, 1:-1, :] = -0.25 * (fq[1:-1, :-1] * (u[:, :-1, :-1] + u[:, 1:, :-1])
-                                  + fq[1:-1, 1:] * (u[:, :-1, 1:] + u[:, 1:, 1:]))
-        return cu, cv
+        """Energy-conserving C-grid Coriolis terms (``core.components.momentum``)."""
+        return self._momentum.coriolis(u, v)
 
     def _vector_invariant(self, st: SigmaState) -> tuple[np.ndarray, np.ndarray]:
-        """
-        Vector-invariant momentum terms of the ALE step (spec 2026-10-12 §3): Sadourny (1975) energy
-        PV flux q·(vh, −uh) with BOUND_CORIOLIS, minus ∇K (core.dynamics.vector_invariant).  The
-        transports are those of the last Lagrangian step (as MOM6 uses the uh of its last continuity);
-        the first step uses L u h̄.
-        """
-        g = self._vi
-        numba.set_num_threads(_THREADS[0])                                 # vector-invariant kernels
-        zeta, q = vi.vorticity_and_pv(st.u, st.v, g["dx_u"], g["dy_v"], g["area_q"], g["mask_q"], self._fq, st.h,
-                                      g["area_t"], self.fs.active)
-        Qx, Qy = st.Qx, st.Qy
-        if Qx is None or Qy is None:
-            hu, hv = self._mean_face_thickness(st.h)
-            Qx, Qy = self.fs.Lu[None] * st.u * hu, self.fs.Lv[None] * st.v * hv
-        cu, cv = vi.coriolis_pv(q, self._fq[None] + zeta, Qx, Qy, st.u, st.v, g["dx_u"], g["dy_v"], bound=True)
-        K = vi.kinetic_energy(st.u, st.v, g["area_u"], g["area_v"], g["area_t"], self.ke_scheme)
-        kx, ky = vi.ke_gradient(K, g["dx_u"], g["dy_v"])
-        return cu + kx, cv + ky
+        """Vector-invariant momentum terms of the ALE step (``core.components.momentum``)."""
+        return self._momentum.vector_invariant(st)
 
     def _vertical_advection(self, vel: np.ndarray, omega_f: np.ndarray, h_f: np.ndarray) -> np.ndarray:
-        """(ω/h) ∂u/∂k, centred: [ω_{k+½}(u_{k+1}−u_k) + ω_{k−½}(u_k−u_{k−1})] / (2h)."""
-        out = np.zeros_like(vel)
-        du = vel[1:] - vel[:-1]                                             # at interior interfaces
-        out[:-1] += omega_f[1:-1] * du
-        out[1:] += omega_f[1:-1] * du
-        return out / (2.0 * np.maximum(h_f, 1e-6))
+        """(ω/h) ∂u/∂k, centred (``core.components.momentum``)."""
+        return self._momentum.vertical_advection(vel, omega_f, h_f)
 
-    def _tendencies(self, st: SigmaState) -> tuple[np.ndarray, np.ndarray]:
-        n = self.n
+    def _momentum_terms(self, st: SigmaState) -> tuple[list, np.ndarray, np.ndarray]:
+        """Named explicit momentum terms of ``st`` in summation order, and the wet u- and v-faces."""
         Du, Dv = self.core.face_depths(st.eta)
         wet_u = np.isfinite(self.fs.H_u) & np.isfinite(Du) & (Du > self.fs.d_min)
         wet_v = np.isfinite(self.fs.H_v) & np.isfinite(Dv) & (Dv > self.fs.d_min)
-        gu, gv = self._baroclinic_pgf(st.eta, st.T, st.h)
-        vinv = self.ale and self.momentum == "vector_invariant"
-        cu, cv = self._vector_invariant(st) if vinv else self._coriolis(st.u, st.v)
-        gu += cu
-        gv += cv
-        if self.adv == "flux" and not vinv:
-            if st.Qx is not None:
-                V = self.layer_volumes(st.eta, st.h)
-                lim = self.dt if self.ale else 0.0                                      # vanished-cell limiter
-                gu += _flux_form_u(st.u, st.Qx, st.Qy, st.Fz, V, wet_u[None], lim)
-                swap = lambda a: np.swapaxes(a, 1, 2)                                   # noqa: E731
-                gv += swap(_flux_form_u(swap(st.v), swap(st.Qy), swap(st.Qx), swap(st.Fz), swap(V),
-                                        swap(wet_v[None]), lim))
-        if self.adv != "flux" and not vinv:
-            for k in range(n):
-                gu[k] -= advection_u(st.u[k], st.v[k], self.hg, wet_u, scheme=self.adv)
-                gv[k] -= advection_v(st.u[k], st.v[k], self.hg, wet_v, scheme=self.adv)
-        if self.ah > 0:                                                 # spacings built once (performance task 5.2)
-            if getattr(self, "_lap", None) is None:
-                self._lap = (_spacings_u(self.hg), _spacings_v(self.hg))
-            numba.set_num_threads(_THREADS[0])
-            gu += self.ah * laplacian_3d(st.u, wet_u, *self._lap[0])
-            gv += self.ah * laplacian_3d(st.v, wet_v, *self._lap[1])
-        if st.omega is not None and self.adv != "flux":
-            om_u = np.zeros((n + 1,) + Du.shape)
-            om_u[:, :, 1:-1] = 0.5 * (st.omega[:, :, 1:] + st.omega[:, :, :-1])
-            om_v = np.zeros((n + 1,) + Dv.shape)
-            om_v[:, 1:-1, :] = 0.5 * (st.omega[:, 1:, :] + st.omega[:, :-1, :])
-            gu -= self._vertical_advection(st.u, om_u, np.nan_to_num(Du)[None] * self.ds[:, None, None])
-            gv -= self._vertical_advection(st.v, om_v, np.nan_to_num(Dv)[None] * self.ds[:, None, None])
-        return np.where(wet_u[None], gu, 0.0), np.where(wet_v[None], gv, 0.0)
+        return self._momentum.terms(st, self._baroclinic_pgf(st.eta, st.T, st.h), Du, Dv, wet_u, wet_v), wet_u, wet_v
+
+    def _tendencies(self, st: SigmaState) -> tuple[np.ndarray, np.ndarray]:
+        """Explicit momentum tendencies at u- and v-faces [m s⁻²]: Σ of the named terms (fixed order)."""
+        terms, wet_u, wet_v = self._momentum_terms(st)
+        return sum_terms(terms, wet_u, wet_v)
 
     # ------------------------------------------------------------------ tracers
     def _faces(self, c: np.ndarray, flux: np.ndarray, ok: np.ndarray, axis: int, centred: bool = False) -> np.ndarray:
