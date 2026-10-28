@@ -279,7 +279,8 @@ class SigmaWetDry:
              hu: np.ndarray | None = None, hv: np.ndarray | None = None, hu_drag: np.ndarray | None = None,
              hv_drag: np.ndarray | None = None, hu_mean: np.ndarray | None = None,
              hv_mean: np.ndarray | None = None, r_u: np.ndarray | None = None,
-             r_v: np.ndarray | None = None, flather_q=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+             r_v: np.ndarray | None = None, flather_q=None,
+             fw: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Advance η and the layer velocities u (N, ny, nx+1), v (N, ny+1, nx) one step.
         G_u, G_v : explicit tendencies per layer [m s⁻²] (advection, Coriolis, body force).
@@ -294,6 +295,8 @@ class SigmaWetDry:
             so column_step restores the depth-mean balance (``dz_mean``).
         r_u, r_v : linear bed rates at u- and v-faces [m s⁻¹] (ALE quadratic drag; column_step ``r_bed``).
         flather_q : prescribed volume fluxes at Flather faces (WetDryFreeSurface.step).
+        fw : (ny, nx) surface freshwater flux P − E [m s⁻¹] as a real volume source of the free surface
+            (WetDryFreeSurface.step; N2a); None: none.
         Returns η^{n+1}, u^{n+1}, v^{n+1}.
         """
         ds = self.dsigma[:, None, None]
@@ -310,7 +313,7 @@ class SigmaWetDry:
         ubar_hat, vbar_hat = (wu_ * u_hat).sum(0), (wv_ * v_hat).sum(0)
         eta_new, ubar_new, vbar_new = self.fs.step(eta, ubar_n, vbar_n, ubar_hat, vbar_hat, flather_eta=flather_eta,
                                                    flather_ubar=flather_ubar, flather_vbar=flather_vbar,
-                                                   flather_q=flather_q)
+                                                   flather_q=flather_q, fw=fw)
         wet_u = self.fs.last_wet_u | (self._fl_u & (ubar_new != 0))
         wet_v = self.fs.last_wet_v | (self._fl_v & (vbar_new != 0))
         u_new = np.where(wet_u, u_hat + (ubar_new - ubar_hat), 0.0)

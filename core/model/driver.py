@@ -57,6 +57,7 @@ class StepContext:
     st: Any
     tau_x: Any = None
     tau_y: Any = None
+    fw: Any = None                   # surface freshwater flux P − E [m s⁻¹] (N2a), or None
     vals: dict = field(default_factory=dict)
 
     def __getattr__(self, name: str):
@@ -131,8 +132,9 @@ class Driver:
         self.last_terms: dict | None = None
 
     # ------------------------------------------------------------------ driver
-    def step(self, st, tau_x=None, tau_y=None):
-        ctx = StepContext(st, tau_x, tau_y)
+    def step(self, st, tau_x=None, tau_y=None, fw=None):
+        """One step; ``fw`` (ny, nx) is the surface freshwater flux P − E [m s⁻¹] (N2a, checked by the facade)."""
+        ctx = StepContext(st, tau_x, tau_y, fw)
         hashes: dict[str, str] = {}
         ale = self.m.ale
         for name in PHASES:
@@ -194,7 +196,8 @@ class Driver:
     def _sigma_implicit_and_free_surface(self, ctx: StepContext) -> None:
         m, st = self.m, ctx.st
         eta_new, u_new, v_new, fluxes, closure = m._free_surface.step(st.eta, st.u, st.v, ctx.gu_ab, ctx.gv_ab, ctx.tu,
-                                                                      ctx.tv, st.closure, m._ob.flather_args(ctx.ext))
+                                                                      ctx.tv, st.closure, m._ob.flather_args(ctx.ext),
+                                                                      fw=ctx.fw)
         ctx.set(eta_new=eta_new, u_new=u_new, v_new=v_new, fluxes=fluxes, closure=closure)
 
     def _sigma_boundary_velocity(self, ctx: StepContext) -> None:
@@ -278,7 +281,7 @@ class Driver:
                 visc.update(hu_mean=hu, hv_mean=hv)
         eta_new, u_new, v_new, fluxes, _ = m._free_surface.step(st.eta, st.u, st.v, ctx.gu_ab, ctx.gv_ab, ctx.tu,
                                                                 ctx.tv, st.closure, m._ob.flather_args(ctx.ext),
-                                                                wu=ctx.wu, wv=ctx.wv, **visc)
+                                                                fw=ctx.fw, wu=ctx.wu, wv=ctx.wv, **visc)
         ctx.set(eta_new=eta_new, u_new=u_new, v_new=v_new, fluxes=fluxes)
 
     def _ale_boundary_velocity(self, ctx: StepContext) -> None:
@@ -299,8 +302,15 @@ class Driver:
 
     def _ale_layer_transport(self, ctx: StepContext) -> None:
         m = self.m
-        ctx.set(lf=m._layer_transport(ctx.st, ctx.eta_new, ctx.u_new, ctx.v_new, ctx.fluxes, m.theta_bc, m.open,
-                                      ctx.wu, ctx.wv, ctx.qe, ctx.qw, ctx.qn, ctx.qs))
+        lf = m._layer_transport(ctx.st, ctx.eta_new, ctx.u_new, ctx.v_new, ctx.fluxes, m.theta_bc, m.open,
+                                ctx.wu, ctx.wv, ctx.qe, ctx.qw, ctx.qn, ctx.qs)
+        ctx.set(lf=lf)
+        if ctx.fluxes.fw is not None:
+            # real freshwater (N2a): the top layer (k = N−1) of the Lagrangian thickness gains fw Δt, so
+            # Σ_k h_fw = H + ηⁿ⁺¹ as the free surface; h† itself (lf.h_dagger, the advection volume V1) is unchanged
+            h_fw = lf.h_dagger.copy()
+            h_fw[-1] += m.dt * ctx.fluxes.fw
+            ctx.set(h_fw=h_fw)
 
     def _ale_tracers(self, ctx: StepContext) -> None:
         m, st, lf, ext = self.m, ctx.st, ctx.lf, ctx.ext
@@ -353,7 +363,8 @@ class Driver:
         mixd, ntr, lay = m.mix_diagnostic, m.n_tracers, ctx.lay
         T_lag, eta_new = ctx.T_lag, ctx.eta_new
         fields = _stack_fields(lay, T_lag, ctx.S_lag, ctx.tr_lag)       # remapped in the stack order
-        h_new, rem = m._vertical.regrid_remap(eta_new, ctx.lf.h_dagger, fields, T_lag, ctx.S_lag)
+        h_src = ctx.vals.get("h_fw", ctx.lf.h_dagger)                  # h† + fw Δt on the top layer (N2a)
+        h_new, rem = m._vertical.regrid_remap(eta_new, h_src, fields, T_lag, ctx.S_lag)
         T_new = rem[0]
         S_new = rem[lay["S"]] if m.salinity else None
         tr_new = np.stack(rem[lay["tr"]:]) if ntr else None
@@ -373,7 +384,7 @@ class Driver:
     def _ale_finalize(self, ctx: StepContext) -> None:
         m, st, lf, vc = self.m, ctx.st, ctx.lf, self.m._vertical
         dt = m.dt
-        hu_lag, hv_lag = vc.mean_face_thickness(lf.h_dagger)
+        hu_lag, hv_lag = vc.mean_face_thickness(ctx.vals.get("h_fw", lf.h_dagger))
         hu1, hv1 = vc.mean_face_thickness(ctx.h_new)
         wu1, wv1 = face_fractions(hu1), face_fractions(hv1)                # once: remap target and thin-bed rule
         u_new = zero_thin_bed_velocity(vc.remap_faces(ctx.u_new, hu_lag, hu1, wu1), hu1, wu1, m.h_thin_bed)

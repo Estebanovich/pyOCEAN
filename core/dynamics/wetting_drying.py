@@ -124,6 +124,7 @@ class WetDryFreeSurface:
         self.index = -np.ones((ny, nx), dtype=np.int64)
         self.index[self.active] = np.arange(self.active.sum())
         self.last_clip_volume = 0.0
+        self.last_fw = None                                  # freshwater source of the last step [m s⁻¹] (N2a)
         # Flather faces: (axis, face indices, adjacent cell indices, outward sign, face length)
         self._flather = []
         for mask, axis in ((flather_u, "u"), (flather_v, "v")):
@@ -226,7 +227,8 @@ class WetDryFreeSurface:
 
     def step(self, eta: np.ndarray, u_n: np.ndarray, v_n: np.ndarray, u_hat: np.ndarray,
              v_hat: np.ndarray, flather_eta=None, flather_ubar: np.ndarray | None = None,
-             flather_vbar: np.ndarray | None = None, flather_q=None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+             flather_vbar: np.ndarray | None = None, flather_q=None,
+             fw: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Advance η and the depth-mean velocities one step.
 
@@ -236,6 +238,11 @@ class WetDryFreeSurface:
         flather_ubar, flather_vbar : external depth-mean velocity there (model sign)
         flather_q : (q_u, q_v) prescribed volume flux at Flather faces [m³ s⁻¹, model sign], NaN where Flather applies:
             those faces carry exactly q, with no radiation term (MOM6 SIMPLE segment; DOME inflow)
+        fw : (ny, nx) surface freshwater flux P − E [m s⁻¹, positive into the ocean] (N2a), or None.  A real volume
+            source (Huang 1993; MITgcm useRealFreshWaterFlux: integr_continuity.F:93,185, solve_for_pressure.F:147-156):
+            A (ηⁿ⁺¹ − ηⁿ)/Δt = −∇·(D ū)^θ + A fw_eff, with fw_eff = fw on active cells with Hⁿ + ηⁿ > d_min and 0 on
+            land and dry cells (no phantom volume).  The exact-conservation recompute of the CG path uses the same
+            source.  fw_eff is kept as ``last_fw`` (None without fw).  fw None adds no operation (bit for bit).
         Returns η^{n+1}, u^{n+1}, v^{n+1} (u = 0 on dry faces).
         """
         th, dt, g = self.theta, self.dt, self.g
@@ -249,6 +256,11 @@ class WetDryFreeSurface:
         flux = self._divergence(self.Lu * Du * (th * us + (1 - th) * un),
                                 self.Lv * Dv * (th * vs + (1 - th) * vn))
         rhs_full = self.area * eta - dt * flux
+        fw_eff = None
+        if fw is not None:                                   # real freshwater volume source (N2a)
+            fw_eff = np.where(self.active & (self.H + eta > self.d_min), np.asarray(fw, float), 0.0)
+            rhs_full = rhs_full + dt * self.area * fw_eff
+        self.last_fw = fw_eff
         extra = np.zeros(self.area.shape)
         fl_state = []
         if self._flather:
@@ -335,7 +347,11 @@ class WetDryFreeSurface:
             for fl in self._flather:
                 Q = self.last_open_Qu if fl["axis"] == "u" else self.last_open_Qv
                 np.add.at(div, fl["cell"], fl["sign"] * Q[fl["face"]])            # outward flux of the cell
-            eta_new = np.where(self.active, eta - dt * div / np.where(self.active, self.area, 1.0), eta_new)
+            if fw_eff is None:
+                eta_new = np.where(self.active, eta - dt * div / np.where(self.active, self.area, 1.0), eta_new)
+            else:                                                                 # same source as the solve
+                eta_new = np.where(self.active, eta - dt * div / np.where(self.active, self.area, 1.0) + dt * fw_eff,
+                                   eta_new)
             # positivity guard on the final η (the recompute above undoes the clip applied to the CG solution)
             depth = self.H + eta_new
             neg = self.active & (depth < 0)

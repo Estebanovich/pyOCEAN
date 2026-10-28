@@ -109,7 +109,7 @@ from core.components.tracers import TracerAdvection, TracerDiffusion
 from core.components.sponge import InteriorSponge
 from core.components.vertical_coordinate import ALECoordinate
 from core.model.driver import Driver
-from core.model.contract import ConfigurationError, raise_issues
+from core.model.contract import ConfigurationError, Issue, raise_issues
 from core.model.preflight import preflight
 from core.components.time_stepper import AB3, AB3Momentum, _ab3_kernel, ab3_combine  # noqa: F401  (re-exported)
 from core.model.threads import _THREADS, set_threads  # noqa: F401  (one shared list; re-exported)
@@ -1643,14 +1643,28 @@ class SigmaBaroclinic:
         return self._tracer_advection.advect(C, V0, V1, Qx, Qy, Fz, ok, self._inflow(C))
 
     # ------------------------------------------------------------------ step
-    def step(self, st: SigmaState, tau_x: np.ndarray | None = None, tau_y: np.ndarray | None = None) -> SigmaState:
+    def step(self, st: SigmaState, tau_x: np.ndarray | None = None, tau_y: np.ndarray | None = None,
+             fw: np.ndarray | None = None) -> SigmaState:
         """
         Advance one step.  tau_x (ny, nx+1), tau_y (ny+1, nx): surface (wind) stress at the u- and
         v-faces [N m⁻²]; τ/ρ₀ enters as the top boundary flux of the implicit vertical viscosity
         (as ROMS/CROCO sustr/svstr), not through the AB3 extrapolation.  The ten phases of the step, the same
         in σ and ALE, are run by ``core.model.driver.Driver`` (N1).
+
+        fw (ny, nx): surface freshwater flux P − E [m s⁻¹, positive into the ocean] (N2a), a real volume source of
+        the free surface (Huang 1993; MITgcm useRealFreshWaterFlux), ignored on land and dry cells; it needs
+        ``salinity=True`` (checked here, since the constructor pre-flight cannot see a step argument).
         """
-        return self._driver.step(st, tau_x, tau_y)
+        if fw is not None:
+            fw = np.asarray(fw, float)
+            issues = []
+            if not self.salinity:
+                issues.append(Issue("error", "salinity", "fw needs salinity=True (it acts on the salinity S)"))
+            if fw.shape != self.H.shape:
+                issues.append(Issue("error", "free_surface",
+                                    f"fw must have shape {self.H.shape} (ny, nx), got {fw.shape}"))
+            raise_issues(issues)
+        return self._driver.step(st, tau_x, tau_y, fw)
 
 
 def _delegate(name: str) -> property:

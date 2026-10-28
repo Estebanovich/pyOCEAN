@@ -35,13 +35,14 @@ class BarotropicFluxes:
     open_Du: np.ndarray | None   # total depth at the Flather faces [m]
     open_Dv: np.ndarray | None
     clip_volume: float           # volume added by the positivity guard [m³] (diagnostic)
+    fw: np.ndarray | None = None  # freshwater source used by the free surface [m s⁻¹] (0 on land / dry), N2a
 
     @classmethod
     def from_free_surface(cls, fs) -> "BarotropicFluxes":
         has_open = bool(fs._flather)
         get = (lambda name: getattr(fs, name)) if has_open else (lambda name: None)   # noqa: E731
         return cls(fs.last_wet_u, fs.last_wet_v, fs.last_Du, fs.last_Dv, get("last_open_Qu"), get("last_open_Qv"),
-                   get("last_open_Du"), get("last_open_Dv"), fs.last_clip_volume)
+                   get("last_open_Du"), get("last_open_Dv"), fs.last_clip_volume, getattr(fs, "last_fw", None))
 
 
 class FreeSurfaceVerticalViscosity:
@@ -66,15 +67,18 @@ class FreeSurfaceVerticalViscosity:
         return None if gls is None else {"tke": gls.tke, "eps": gls.eps, "akv": gls.akv}
 
     def step(self, eta: np.ndarray, u: np.ndarray, v: np.ndarray, gu_ab: np.ndarray, gv_ab: np.ndarray, tu, tv,
-             closure: dict | None, flather: dict, **visc) -> tuple[np.ndarray, np.ndarray, np.ndarray,
+             closure: dict | None, flather: dict, fw: np.ndarray | None = None, **visc) -> tuple[np.ndarray, np.ndarray, np.ndarray,
                                                                   BarotropicFluxes, dict | None]:
         """
         One free-surface + vertical-viscosity step: (ηⁿ⁺¹, uⁿ⁺¹, vⁿ⁺¹) before the open-boundary relaxation,
         the barotropic fluxes of the step and the new closure state.  ``visc``: the ALE face thicknesses, face
-        fractions (wu, wv) and bed-drag rates of ``SigmaWetDry.step``.
+        fractions (wu, wv) and bed-drag rates of ``SigmaWetDry.step``.  ``fw``: surface freshwater flux P − E
+        [m s⁻¹], a real volume source of the free surface (N2a; masked to wet cells, returned as
+        ``BarotropicFluxes.fw``); None adds no operation.
         """
         self.sync_closure_in(closure)
-        eta_new, u_new, v_new = self.core.step(eta, u, v, G_u=gu_ab, G_v=gv_ab, tau_u=tu, tau_v=tv, **visc, **flather)
+        eta_new, u_new, v_new = self.core.step(eta, u, v, G_u=gu_ab, G_v=gv_ab, tau_u=tu, tau_v=tv, **visc, **flather,
+                                               fw=fw)
         return eta_new, u_new, v_new, BarotropicFluxes.from_free_surface(self.fs), self.closure_out()
 
     def check(self, ctx: BuildContext) -> list[Issue]:
