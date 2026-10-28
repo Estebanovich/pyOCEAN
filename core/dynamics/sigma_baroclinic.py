@@ -104,6 +104,7 @@ from core.components.momentum import Momentum, sum_terms
 from core.components.open_boundary import CONFIG as _OB_CONFIG, OpenBoundary
 from core.components.bottom_drag import QuadraticBedDrag
 from core.components.free_surface import FreeSurfaceVerticalViscosity
+from core.components.layer_transport import ALELayerTransport, SigmaLayerTransport
 from core.components.time_stepper import AB3, AB3Momentum, _ab3_kernel, ab3_combine  # noqa: F401  (re-exported)
 from core.model.threads import _THREADS, set_threads  # noqa: F401  (one shared list; re-exported)
 
@@ -1127,6 +1128,14 @@ class SigmaBaroclinic:
         self.tr_ext, self._tr_in = None, None
         self._ob.bind(dt=dt, ds=self.ds, fs=self.fs, H=self.H, n_tracers=self.n_tracers, ale=self.ale,
                       remap_code=getattr(self, "remap_code", rm.PPM_H4))
+        if self.ale:
+            self._layer_transport = ALELayerTransport(fs=self.fs, H=self.H, area=self.area, dt=dt,
+                                                      thickness_flux=self.thickness_flux, vi_geom=self._vi,
+                                                      layer_volumes=self.layer_volumes, ob=self._ob)
+        else:
+            self._layer_transport = SigmaLayerTransport(fs=self.fs, ds=self.ds, H=self.H, dt=dt,
+                                                        layer_volumes=self.layer_volumes, ob=self._ob)
+        self._last_layer_fluxes = None
         self.sponge_rate = None
         if sponge_rate is not None:
             if not self.ale:
@@ -1891,27 +1900,10 @@ class SigmaBaroclinic:
             v_up = np.where(v_new.swapaxes(1, 2) >= 0, qn, qs).swapaxes(1, 2)
             u_new = blend_thin_layers(u_new, u_up, wu, self.thin_layer_cutoff)
             v_new = blend_thin_layers(v_new, v_up, wv, self.thin_layer_cutoff)
-        # transport velocities and free-surface volume fluxes (core.vertical.ale.transport_velocity)
-        tb = self.theta_bc
-        utx, Qbx = transport_velocity(u_new, st.u, self._fluxes.wet_u, wu, self.fs.Lu, self._fluxes.Du, th, tb)
-        uty, Qby = transport_velocity(v_new, st.v, self._fluxes.wet_v, wv, self.fs.Lv, self._fluxes.Dv, th, tb)
-        if self.thickness_flux == "ppm":
-            dx_t, dy_t = self._vi["dx_t"], self._vi["dy_t"]
-            Qx = ppm_transport_x(st.h, utx, self.fs.Lu, Qbx, qe, qw, act, dt, dx_t)
-            Qy = ppm_transport_x(st.h.swapaxes(1, 2), uty.swapaxes(1, 2), self.fs.Lv.T, Qby.T, qn, qs, act.T,
-                                 dt, dy_t.T).swapaxes(1, 2)
-        else:
-            Qx = upwind_transport_x(qe, qw, utx, self.fs.Lu, Qbx)
-            Qy = upwind_transport_x(qn, qs, uty.swapaxes(1, 2), self.fs.Lv.T, Qby.T).swapaxes(1, 2)
-        if self.open:                                                   # old velocity unmasked: the wet flag is False at edges
-            self._open_face_transports(Qx, Qy, st.h, st.u, st.v, u_new, v_new)
-        # outflow limiter: no layer loses more than it holds; Σ_k Q_k unchanged (core.vertical.ale.limit_outflow)
-        Qx, Qy, n_lim = limit_outflow(st.h, Qx, Qy, self.area, dt, act)
-        divh = Qx[..., 1:] - Qx[..., :-1] + Qy[:, 1:, :] - Qy[:, :-1, :]
-        h_lag = lagrangian_thickness(st.h, divh, dt, self.area)
-        V0, V1 = self.layer_volumes(st.eta, st.h), self.layer_volumes(eta_new, h_lag)
-        Fz = np.zeros((n + 1,) + self.H.shape)                              # Lagrangian: no flux through interfaces
-        ok = np.broadcast_to(act[None], V1.shape) & (V1 > 0)
+        lf = self._layer_transport(st, eta_new, u_new, v_new, self._fluxes, self.theta_bc, self.open, wu, wv,
+                                   qe, qw, qn, qs)
+        self._last_layer_fluxes = lf
+        Qx, Qy, Fz, V0, V1, ok, h_lag, n_lim = lf.Qx, lf.Qy, lf.Fz, lf.V0, lf.V1, lf.ok, lf.h_dagger, lf.n_limited
         self._T_in = self._exterior_T(st.h) if self.open else None        # inflow T on hⁿ (spec §3.5)
         ntr = self.n_tracers
         self._tr_in = self._exterior_tr(st.h) if (self.open and ntr) else None
@@ -1995,29 +1987,9 @@ class SigmaBaroclinic:
                                                                                tv, st.closure, self._flather_args())
         self._open_velocity(st, u_new, v_new)
 
-        # layer transports consistent with the free-surface flux (fluxes.Du / Dv: upwind face depth)
-        un = np.where(self._fluxes.wet_u[None], st.u, 0.0)
-        vn = np.where(self._fluxes.wet_v[None], st.v, 0.0)
-        # depth mean with the free-surface θ, baroclinic part with θ_bc (see transport_velocity)
-        tb, ds = self.theta_bc, self.ds[:, None, None]
-        ux = tb * u_new + (1 - tb) * un + ((th - tb) * ((ds * u_new).sum(0) - (ds * un).sum(0)))[None]
-        vy = tb * v_new + (1 - tb) * vn + ((th - tb) * ((ds * v_new).sum(0) - (ds * vn).sum(0)))[None]
-        Qx = (self.fs.Lu * self._fluxes.Du)[None] * ds * ux
-        Qy = (self.fs.Lv * self._fluxes.Dv)[None] * ds * vy
-        if self.open:
-            # open faces: Δσ_k × the free-surface (Flather) flux + the baroclinic part, so Σ_k Q_k is exactly
-            # the volume flux of the continuity equation
-            for Q, D, Qo, L, vo, vn1 in ((Qx, self._fluxes.open_Du, self._fluxes.open_Qu, self.fs.Lu, st.u, u_new),
-                                         (Qy, self._fluxes.open_Dv, self._fluxes.open_Qv, self.fs.Lv, st.v, v_new)):
-                po, pn = self._baroclinic_part(vo)[1], self._baroclinic_part(vn1)[1]
-                ds = self.ds[:, None, None]
-                Q[...] = np.where((D > 0)[None], ds * Qo[None] + (L * D)[None] * ds * (tb * pn + (1 - tb) * po), Q)
-        V0, V1 = self.layer_volumes(st.eta), self.layer_volumes(eta_new)
-        divh = Qx[..., 1:] - Qx[..., :-1] + Qy[:, 1:, :] - Qy[:, :-1, :]
-        Fz = np.zeros((n + 1,) + self.H.shape)                              # volume flux through interface k (k=0 bed)
-        Fz[1:] = -np.cumsum((V1 - V0) / dt + divh, axis=0)
-        Fz[-1] = 0.0                                                        # surface: round-off residual only
-        ok = (np.broadcast_to(self.fs.active[None], V1.shape)) & (V1 > 0)
+        lf = self._layer_transport(st, eta_new, u_new, v_new, self._fluxes, self.theta_bc, self.open)
+        self._last_layer_fluxes = lf
+        Qx, Qy, Fz, V0, V1, ok = lf.Qx, lf.Qy, lf.Fz, lf.V0, lf.V1, lf.ok
         C = self._advect(np.stack([st.T, st.T**2]), V0, V1, Qx, Qy, Fz, ok)
         T_new = C[0]
         mix = V1 * (C[1] - C[0] ** 2) / dt
