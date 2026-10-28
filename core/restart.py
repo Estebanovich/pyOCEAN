@@ -108,11 +108,12 @@ def write_restart(path: str | Path, model: SigmaBaroclinic, state: SigmaState) -
                                         {"units": "m s-2", "long_name": "AB history of explicit u tendencies, newest first"})
         data["ab_hist_v"] = xr.Variable(("hist", "layer", "yv", "x"), np.stack([g[1] for g in state.g_hist]),
                                         {"units": "m s-2", "long_name": "AB history of explicit v tendencies, newest first"})
-    gls = model.core.gls
-    if gls is not None:
+    closure = state.closure if state.closure is not None else (
+        None if model.core.gls is None else {n: getattr(model.core.gls, n) for n in ("tke", "eps", "akv")})
+    if closure is not None:
         ny, nx = model.H.shape
         for name, units in (("tke", "m2 s-2"), ("eps", "m2 s-3"), ("akv", "m2 s-1")):
-            data[f"gls_{name}"] = xr.Variable(("level", "y", "x"), getattr(gls, name).reshape(-1, ny, nx),
+            data[f"gls_{name}"] = xr.Variable(("level", "y", "x"), closure[name].reshape(-1, ny, nx),
                                               {"units": units, "long_name": f"GLS {name} at layer interfaces"})
     if (model.open or getattr(model, "ale", False)) and model.T_ext is not None:
         data["T_ext"] = xr.Variable(("layer", "y", "x"), np.asarray(model.T_ext, np.float64),
@@ -174,6 +175,9 @@ def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
             raise ValueError("restart has no GLS state but the model uses closure='gls'")
         gls = model.core.gls
         gls.tke, gls.eps, gls.akv = (ds[f"gls_{n}"].values.reshape(gls.tke.shape).copy() for n in ("tke", "eps", "akv"))
+        closure = {"tke": gls.tke, "eps": gls.eps, "akv": gls.akv}
+    else:
+        closure = None
     if model.open:
         if "T_ext" not in ds:
             raise ValueError("restart has no external tracer but the model has open boundaries")
@@ -197,4 +201,4 @@ def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
         model.rho_ref = ReferenceProfile(ds["rho_ref_z"].values.copy(), ds["rho_ref_rho"].values.copy())
     return SigmaState(g_hist=hist, time=float(ds.attrs["time"]), n_trunc=int(ds.attrs.get("n_trunc", 0)),
                       n_limited=int(ds.attrs.get("n_limited", 0)),
-                      tr=ds["tr"].values.copy() if "tr" in ds else None, **kw)
+                      tr=ds["tr"].values.copy() if "tr" in ds else None, closure=closure, **kw)

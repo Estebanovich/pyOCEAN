@@ -121,6 +121,7 @@ class SigmaState:
     n_trunc: int = 0                                         # CFL velocity truncations so far (ALE, counted faces)
     n_limited: int = 0                                       # cell-layers scaled by the outflow limiter so far (ALE)
     tr: np.ndarray | None = None                             # passive tracers (ntr, N, ny, nx), ALE only
+    closure: dict | None = None                              # turbulence-closure state (GLS: tke, eps, akv), N1
 
 
 def _up3_faces(c: np.ndarray, flux: np.ndarray, ok: np.ndarray, axis: int, order: int = 3) -> np.ndarray:
@@ -1228,6 +1229,17 @@ class SigmaBaroclinic:
         self._vi = g                                                    # geometry of the vector-invariant terms
 
     # ------------------------------------------------------------------ helpers
+    def _sync_closure_in(self, st: SigmaState) -> None:
+        """Load the closure state carried by ``st`` into the GLS object (by reference, no copies)."""
+        gls = self.core.gls
+        if gls is not None and st.closure is not None:
+            gls.tke, gls.eps, gls.akv = st.closure["tke"], st.closure["eps"], st.closure["akv"]
+
+    def _sync_closure_out(self) -> dict | None:
+        """The closure state to carry to the next step (references to the GLS arrays), or None."""
+        gls = self.core.gls
+        return None if gls is None else {"tke": gls.tke, "eps": gls.eps, "akv": gls.akv}
+
     def initial_state(self, eta: np.ndarray, T: np.ndarray, h_src: np.ndarray | None = None,
                       tr: np.ndarray | None = None) -> SigmaState:
         """
@@ -1255,7 +1267,7 @@ class SigmaBaroclinic:
         self.T_ext = np.array(T, float)                                # inflow / sponge target at open boundaries
         st = SigmaState(eta=np.array(eta, float), u=np.zeros((self.n, ny, nx + 1)),
                         v=np.zeros((self.n, ny + 1, nx)), T=np.array(T, float),
-                        h=self._initial_h(eta) if self.ale else None, tr=tr)
+                        h=self._initial_h(eta) if self.ale else None, tr=tr, closure=self._sync_closure_out())
         if self.ale and self.regrid_rule == "hybrid":
             for _ in range(self.init_iterations):
                 fields = [st.T] + ([] if st.tr is None else list(st.tr))
@@ -1325,7 +1337,7 @@ class SigmaBaroclinic:
         tr = None if tr_src is None else np.stack(
             [np.where(wet[None], rm.remap_columns(h_src, f, h, self.remap_code, wet), 0.0) for f in tr_src])
         st = SigmaState(eta=np.array(eta, float), u=np.zeros((self.n, ny, nx + 1)),
-                        v=np.zeros((self.n, ny + 1, nx)), T=T, h=h, tr=tr)
+                        v=np.zeros((self.n, ny + 1, nx)), T=T, h=h, tr=tr, closure=self._sync_closure_out())
         self.T_ext, self.h_ext = T.copy(), h.copy()                    # exterior profile in z (spec §3.5)
         self.tr_ext = None if tr is None else tr.copy()
         return st
@@ -2269,6 +2281,7 @@ class SigmaBaroclinic:
             self._evaluate_exterior(st.time + dt, Hu_e[None] * ds, Hv_e[None] * ds, None, None)
             D0 = np.maximum(np.nan_to_num(self.H + st.eta, nan=self.fs.d_min), self.fs.d_min)
             self._T_in = self._exterior_T(D0[None] * ds)
+        self._sync_closure_in(st)
         eta_new, u_new, v_new = self.core.step(st.eta, st.u, st.v, G_u=gu_ab, G_v=gv_ab, tau_u=tu, tau_v=tv,
                                                **self._flather_args())
         self._open_velocity(st, u_new, v_new)
@@ -2311,4 +2324,4 @@ class SigmaBaroclinic:
             T_new = (T_new + r * (self.T_ext if self._ext is None else self._T_in)) / (1.0 + r)
         omega = Fz / np.where(self.area > 0, self.area, 1.0)[None]
         return SigmaState(eta=eta_new, u=u_new, v=v_new, T=T_new, g_hist=hist, omega=omega, mix_num=mix,
-                          Qx=Qx, Qy=Qy, Fz=Fz, time=st.time + dt)
+                          Qx=Qx, Qy=Qy, Fz=Fz, time=st.time + dt, closure=self._sync_closure_out())
