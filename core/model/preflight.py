@@ -10,6 +10,8 @@ that can dry next to open edges, the hybrid floor) stay where the grid is built.
 """
 from __future__ import annotations
 
+import numpy as np
+
 from core.model.contract import Issue
 
 EDGES = ("west", "east", "south", "north")
@@ -25,7 +27,7 @@ ALE_ONLY = ("regrid", "regrid_params", "remap_scheme", "h_thin_bed", "init_itera
             "thin_layer_cutoff", "mix_diagnostic", "thickness_flux")
 
 # arguments that act on salinity and need salinity=True (N2a)
-SALINITY_ONLY = ("fw", "variance_budget", "tef_face", "sponge_S")
+SALINITY_ONLY = ("fw", "variance_budget", "tef_face", "tef_region", "sponge_S")
 
 
 def _opts(values) -> str:
@@ -140,12 +142,27 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
         if tlc == "mom6":
             warn("free_surface", "thin_layer_coupling='mom6' has no effect with vertical_coordinate='sigma_eulerian'")
     # ---- salinity (N2a, spec 2026-10-28-n2a-salinity-freshwater §7).  ``fw`` is a step() argument and
-    # ``variance_budget`` (task 6) is a constructor argument; ``tef_face`` arrives later: absent names are not checked
+    # ``variance_budget`` (task 6) and ``tef_face`` (task 7) are constructor arguments
     sal = bool(a.get("salinity", False))
     for name in SALINITY_ONLY:
         v = a.get(name)
         if v is not None and v is not False and not sal:
             err("salinity", f"{name} needs salinity=True (it acts on the salinity S)")
+    # TEF and Lorenz's relation (N2a task 7, diagnostics.tef)
+    tf = a.get("tef_face")
+    bathy = a.get("bathy")
+    if tf is not None:
+        shp = () if bathy is None else np.shape(bathy)
+        nx = shp[1] if len(shp) == 2 else None
+        if int(tf) != tf or tf < 0 or (nx is not None and tf > nx):
+            err("tef", f"tef_face={tf!r} must be a u-face column 0 … nx" + ("" if nx is None else f" (= {nx})"))
+        if a.get("kh", 0.0) > 0:
+            warn("tef", "tef_face with kh > 0: the along-layer diffusive salt flux through the transect is not an "
+                        "exchange-flow transport and is not in the TEF bins, so Lorenz's relation (32) misses it")
+    if a.get("tef_sign", 1) not in (1, -1):
+        err("tef", f"tef_sign must be +1 or −1, got {a.get('tef_sign')!r}")
+    if a.get("tef_region") is not None and not a.get("variance_budget", False):
+        err("tef", "tef_region integrates the variance budget over the region: it needs variance_budget=True")
     if not sal and a.get("s_coef", 0.0) != 0.0:
         warn("salinity", f"s_coef={a['s_coef']!r} is ignored with salinity=False (there is no S in the density); "
                          "pass salinity=True")

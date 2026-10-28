@@ -140,14 +140,31 @@ class TracerAdvection:
             fy[..., -1, :] = Qy[None, :, -1, :] * np.where(Qy[None, :, -1, :] < 0, ext[..., -1, :], c[..., -1, :])
         return fx, fy
 
+    def flux_x(self, c: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, ok: np.ndarray, centred: bool = False,
+               inflow: np.ndarray | None = None) -> np.ndarray:
+        """
+        x-face fluxes Q·c_face (ntr, N, ny, nx+1) [tracer m³ s⁻¹] of the stack c that ``rhs`` differences: the
+        compiled WENO5 faces of _advect_div (_advect_faces_h, the same kernel) or the faces of ``rhs_numpy``.  Used
+        only for the effective transect flux of the TEF diagnostic (N2a task 7).
+        """
+        if not centred and self.tracer_scheme.startswith("weno5"):
+            return self.faces_h(c, Qx, Qy, np.broadcast_to(ok, c.shape[1:]), inflow=inflow)[0]
+        okb = np.broadcast_to(ok, c.shape)
+        return Qx * self.open_faces(self.faces(c, np.broadcast_to(Qx, c.shape[:1] + Qx.shape), okb, 3, centred),
+                                    c, Qx, 3, inflow)
+
     def advect_fct(self, C: np.ndarray, V0: np.ndarray, V1: np.ndarray, Qx: np.ndarray, Qy: np.ndarray,
-                   ok: np.ndarray, unlimited: bool = False, inflow: np.ndarray | None = None) -> np.ndarray:
+                   ok: np.ndarray, unlimited: bool = False, inflow: np.ndarray | None = None,
+                   flux_face_i: int | None = None):
         """
         _advect_fct_numpy with its arithmetic in fused Numba kernels (_fct_stage, _fct_fluxes, _fct_coeff_kernel,
         _fct_final): the NumPy glue cost 23–36 % of the BayIW step (2026-10-14).  ``unlimited``: the NumPy path.
+        ``flux_face_i`` (TEF, N2a task 7): also return the effective flux of the step through u-face column i,
+        F_L + C·A (Zalesak 1979, eq. 14), (ntr, N, ny): (C_new, fx_i).
         """
         if unlimited:
-            return self.advect_fct_numpy(C, V0, V1, Qx, Qy, ok, unlimited=True, inflow=inflow)
+            return self.advect_fct_numpy(C, V0, V1, Qx, Qy, ok, unlimited=True, inflow=inflow,
+                                         flux_face_i=flux_face_i)
         dt = float(self.dt)
         C = np.ascontiguousarray(C, dtype=float)
         Qx, Qy = np.ascontiguousarray(Qx, dtype=float), np.ascontiguousarray(Qy, dtype=float)
@@ -173,12 +190,18 @@ class TracerAdvection:
         qL, cL = q1, c1                                                  # stage buffers reused
         sb._fct_stage(q0, q0, FLx, FLy, 0.0, 1.0, dt, V1, C, qL, cL)
         Cx, Cy = sb._fct_coeff_kernel(C, cL, V1, Ax, Ay, okc, dt)
-        return sb._fct_final(q0, FLx, FLy, Ax, Ay, Cx, Cy, dt, V1, C)
+        out = sb._fct_final(q0, FLx, FLy, Ax, Ay, Cx, Cy, dt, V1, C)
+        if flux_face_i is None:
+            return out
+        i = flux_face_i
+        return out, FLx[..., i] + Cx[..., i] * Ax[..., i]
 
     def advect_fct_numpy(self, C: np.ndarray, V0: np.ndarray, V1: np.ndarray, Qx: np.ndarray, Qy: np.ndarray,
-                         ok: np.ndarray, unlimited: bool = False, inflow: np.ndarray | None = None) -> np.ndarray:
+                         ok: np.ndarray, unlimited: bool = False, inflow: np.ndarray | None = None,
+                         flux_face_i: int | None = None):
         """
-        NumPy reference of _advect_fct (test oracle).
+        NumPy reference of _advect_fct (test oracle).  ``flux_face_i``: also return the step's flux through u-face
+        column i, F_L + C·A (F_H when ``unlimited``), (ntr, N, ny).
         SSP-RK3 WENO5 advection of the stack C with Zalesak (1979) FCT (spec 2026-10-14 §4).  The high-order flux
         of the step is the RK3 combination F_H = (F(c0) + F(c1))/6 + 2F(c2)/3, so V1 c_RK3 = V0 c0 − Δt ∇·F_H;
         the low-order flux is donor cell, V1 c_L = V0 c0 − Δt ∇·F_L, bounded because limit_outflow keeps every
@@ -202,24 +225,32 @@ class TracerAdvection:
         FHy = (fy0 + fy1) / 6.0 + 2.0 * fy2 / 3.0
         FLx, FLy = self.upwind_faces_h(C, Qx, Qy, inflow)
         Ax, Ay = FHx - FLx, FHy - FLy
+        i = flux_face_i
         if unlimited:
-            return safe(q0 - dt * div(FHx, FHy), V1)
+            out = safe(q0 - dt * div(FHx, FHy), V1)
+            return out if i is None else (out, FHx[..., i])
         cL = safe(q0 - dt * div(FLx, FLy), V1)
         okc = np.ascontiguousarray(np.broadcast_to(ok, C.shape[1:]))
         numba.set_num_threads(threads._THREADS[0])
         Cx, Cy = sb._fct_coeff_kernel(np.ascontiguousarray(C, dtype=float), np.ascontiguousarray(cL),
                                    np.ascontiguousarray(V1, dtype=float), np.ascontiguousarray(Ax),
                                    np.ascontiguousarray(Ay), okc, float(dt))
-        return safe(q0 - dt * div(FLx + Cx * Ax, FLy + Cy * Ay), V1)
+        out = safe(q0 - dt * div(FLx + Cx * Ax, FLy + Cy * Ay), V1)
+        return out if i is None else (out, FLx[..., i] + Cx[..., i] * Ax[..., i])
 
     def advect_numpy(self, C: np.ndarray, V0: np.ndarray, V1: np.ndarray, Qx: np.ndarray, Qy: np.ndarray,
-                     Fz: np.ndarray, ok: np.ndarray, inflow: np.ndarray | None = None) -> np.ndarray:
+                     Fz: np.ndarray, ok: np.ndarray, inflow: np.ndarray | None = None,
+                     flux_face_i: int | None = None):
         """
         NumPy reference of _advect (test oracle).
         SSP-RK3 flux-form advection of the tracer stack C (ntr,N,ny,nx) with frozen
         transports Qx, Qy (layer volume fluxes at faces) and Fz (N+1,ny,nx, through
         the interfaces); layer volumes go linearly from V0 to V1.
+        ``flux_face_i`` (TEF, N2a task 7): also return the effective flux of the step through u-face column i,
+        (ntr, N, ny): SSP-RK3 (F(c0) + F(c1))/6 + 2F(c2)/3; 'pc' the corrector's flux F(c^{n+½}).
         """
+        fi = flux_face_i
+        fx = lambda c, centred=False: self.flux_x(c, Qx, Qy, ok, centred, inflow)[..., fi]   # noqa: E731
         dt = self.dt
         rhs = lambda c, centred=False: self.rhs(c, Qx, Qy, Fz, ok, centred, inflow)          # noqa: E731
 
@@ -231,7 +262,8 @@ class TracerAdvection:
             # upwind (WENO) faces of the mid-step tracer — upwinding applied once (CROCO step3d_t.F)
             Vh = V0 + 0.5 * dV
             ch = safe(q0 + 0.5 * dt * rhs(C, centred=True), Vh)
-            return safe(q0 + dt * rhs(ch), V1)
+            out = safe(q0 + dt * rhs(ch), V1)
+            return out if fi is None else (out, fx(ch))
         q1 = q0 + dt * rhs(C)
         Va = V0 + dV
         c1 = safe(q1, Va)
@@ -239,17 +271,23 @@ class TracerAdvection:
         Vb = V0 + 0.5 * dV
         c2 = safe(q2, Vb)
         q3 = q0 / 3.0 + 2.0 / 3.0 * (q2 + dt * rhs(c2))
-        return safe(q3, V1)
+        if fi is None:
+            return safe(q3, V1)
+        return safe(q3, V1), (fx(C) + fx(c1)) / 6.0 + 2.0 * fx(c2) / 3.0
 
     def advect(self, C: np.ndarray, V0: np.ndarray, V1: np.ndarray, Qx: np.ndarray, Qy: np.ndarray,
-               Fz: np.ndarray, ok: np.ndarray, inflow: np.ndarray | None = None) -> np.ndarray:
+               Fz: np.ndarray, ok: np.ndarray, inflow: np.ndarray | None = None,
+               flux_face_i: int | None = None):
         """
         SSP-RK3 flux-form advection of the tracer stack C (ntr,N,ny,nx) with frozen transports Qx, Qy and Fz;
         layer volumes go linearly from V0 to V1.  The stage combinations and the ``safe`` division run in the
         fused kernel _rk_stage with _advect_numpy's arithmetic (the reference); 'pc' keeps the NumPy path.
+        ``flux_face_i`` (TEF, N2a task 7): also return the step's flux through u-face column i, (ntr, N, ny):
+        (C_new, (F(c0) + F(c1))/6 + 2F(c2)/3) — the SSP-RK3 combination that V¹c¹ − V⁰c⁰ differences
+        (Shu & Osher 1988), with the x-face fluxes of the same kernel (``flux_x``).
         """
         if self.tracer_time == "pc":
-            return self.advect_numpy(C, V0, V1, Qx, Qy, Fz, ok, inflow)
+            return self.advect_numpy(C, V0, V1, Qx, Qy, Fz, ok, inflow, flux_face_i)
         dt = self.dt
         C = np.ascontiguousarray(C, dtype=float)
         if np.shape(V0) != C.shape[1:] or np.shape(V1) != C.shape[1:]:     # the kernel does not check bounds
@@ -265,7 +303,10 @@ class TracerAdvection:
         sb._rk_stage(f(q0), f(q1), f(self.rhs(c1, Qx, Qy, Fz, ok, inflow=inflow)), dt, f(Vb), f(C), 2, q2.ravel(), c2.ravel())
         q3, c3 = np.empty_like(C), np.empty_like(C)
         sb._rk_stage(f(q0), f(q2), f(self.rhs(c2, Qx, Qy, Fz, ok, inflow=inflow)), dt, f(V1), f(C), 3, q3.ravel(), c3.ravel())
-        return c3
+        if flux_face_i is None:
+            return c3
+        fx = lambda c: self.flux_x(c, Qx, Qy, ok, inflow=inflow)[..., flux_face_i]          # noqa: E731
+        return c3, (fx(C) + fx(c1)) / 6.0 + 2.0 * fx(c2) / 3.0
 
 
 class TracerDiffusion:

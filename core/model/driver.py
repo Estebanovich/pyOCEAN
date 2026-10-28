@@ -24,13 +24,18 @@ barotropic fluxes and layer fluxes on the model for inspection only.
 
 Tracer stack (N2a, spec 2026-10-28-n2a-salinity-freshwater §1): ``[T, (T²), S, (S²), tr…]``, positions from
 ``_stack_layout``; T² in σ always and in ALE with ``mix_diagnostic`` or ``variance_budget``, S with ``salinity``,
-S² with ``variance_budget`` (N2a task 6), the passive tracers last.  S follows the path of T at every phase; with
+S² with ``variance_budget`` (N2a task 6) or ``tef_face`` (task 7), the passive tracers last.  S follows the path of T at every phase; with
 ``salinity`` both T and S are diffused along the layers as fields (no T − T_ref(z) anomaly: the reference profile
 is a density, and splitting it into T_ref and S_ref is not defined; spec §"Decisiones").
 
 Variance budget (``variance_budget=True``, N2a task 6, ``core.components.variance_budget``): each tracer operator
 of phases 7–9 records its change of Σ V c² for S and T in ``SigmaState.budget``; the advective term is taken from
 the stack right after the advection, before the freshwater substep (which scales the S² member by r, S² by r²).
+
+TEF (``tef_face``, N2a task 7, ``diagnostics.tef``): the advection returns the step's effective flux through the
+transect column (the same fluxes that updated the cells), and ``TEFTransect.add`` sorts its volume, S and S² fluxes
+into salinity bins; with ``tef_region`` the step's budget, freshwater volume, open-face inflow and region content are
+integrated in ``TEFRegion`` after the step (Lorenz et al. 2021, eq. 32).
 
 ``debug=True`` hashes the arrays alive at the end of every phase (``phase_hashes``), to find the first phase that
 departs from a reference run; ``keep_terms=True`` keeps the named explicit momentum terms (``last_terms``).
@@ -79,16 +84,18 @@ class StepContext:
 def _stack_layout(model) -> dict[str, int]:
     """
     Positions of the advected tracer stack ``[T, (T²), S, (S²), tr…]`` (N2a): 'T', 'T2' (σ always; ALE with
-    ``mix_diagnostic`` or ``variance_budget``), 'S' (``salinity``), 'S2' (``salinity`` and ``variance_budget``), 'tr' (first passive
+    ``mix_diagnostic`` or ``variance_budget``), 'S' (``salinity``), 'S2' (``salinity`` and ``variance_budget`` or
+    ``tef_face``), 'tr' (first passive
     tracer, ALE ``n_tracers`` > 0) and 'n', the stack length.  Every phase and the inflow stack use it.
     """
     lay, i = {"T": 0}, 1
     vb = getattr(model, "variance_budget", False)
+    tef = getattr(model, "tef_face", None) is not None              # TEF needs the S² flux (task 7)
     if not model.ale or model.mix_diagnostic or vb:
         lay["T2"], i = i, i + 1
     if model.salinity:
         lay["S"], i = i, i + 1
-        if vb:
+        if vb or tef:
             lay["S2"], i = i, i + 1
     ntr = model.n_tracers if model.ale else 0
     if ntr:
@@ -151,6 +158,8 @@ class Driver:
         if self.debug:
             self.phase_hashes.append(hashes)
         m = self.m                                   # last-step records, for inspection only
+        if m.tef_region_budget is not None:
+            self._tef_region(ctx, st, ctx.new_state)
         m._ext, m._fluxes, m._last_layer_fluxes = ctx.ext, ctx.fluxes, ctx.lf
         m._T_in = ctx.vals.get("T_in", m._T_in)
         m._tr_in = ctx.vals.get("tr_in", m._tr_in)
@@ -166,6 +175,41 @@ class Driver:
         else:
             ext = m._ob.inflow_stack(stack, m.T_ext if T_in is None else T_in, tr_in)
         return None if ext is stack else ext
+
+    def _advect_tef(self, ctx: StepContext, lay: dict[str, int], advect, *args, **kw) -> np.ndarray:
+        """
+        The advection call ``advect(*args, **kw)``; with ``tef_face`` it also returns the step's flux through the
+        transect column, whose volume, S and S² parts go to ``TEFTransect.add`` (N2a task 7).
+        """
+        m = self.m
+        if m.tef is None:
+            return advect(*args, **kw)
+        C, fx = advect(*args, flux_face_i=m.tef_face, **kw)
+        m.tef.add(ctx.lf.Qx[:, :, m.tef_face], fx[lay["S"]], fx[lay["S2"]], m.dt)
+        return C
+
+    def _tef_region(self, ctx: StepContext, st, new) -> None:
+        """
+        Region integrals for Lorenz's relation (``TEFRegion``): the step's variance budget, freshwater volume
+        Σ fw A, inflow through the region's open faces (rivers) and the volume, S and S² content before the first
+        step and after this one.
+        """
+        m, reg = self.m, self.m.tef_region_budget
+        if reg.start is None:
+            reg.start = reg.content(m.layer_volumes(st.eta, st.h), st.S)
+        mask, Qx, Qy = reg.mask, ctx.lf.Qx, ctx.lf.Qy
+        q = 0.0                                                         # volume into the region [m³ s⁻¹]
+        if "west" in m.open:
+            q += Qx[:, :, 0][:, mask[:, 0]].sum()
+        if "east" in m.open:
+            q -= Qx[:, :, -1][:, mask[:, -1]].sum()
+        if "south" in m.open:
+            q += Qy[:, 0, :][:, mask[0, :]].sum()
+        if "north" in m.open:
+            q -= Qy[:, -1, :][:, mask[-1, :]].sum()
+        fw = ctx.fluxes.fw
+        reg.add(new.budget, None if fw is None else np.nan_to_num(m.area) * fw, q, m.dt)
+        reg.end = reg.content(m.layer_volumes(new.eta, new.h), new.S)
 
     # ------------------------------------------------------------------ phases shared by σ and ALE
     def _explicit_momentum(self, ctx: StepContext) -> None:
@@ -262,8 +306,8 @@ class Driver:
         S_in_now = ctx.vals.get("S_in", m._S_in) if sal else None
         lay = _stack_layout(m)                                         # [T, T², S, (S²)]
         stack = np.stack(_stack_fields(lay, st.T, st.S, ()))
-        C = m._tracer_advection.advect(stack, lf.V0, lf.V1, lf.Qx, lf.Qy, lf.Fz, lf.ok,
-                                       self._inflow(stack, T_in_now, None, S_in_now))
+        C = self._advect_tef(ctx, lay, m._tracer_advection.advect, stack, lf.V0, lf.V1, lf.Qx, lf.Qy, lf.Fz, lf.ok,
+                             self._inflow(stack, T_in_now, None, S_in_now))
         mix = lf.V1 * (C[1] - C[0] ** 2) / dt                          # advection part (T² is not changed by fw)
         bud = self._budget_advection(ctx, C, lay, lf.V1)               # variance budget (N2a), None by default
         V1 = lf.V1
@@ -392,8 +436,9 @@ class Driver:
         stack = np.stack(_stack_fields(lay, st.T, st.S, () if st.tr is None else st.tr))
         inflow = self._inflow(stack, T_in, tr_in, S_in)
         adv = m._tracer_advection
-        C = (adv.advect_fct(stack, lf.V0, V1, lf.Qx, lf.Qy, lf.ok, inflow=inflow) if m.tracer_limiter == "fct"
-             else adv.advect(stack, lf.V0, V1, lf.Qx, lf.Qy, lf.Fz, lf.ok, inflow))
+        C = (self._advect_tef(ctx, lay, adv.advect_fct, stack, lf.V0, V1, lf.Qx, lf.Qy, lf.ok, inflow=inflow)
+             if m.tracer_limiter == "fct"
+             else self._advect_tef(ctx, lay, adv.advect, stack, lf.V0, V1, lf.Qx, lf.Qy, lf.Fz, lf.ok, inflow))
         mix = V1 * (C[1] - C[0] ** 2) / dt if mixd else None                # advection part
         bud = self._budget_advection(ctx, C, lay, V1)                   # variance budget (N2a), None by default
         if lf.V_fw is not None:                                        # freshwater substep at fixed salt (N2a)

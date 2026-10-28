@@ -89,6 +89,7 @@ from core.dynamics import vector_invariant as vi
 from core.dynamics.nonlinear import _spacings_u, _spacings_v, advection_u, advection_v, laplacian_3d
 from core.dynamics.sigma_wd import SigmaWetDry, vertical_implicit
 from diagnostics.mixing import reference_potential_energy
+from diagnostics.tef import TEFRegion, TEFTransect
 from core.vertical import regrid as rg
 from core.vertical import remap as rm
 from core.dynamics import open_boundary as obc
@@ -932,6 +933,15 @@ class SigmaBaroclinic:
           (needs ``salinity=True``; default False, nothing changes; N2a task 6, Klingbeil et al. 2014,
           core.components.variance_budget): S² (and in ALE T²) are advected and remapped in the tracer stack;
           the solution is the same bit for bit
+    tef_face : u-face column (0 … nx) of a TEF transect computed during the run (N2a task 7, diagnostics.tef;
+          MacCready 2011, Lorenz et al. 2021): every step the effective advective fluxes of volume, S and S² of
+          that column are sorted into 250 salinity bins (0–40 g kg⁻¹) of ``self.tef`` (a ``TEFTransect``); needs
+          ``salinity=True`` (S² is then advected in the stack).  None (default): nothing changes
+    tef_sign : +1 (default) when flow in +x enters the region (estuary) of the transect, −1 otherwise
+    tef_region : (ny, nx) bool mask of the region (estuary): ``self.tef_region_budget`` (``TEFRegion``) integrates
+          the variance budget, the freshwater volume, the open-face inflow and the volume, salt and S² content of
+          the region every step (needs ``variance_budget=True``); ``diagnostics.tef.lorenz_mixing`` then gives
+          Lorenz's M_e, equal to the region's M_tot to round-off
     ah : horizontal Laplacian viscosity [m² s⁻¹] (free slip)
     adv : momentum advection: 'flux' (default; momentum-conserving flux form with WENO5,
           as CROCO) or the advective form 'upwind3' / 'centred' of core.dynamics.nonlinear
@@ -1029,7 +1039,8 @@ class SigmaBaroclinic:
                  sponge_T: np.ndarray | None = None, sponge_zw: np.ndarray | None = None,
                  sponge_tr: np.ndarray | None = None, bottom_drag: str | None = None, cd: float = 2.5e-3,
                  drag_bg_vel: float = 0.0, hbbl: float = 10.0, salinity: bool = False, s_coef: float = 0.0,
-                 s_ref: float = 35.0, sponge_S: np.ndarray | None = None, variance_budget: bool = False) -> None:
+                 s_ref: float = 35.0, sponge_S: np.ndarray | None = None, variance_budget: bool = False,
+                 tef_face: int | None = None, tef_sign: int = 1, tef_region: np.ndarray | None = None) -> None:
         _args = {k: v for k, v in locals().items() if k != "self"}
         raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
         if ke_scheme == "godunov":                                      # correct spelling; the kernels use 'gudonov'
@@ -1080,6 +1091,10 @@ class SigmaBaroclinic:
         self.kh, self.kv = float(kh), float(kv)
         self.mix_diagnostic = bool(mix_diagnostic)                      # ALE: advect/remap T² for mix_num
         self.variance_budget = bool(variance_budget)                    # N2a: per-operator Σ V c² budget
+        # N2a task 7: TEF on the u-face column tef_face and region integrals for Lorenz et al. (2021) eq. (32)
+        self.tef_face = None if tef_face is None else int(tef_face)
+        self.tef = None if tef_face is None else TEFTransect(int(tef_face), sign=int(tef_sign))
+        self.tef_region_budget = None if tef_region is None else TEFRegion(tef_region)
         act = np.isfinite(np.asarray(bathy, float))
         fl_u = np.zeros((act.shape[0], act.shape[1] + 1), bool)
         fl_v = np.zeros((act.shape[0] + 1, act.shape[1]), bool)
