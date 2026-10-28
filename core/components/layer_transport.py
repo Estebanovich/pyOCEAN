@@ -21,8 +21,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from core.components.freshwater import freshwater_volumes
 from core.model.contract import BuildContext, Issue, Role
-from core.vertical.ale import (lagrangian_thickness, limit_outflow, ppm_transport_x, transport_velocity,
+from core.vertical.ale import (DZ_FLOOR, lagrangian_thickness, limit_outflow, ppm_transport_x, transport_velocity,
                                upwind_transport_x)
 
 
@@ -36,6 +37,8 @@ class LayerFluxes:
     ok: np.ndarray                   # wet cell-layers after the step
     h_dagger: np.ndarray | None = None   # ALE Lagrangian thickness h† [m]
     n_limited: int = 0               # ALE cell-layers scaled by the outflow limiter this step
+    V_fw: np.ndarray | None = None   # layer volumes after the freshwater substep (N2a; None without fw) [m³]
+    h_fw: np.ndarray | None = None   # ALE: h† with the freshwater on the top layer (N2a; None without fw) [m]
 
 
 class SigmaLayerTransport:
@@ -44,9 +47,10 @@ class SigmaLayerTransport:
     reads = ("u", "v", "eta")
     writes = ("Qx", "Qy", "Fz")
 
-    def __init__(self, *, fs, ds: np.ndarray, H: np.ndarray, dt: float, layer_volumes: Callable, ob) -> None:
+    def __init__(self, *, fs, ds: np.ndarray, H: np.ndarray, dt: float, layer_volumes: Callable, ob,
+                 area: np.ndarray | None = None) -> None:
         self.fs, self.ds, self.H, self.dt = fs, ds, H, dt
-        self.layer_volumes, self.ob = layer_volumes, ob
+        self.layer_volumes, self.ob, self.area = layer_volumes, ob, area
 
     def __call__(self, st, eta_new: np.ndarray, u_new: np.ndarray, v_new: np.ndarray, fluxes, theta_bc: float,
                  open_: tuple[str, ...]) -> LayerFluxes:
@@ -69,12 +73,20 @@ class SigmaLayerTransport:
                 ds = self.ds[:, None, None]
                 Q[...] = np.where((D > 0)[None], ds * Qo[None] + (L * D)[None] * ds * (tb * pn + (1 - tb) * po), Q)
         V0, V1 = self.layer_volumes(st.eta), self.layer_volumes(eta_new)
+        V_fw = None
+        fw = getattr(fluxes, "fw", None)
+        if fw is not None:
+            # real freshwater (N2a): V(ηⁿ⁺¹) includes Δt A fw; the advection sees the top layer without it, so the
+            # surface flux Fz_top stays 0 and the freshwater enters in the substep (core.components.freshwater)
+            V_fw = V1
+            A = np.nan_to_num(self.area)
+            V1, _ = freshwater_volumes(V_fw, -dt * A * fw, DZ_FLOOR * A)
         divh = Qx[..., 1:] - Qx[..., :-1] + Qy[:, 1:, :] - Qy[:, :-1, :]
         Fz = np.zeros((n + 1,) + self.H.shape)                              # volume flux through interface k (k=0 bed)
         Fz[1:] = -np.cumsum((V1 - V0) / dt + divh, axis=0)
         Fz[-1] = 0.0                                                        # surface: round-off residual only
         ok = (np.broadcast_to(self.fs.active[None], V1.shape)) & (V1 > 0)
-        return LayerFluxes(Qx, Qy, Fz, V0, V1, ok)
+        return LayerFluxes(Qx, Qy, Fz, V0, V1, ok, V_fw=V_fw)
 
     def check(self, ctx: BuildContext) -> list[Issue]:
         return []
@@ -119,7 +131,15 @@ class ALELayerTransport:
         V0, V1 = self.layer_volumes(st.eta, st.h), self.layer_volumes(eta_new, h_lag)
         Fz = np.zeros((n + 1,) + self.H.shape)                              # Lagrangian: no flux through interfaces
         ok = np.broadcast_to(act[None], V1.shape) & (V1 > 0)
-        return LayerFluxes(Qx, Qy, Fz, V0, V1, ok, h_dagger=h_lag, n_limited=n_lim)
+        h_fw = V_fw = None
+        fw = getattr(fluxes, "fw", None)
+        if fw is not None:
+            # real freshwater (N2a): the top layer (k = N−1) of h† gains fw Δt, so Σ_k h_fw = H + ηⁿ⁺¹ as the free
+            # surface; an evaporation deficit below DZ_FLOOR is taken from the layers below (freshwater_volumes).
+            # h† and V1 (the advection volume) stay without freshwater.
+            h_fw, _ = freshwater_volumes(h_lag, dt * fw, DZ_FLOOR)
+            V_fw = self.layer_volumes(eta_new, h_fw)
+        return LayerFluxes(Qx, Qy, Fz, V0, V1, ok, h_dagger=h_lag, n_limited=n_lim, V_fw=V_fw, h_fw=h_fw)
 
     def check(self, ctx: BuildContext) -> list[Issue]:
         return []

@@ -1160,7 +1160,8 @@ class SigmaBaroclinic:
                                                       layer_volumes=self.layer_volumes, ob=self._ob)
         else:
             self._layer_transport = SigmaLayerTransport(fs=self.fs, ds=self.ds, H=self.H, dt=dt,
-                                                        layer_volumes=self.layer_volumes, ob=self._ob)
+                                                        layer_volumes=self.layer_volumes, ob=self._ob,
+                                                        area=self.area)
         self._last_layer_fluxes = None
         self._driver = Driver(self)
         self._tracer_advection = TracerAdvection(scheme=self.tracer_scheme, time=self.tracer_time, dt=dt, ob=self._ob)

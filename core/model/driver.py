@@ -40,6 +40,7 @@ from typing import Any
 import numba
 import numpy as np
 
+from core.components.freshwater import apply_freshwater
 from core.components.momentum import sum_terms
 from core.dynamics.sigma_wd import vertical_implicit
 from core.model import threads
@@ -178,6 +179,19 @@ class Driver:
     _sigma_explicit_momentum = _ale_explicit_momentum = _explicit_momentum
     _sigma_time_combine = _ale_time_combine = _time_combine
 
+    def _freshwater(self, ctx: StepContext, C: np.ndarray, lay: dict[str, int], V_adv: np.ndarray,
+                    V_fw: np.ndarray) -> None:
+        """
+        Freshwater substep on the advected stack C, in place (N2a, ``core.components.freshwater``): after the
+        advection, before the diffusion; S, S² and passive tracers keep their content, T and T² their value.
+        Sets ``n_limited_fw`` (evaporation-deficit columns) and ``var_surf`` (salinity-variance source of the
+        freshwater, (N, ny, nx), for the variance budget of task 6) in ``ctx.vals``.
+        """
+        m = self.m
+        _, n_lim, var_surf = apply_freshwater(C, lay, V_adv, V_fw, m.dt * np.nan_to_num(m.area) * ctx.fluxes.fw,
+                                              dt=m.dt)
+        ctx.set(n_limited_fw=n_lim, var_surf=var_surf)
+
     # ------------------------------------------------------------------ σ (Eulerian)
     def _sigma_prepare(self, ctx: StepContext) -> None:
         m, st = self.m, ctx.st
@@ -217,15 +231,19 @@ class Driver:
         stack = np.stack(_stack_fields(lay, st.T, st.S, ()))
         C = m._tracer_advection.advect(stack, lf.V0, lf.V1, lf.Qx, lf.Qy, lf.Fz, lf.ok,
                                        self._inflow(stack, T_in_now, None, S_in_now))
+        mix = lf.V1 * (C[1] - C[0] ** 2) / dt                          # advection part (T² is not changed by fw)
+        V1 = lf.V1
+        if lf.V_fw is not None:                                        # freshwater substep at fixed salt (N2a)
+            self._freshwater(ctx, C, lay, lf.V1, lf.V_fw)
+            V1 = lf.V_fw                                               # = layer_volumes(ηⁿ⁺¹)
         T_new = C[0]
         S_new = C[lay["S"]] if sal else None
-        mix = lf.V1 * (C[1] - C[0] ** 2) / dt
         if m.kh > 0:
             if sal:                                                    # T and S as fields (module docstring)
-                T_new = m._tracer_diffusion.diffuse_h(T_new, lf.V1, ctx.eta_new, anomaly=False)
-                S_new = m._tracer_diffusion.diffuse_h(S_new, lf.V1, ctx.eta_new, anomaly=False)
+                T_new = m._tracer_diffusion.diffuse_h(T_new, V1, ctx.eta_new, anomaly=False)
+                S_new = m._tracer_diffusion.diffuse_h(S_new, V1, ctx.eta_new, anomaly=False)
             else:
-                T_new = m._tracer_diffusion.diffuse_h(T_new, lf.V1, ctx.eta_new)
+                T_new = m._tracer_diffusion.diffuse_h(T_new, V1, ctx.eta_new)
         if m.kv > 0:
             D1 = np.maximum(np.nan_to_num(m.H + ctx.eta_new, nan=m.fs.d_min), m.fs.d_min)
             dz = (D1[None] * m.ds[:, None, None]).reshape(n, -1)
@@ -251,7 +269,8 @@ class Driver:
         omega = lf.Fz / np.where(m.area > 0, m.area, 1.0)[None]
         ctx.set(new_state=type(st)(eta=ctx.eta_new, u=ctx.u_new, v=ctx.v_new, T=ctx.T_new, g_hist=ctx.hist,
                                    omega=omega, mix_num=ctx.mix, Qx=lf.Qx, Qy=lf.Qy, Fz=lf.Fz, time=st.time + m.dt,
-                                   closure=ctx.closure, S=ctx.S_new))
+                                   closure=ctx.closure, S=ctx.S_new,
+                                   n_limited=st.n_limited + ctx.vals.get("n_limited_fw", 0)))
 
     # ------------------------------------------------------------------ ALE
     def _ale_prepare(self, ctx: StepContext) -> None:
@@ -305,12 +324,11 @@ class Driver:
         lf = m._layer_transport(ctx.st, ctx.eta_new, ctx.u_new, ctx.v_new, ctx.fluxes, m.theta_bc, m.open,
                                 ctx.wu, ctx.wv, ctx.qe, ctx.qw, ctx.qn, ctx.qs)
         ctx.set(lf=lf)
-        if ctx.fluxes.fw is not None:
-            # real freshwater (N2a): the top layer (k = N−1) of the Lagrangian thickness gains fw Δt, so
-            # Σ_k h_fw = H + ηⁿ⁺¹ as the free surface; h† itself (lf.h_dagger, the advection volume V1) is unchanged
-            h_fw = lf.h_dagger.copy()
-            h_fw[-1] += m.dt * ctx.fluxes.fw
-            ctx.set(h_fw=h_fw)
+        if lf.h_fw is not None:
+            # real freshwater (N2a): h† + fw Δt on the top layer, an evaporation deficit taken from the layers below
+            # (ALELayerTransport); Σ_k h_fw = H + ηⁿ⁺¹.  Remap source and face thickness of the remap; h† itself
+            # (lf.h_dagger, the advection volume V1) is unchanged.  In ctx.vals only with fw (debug hashes).
+            ctx.set(h_fw=lf.h_fw)
 
     def _ale_tracers(self, ctx: StepContext) -> None:
         m, st, lf, ext = self.m, ctx.st, ctx.lf, ctx.ext
@@ -329,6 +347,9 @@ class Driver:
         C = (adv.advect_fct(stack, lf.V0, V1, lf.Qx, lf.Qy, lf.ok, inflow=inflow) if m.tracer_limiter == "fct"
              else adv.advect(stack, lf.V0, V1, lf.Qx, lf.Qy, lf.Fz, lf.ok, inflow))
         mix = V1 * (C[1] - C[0] ** 2) / dt if mixd else None                # advection part
+        if lf.V_fw is not None:                                        # freshwater substep at fixed salt (N2a)
+            self._freshwater(ctx, C, lay, V1, lf.V_fw)
+            h_lag, V1 = lf.h_fw, lf.V_fw                               # diffusion and sponge on h† + fw Δt
         T_lag = C[0]
         S_lag = C[lay["S"]] if sal else None
         tr_lag = [C[lay["tr"] + i] for i in range(ntr)]
@@ -392,5 +413,7 @@ class Driver:
         u_new, v_new, n_trunc = vc.truncate(u_new, v_new, hu1, hv1, dt, st.n_trunc)
         ctx.set(new_state=type(st)(eta=ctx.eta_new, u=u_new, v=v_new, T=ctx.T_new, h=ctx.h_new, g_hist=ctx.hist,
                                    omega=None, mix_num=ctx.mix, Qx=lf.Qx, Qy=lf.Qy, Fz=lf.Fz, time=st.time + dt,
-                                   n_trunc=n_trunc, n_limited=st.n_limited + lf.n_limited, tr=ctx.tr_new,
+                                   n_trunc=n_trunc,
+                                   n_limited=st.n_limited + lf.n_limited + ctx.vals.get("n_limited_fw", 0),
+                                   tr=ctx.tr_new,
                                    S=ctx.S_new))
