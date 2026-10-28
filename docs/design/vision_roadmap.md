@@ -204,7 +204,7 @@ Reorganiza las fases del `CLAUDE.md`. Cambiar el plan del `CLAUDE.md` requiere l
 
 **Etapa N, núcleo modular y experiencia de usuario (agregada el 2026-10-15; diseño en la sección 9):**
 - Va **antes de la Etapa D** (JAX necesita núcleos funcionales separados) y antes de terminar el split-explicit de la Etapa C, que debe entrar ya como componente `FreeSurface`.
-- N1. Contrato de componentes y driver con orden de pasos fijo, extraídos de `SigmaBaroclinic` sin cambiar la física.
+- N1. Contrato de componentes y driver con orden de pasos fijo, extraídos de `SigmaBaroclinic` sin cambiar la física. ✅ 2026-10-28: `core/components/` + driver de 10 fases (`core/model/driver.py`), bit a bit en 31 configuraciones y en las corridas de humo de los benchmarks; spec `docs/superpowers/specs/2026-10-28-n1-component-core-design.md`. Queda para N2: partir `SigmaWetDry.step` (viscosidad, arrastre, superficie libre, cierre) y que el cierre dé κ a los trazadores.
 - N2. Salinidad, TEOS-10 y flujos de superficie completos (calor, onda corta, E − P) en el núcleo 3D, conectando `physics/eos` y `forcing/bulk.py`.
 - N3. KPP como segundo cierre con la misma interfaz que GLS.
 - N4. `Simulation`: config tipada (TOML/YAML) guardada en la salida y el restart, presets con procedencia, pre-flight (verificador de dominio, CFL, compatibilidad de componentes, balance de masa en fronteras), post-mortem, salida CF/Zarr y presupuestos término a término por defecto.

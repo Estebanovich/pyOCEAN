@@ -15,6 +15,29 @@ phase-1 AB2 z-level model.
     Line numbers refer to the source tree of 2026-10-14 (commit `0481616`). They drift; the function names
     do not.
 
+## Since N1 (2026-10-28): ten phases and components
+
+`SigmaBaroclinic.step` now calls `core.model.driver.Driver.step`, which runs the same ten phases in σ and ALE
+(phases 8–9 do nothing in σ). The order is exactly the one described below — the diagrams name the former
+methods of `SigmaBaroclinic`, which remain as delegates to the components listed here.
+
+| # | Phase | Components |
+|---|---|---|
+| 1 | `prepare` | `OpenBoundary.evaluate` (exterior at tⁿ⁺¹); ALE: `ALECoordinate.transport_thickness`, face fractions |
+| 2 | `explicit_momentum` | `PressureGradient`, `Momentum.terms` → `sum_terms` (pgf, coriolis \| vector_invariant, advection, hviscosity, vadvection) |
+| 3 | `time_combine` | `AB3Momentum.combine`; τ/ρ₀ |
+| 4 | `implicit_and_free_surface` | `FreeSurfaceVerticalViscosity.step` (wraps `SigmaWetDry.step`) → `BarotropicFluxes`; ALE: `QuadraticBedDrag.rates` |
+| 5 | `boundary_velocity` | `OpenBoundary.relax_velocity`; ALE: thin bed layers, blending |
+| 6 | `layer_transport` | `SigmaLayerTransport` \| `ALELayerTransport` → `LayerFluxes` |
+| 7 | `tracers` | `TracerAdvection` (inflow stack as argument), `TracerDiffusion`, K_v, boundary sponge |
+| 8 | `vertical_coordinate` | ALE: `ALECoordinate.regrid_remap` |
+| 9 | `interior_sponge` | ALE: `InteriorSponge.apply` |
+| 10 | `finalize` | ALE: `ALECoordinate.remap_faces`, `truncate`; the new `SigmaState` |
+
+`model._driver.debug = True` records a hash of the arrays alive after each phase (`phase_hashes`), to locate
+the first phase that departs from a reference run; `model._driver.keep_terms = True` keeps the named momentum
+terms of the last step (`last_terms`).
+
 ## The model object and the state
 
 A run is a loop over

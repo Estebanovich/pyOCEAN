@@ -141,6 +141,27 @@ deliberately independent of the model classes: they take NumPy arrays.
 | `pressure.py` | hydrostatic pressure and PGF on z-levels; deprecated `surface_pressure_cg` | `hydrostatic_pressure`, `pressure_gradient_x/y`, `surface_pressure_cg` | phase 1 | legacy |
 | `momentum.py` | z-level momentum tendencies (Coriolis, PGF, Laplacian), continuity, diagnostic w | `momentum_tendency`, `coriolis_u/v`, `eta_tendency`, `diagnose_w` | phase 1 | legacy |
 
+### `core/model/` and `core/components/` — the component core (N1, 2026-10-28)
+
+Since N1 `SigmaBaroclinic` is a facade with the same constructor: it builds one component per role and its
+`step` runs the fixed ten-phase driver. The physics did not change (31 golden configurations bit for bit,
+`tests/test_n1_golden.py`). The former private methods of `SigmaBaroclinic` remain as thin delegates.
+
+| Module | Purpose | Main API | Status |
+|---|---|---|---|
+| `core/model/driver.py` | the ten phases of one step, the same in σ and ALE; per-step values passed as locals; `debug` phase hashes, `keep_terms` | `Driver`, `PHASES` | active |
+| `core/model/contract.py` | component contract: roles, issues, documented parameters, single error report | `Role`, `Issue`, `param`, `Component`, `raise_issues`, `ConfigurationError`, `PyOceanConfigWarning` | active |
+| `core/model/preflight.py` | all argument errors at once before building; warnings for arguments a mode ignores | `preflight` | active |
+| `core/model/registry.py` | single variable registry (dims, C-grid location, units, CF name, kind) | `REGISTRY`, `VarSpec` | active |
+| `core/model/threads.py` | thread count of the Numba kernels (one shared list) | `set_threads` | active |
+| `core/components/eos.py`, `pgf.py`, `geometry.py` | linear EOS; Jacobian / two-term / finite-volume PGF with ρ_ref(z) | `LinearEOS`, `PressureGradient`, `LayerGeometry` | active |
+| `core/components/momentum.py`, `time_stepper.py` | named explicit momentum terms and their fixed summation order; AB3 | `Momentum`, `sum_terms`, `AB3Momentum`, `ab3_combine` | active |
+| `core/components/free_surface.py`, `bottom_drag.py` | wrapper of `SigmaWetDry.step` returning `BarotropicFluxes`; quadratic bbl drag | `FreeSurfaceVerticalViscosity`, `BarotropicFluxes`, `QuadraticBedDrag` | active |
+| `core/components/open_boundary.py` | Flather targets, sponge and Orlanski on u′, inflow values, open-face transports; the exterior is returned, not stored | `OpenBoundary` | active |
+| `core/components/layer_transport.py` | σ and ALE layer transports | `SigmaLayerTransport`, `ALELayerTransport`, `LayerFluxes` | active |
+| `core/components/tracers.py` | SSP-RK3/'pc' WENO5 advection with FCT; along-layer K_h | `TracerAdvection`, `TracerDiffusion` | active |
+| `core/components/vertical_coordinate.py`, `sponge.py` | ALE regrid/remap, face geometry (identity cache), velocity remap and CFL backstop; interior sponge | `ALECoordinate`, `InteriorSponge` | active |
+
 ### `core/vertical/` — the ALE toolkit
 
 | Module | Purpose | Main API | Status |
