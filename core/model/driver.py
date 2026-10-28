@@ -187,7 +187,7 @@ class Driver:
         omega = lf.Fz / np.where(m.area > 0, m.area, 1.0)[None]
         ctx.set(new_state=type(st)(eta=ctx.eta_new, u=ctx.u_new, v=ctx.v_new, T=ctx.T_new, g_hist=ctx.hist,
                                    omega=omega, mix_num=ctx.mix, Qx=lf.Qx, Qy=lf.Qy, Fz=lf.Fz, time=st.time + m.dt,
-                                   closure=ctx.closure))
+                                   closure=ctx.closure, S=st.S))             # N2a task 1: S carried unchanged
 
     # ------------------------------------------------------------------ ALE
     def _ale_prepare(self, ctx: StepContext) -> None:
@@ -305,4 +305,5 @@ class Driver:
         u_new, v_new, n_trunc = vc.truncate(u_new, v_new, hu1, hv1, dt, st.n_trunc)
         ctx.set(new_state=type(st)(eta=ctx.eta_new, u=u_new, v=v_new, T=ctx.T_new, h=ctx.h_new, g_hist=ctx.hist,
                                    omega=None, mix_num=ctx.mix, Qx=lf.Qx, Qy=lf.Qy, Fz=lf.Fz, time=st.time + dt,
-                                   n_trunc=n_trunc, n_limited=st.n_limited + lf.n_limited, tr=ctx.tr_new))
+                                   n_trunc=n_trunc, n_limited=st.n_limited + lf.n_limited, tr=ctx.tr_new,
+                                   S=st.S))                                  # N2a task 1: S carried unchanged

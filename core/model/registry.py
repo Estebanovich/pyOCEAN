@@ -28,6 +28,7 @@ _SPECS = [
     VarSpec("u", ("k", "y", "xq"), "u", "m s-1", "sea_water_x_velocity", "prognostic", "layer velocity at u-faces"),
     VarSpec("v", ("k", "yq", "x"), "v", "m s-1", "sea_water_y_velocity", "prognostic", "layer velocity at v-faces"),
     VarSpec("T", ("k", "y", "x"), "t", "degC", "sea_water_potential_temperature", "prognostic", "temperature"),
+    VarSpec("S", ("k", "y", "x"), "t", "1e-3", "sea_water_salinity", "prognostic", "salinity"),
     VarSpec("h", ("k", "y", "x"), "t", "m", "cell_thickness", "prognostic", "ALE layer thickness"),
     VarSpec("tr", ("n", "k", "y", "x"), "t", "1", None, "prognostic", "passive tracers (ALE)"),
     VarSpec("g_hist", ("hist", "k", "y", "xq|yq"), "u", "m s-2", None, "history",

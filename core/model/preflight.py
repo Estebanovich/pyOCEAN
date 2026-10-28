@@ -24,6 +24,9 @@ REMAP = ("pcm", "plm", "ppm_h4")
 ALE_ONLY = ("regrid", "regrid_params", "remap_scheme", "h_thin_bed", "init_iterations", "max_truncations",
             "thin_layer_cutoff", "mix_diagnostic", "thickness_flux")
 
+# arguments that act on salinity and need salinity=True (N2a)
+SALINITY_ONLY = ("fw", "variance_budget", "tef_face")
+
 
 def _opts(values) -> str:
     return ", ".join(repr(v) for v in values)
@@ -136,6 +139,16 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
                                             "to the ALE coordinate only)")
         if tlc == "mom6":
             warn("free_surface", "thin_layer_coupling='mom6' has no effect with vertical_coordinate='sigma_eulerian'")
+    # ---- salinity (N2a, spec 2026-10-28-n2a-salinity-freshwater §7).  ``fw`` is a step() argument and
+    # ``variance_budget`` / ``tef_face`` arrive with later N2a tasks: absent names are simply not checked
+    sal = bool(a.get("salinity", False))
+    for name in SALINITY_ONLY:
+        v = a.get(name)
+        if v is not None and v is not False and not sal:
+            err("salinity", f"{name} needs salinity=True (it acts on the salinity S)")
+    if not sal and a.get("s_coef", 0.0) != 0.0:
+        warn("salinity", f"s_coef={a['s_coef']!r} is ignored with salinity=False (there is no S in the density); "
+                         "pass salinity=True")
     if a["sponge_rate"] is None and ({"sponge_T", "sponge_zw", "sponge_tr"} & given):
         warn("interior_sponge", "sponge_T / sponge_zw / sponge_tr are ignored without sponge_rate")
     return out

@@ -109,7 +109,7 @@ from core.components.tracers import TracerAdvection, TracerDiffusion
 from core.components.sponge import InteriorSponge
 from core.components.vertical_coordinate import ALECoordinate
 from core.model.driver import Driver
-from core.model.contract import raise_issues
+from core.model.contract import ConfigurationError, raise_issues
 from core.model.preflight import preflight
 from core.components.time_stepper import AB3, AB3Momentum, _ab3_kernel, ab3_combine  # noqa: F401  (re-exported)
 from core.model.threads import _THREADS, set_threads  # noqa: F401  (one shared list; re-exported)
@@ -120,7 +120,7 @@ REMAP_SCHEMES = {"pcm": rm.PCM, "plm": rm.PLM, "ppm_h4": rm.PPM_H4}
 
 @dataclass
 class SigmaState:
-    """Prognostic state: η (ny,nx), u (N,ny,nx+1), v (N,ny+1,nx), T (N,ny,nx); diagnostics."""
+    """Prognostic state: η (ny,nx), u (N,ny,nx+1), v (N,ny+1,nx), T (N,ny,nx), S (N,ny,nx) (salinity); diagnostics."""
     eta: np.ndarray
     u: np.ndarray
     v: np.ndarray
@@ -137,6 +137,7 @@ class SigmaState:
     n_limited: int = 0                                       # cell-layers scaled by the outflow limiter so far (ALE)
     tr: np.ndarray | None = None                             # passive tracers (ntr, N, ny, nx), ALE only
     closure: dict | None = None                              # turbulence-closure state (GLS: tke, eps, akv), N1
+    S: np.ndarray | None = None                              # salinity (N, ny, nx) [g kg⁻¹], ``salinity=True`` (N2a)
 
 
 def _up3_faces(c: np.ndarray, flux: np.ndarray, ok: np.ndarray, axis: int, order: int = 3) -> np.ndarray:
@@ -919,6 +920,9 @@ class SigmaBaroclinic:
     ----------
     h_grid, bathy, dt, n_layers, z0, closure, nu_const, theta, d_min, g : as ``SigmaWetDry``
     rho0 : reference density [kg m⁻³];  t_coef : α [kg m⁻³ °C⁻¹];  t_ref : T₀ [°C]
+    salinity : carry salinity S [g kg⁻¹] in the state (N2a, spec 2026-10-28-n2a-salinity-freshwater); the EOS is
+          then ρ = ρ₀ − α (T − T₀) + β (S − S₀) (Vallis 2006, eq. 1.156) and ``initial_state`` needs S
+    s_coef : β [kg m⁻³ (g kg⁻¹)⁻¹];  s_ref : S₀ [g kg⁻¹] (both fixed after construction, as t_coef)
     ah : horizontal Laplacian viscosity [m² s⁻¹] (free slip)
     adv : momentum advection: 'flux' (default; momentum-conserving flux form with WENO5,
           as CROCO) or the advective form 'upwind3' / 'centred' of core.dynamics.nonlinear
@@ -1014,7 +1018,8 @@ class SigmaBaroclinic:
                  tracer_limiter: str | None = None, n_tracers: int = 0, sponge_rate: np.ndarray | None = None,
                  sponge_T: np.ndarray | None = None, sponge_zw: np.ndarray | None = None,
                  sponge_tr: np.ndarray | None = None, bottom_drag: str | None = None, cd: float = 2.5e-3,
-                 drag_bg_vel: float = 0.0, hbbl: float = 10.0) -> None:
+                 drag_bg_vel: float = 0.0, hbbl: float = 10.0, salinity: bool = False, s_coef: float = 0.0,
+                 s_ref: float = 35.0) -> None:
         _args = {k: v for k, v in locals().items() if k != "self"}
         raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
         if ke_scheme == "godunov":                                      # correct spelling; the kernels use 'gudonov'
@@ -1103,7 +1108,8 @@ class SigmaBaroclinic:
         self.h_ext, self._T_in = None, None
         self.hg, self.dt, self.n, self.g = h_grid, dt, n_layers, g
         self.rho0, self.t_coef, self.t_ref, self.ah, self.adv = rho0, t_coef, t_ref, ah, adv
-        self._eos = LinearEOS(rho0=rho0, t_coef=t_coef, t_ref=t_ref)
+        self.salinity, self.s_coef, self.s_ref = bool(salinity), float(s_coef), float(s_ref)
+        self._eos = LinearEOS(rho0=rho0, t_coef=t_coef, t_ref=t_ref, s_coef=self.s_coef, s_ref=self.s_ref)
         self._time_stepper = AB3Momentum()
         self._pgf = PressureGradient(pgf, self._eos, g, rho_ref)
         self.fs = self.core.fs
@@ -1255,7 +1261,7 @@ class SigmaBaroclinic:
         return self._free_surface.closure_out()
 
     def initial_state(self, eta: np.ndarray, T: np.ndarray, h_src: np.ndarray | None = None,
-                      tr: np.ndarray | None = None) -> SigmaState:
+                      tr: np.ndarray | None = None, S: np.ndarray | None = None) -> SigmaState:
         """
         Resting state; T on the layers of ``layer_heights(eta)``.  With ``rho_ref="auto"`` the reference
         profile is taken from this T.  ALE: h is the rule's grid (σ-layers for 'hybrid', followed by
@@ -1268,11 +1274,14 @@ class SigmaBaroclinic:
         hybrid grid starts from T on σ-layers, which are ~H/N thick in deep water and lose the structure
         of the top metres (BayIW bay mouth: 0.5 °C spurious step across the 600 → 164 m shelf edge).
         ``tr``: passive tracers (n_tracers, ...) on the grid of T (default 0; ALE ``n_tracers``).
+        ``S``: salinity [g kg⁻¹] on the grid of T, required with ``salinity=True`` and refused without; it is
+        remapped with T (from ``h_src`` and in the hybrid start-up passes).
         """
         ny, nx = self.H.shape
         eta = np.asarray(eta, float)
+        S = self._check_salinity(S, np.shape(T))
         if h_src is not None:
-            return self._initial_state_from_source(eta, np.asarray(T, float), np.asarray(h_src, float), tr)
+            return self._initial_state_from_source(eta, np.asarray(T, float), np.asarray(h_src, float), tr, S)
         tr = self._check_tracers(tr, np.shape(T))
         if isinstance(self.rho_ref, str) and self.rho_ref == "auto":
             z = self.layer_heights(eta)
@@ -1281,12 +1290,14 @@ class SigmaBaroclinic:
         self.T_ext = np.array(T, float)                                # inflow / sponge target at open boundaries
         st = SigmaState(eta=np.array(eta, float), u=np.zeros((self.n, ny, nx + 1)),
                         v=np.zeros((self.n, ny + 1, nx)), T=np.array(T, float),
-                        h=self._initial_h(eta) if self.ale else None, tr=tr, closure=self._sync_closure_out())
+                        h=self._initial_h(eta) if self.ale else None, tr=tr, closure=self._sync_closure_out(), S=S)
         if self.ale and self.regrid_rule == "hybrid":
             for _ in range(self.init_iterations):
-                fields = [st.T] + ([] if st.tr is None else list(st.tr))
+                fields = [st.T] + ([] if st.tr is None else list(st.tr)) + ([] if st.S is None else [st.S])
                 st.h, rem = self._regrid_remap(st.eta, st.h, fields, st.T)
                 st.T = rem[0]
+                if st.S is not None:
+                    st.S, rem = rem[-1], rem[:-1]
                 st.tr = None if st.tr is None else np.stack(rem[1:])
         if self.ale:                                                    # exterior profile in z (spec §3.5)
             self.T_ext, self.h_ext = st.T.copy(), st.h.copy()
@@ -1306,14 +1317,29 @@ class SigmaBaroclinic:
             raise ValueError(f"tr shape {tr.shape}, expected {(self.n_tracers,) + tuple(shape)}")
         return tr
 
+    def _check_salinity(self, S, shape: tuple) -> np.ndarray | None:
+        """Initial salinity: a float copy with the shape of T, or None without salinity; else ConfigurationError."""
+        if not self.salinity:
+            if S is not None:
+                raise ConfigurationError("S given to initial_state but the model has salinity=False; build it with "
+                                         "salinity=True (and s_coef, s_ref)")
+            return None
+        if S is None:
+            raise ConfigurationError("salinity=True needs S in initial_state")
+        S = np.array(S, float)
+        if S.shape != tuple(shape):
+            raise ConfigurationError(f"S shape {S.shape}, expected the shape of T {tuple(shape)}")
+        return S
+
     def _initial_state_from_source(self, eta: np.ndarray, T_src: np.ndarray, h_src: np.ndarray,
-                                   tr_src: np.ndarray | None = None) -> SigmaState:
+                                   tr_src: np.ndarray | None = None, S_src: np.ndarray | None = None) -> SigmaState:
         """
         ALE resting state from layer means T_src on a source grid h_src (both (N_src, ny, nx), bed first):
         the rule's grid regridded once on the source levels themselves (MOM6 MOM_state_initialization.F90:2928),
         for 'hybrid' with the model interfaces moved onto the density jumps of the source that would otherwise
         fall inside a model layer (core.vertical.regrid.snap_to_jumps, beyond MOM6), then a conservative remap
-        of T from the source grid (:2933-2935).  Dry columns get T = t_ref.
+        of T from the source grid (:2933-2935).  Dry columns get T = t_ref; salinity ``S_src`` (on the grid of
+        T_src) is remapped the same way, S = s_ref where dry.
         """
         if not self.ale:
             raise ValueError("initial_state(h_src=...) needs vertical_coordinate='ale'")
@@ -1347,11 +1373,13 @@ class SigmaBaroclinic:
             rg.snap_to_jumps(zw, zw_src, rho_src, float(np.min(np.abs(np.diff(tgt)))))
             h = np.where(wet[None], np.diff(zw, axis=0), h)
         T = from_source(h)
+        S = None if S_src is None else np.where(wet[None], rm.remap_columns(h_src, S_src, h, self.remap_code, wet),
+                                                self.s_ref)
         tr_src = self._check_tracers(tr_src, T_src.shape)               # passive tracers: the same remap, 0 where dry
         tr = None if tr_src is None else np.stack(
             [np.where(wet[None], rm.remap_columns(h_src, f, h, self.remap_code, wet), 0.0) for f in tr_src])
         st = SigmaState(eta=np.array(eta, float), u=np.zeros((self.n, ny, nx + 1)),
-                        v=np.zeros((self.n, ny + 1, nx)), T=T, h=h, tr=tr, closure=self._sync_closure_out())
+                        v=np.zeros((self.n, ny + 1, nx)), T=T, h=h, tr=tr, closure=self._sync_closure_out(), S=S)
         self.T_ext, self.h_ext = T.copy(), h.copy()                    # exterior profile in z (spec §3.5)
         self.tr_ext = None if tr is None else tr.copy()
         return st
@@ -1374,9 +1402,9 @@ class SigmaBaroclinic:
         self._zc_cache = ((h, val),) + tuple(getattr(self, "_zc_cache", ()))[:1]
         return val
 
-    def density(self, T: np.ndarray) -> np.ndarray:
-        """Linear EOS ρ = ρ₀ − α (T − T₀) [kg m⁻³] (``core.components.eos``)."""
-        return self._eos.density(T)
+    def density(self, T: np.ndarray, S: np.ndarray | None = None) -> np.ndarray:
+        """Linear EOS ρ = ρ₀ − α (T − T₀) [+ β (S − S₀) with S] [kg m⁻³] (Vallis 2006 eq. 1.156; components.eos)."""
+        return self._eos.density(T, S)
 
     def layer_volumes(self, eta: np.ndarray, h: np.ndarray | None = None) -> np.ndarray:
         """Layer volumes [m³]: D Δσ_k A, or h_k A (ALE)."""
@@ -1680,7 +1708,7 @@ _PARAMS = {
 }
 for _name, (_targets, _to, _norm) in _PARAMS.items():
     setattr(SigmaBaroclinic, _name, _component_param(_name, _targets, _to, _norm))
-for _name in ("rho0", "t_coef", "t_ref"):
+for _name in ("rho0", "t_coef", "t_ref", "s_coef", "s_ref"):
     setattr(SigmaBaroclinic, _name, _fixed_after_construction(_name))
 
 

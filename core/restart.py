@@ -6,7 +6,7 @@ fields — the classic failures in community models are missing time-stepping
 history, hidden model state and precision loss (MOM6 issues #975, #208, #508;
 SCHISM #140).  For ``SigmaBaroclinic`` that is:
 
-* η, u, v, T and the model time;
+* η, u, v, T, the salinity S (``salinity=True``, N2a) and the model time;
 * the AB3 history of the explicit momentum tendencies (0–3 levels, so a restart
   during the AB start-up also reproduces the continuous run);
 * the layer transports Qx, Qy, Fz and ω of the last step (flux-form momentum
@@ -46,6 +46,7 @@ _OPTIONAL = {
     "Fz": (("level", "y", "x"), "m3 s-1", "volume flux through layer interfaces"),
     "mix_num": (("layer", "y", "x"), "degC2 m3 s-1", "online numerical mixing (Burchard & Rennau 2008)"),
     "h": (("layer", "y", "x"), "m", "layer thickness (ALE), bed first"),
+    "S": (("layer", "y", "x"), "1e-3", "salinity"),
 }
 
 
@@ -70,6 +71,7 @@ def _config(model: SigmaBaroclinic) -> dict:
                 closure=core.closure, z0=-1.0 if core.z0 is None else core.z0, nu_const=core.nu_const,
                 adv=model.adv, tracer_scheme=model.tracer_scheme, tracer_time=model.tracer_time,
                 rho0=model.rho0, t_coef=model.t_coef, t_ref=model.t_ref, ah=model.ah,
+                salinity=int(model.salinity), s_coef=model.s_coef, s_ref=model.s_ref,
                 theta_bc=model.theta_bc,
                 ny=int(model.H.shape[0]), nx=int(model.H.shape[1]))
     if getattr(model, "ale", False):                           # ALE (Plan D): the rule and every scheme choice
@@ -92,6 +94,9 @@ def _config(model: SigmaBaroclinic) -> dict:
         cfg.update({f"regrid_{k}": _text(v) for k, v in sorted(model.regrid_params.items())})
     return cfg
 
+
+# configuration entries added after files were written: a file without them was written with these values
+_CONFIG_DEFAULTS = {"salinity": 0, "s_coef": 0.0, "s_ref": 35.0}         # N2a: files before salinity
 
 _SECTIONS = {"ab_hist": "time_stepper", "gls_": "closure", "T_ext": "open_boundary", "h_ext": "open_boundary",
              "tr_ext": "open_boundary", "fs_lu_": "free_surface", "rho_ref_": "pgf"}
@@ -171,7 +176,7 @@ def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
         raise ValueError("restart written by an ALE model (vertical_coordinate='ale'), not a σ model")
     bad = []
     for k, v in _config(model).items():
-        stored = ds.attrs.get(f"config_{k}")
+        stored = ds.attrs.get(f"config_{k}", _CONFIG_DEFAULTS.get(k))
         if isinstance(v, str) or isinstance(stored, str):
             same = str(stored) == str(v)
         else:
@@ -180,6 +185,8 @@ def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
             bad.append(f"{k}: restart {stored!r} vs model {v!r}")
     if bad:
         raise ValueError("restart incompatible with the model configuration — " + "; ".join(bad))
+    if model.salinity and "S" not in ds:
+        raise ValueError("restart has no salinity S but the model has salinity=True")
     kw = {name: ds[name].values.copy() for name in _FIELDS}
     for name in _OPTIONAL:
         kw[name] = ds[name].values.copy() if name in ds else None
