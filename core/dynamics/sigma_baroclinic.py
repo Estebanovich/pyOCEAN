@@ -108,6 +108,7 @@ from core.components.layer_transport import ALELayerTransport, SigmaLayerTranspo
 from core.components.tracers import TracerAdvection, TracerDiffusion
 from core.components.sponge import InteriorSponge
 from core.components.vertical_coordinate import ALECoordinate
+from core.model.driver import Driver
 from core.components.time_stepper import AB3, AB3Momentum, _ab3_kernel, ab3_combine  # noqa: F401  (re-exported)
 from core.model.threads import _THREADS, set_threads  # noqa: F401  (one shared list; re-exported)
 
@@ -1143,6 +1144,7 @@ class SigmaBaroclinic:
             self._layer_transport = SigmaLayerTransport(fs=self.fs, ds=self.ds, H=self.H, dt=dt,
                                                         layer_volumes=self.layer_volumes, ob=self._ob)
         self._last_layer_fluxes = None
+        self._driver = Driver(self)
         self._tracer_advection = TracerAdvection(scheme=self.tracer_scheme, time=self.tracer_time, dt=dt, ob=self._ob)
         self._tracer_diffusion = TracerDiffusion(kh=self.kh, dt=dt, ds=self.ds, fs=self.fs, eos=self._eos, pgf=self._pgf,
                                                  face_depths=self.core.face_depths, layer_heights=self.layer_heights)
@@ -1583,142 +1585,15 @@ class SigmaBaroclinic:
         """SSP-RK3 (or 'pc') flux-form advection (``core.components.tracers``), with this step's inflow values."""
         return self._tracer_advection.advect(C, V0, V1, Qx, Qy, Fz, ok, self._inflow(C))
 
-    def _step_ale(self, st: SigmaState, gu_ab: np.ndarray, gv_ab: np.ndarray, tu, tv, hist: list) -> SigmaState:
-        """
-        ALE step (spec §2): (1) Lagrangian step with no flux through the layer interfaces —
-        free surface with the depth mean ū = Σ w_k u_k on the mean face thicknesses of hⁿ, donor-cell
-        layer transports of u_k^θ = θ u_k^{n+1} + (1−θ) u_k^n corrected to the free-surface flux
-        (core.vertical.ale.upwind_transport_x), layer continuity h† = hⁿ − Δt ∇·Q_k / A, flux-form
-        tracer advection with Fz = 0; (2) vertical physics on h†; (3) regrid with the rule; (4)
-        conservative remap of T (and T² for the mixing diagnostic) and of u, v in face-fraction
-        space.  Velocity is zero in bed layers thin on both sides of a face (HYCOM hybgen.F90:1757-1764).
-        Open boundaries (spec 2026-10-12-ale-open-boundaries): Flather in the free surface, sponge on u′ and
-        Orlanski with the face fractions, open-face fluxes on the interior thickness, inflow T and tracer
-        sponge from the exterior z profile remapped to hⁿ and h†.
-        """
-        dt, th, n = self.dt, self.fs.theta, self.n
-        numba.set_num_threads(_THREADS[0])                                 # parallel ALE kernels (≤ 5 P-cores)
-        act = self.fs.active
-        (qe, qw), (qn, qs) = self._transport_thickness(st.h)
-        hu, hv = 0.5 * (qe + qw), (0.5 * (qn + qs)).swapaxes(1, 2)
-        wu, wv = face_fractions(hu), face_fractions(hv)
-        self._evaluate_exterior(st.time + dt, hu, hv, wu, wv)
-        if self.thin_layer_coupling == "mom6":                         # viscous tie of vanished layers (spec §3)
-            hu_v = viscous_face_thickness(qe, qw, st.u)                 # upwind-biased (MOM6, Hallberg & Rhines)
-            hv_v = viscous_face_thickness(qn, qs, st.v.swapaxes(1, 2)).swapaxes(1, 2)
-            visc = dict(hu=np.maximum(hu_v, DZ_FLOOR), hv=np.maximum(hv_v, DZ_FLOOR),
-                        hu_drag=np.maximum(hu[0], DZ_FLOOR), hv_drag=np.maximum(hv[0], DZ_FLOOR),
-                        hu_mean=hu, hv_mean=hv)                         # ū on the clipped face column
-        else:
-            visc = dict(hu=np.maximum(hu, DZ_FLOOR), hv=np.maximum(hv, DZ_FLOOR))
-        if self.bottom_drag == "quadratic":                            # bed stress at uⁿ (spec 2026-10-14-dome §3)
-            r_u, r_v, f_u, f_v = self._bed_drag_rates(st.u, st.v, hu, hv)
-            visc.update(r_u=r_u[None] * f_u, r_v=r_v[None] * f_v)      # stress spread over hbbl
-            if "hu_mean" not in visc:                                  # δ needs the depth-mean column with drag
-                visc.update(hu_mean=hu, hv_mean=hv)
-        eta_new, u_new, v_new, self._fluxes, _ = self._free_surface.step(st.eta, st.u, st.v, gu_ab, gv_ab, tu, tv,
-                                                                         st.closure, self._flather_args(),
-                                                                         wu=wu, wv=wv, **visc)
-        self._open_velocity(st, u_new, v_new, wu, wv)                   # sponge on u′, Orlanski (spec §3.2-3.3)
-        u_new = zero_thin_bed_velocity(u_new, hu, wu, self.h_thin_bed)
-        v_new = zero_thin_bed_velocity(v_new, hv, wv, self.h_thin_bed)
-        if self.thin_layer_cutoff > 0.0:                                # HYCOM blending of thin layers (spec §3, 1B)
-            # on the upwind (donor) thickness, not the mean (Hallberg & Rhines 1996): a nose advancing from a thick
-            # cell keeps its speed, a layer draining from where it has vanished moves with the layer above
-            u_up = np.where(u_new >= 0, qe, qw)
-            v_up = np.where(v_new.swapaxes(1, 2) >= 0, qn, qs).swapaxes(1, 2)
-            u_new = blend_thin_layers(u_new, u_up, wu, self.thin_layer_cutoff)
-            v_new = blend_thin_layers(v_new, v_up, wv, self.thin_layer_cutoff)
-        lf = self._layer_transport(st, eta_new, u_new, v_new, self._fluxes, self.theta_bc, self.open, wu, wv,
-                                   qe, qw, qn, qs)
-        self._last_layer_fluxes = lf
-        Qx, Qy, Fz, V0, V1, ok, h_lag, n_lim = lf.Qx, lf.Qy, lf.Fz, lf.V0, lf.V1, lf.ok, lf.h_dagger, lf.n_limited
-        self._T_in = self._exterior_T(st.h) if self.open else None        # inflow T on hⁿ (spec §3.5)
-        ntr = self.n_tracers
-        self._tr_in = self._exterior_tr(st.h) if (self.open and ntr) else None
-        mixd = self.mix_diagnostic
-        lead = 2 if mixd else 1                                         # [T, T²] or [T], then the passive tracers
-        parts = [st.T, st.T**2] if mixd else [st.T]
-        stack = np.stack(parts + ([] if st.tr is None else list(st.tr)))
-        C = (self._advect_fct(stack, V0, V1, Qx, Qy, ok) if self.tracer_limiter == "fct"
-             else self._advect(stack, V0, V1, Qx, Qy, Fz, ok))
-        mix = V1 * (C[1] - C[0] ** 2) / dt if mixd else None                # advection part
-        T_lag = C[0]
-        tr_lag = [C[lead + i] for i in range(ntr)]
-        if self.kh > 0:
-            T_lag = self._diffuse_h(T_lag, V1, eta_new, h_lag)
-            tr_lag = [self._diffuse_h(c, V1, eta_new, h_lag, anomaly=False) for c in tr_lag]
-        if self.kv > 0:
-            dz = np.maximum(h_lag, DZ_FLOOR).reshape(n, -1)
-            kvz, zero = np.full((n + 1, dz.shape[1]), self.kv), np.zeros(dz.shape[1])
-            T_lag = vertical_implicit(T_lag.reshape(n, -1), dz, kvz, zero, dt).reshape(T_lag.shape)
-            tr_lag = [vertical_implicit(c.reshape(n, -1), dz, kvz, zero, dt).reshape(c.shape) for c in tr_lag]
-        if self._sp_c is not None and self.sponge_tracer:                 # tracer sponge toward the exterior on h†
-            r = dt * self._sp_c[None]
-            T_lag = (T_lag + r * self._exterior_T(h_lag)) / (1.0 + r)
-            if ntr:
-                tr_lag = [(c + r * e) / (1.0 + r) for c, e in zip(tr_lag, self._exterior_tr(h_lag))]
-        fields = ([T_lag, T_lag**2] if mixd else [T_lag]) + tr_lag
-        h_new, rem = self._regrid_remap(eta_new, h_lag, fields, T_lag)
-        T_new = rem[0]
-        tr_new = np.stack(rem[lead:]) if ntr else None
-        if mixd:                                                       # remap part, before the sponge (a forcing)
-            mix = mix + self.layer_volumes(eta_new, h_new) * (rem[1] - T_new**2) / dt
-        if self.sponge_rate is not None:                               # interior sponge (spec 2026-10-14-dome §2)
-            T_new, tr_new = self._interior_sponge(T_new, tr_new, eta_new, h_new)
-        hu_lag, hv_lag = self._mean_face_thickness(h_lag)
-        hu1, hv1 = self._mean_face_thickness(h_new)
-        wu1, wv1 = face_fractions(hu1), face_fractions(hv1)                # once: remap target and thin-bed rule
-        u_new = zero_thin_bed_velocity(self._remap_faces(u_new, hu_lag, hu1, wu1), hu1, wu1, self.h_thin_bed)
-        v_new = zero_thin_bed_velocity(self._remap_faces(v_new, hv_lag, hv1, wv1), hv1, wv1, self.h_thin_bed)
-        u_new, v_new, n_trunc = self._vertical.truncate(u_new, v_new, hu1, hv1, dt, st.n_trunc)
-        return SigmaState(eta=eta_new, u=u_new, v=v_new, T=T_new, h=h_new, g_hist=hist, omega=None, mix_num=mix,
-                          Qx=Qx, Qy=Qy, Fz=Fz, time=st.time + dt, n_trunc=n_trunc, n_limited=st.n_limited + n_lim,
-                          tr=tr_new)
-
     # ------------------------------------------------------------------ step
     def step(self, st: SigmaState, tau_x: np.ndarray | None = None, tau_y: np.ndarray | None = None) -> SigmaState:
         """
         Advance one step.  tau_x (ny, nx+1), tau_y (ny+1, nx): surface (wind) stress at the u- and
         v-faces [N m⁻²]; τ/ρ₀ enters as the top boundary flux of the implicit vertical viscosity
-        (as ROMS/CROCO sustr/svstr), not through the AB3 extrapolation.
+        (as ROMS/CROCO sustr/svstr), not through the AB3 extrapolation.  The ten phases of the step, the same
+        in σ and ALE, are run by ``core.model.driver.Driver`` (N1).
         """
-        dt, th, n = self.dt, self.fs.theta, self.n
-        gu, gv = self._tendencies(st)
-        gu_ab, gv_ab, hist = self._time_stepper.combine(st.g_hist, gu, gv)
-        tu = None if tau_x is None else np.asarray(tau_x, float) / self.rho0
-        tv = None if tau_y is None else np.asarray(tau_y, float) / self.rho0
-        if self.ale:
-            return self._step_ale(st, gu_ab, gv_ab, tu, tv, hist)
-        if self.obc_state is not None:
-            ds = self.ds[:, None, None]
-            Hu_e, Hv_e = self._edge_face_depths()
-            self._evaluate_exterior(st.time + dt, Hu_e[None] * ds, Hv_e[None] * ds, None, None)
-            D0 = np.maximum(np.nan_to_num(self.H + st.eta, nan=self.fs.d_min), self.fs.d_min)
-            self._T_in = self._exterior_T(D0[None] * ds)
-        eta_new, u_new, v_new, self._fluxes, closure = self._free_surface.step(st.eta, st.u, st.v, gu_ab, gv_ab, tu,
-                                                                               tv, st.closure, self._flather_args())
-        self._open_velocity(st, u_new, v_new)
-
-        lf = self._layer_transport(st, eta_new, u_new, v_new, self._fluxes, self.theta_bc, self.open)
-        self._last_layer_fluxes = lf
-        Qx, Qy, Fz, V0, V1, ok = lf.Qx, lf.Qy, lf.Fz, lf.V0, lf.V1, lf.ok
-        C = self._advect(np.stack([st.T, st.T**2]), V0, V1, Qx, Qy, Fz, ok)
-        T_new = C[0]
-        mix = V1 * (C[1] - C[0] ** 2) / dt
-        if self.kh > 0:
-            T_new = self._diffuse_h(T_new, V1, eta_new)
-        if self.kv > 0:
-            D1 = np.maximum(np.nan_to_num(self.H + eta_new, nan=self.fs.d_min), self.fs.d_min)
-            dz = (D1[None] * self.ds[:, None, None]).reshape(n, -1)
-            T_new = vertical_implicit(T_new.reshape(n, -1), dz, np.full((n + 1, dz.shape[1]), self.kv),
-                                      np.zeros(dz.shape[1]), dt).reshape(T_new.shape)
-        if self._sp_c is not None and self.sponge_tracer:
-            r = dt * self._sp_c[None]
-            T_new = (T_new + r * (self.T_ext if self._ext is None else self._T_in)) / (1.0 + r)
-        omega = Fz / np.where(self.area > 0, self.area, 1.0)[None]
-        return SigmaState(eta=eta_new, u=u_new, v=v_new, T=T_new, g_hist=hist, omega=omega, mix_num=mix,
-                          Qx=Qx, Qy=Qy, Fz=Fz, time=st.time + dt, closure=closure)
+        return self._driver.step(st, tau_x, tau_y)
 
 
 def _delegate(name: str) -> property:
