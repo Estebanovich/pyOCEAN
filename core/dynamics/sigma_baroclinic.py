@@ -1611,25 +1611,77 @@ for _name in _OB_CONFIG:
     setattr(SigmaBaroclinic, _name, _delegate(_name))
 
 
-def _component_param(name: str, component: str) -> property:
-    """A parameter kept by a component: set before the component exists (in ``__init__``), it is stored on the
-    model and handed over when the component is built; set later (scripts change ``ke_scheme``, tests ``kh``), it
-    reaches the component."""
+def _component_param(name: str, targets: tuple[tuple[str, str], ...], to_component=None,
+                     normalise=None) -> property:
+    """
+    A model parameter kept in sync with the components that use it (N1).  The model stores the value; setting it
+    after construction (scripts change ``ke_scheme``, tests ``kh``, sensitivity runs ``cd`` …) also sets it on
+    every built component in ``targets`` ((component attribute of the model, attribute of the component)), as
+    ``SigmaBaroclinic`` read ``self.<name>`` every step before N1.  ``to_component(model, value)``: the value the
+    component keeps, when it differs; ``normalise(value)``: the stored spelling.
+    """
+    key = f"_pre_{name}"
+
     def get(self):
-        comp = self.__dict__.get(component)
-        return getattr(comp, name) if comp is not None else self.__dict__[f"_pre_{name}"]
+        try:
+            return self.__dict__[key]
+        except KeyError:
+            raise AttributeError(name) from None
 
     def put(self, value) -> None:
-        comp = self.__dict__.get(component)
-        if comp is not None:
-            setattr(comp, name, value)
-        self.__dict__[f"_pre_{name}"] = value
-    return property(get, put, doc=f"``{name}`` of the component ``{component}``")
+        if normalise is not None:
+            value = normalise(value)
+        self.__dict__[key] = value
+        for comp_name, attr in targets:
+            comp = self.__dict__.get(comp_name)
+            if comp is not None and hasattr(comp, attr):
+                setattr(comp, attr, value if to_component is None else to_component(self, value))
+    return property(get, put, doc=f"``{name}``, kept in sync with {', '.join(c for c, _ in targets)}")
 
 
-for _name, _comp in (("ke_scheme", "_momentum"), ("ah", "_momentum"), ("adv", "_momentum"),
-                     ("kh", "_tracer_diffusion")):
-    setattr(SigmaBaroclinic, _name, _component_param(_name, _comp))
+def _fixed_after_construction(name: str) -> property:
+    """EOS constants: shared by the EOS, PGF, tracer diffusion and regrid; changing them later is refused."""
+    key = f"_pre_{name}"
+
+    def get(self):
+        try:
+            return self.__dict__[key]
+        except KeyError:
+            raise AttributeError(name) from None
+
+    def put(self, value) -> None:
+        if "_eos" in self.__dict__:
+            raise AttributeError(f"{name} is fixed after construction (the equation of state, the pressure gradient "
+                                 "and the tracer diffusion share it); build a new SigmaBaroclinic instead")
+        self.__dict__[key] = value
+    return property(get, put, doc=f"``{name}`` of the equation of state (fixed after construction)")
+
+
+_ke_spelling = lambda v: "gudonov" if v == "godunov" else v                         # noqa: E731  kernel spelling
+_PARAMS = {
+    "ke_scheme": ((("_momentum", "ke_scheme"),), None, _ke_spelling),
+    "ah": ((("_momentum", "ah"),), None, None),
+    "adv": ((("_momentum", "adv"),), None, None),
+    "momentum": ((("_momentum", "form"),),
+                 lambda m, v: "vector_invariant" if m.ale and v == "vector_invariant" else "flux", None),
+    "kh": ((("_tracer_diffusion", "kh"),), None, None),
+    "tracer_scheme": ((("_tracer_advection", "tracer_scheme"),), None, None),
+    "tracer_time": ((("_tracer_advection", "tracer_time"),), None, None),
+    "pgf": ((("_pgf", "scheme"),), None, None),
+    "thickness_flux": ((("_layer_transport", "thickness_flux"),), None, None),
+    "cd": ((("_bed_drag", "cd"),), lambda m, v: float(v), None),
+    "hbbl": ((("_bed_drag", "hbbl"),), lambda m, v: float(v), None),
+    "drag_bg_vel": ((("_bed_drag", "drag_bg_vel"),), lambda m, v: float(v), None),
+    "max_truncations": ((("_vertical", "max_truncations"),), None, None),
+    "h_thin_bed": ((("_vertical", "h_thin_bed"),), None, None),
+    "regrid_rule": ((("_vertical", "regrid_rule"),), None, None),
+    "remap_code": ((("_vertical", "remap_code"), ("_ob", "remap_code"), ("_interior_sponge_c", "remap_code")),
+                   None, None),
+}
+for _name, (_targets, _to, _norm) in _PARAMS.items():
+    setattr(SigmaBaroclinic, _name, _component_param(_name, _targets, _to, _norm))
+for _name in ("rho0", "t_coef", "t_ref"):
+    setattr(SigmaBaroclinic, _name, _fixed_after_construction(_name))
 
 
 def _given(args: dict) -> frozenset[str]:
