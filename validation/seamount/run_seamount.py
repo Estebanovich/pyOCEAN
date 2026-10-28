@@ -68,7 +68,7 @@ def main() -> None:
         z = m.layer_heights(st.eta, st.h)
         m.rho_ref = reference_profile(z, m.density(st.T))
     tag = args.pgf + ("_ref" if args.ref else "") + ("_zstar" if args.coord == "zstar" else "")
-    gx, gy = m._baroclinic_pgf(st.eta, st.T, st.h)
+    gx, gy = m.pressure_gradient(st.eta, st.T, st.h)
     r1 = rx1(h, np.linspace(-1, 0, args.layers + 1))[0].max()
     lines = [f"seamount {h.shape[1]}×{h.shape[0]}×{args.layers}, dx {args.dx / 1e3:.0f} km, pgf {tag}: "
              f"rx0 {rx0(h)[0].max():.2f}, rx1 {r1:.1f}",

@@ -33,7 +33,7 @@ def record(m, st, buf: dict) -> None:
     H = np.asarray(m.H, float)[:, 0]
     Hc = np.nan_to_num(H)
     Tl = section.to_mitgcm_levels(st.h, st.T, m.H)[::-1, :, 0]                  # (50, ny), surface first
-    hv = m._mean_face_thickness(st.h)[1]                                          # v-face layers (N, ny+1, 1)
+    hv = m.face_thickness(st.h)[1]                                          # v-face layers (N, ny+1, 1)
     Hf = np.concatenate([Hc[:1], np.minimum(Hc[1:], Hc[:-1]), Hc[-1:]])           # face bed: shallower side
     Vl = section.to_mitgcm_levels(hv, st.v, Hf[:, None])[::-1, :, 0]             # (50, ny+1)
     lev = dict(T=np.nan_to_num(Tl)[None], V=np.nan_to_num(Vl)[None], zc=bayiw.Z_C)

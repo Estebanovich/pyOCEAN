@@ -30,8 +30,8 @@ UV_LEV = [29, 39]                         # levels 30 and 40
 
 def record(m, st, buf: dict) -> None:
     H = np.asarray(m.H, float)
-    Hu, Hv = m._edge_face_depths()                                   # face beds; open edges = boundary cell
-    hu, hv = m._mean_face_thickness(st.h)
+    Hu, Hv = m.edge_face_depths()                                   # face beds; open edges = boundary cell
+    hu, hv = m.face_thickness(st.h)
     buf["eta"].append(st.eta.astype(np.float32))
     buf["T"].append(to_mitgcm_levels(st.h, st.T, H)[::-1][T_LEV].astype(np.float32))
     buf["U"].append(to_mitgcm_levels(hu, st.u, Hu)[::-1][UV_LEV].astype(np.float32))

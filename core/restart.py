@@ -85,12 +85,26 @@ def _config(model: SigmaBaroclinic) -> dict:
                    n_tracers=int(getattr(model, "n_tracers", 0)))
         sp = getattr(model, "sponge_rate", None)
         cfg.update(sponge_rate="none" if sp is None else _text(sp),
-                   sponge_T="none" if sp is None else _text(model._sp_T),
-                   sponge_zw="none" if sp is None else _text(model._sp_zw))
+                   sponge_T="none" if sp is None else _text(model._interior_sponge_c.T),
+                   sponge_zw="none" if sp is None else _text(model._interior_sponge_c.zw))
         cfg.update(bottom_drag=str(getattr(model, "bottom_drag", None)), cd=model.cd, drag_bg_vel=model.drag_bg_vel,
                    hbbl=model.hbbl)
         cfg.update({f"regrid_{k}": _text(v) for k, v in sorted(model.regrid_params.items())})
     return cfg
+
+
+_SECTIONS = {"ab_hist": "time_stepper", "gls_": "closure", "T_ext": "open_boundary", "h_ext": "open_boundary",
+             "tr_ext": "open_boundary", "fs_lu_": "free_surface", "rho_ref_": "pgf"}
+
+
+def _component_of(name: str) -> str:
+    """Section of a restart variable: the component that owns it (``core.model.contract.Role`` values), or
+    'state' for the variables of ``SigmaState``.  Reading does not depend on it: files written before N1, without
+    sections, read the same."""
+    for prefix, comp in _SECTIONS.items():
+        if name.startswith(prefix):
+            return comp
+    return "state"
 
 
 def write_restart(path: str | Path, model: SigmaBaroclinic, state: SigmaState) -> None:
@@ -142,6 +156,8 @@ def write_restart(path: str | Path, model: SigmaBaroclinic, state: SigmaState) -
     attrs.update({f"config_{k}": v for k, v in _config(model).items()})
     if pre is not None:
         attrs.update(fs_lu_rows=int(pre["shape"][0]), fs_lu_cols=int(pre["shape"][1]), fs_lu_refactor=int(pre["refactor"]))
+    for name, var in data.items():                                   # N1: one section per component
+        var.attrs["component"] = _component_of(name)
     xr.Dataset(data, attrs=attrs).to_netcdf(path, engine="netcdf4", format="NETCDF4")
 
 

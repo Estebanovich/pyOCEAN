@@ -124,9 +124,9 @@ def evaluate():
         if ref:
             act = np.broadcast_to(m.fs.active[None], z.shape)
             m.rho_ref = reference_profile(z[act], rho[act])        # as rho_ref="auto" does in initial_state
-        gx, gy = m._baroclinic_pgf(eta, T, h)
+        gx, gy = m.pressure_gradient(eta, T, h)
         if coord == "zstar":                                       # report only faces that carry water (≥ 1 cm)
-            hu, hv = m._mean_face_thickness(h)
+            hu, hv = m.face_thickness(h)
             gx = np.where(hu >= 0.01, gx, 0.0)
             gy = np.where(hv >= 0.01, gy, 0.0)
         res[label] = dict(gx=gx, err=max(np.abs(gx).max(), np.abs(gy).max()), x=x, H=H, z=z, m=m)

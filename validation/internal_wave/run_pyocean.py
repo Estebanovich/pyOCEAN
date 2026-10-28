@@ -25,7 +25,7 @@ def record(m, st, buf: dict) -> None:
     H = np.asarray(m.H, float)[0]
     Hc = np.nan_to_num(H)
     Hf = np.concatenate([Hc[:1], np.minimum(Hc[1:], Hc[:-1]), [0.0]])          # west face = first cell; east wall
-    hu = m._mean_face_thickness(st.h)[0]                                         # (N, 1, nx+1)
+    hu = m.face_thickness(st.h)[0]                                         # (N, 1, nx+1)
     buf["U"].append(case.to_levels(hu, st.u, Hf[None])[:, 0, :])
     buf["T"].append(case.to_levels(st.h, st.T, H[None])[:, 0, :])
     buf["eta"].append(st.eta[0].copy())
