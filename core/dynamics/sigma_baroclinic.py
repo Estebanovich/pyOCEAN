@@ -105,6 +105,7 @@ from core.components.open_boundary import CONFIG as _OB_CONFIG, OpenBoundary
 from core.components.bottom_drag import QuadraticBedDrag
 from core.components.free_surface import FreeSurfaceVerticalViscosity
 from core.components.layer_transport import ALELayerTransport, SigmaLayerTransport
+from core.components.tracers import TracerAdvection, TracerDiffusion
 from core.components.time_stepper import AB3, AB3Momentum, _ab3_kernel, ab3_combine  # noqa: F401  (re-exported)
 from core.model.threads import _THREADS, set_threads  # noqa: F401  (one shared list; re-exported)
 
@@ -1136,6 +1137,9 @@ class SigmaBaroclinic:
             self._layer_transport = SigmaLayerTransport(fs=self.fs, ds=self.ds, H=self.H, dt=dt,
                                                         layer_volumes=self.layer_volumes, ob=self._ob)
         self._last_layer_fluxes = None
+        self._tracer_advection = TracerAdvection(scheme=self.tracer_scheme, time=self.tracer_time, dt=dt, ob=self._ob)
+        self._tracer_diffusion = TracerDiffusion(kh=self.kh, dt=dt, ds=self.ds, fs=self.fs, eos=self._eos, pgf=self._pgf,
+                                                 face_depths=self.core.face_depths, layer_heights=self.layer_heights)
         self.sponge_rate = None
         if sponge_rate is not None:
             if not self.ale:
@@ -1499,92 +1503,25 @@ class SigmaBaroclinic:
 
     # ------------------------------------------------------------------ tracers
     def _faces(self, c: np.ndarray, flux: np.ndarray, ok: np.ndarray, axis: int, centred: bool = False) -> np.ndarray:
-        if centred:
-            return _centred_faces(c, ok, axis, n_out=flux.shape[axis])
-        if self.tracer_scheme.startswith("weno5"):
-            return _weno5_faces(c, flux, ok, axis, variant="js" if self.tracer_scheme == "weno5js" else "z")
-        return _up3_faces(c, flux, ok, axis, order=1 if self.tracer_scheme == "upwind1" else 3)
+        return self._tracer_advection.faces(c, flux, ok, axis, centred)
+
+    def _inflow(self, c: np.ndarray) -> np.ndarray | None:
+        """This step's inflow stack for the advected stack ``c`` (None: no open edges or no exterior)."""
+        ext = self._ext_stack(c)
+        return None if ext is c else ext
 
     def _open_faces(self, face: np.ndarray, c: np.ndarray, Q: np.ndarray, axis: int) -> np.ndarray:
-        """
-        Tracer values on the open-boundary faces: upstream (Marsaleix et al. 2006, advection
-        equation for tracers) — the boundary cell when flowing out, the external value
-        ``T_ext`` (and its square for the T² stack) when flowing in.
-        """
-        if not self.open:
-            return face
-        ext = self._ext_stack(c)
-        face = np.array(face, copy=True)
-        lo, hi = ("west", "east") if axis == 3 else ("south", "north")
-        for edge, f_i, c_i, inflow_sign in ((lo, 0, 0, 1.0), (hi, -1, -1, -1.0)):
-            if edge not in self.open:
-                continue
-            sl_f = [slice(None)] * face.ndim
-            sl_c = [slice(None)] * c.ndim
-            sl_f[axis], sl_c[axis] = f_i, c_i
-            q = np.take(Q, f_i, axis=axis - 1)
-            face[tuple(sl_f)] = np.where(inflow_sign * q > 0, ext[tuple(sl_c)], c[tuple(sl_c)])
-        return face
+        return self._tracer_advection.open_faces(face, c, Q, axis, self._inflow(c))
 
     def _diffuse_h(self, T: np.ndarray, V: np.ndarray, eta: np.ndarray, h: np.ndarray | None = None,
                    anomaly: bool = True) -> np.ndarray:
-        """
-        Explicit Laplacian diffusion along the layers (see _diffuse_h_numpy).  ALE: the Numba kernel
-        _diffuse_ale_kernel with the same per-element arithmetic (performance task 5.6); σ: the NumPy version.
-        """
-        if h is None:
-            return self._diffuse_h_numpy(T, V, eta, h, anomaly)
-        Tw = T
-        if anomaly and self.rho_ref is not None and not isinstance(self.rho_ref, str) and self.t_coef != 0:
-            Tw = T - (self.t_ref + (self.rho0 - self.rho_ref(self.layer_heights(eta, h))) / self.t_coef)
-        Du, Dv = self.core.face_depths(eta)
-        okx = np.isfinite(self.fs.H_u) & np.isfinite(Du) & (Du > self.fs.d_min)
-        oky = np.isfinite(self.fs.H_v) & np.isfinite(Dv) & (Dv > self.fs.d_min)
-        act = self.fs.active
-        c = np.ascontiguousarray
-        out = np.empty(np.shape(T))
-        numba.set_num_threads(_THREADS[0])
-        _diffuse_ale_kernel(c(T, dtype=float), c(Tw, dtype=float), c(np.where(act[None], np.nan_to_num(h), 0.0)),
-                            c(act), c(self.fs.Lu / self.fs.du), c(self.fs.Lv / self.fs.dv), c(okx), c(oky),
-                            c(V, dtype=float), float(self.kh), float(self.dt), out)
-        return out
+        """Explicit Laplacian diffusion along the layers (``core.components.tracers``)."""
+        return self._tracer_diffusion.diffuse_h(T, V, eta, h, anomaly)
 
     def _diffuse_h_numpy(self, T: np.ndarray, V: np.ndarray, eta: np.ndarray, h: np.ndarray | None = None,
                          anomaly: bool = True) -> np.ndarray:
-        """
-        NumPy reference of _diffuse_h (test oracle; used for σ).
-        Explicit Laplacian diffusion along σ-surfaces in flux form (MITgcm diffKhT):
-            V_k ∂T/∂t = −Σ_faces F,   F_x = −K_h L_u h_{u,k} (T_i − T_{i−1}) / Δx_u
-        with h_{u,k} = D_u Δσ_k (σ) or the face layer thickness min(h_L, h_R) (ALE); conservative, and a uniform
-        T stays uniform.  With a reference profile the anomaly T − T_ref(z) is diffused instead
-        (Mellor & Blumberg 1985 [verificar]), so a resting stratification is not mixed across
-        sloping σ-surfaces (e.g. a shelf step).  ``anomaly`` False (passive tracers, which have no reference
-        profile): the field itself is diffused.
-        """
-        Tw = T
-        if anomaly and self.rho_ref is not None and not isinstance(self.rho_ref, str) and self.t_coef != 0:
-            Tw = T - (self.t_ref + (self.rho0 - self.rho_ref(self.layer_heights(eta, h))) / self.t_coef)
-        Du, Dv = self.core.face_depths(eta)
-        okx = np.isfinite(self.fs.H_u) & np.isfinite(Du) & (Du > self.fs.d_min)
-        oky = np.isfinite(self.fs.H_v) & np.isfinite(Dv) & (Dv > self.fs.d_min)
-        ds = self.ds[:, None, None]
-        Fx = np.zeros((self.n,) + Du.shape)
-        Fy = np.zeros((self.n,) + Dv.shape)
-        if h is None:
-            Fx[..., 1:-1] = -self.kh * (self.fs.Lu * np.nan_to_num(Du) / self.fs.du)[None, :, 1:-1] * ds \
-                * (Tw[..., 1:] - Tw[..., :-1])
-            Fy[:, 1:-1, :] = -self.kh * (self.fs.Lv * np.nan_to_num(Dv) / self.fs.dv)[None, 1:-1, :] * ds \
-                * (Tw[:, 1:, :] - Tw[:, :-1, :])
-        else:                                                        # ALE: face layer thickness (min of the cells)
-            hu, hv = face_thickness(h, self.fs.active)
-            Fx[..., 1:-1] = -self.kh * (self.fs.Lu / self.fs.du)[None, :, 1:-1] * hu[..., 1:-1] \
-                * (Tw[..., 1:] - Tw[..., :-1])
-            Fy[:, 1:-1, :] = -self.kh * (self.fs.Lv / self.fs.dv)[None, 1:-1, :] * hv[:, 1:-1, :] \
-                * (Tw[:, 1:, :] - Tw[:, :-1, :])
-        Fx = np.where(okx[None], Fx, 0.0)
-        Fy = np.where(oky[None], Fy, 0.0)
-        div = Fx[..., 1:] - Fx[..., :-1] + Fy[:, 1:, :] - Fy[:, :-1, :]
-        return np.where(V > 0, T - self.dt * div / np.where(V > 0, V, 1.0), T)
+        """NumPy reference of _diffuse_h (``core.components.tracers``)."""
+        return self._tracer_diffusion.diffuse_h_numpy(T, V, eta, h, anomaly)
 
     def _baroclinic_part(self, vel: np.ndarray, w: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
         """Depth mean and baroclinic remainder (``core.components.open_boundary``)."""
@@ -1670,189 +1607,39 @@ class SigmaBaroclinic:
 
     def _rhs_numpy(self, c: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, Fz: np.ndarray, ok: np.ndarray,
                    centred: bool = False) -> np.ndarray:
-        """Advection RHS −∇·(Q c) of the stack c (ntr, N, ny, nx), vectorised reference path."""
-        okb = np.broadcast_to(ok, c.shape)
-        fx = Qx * self._open_faces(self._faces(c, np.broadcast_to(Qx, c.shape[:1] + Qx.shape), okb, 3, centred),
-                                   c, Qx, 3)
-        fy = Qy * self._open_faces(self._faces(c, np.broadcast_to(Qy, c.shape[:1] + Qy.shape), okb, 2, centred),
-                                   c, Qy, 2)
-        # vertical: Fz[j] is the volume flux through interface j (bottom of layer j; 0 = bed, N = surface)
-        fzc = np.broadcast_to(Fz[:-1], c.shape)
-        fz = np.zeros(c.shape[:1] + Fz.shape)
-        fz[:, :-1] = Fz[:-1] * self._faces(c, fzc, okb, 1, centred)
-        return -(fx[..., 1:] - fx[..., :-1] + fy[:, :, 1:, :] - fy[:, :, :-1, :] + fz[:, 1:] - fz[:, :-1])
+        return self._tracer_advection.rhs_numpy(c, Qx, Qy, Fz, ok, centred, self._inflow(c))
 
     def _rhs(self, c: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, Fz: np.ndarray, ok: np.ndarray,
              centred: bool = False) -> np.ndarray:
-        """Advection RHS: the fused compiled kernel for WENO5 upwind faces, else the reference path."""
-        if centred or not self.tracer_scheme.startswith("weno5"):
-            return self._rhs_numpy(c, Qx, Qy, Fz, ok, centred)
-        c = np.ascontiguousarray(c, dtype=float)
-        ext = self._ext_stack(c)
-        numba.set_num_threads(_THREADS[0])
-        return _advect_div(c, np.ascontiguousarray(Qx, dtype=float), np.ascontiguousarray(Qy, dtype=float),
-                           np.ascontiguousarray(Fz, dtype=float), np.ascontiguousarray(np.broadcast_to(ok, c.shape[1:])),
-                           ext, "west" in self.open, "east" in self.open, "south" in self.open,
-                           "north" in self.open, self.tracer_scheme == "weno5", bool(np.any(Fz != 0.0)))
+        return self._tracer_advection.rhs(c, Qx, Qy, Fz, ok, centred, self._inflow(c))
 
     def _ext_stack(self, c: np.ndarray) -> np.ndarray:
         """Inflow values of the advected stack on open edges (``core.components.open_boundary``)."""
         return self._ob.inflow_stack(c, self._inflow_T(), self._tr_in)
 
     def _faces_h(self, c: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, ok: np.ndarray, ext: np.ndarray | None = None):
-        """WENO5 horizontal face fluxes (fx, fy) of the stack — the terms _advect_div differences (no ω in ALE).
-        ``ext``: the inflow values of _ext_stack, when the caller already has them."""
-        c = np.ascontiguousarray(c, dtype=float)
-        numba.set_num_threads(_THREADS[0])
-        return _advect_faces_h(c, np.ascontiguousarray(Qx, dtype=float), np.ascontiguousarray(Qy, dtype=float),
-                               np.ascontiguousarray(np.broadcast_to(ok, c.shape[1:])),
-                               self._ext_stack(c) if ext is None else ext,
-                               "west" in self.open, "east" in self.open, "south" in self.open, "north" in self.open,
-                               self.tracer_scheme == "weno5")
+        return self._tracer_advection.faces_h(c, Qx, Qy, ok, ext, self._inflow(c))
 
     def _upwind_faces_h(self, c: np.ndarray, Qx: np.ndarray, Qy: np.ndarray):
-        """Donor-cell face fluxes Q c_up (the FCT low-order flux); open edges as _advect_div (ext on inflow)."""
-        ext = self._ext_stack(c)
-        fx = np.zeros(c.shape[:3] + (c.shape[3] + 1,))
-        fy = np.zeros(c.shape[:2] + (c.shape[2] + 1, c.shape[3]))
-        fx[..., 1:-1] = Qx[None, ..., 1:-1] * np.where(Qx[None, ..., 1:-1] >= 0, c[..., :-1], c[..., 1:])
-        fy[..., 1:-1, :] = Qy[None, :, 1:-1, :] * np.where(Qy[None, :, 1:-1, :] >= 0, c[..., :-1, :], c[..., 1:, :])
-        if "west" in self.open:
-            fx[..., 0] = Qx[None, ..., 0] * np.where(Qx[None, ..., 0] > 0, ext[..., 0], c[..., 0])
-        if "east" in self.open:
-            fx[..., -1] = Qx[None, ..., -1] * np.where(Qx[None, ..., -1] < 0, ext[..., -1], c[..., -1])
-        if "south" in self.open:
-            fy[..., 0, :] = Qy[None, :, 0, :] * np.where(Qy[None, :, 0, :] > 0, ext[..., 0, :], c[..., 0, :])
-        if "north" in self.open:
-            fy[..., -1, :] = Qy[None, :, -1, :] * np.where(Qy[None, :, -1, :] < 0, ext[..., -1, :], c[..., -1, :])
-        return fx, fy
+        return self._tracer_advection.upwind_faces_h(c, Qx, Qy, self._inflow(c))
 
     def _advect_fct(self, C: np.ndarray, V0: np.ndarray, V1: np.ndarray, Qx: np.ndarray, Qy: np.ndarray,
                     ok: np.ndarray, unlimited: bool = False) -> np.ndarray:
-        """
-        _advect_fct_numpy with its arithmetic in fused Numba kernels (_fct_stage, _fct_fluxes, _fct_coeff_kernel,
-        _fct_final): the NumPy glue cost 23–36 % of the BayIW step (2026-10-14).  ``unlimited``: the NumPy path.
-        """
-        if unlimited:
-            return self._advect_fct_numpy(C, V0, V1, Qx, Qy, ok, unlimited=True)
-        dt = float(self.dt)
-        C = np.ascontiguousarray(C, dtype=float)
-        Qx, Qy = np.ascontiguousarray(Qx, dtype=float), np.ascontiguousarray(Qy, dtype=float)
-        V0, V1 = np.ascontiguousarray(V0, dtype=float), np.ascontiguousarray(V1, dtype=float)
-        dV = V1 - V0
-        Va, Vb = np.ascontiguousarray(V0 + dV), np.ascontiguousarray(V0 + 0.5 * dV)
-        okc = np.ascontiguousarray(np.broadcast_to(ok, C.shape[1:]))
-        ext = self._ext_stack(C)
-        ext_s = None if ext is C else ext                                # no inflow data: each stage's own values
-        ext = np.ascontiguousarray(ext, dtype=float)
-        q0 = V0 * C
-        q1, c1 = np.empty_like(C), np.empty_like(C)
-        q2, c2 = np.empty_like(C), np.empty_like(C)
-        fx0, fy0 = self._faces_h(C, Qx, Qy, okc, ext)
-        numba.set_num_threads(_THREADS[0])
-        _fct_stage(q0, q0, fx0, fy0, 0.0, 1.0, dt, Va, C, q1, c1)
-        fx1, fy1 = self._faces_h(c1, Qx, Qy, okc, ext_s)
-        _fct_stage(q0, q1, fx1, fy1, 0.75, 0.25, dt, Vb, C, q2, c2)
-        fx2, fy2 = self._faces_h(c2, Qx, Qy, okc, ext_s)
-        opn = self.open
-        FLx, FLy, Ax, Ay = _fct_fluxes(C, Qx, Qy, ext, "west" in opn, "east" in opn, "south" in opn, "north" in opn,
-                                       fx0, fy0, fx1, fy1, fx2, fy2)
-        qL, cL = q1, c1                                                  # stage buffers reused
-        _fct_stage(q0, q0, FLx, FLy, 0.0, 1.0, dt, V1, C, qL, cL)
-        Cx, Cy = _fct_coeff_kernel(C, cL, V1, Ax, Ay, okc, dt)
-        return _fct_final(q0, FLx, FLy, Ax, Ay, Cx, Cy, dt, V1, C)
+        """SSP-RK3 WENO5 with Zalesak FCT (``core.components.tracers``), with this step's inflow values."""
+        return self._tracer_advection.advect_fct(C, V0, V1, Qx, Qy, ok, unlimited, self._inflow(C))
 
     def _advect_fct_numpy(self, C: np.ndarray, V0: np.ndarray, V1: np.ndarray, Qx: np.ndarray, Qy: np.ndarray,
                           ok: np.ndarray, unlimited: bool = False) -> np.ndarray:
-        """
-        NumPy reference of _advect_fct (test oracle).
-        SSP-RK3 WENO5 advection of the stack C with Zalesak (1979) FCT (spec 2026-10-14 §4).  The high-order flux
-        of the step is the RK3 combination F_H = (F(c0) + F(c1))/6 + 2F(c2)/3, so V1 c_RK3 = V0 c0 − Δt ∇·F_H;
-        the low-order flux is donor cell, V1 c_L = V0 c0 − Δt ∇·F_L, bounded because limit_outflow keeps every
-        layer's outflow ≤ its content; the antidiffusive flux A = F_H − F_L is limited by
-        fct_coefficients (_fct_coeff_kernel).  ``unlimited``: C = 1 (the RK3 result; test of the identity).
-        HYCOM mod_tsadvc.F90:877-905 does the same around its own scheme.
-        """
-        dt = self.dt
-        dV = V1 - V0
-        div = lambda fx, fy: fx[..., 1:] - fx[..., :-1] + fy[..., 1:, :] - fy[..., :-1, :]   # noqa: E731
-        safe = lambda q, v: np.where(v > 0, q / np.where(v > 0, v, 1.0), C)                  # noqa: E731
-        q0 = V0 * C
-        fx0, fy0 = self._faces_h(C, Qx, Qy, ok)
-        q1 = q0 - dt * div(fx0, fy0)
-        c1 = safe(q1, V0 + dV)
-        fx1, fy1 = self._faces_h(c1, Qx, Qy, ok)
-        q2 = 0.75 * q0 + 0.25 * (q1 - dt * div(fx1, fy1))
-        c2 = safe(q2, V0 + 0.5 * dV)
-        fx2, fy2 = self._faces_h(c2, Qx, Qy, ok)
-        FHx = (fx0 + fx1) / 6.0 + 2.0 * fx2 / 3.0
-        FHy = (fy0 + fy1) / 6.0 + 2.0 * fy2 / 3.0
-        FLx, FLy = self._upwind_faces_h(C, Qx, Qy)
-        Ax, Ay = FHx - FLx, FHy - FLy
-        if unlimited:
-            return safe(q0 - dt * div(FHx, FHy), V1)
-        cL = safe(q0 - dt * div(FLx, FLy), V1)
-        okc = np.ascontiguousarray(np.broadcast_to(ok, C.shape[1:]))
-        numba.set_num_threads(_THREADS[0])
-        Cx, Cy = _fct_coeff_kernel(np.ascontiguousarray(C, dtype=float), np.ascontiguousarray(cL),
-                                   np.ascontiguousarray(V1, dtype=float), np.ascontiguousarray(Ax),
-                                   np.ascontiguousarray(Ay), okc, float(dt))
-        return safe(q0 - dt * div(FLx + Cx * Ax, FLy + Cy * Ay), V1)
+        return self._tracer_advection.advect_fct_numpy(C, V0, V1, Qx, Qy, ok, unlimited, self._inflow(C))
 
     def _advect_numpy(self, C: np.ndarray, V0: np.ndarray, V1: np.ndarray, Qx: np.ndarray, Qy: np.ndarray,
-                Fz: np.ndarray, ok: np.ndarray) -> np.ndarray:
-        """
-        NumPy reference of _advect (test oracle).
-        SSP-RK3 flux-form advection of the tracer stack C (ntr,N,ny,nx) with frozen
-        transports Qx, Qy (layer volume fluxes at faces) and Fz (N+1,ny,nx, through
-        the interfaces); layer volumes go linearly from V0 to V1.
-        """
-        dt = self.dt
-        rhs = lambda c, centred=False: self._rhs(c, Qx, Qy, Fz, ok, centred)          # noqa: E731
-
-        dV = V1 - V0
-        safe = lambda q, v: np.where(v > 0, q / np.where(v > 0, v, 1.0), C)     # noqa: E731
-        q0 = V0 * C
-        if self.tracer_time == "pc":
-            # predictor: half step with centred 6th-order faces; corrector: full step from n with the
-            # upwind (WENO) faces of the mid-step tracer — upwinding applied once (CROCO step3d_t.F)
-            Vh = V0 + 0.5 * dV
-            ch = safe(q0 + 0.5 * dt * rhs(C, centred=True), Vh)
-            return safe(q0 + dt * rhs(ch), V1)
-        q1 = q0 + dt * rhs(C)
-        Va = V0 + dV
-        c1 = safe(q1, Va)
-        q2 = 0.75 * q0 + 0.25 * (q1 + dt * rhs(c1))
-        Vb = V0 + 0.5 * dV
-        c2 = safe(q2, Vb)
-        q3 = q0 / 3.0 + 2.0 / 3.0 * (q2 + dt * rhs(c2))
-        return safe(q3, V1)
+                      Fz: np.ndarray, ok: np.ndarray) -> np.ndarray:
+        return self._tracer_advection.advect_numpy(C, V0, V1, Qx, Qy, Fz, ok, self._inflow(C))
 
     def _advect(self, C: np.ndarray, V0: np.ndarray, V1: np.ndarray, Qx: np.ndarray, Qy: np.ndarray,
                 Fz: np.ndarray, ok: np.ndarray) -> np.ndarray:
-        """
-        SSP-RK3 flux-form advection of the tracer stack C (ntr,N,ny,nx) with frozen transports Qx, Qy and Fz;
-        layer volumes go linearly from V0 to V1.  The stage combinations and the ``safe`` division run in the
-        fused kernel _rk_stage with _advect_numpy's arithmetic (the reference); 'pc' keeps the NumPy path.
-        """
-        if self.tracer_time == "pc":
-            return self._advect_numpy(C, V0, V1, Qx, Qy, Fz, ok)
-        dt = self.dt
-        C = np.ascontiguousarray(C, dtype=float)
-        if np.shape(V0) != C.shape[1:] or np.shape(V1) != C.shape[1:]:     # the kernel does not check bounds
-            raise ValueError(f"_advect: volume shape {np.shape(V0)}/{np.shape(V1)} vs tracer layers {C.shape[1:]}")
-        dV = V1 - V0
-        Va, Vb = np.ascontiguousarray(V0 + dV), np.ascontiguousarray(V0 + 0.5 * dV)
-        q0 = V0 * C
-        numba.set_num_threads(_THREADS[0])
-        f = lambda a: np.ascontiguousarray(a, dtype=float).ravel()            # noqa: E731  1-D views
-        q1, c1 = np.empty_like(C), np.empty_like(C)
-        _rk_stage(f(q0), f(q0), f(self._rhs(C, Qx, Qy, Fz, ok)), dt, f(Va), f(C), 1, q1.ravel(), c1.ravel())
-        q2, c2 = np.empty_like(C), np.empty_like(C)
-        _rk_stage(f(q0), f(q1), f(self._rhs(c1, Qx, Qy, Fz, ok)), dt, f(Vb), f(C), 2, q2.ravel(), c2.ravel())
-        q3, c3 = np.empty_like(C), np.empty_like(C)
-        _rk_stage(f(q0), f(q2), f(self._rhs(c2, Qx, Qy, Fz, ok)), dt, f(V1), f(C), 3, q3.ravel(), c3.ravel())
-        return c3
+        """SSP-RK3 (or 'pc') flux-form advection (``core.components.tracers``), with this step's inflow values."""
+        return self._tracer_advection.advect(C, V0, V1, Qx, Qy, Fz, ok, self._inflow(C))
 
     def _step_ale(self, st: SigmaState, gu_ab: np.ndarray, gv_ab: np.ndarray, tu, tv, hist: list) -> SigmaState:
         """
@@ -2015,3 +1802,24 @@ def _delegate(name: str) -> property:
 
 for _name in _OB_CONFIG:
     setattr(SigmaBaroclinic, _name, _delegate(_name))
+
+
+def _component_param(name: str, component: str) -> property:
+    """A parameter kept by a component: set before the component exists (in ``__init__``), it is stored on the
+    model and handed over when the component is built; set later (scripts change ``ke_scheme``, tests ``kh``), it
+    reaches the component."""
+    def get(self):
+        comp = self.__dict__.get(component)
+        return getattr(comp, name) if comp is not None else self.__dict__[f"_pre_{name}"]
+
+    def put(self, value) -> None:
+        comp = self.__dict__.get(component)
+        if comp is not None:
+            setattr(comp, name, value)
+        self.__dict__[f"_pre_{name}"] = value
+    return property(get, put, doc=f"``{name}`` of the component ``{component}``")
+
+
+for _name, _comp in (("ke_scheme", "_momentum"), ("ah", "_momentum"), ("adv", "_momentum"),
+                     ("kh", "_tracer_diffusion")):
+    setattr(SigmaBaroclinic, _name, _component_param(_name, _comp))

@@ -34,3 +34,13 @@ def test_sum_terms_signs_and_order():
     wet = np.array([[True, False, True]])
     gu, _ = sum_terms([("x", a.copy(), a.copy(), "+"), ("y", b, b, "-")], wet, wet)
     assert np.array_equal(gu, np.array([[[0.75, 0.0, 0.75]]]))
+
+
+def test_parameters_set_after_construction_reach_the_components():
+    # validation/bayiw_cut/native_columns.py and mom6_ke_schemes/lock_pyocean.py set m.ke_scheme after building;
+    # tests set m.kh — the components must see it
+    warnings.simplefilter("ignore")
+    m, _, _ = CASES["zstar_vi_arakawa"]()
+    m.ke_scheme, m.kh, m.ah = "gudonov", 7.0, 3.0
+    assert m._momentum.ke_scheme == "gudonov" and m._tracer_diffusion.kh == 7.0 and m._momentum.ah == 3.0
+    assert m.ke_scheme == "gudonov" and m.kh == 7.0 and m.ah == 3.0
