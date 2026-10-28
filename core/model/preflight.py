@@ -140,7 +140,7 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
         if tlc == "mom6":
             warn("free_surface", "thin_layer_coupling='mom6' has no effect with vertical_coordinate='sigma_eulerian'")
     # ---- salinity (N2a, spec 2026-10-28-n2a-salinity-freshwater §7).  ``fw`` is a step() argument and
-    # ``variance_budget`` / ``tef_face`` arrive with later N2a tasks: absent names are simply not checked
+    # ``variance_budget`` (task 6) is a constructor argument; ``tef_face`` arrives later: absent names are not checked
     sal = bool(a.get("salinity", False))
     for name in SALINITY_ONLY:
         v = a.get(name)

@@ -39,6 +39,9 @@ _SPECS = [
     VarSpec("omega", ("kw", "y", "x"), "w", "m s-1", None, "history", "σ-coordinate vertical velocity ω"),
     VarSpec("mix_num", ("k", "y", "x"), "t", "degC2 m3 s-1", None, "diagnostic",
             "online numerical mixing (Burchard & Rennau 2008)"),
+    VarSpec("budget", ("term", "k", "y", "x"), "t", "(1e-3)2 m3 s-1 | degC2 m3 s-1", None, "diagnostic",
+            "discrete variance budget of S and T of the last step, per operator (variance_budget, N2a; "
+            "Klingbeil et al. 2014): {S,T}_{num_adv,surf,phy_h,phy_v,sponge[,num_remap]}"),
     VarSpec("n_trunc", (), "scalar", "1", None, "diagnostic", "CFL velocity truncations so far (ALE)"),
     VarSpec("n_limited", (), "scalar", "1", None, "diagnostic", "cell-layers scaled by the outflow limiter (ALE)"),
     VarSpec("closure", (), "scalar", "", None, "component_state", "state of the turbulence closure"),

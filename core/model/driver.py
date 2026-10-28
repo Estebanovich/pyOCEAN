@@ -23,10 +23,14 @@ is a local of the step (``StepContext``), not model state; after the step the dr
 barotropic fluxes and layer fluxes on the model for inspection only.
 
 Tracer stack (N2a, spec 2026-10-28-n2a-salinity-freshwater §1): ``[T, (T²), S, (S²), tr…]``, positions from
-``_stack_layout``; T² in σ always and in ALE with ``mix_diagnostic``, S with ``salinity``, S² with
-``variance_budget`` (N2a task 6), the passive tracers last.  S follows the path of T at every phase; with
+``_stack_layout``; T² in σ always and in ALE with ``mix_diagnostic`` or ``variance_budget``, S with ``salinity``,
+S² with ``variance_budget`` (N2a task 6), the passive tracers last.  S follows the path of T at every phase; with
 ``salinity`` both T and S are diffused along the layers as fields (no T − T_ref(z) anomaly: the reference profile
 is a density, and splitting it into T_ref and S_ref is not defined; spec §"Decisiones").
+
+Variance budget (``variance_budget=True``, N2a task 6, ``core.components.variance_budget``): each tracer operator
+of phases 7–9 records its change of Σ V c² for S and T in ``SigmaState.budget``; the advective term is taken from
+the stack right after the advection, before the freshwater substep (which scales the S² member by r, S² by r²).
 
 ``debug=True`` hashes the arrays alive at the end of every phase (``phase_hashes``), to find the first phase that
 departs from a reference run; ``keep_terms=True`` keeps the named explicit momentum terms (``last_terms``).
@@ -41,6 +45,7 @@ import numba
 import numpy as np
 
 from core.components.freshwater import apply_freshwater
+from core.components.variance_budget import VarianceBudget
 from core.components.momentum import sum_terms
 from core.dynamics.sigma_wd import vertical_implicit
 from core.model import threads
@@ -74,15 +79,16 @@ class StepContext:
 def _stack_layout(model) -> dict[str, int]:
     """
     Positions of the advected tracer stack ``[T, (T²), S, (S²), tr…]`` (N2a): 'T', 'T2' (σ always; ALE with
-    ``mix_diagnostic``), 'S' (``salinity``), 'S2' (``salinity`` and ``variance_budget``), 'tr' (first passive
+    ``mix_diagnostic`` or ``variance_budget``), 'S' (``salinity``), 'S2' (``salinity`` and ``variance_budget``), 'tr' (first passive
     tracer, ALE ``n_tracers`` > 0) and 'n', the stack length.  Every phase and the inflow stack use it.
     """
     lay, i = {"T": 0}, 1
-    if not model.ale or model.mix_diagnostic:
+    vb = getattr(model, "variance_budget", False)
+    if not model.ale or model.mix_diagnostic or vb:
         lay["T2"], i = i, i + 1
     if model.salinity:
         lay["S"], i = i, i + 1
-        if getattr(model, "variance_budget", False):
+        if vb:
             lay["S2"], i = i, i + 1
     ntr = model.n_tracers if model.ale else 0
     if ntr:
@@ -192,6 +198,33 @@ class Driver:
                                               dt=m.dt)
         ctx.set(n_limited_fw=n_lim, var_surf=var_surf)
 
+    def _budget_advection(self, ctx: StepContext, C: np.ndarray, lay: dict[str, int], V1: np.ndarray):
+        """
+        Variance budget (``variance_budget``): a new accumulator with the numerical mixing of the advection of T and
+        S, V¹ (⟨c²⟩ − c²)/Δt, from the advected stack C before the freshwater substep; None without the budget.
+        """
+        m = self.m
+        if not m.variance_budget:
+            return None
+        bud = VarianceBudget(C.shape[1:], m.dt, m.ale)
+        bud.advective("T", V1, C[lay["T2"]], C[lay["T"]])
+        bud.advective("S", V1, C[lay["S2"]], C[lay["S"]])
+        ctx.set(budget=bud)
+        return bud
+
+    @staticmethod
+    def _budget_terms(ctx: StepContext) -> dict | None:
+        """The budget arrays of the step for ``SigmaState.budget`` (None without ``variance_budget``)."""
+        bud = ctx.vals.get("budget")
+        return None if bud is None else bud.terms
+
+    def _budget_surface(self, ctx: StepContext, bud, C: np.ndarray, V_adv: np.ndarray, V_fw: np.ndarray) -> None:
+        """Freshwater terms: S_surf = var_surf of the substep; T keeps its value, T_surf = (V_fw − V_adv) T²/Δt."""
+        if bud is None:
+            return
+        bud.source("S_surf", ctx.var_surf)
+        bud.source("T_surf", (V_fw - V_adv) * C[0] ** 2 / self.m.dt)            # T is stack member 0
+
     # ------------------------------------------------------------------ σ (Eulerian)
     def _sigma_prepare(self, ctx: StepContext) -> None:
         m, st = self.m, ctx.st
@@ -232,30 +265,44 @@ class Driver:
         C = m._tracer_advection.advect(stack, lf.V0, lf.V1, lf.Qx, lf.Qy, lf.Fz, lf.ok,
                                        self._inflow(stack, T_in_now, None, S_in_now))
         mix = lf.V1 * (C[1] - C[0] ** 2) / dt                          # advection part (T² is not changed by fw)
+        bud = self._budget_advection(ctx, C, lay, lf.V1)               # variance budget (N2a), None by default
         V1 = lf.V1
         if lf.V_fw is not None:                                        # freshwater substep at fixed salt (N2a)
             self._freshwater(ctx, C, lay, lf.V1, lf.V_fw)
+            self._budget_surface(ctx, bud, C, lf.V1, lf.V_fw)
             V1 = lf.V_fw                                               # = layer_volumes(ηⁿ⁺¹)
         T_new = C[0]
         S_new = C[lay["S"]] if sal else None
         if m.kh > 0:
+            T_a, S_a = T_new, S_new
             if sal:                                                    # T and S as fields (module docstring)
                 T_new = m._tracer_diffusion.diffuse_h(T_new, V1, ctx.eta_new, anomaly=False)
                 S_new = m._tracer_diffusion.diffuse_h(S_new, V1, ctx.eta_new, anomaly=False)
             else:
                 T_new = m._tracer_diffusion.diffuse_h(T_new, V1, ctx.eta_new)
+            if bud is not None:
+                bud.operator("T_phy_h", V1, T_a, T_new)
+                bud.operator("S_phy_h", V1, S_a, S_new)
         if m.kv > 0:
+            T_a, S_a = T_new, S_new
             D1 = np.maximum(np.nan_to_num(m.H + ctx.eta_new, nan=m.fs.d_min), m.fs.d_min)
             dz = (D1[None] * m.ds[:, None, None]).reshape(n, -1)
             kvz, zero = np.full((n + 1, dz.shape[1]), m.kv), np.zeros(dz.shape[1])
             T_new = vertical_implicit(T_new.reshape(n, -1), dz, kvz, zero, dt).reshape(T_new.shape)
             if sal:
                 S_new = vertical_implicit(S_new.reshape(n, -1), dz, kvz, zero, dt).reshape(S_new.shape)
+            if bud is not None:
+                bud.operator("T_phy_v", V1, T_a, T_new)
+                bud.operator("S_phy_v", V1, S_a, S_new)
         if m._sp_c is not None and m.sponge_tracer:
+            T_a, S_a = T_new, S_new
             r = dt * m._sp_c[None]
             T_new = (T_new + r * (m.T_ext if ctx.ext is None else T_in_now)) / (1.0 + r)
             if sal:
                 S_new = (S_new + r * (m.S_ext if ctx.ext is None else S_in_now)) / (1.0 + r)
+            if bud is not None:
+                bud.operator("T_sponge", V1, T_a, T_new)
+                bud.operator("S_sponge", V1, S_a, S_new)
         ctx.set(T_new=T_new, S_new=S_new, mix=mix)
 
     def _sigma_vertical_coordinate(self, ctx: StepContext) -> None:
@@ -270,7 +317,8 @@ class Driver:
         ctx.set(new_state=type(st)(eta=ctx.eta_new, u=ctx.u_new, v=ctx.v_new, T=ctx.T_new, g_hist=ctx.hist,
                                    omega=omega, mix_num=ctx.mix, Qx=lf.Qx, Qy=lf.Qy, Fz=lf.Fz, time=st.time + m.dt,
                                    closure=ctx.closure, S=ctx.S_new,
-                                   n_limited=st.n_limited + ctx.vals.get("n_limited_fw", 0)))
+                                   n_limited=st.n_limited + ctx.vals.get("n_limited_fw", 0),
+                                   budget=self._budget_terms(ctx)))
 
     # ------------------------------------------------------------------ ALE
     def _ale_prepare(self, ctx: StepContext) -> None:
@@ -347,13 +395,16 @@ class Driver:
         C = (adv.advect_fct(stack, lf.V0, V1, lf.Qx, lf.Qy, lf.ok, inflow=inflow) if m.tracer_limiter == "fct"
              else adv.advect(stack, lf.V0, V1, lf.Qx, lf.Qy, lf.Fz, lf.ok, inflow))
         mix = V1 * (C[1] - C[0] ** 2) / dt if mixd else None                # advection part
+        bud = self._budget_advection(ctx, C, lay, V1)                   # variance budget (N2a), None by default
         if lf.V_fw is not None:                                        # freshwater substep at fixed salt (N2a)
             self._freshwater(ctx, C, lay, V1, lf.V_fw)
+            self._budget_surface(ctx, bud, C, V1, lf.V_fw)
             h_lag, V1 = lf.h_fw, lf.V_fw                               # diffusion and sponge on h† + fw Δt
         T_lag = C[0]
         S_lag = C[lay["S"]] if sal else None
         tr_lag = [C[lay["tr"] + i] for i in range(ntr)]
         if m.kh > 0:
+            T_a, S_a = T_lag, S_lag
             dif = m._tracer_diffusion
             if sal:                                                     # T and S as fields (module docstring)
                 T_lag = dif.diffuse_h(T_lag, V1, ctx.eta_new, h_lag, anomaly=False)
@@ -361,20 +412,31 @@ class Driver:
             else:
                 T_lag = dif.diffuse_h(T_lag, V1, ctx.eta_new, h_lag)
             tr_lag = [dif.diffuse_h(c, V1, ctx.eta_new, h_lag, anomaly=False) for c in tr_lag]
+            if bud is not None:
+                bud.operator("T_phy_h", V1, T_a, T_lag)
+                bud.operator("S_phy_h", V1, S_a, S_lag)
         if m.kv > 0:
+            T_a, S_a = T_lag, S_lag
             dz = np.maximum(h_lag, DZ_FLOOR).reshape(n, -1)
             kvz, zero = np.full((n + 1, dz.shape[1]), m.kv), np.zeros(dz.shape[1])
             T_lag = vertical_implicit(T_lag.reshape(n, -1), dz, kvz, zero, dt).reshape(T_lag.shape)
             if sal:
                 S_lag = vertical_implicit(S_lag.reshape(n, -1), dz, kvz, zero, dt).reshape(S_lag.shape)
             tr_lag = [vertical_implicit(c.reshape(n, -1), dz, kvz, zero, dt).reshape(c.shape) for c in tr_lag]
+            if bud is not None:
+                bud.operator("T_phy_v", V1, T_a, T_lag)
+                bud.operator("S_phy_v", V1, S_a, S_lag)
         if m._sp_c is not None and m.sponge_tracer:                     # tracer sponge toward the exterior on h†
+            T_a, S_a = T_lag, S_lag
             r = dt * m._sp_c[None]
             T_lag = (T_lag + r * m._ob.exterior_T(h_lag, ext)) / (1.0 + r)
             if sal:
                 S_lag = (S_lag + r * m._ob.exterior_S(h_lag, ext)) / (1.0 + r)
             if ntr:
                 tr_lag = [(c + r * e) / (1.0 + r) for c, e in zip(tr_lag, m._ob.exterior_tr(h_lag, ext))]
+            if bud is not None:
+                bud.operator("T_sponge", V1, T_a, T_lag)
+                bud.operator("S_sponge", V1, S_a, S_lag)
         ctx.set(T_in=T_in, tr_in=tr_in, T_lag=T_lag, S_lag=S_lag, tr_lag=tr_lag, mix=mix, lay=lay)
         if sal:
             ctx.set(S_in=S_in)
@@ -392,15 +454,26 @@ class Driver:
         mix = ctx.mix
         if mixd:                                                       # remap part, before the sponge (a forcing)
             mix = mix + m.layer_volumes(eta_new, h_new) * (rem[1] - T_new**2) / dt
+        bud = ctx.vals.get("budget")
+        if bud is not None:                                            # variance budget: remap part (as mix_num)
+            V_new = m.layer_volumes(eta_new, h_new)
+            bud.remap("T", V_new, rem[lay["T2"]], T_new)
+            bud.remap("S", V_new, rem[lay["S2"]], S_new)
         ctx.set(h_new=h_new, T_new=T_new, S_new=S_new, tr_new=tr_new, mix=mix)
 
     def _ale_interior_sponge(self, ctx: StepContext) -> None:
         m = self.m
         if m._interior_sponge_c is not None:                           # interior sponge (spec 2026-10-14-dome §2)
             T_new, tr_new = m._interior_sponge_c.apply(ctx.T_new, ctx.tr_new, ctx.eta_new, ctx.h_new)
+            T_a, S_a = ctx.T_new, ctx.S_new
             ctx.set(T_new=T_new, tr_new=tr_new)
             if m.salinity:
                 ctx.set(S_new=m._interior_sponge_c.apply_S(ctx.S_new, ctx.eta_new, ctx.h_new))
+            bud = ctx.vals.get("budget")
+            if bud is not None:                                        # variance budget: sponge on the new layers
+                V_new = m.layer_volumes(ctx.eta_new, ctx.h_new)
+                bud.operator("T_sponge", V_new, T_a, ctx.T_new)
+                bud.operator("S_sponge", V_new, S_a, ctx.S_new)
 
     def _ale_finalize(self, ctx: StepContext) -> None:
         m, st, lf, vc = self.m, ctx.st, ctx.lf, self.m._vertical
@@ -416,4 +489,4 @@ class Driver:
                                    n_trunc=n_trunc,
                                    n_limited=st.n_limited + lf.n_limited + ctx.vals.get("n_limited_fw", 0),
                                    tr=ctx.tr_new,
-                                   S=ctx.S_new))
+                                   S=ctx.S_new, budget=self._budget_terms(ctx)))

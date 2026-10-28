@@ -138,6 +138,7 @@ class SigmaState:
     tr: np.ndarray | None = None                             # passive tracers (ntr, N, ny, nx), ALE only
     closure: dict | None = None                              # turbulence-closure state (GLS: tke, eps, akv), N1
     S: np.ndarray | None = None                              # salinity (N, ny, nx) [g kg⁻¹], ``salinity=True`` (N2a)
+    budget: dict | None = None                               # variance budget of the last step (N2a, variance_budget)
 
 
 def _up3_faces(c: np.ndarray, flux: np.ndarray, ok: np.ndarray, axis: int, order: int = 3) -> np.ndarray:
@@ -927,6 +928,10 @@ class SigmaBaroclinic:
           sponge, remap, interior sponge ``sponge_S``); with salinity both T and S are diffused along the layers as
           fields, without the T − T_ref(z) anomaly of ``rho_ref``
     s_coef : β [kg m⁻³ (g kg⁻¹)⁻¹];  s_ref : S₀ [g kg⁻¹] (both fixed after construction, as t_coef)
+    variance_budget : exact discrete budget of Σ V S² and Σ V T² operator by operator in ``SigmaState.budget``
+          (needs ``salinity=True``; default False, nothing changes; N2a task 6, Klingbeil et al. 2014,
+          core.components.variance_budget): S² (and in ALE T²) are advected and remapped in the tracer stack;
+          the solution is the same bit for bit
     ah : horizontal Laplacian viscosity [m² s⁻¹] (free slip)
     adv : momentum advection: 'flux' (default; momentum-conserving flux form with WENO5,
           as CROCO) or the advective form 'upwind3' / 'centred' of core.dynamics.nonlinear
@@ -1024,7 +1029,7 @@ class SigmaBaroclinic:
                  sponge_T: np.ndarray | None = None, sponge_zw: np.ndarray | None = None,
                  sponge_tr: np.ndarray | None = None, bottom_drag: str | None = None, cd: float = 2.5e-3,
                  drag_bg_vel: float = 0.0, hbbl: float = 10.0, salinity: bool = False, s_coef: float = 0.0,
-                 s_ref: float = 35.0, sponge_S: np.ndarray | None = None) -> None:
+                 s_ref: float = 35.0, sponge_S: np.ndarray | None = None, variance_budget: bool = False) -> None:
         _args = {k: v for k, v in locals().items() if k != "self"}
         raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
         if ke_scheme == "godunov":                                      # correct spelling; the kernels use 'gudonov'
@@ -1074,6 +1079,7 @@ class SigmaBaroclinic:
         self.sponge_cells, self.sponge_tau = int(sponge_cells), tuple(float(t) for t in sponge_tau)
         self.kh, self.kv = float(kh), float(kv)
         self.mix_diagnostic = bool(mix_diagnostic)                      # ALE: advect/remap T² for mix_num
+        self.variance_budget = bool(variance_budget)                    # N2a: per-operator Σ V c² budget
         act = np.isfinite(np.asarray(bathy, float))
         fl_u = np.zeros((act.shape[0], act.shape[1] + 1), bool)
         fl_v = np.zeros((act.shape[0] + 1, act.shape[1]), bool)
