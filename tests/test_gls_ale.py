@@ -192,6 +192,55 @@ def test_gls_vanished_bed_and_top_layers():
                                    err_msg=name)
 
 
+@pytest.mark.parametrize("h_thin", [5e-3, 1e-2, 2e-2])
+def test_gls_thin_layers_5mm_to_2cm_no_spike(h_thin):
+    """
+    The task-5 review probe (N3 task 9c): two adjacent thin layers of ``h_thin`` (5 mm–2 cm) between layers 4 and 5
+    of the 10 × 5 m sheared, stratified column, with stale velocities ±2 cm/s and densities ∓0.05 kg m⁻³ off the
+    mean of their neighbours.  With the 1 mm threshold they gave 25× ν and 100× k; the column-relative threshold
+    (``thin_layer_threshold``: 1 % of D/N = 4.2 cm here) merges them, so ν and k stay ≤ 1.5× those of the column
+    without them.
+    """
+    n_thick, dz = 10, 5.0
+    zc = (np.arange(n_thick) + 0.5) * dz
+    u_t = 0.3 * np.tanh((zc - 30.0) / 5.0)
+    rho_t = 1025.0 - 0.02 * zc
+    u_m, rho_m = 0.5 * (u_t[4] + u_t[5]), 0.5 * (rho_t[4] + rho_t[5])
+    h = np.concatenate([np.full(5, dz), [h_thin, h_thin], np.full(5, dz)])
+    u = np.concatenate([u_t[:5], [u_m + 0.02, u_m - 0.02], u_t[5:]])
+    rho = np.concatenate([rho_t[:5], [rho_m - 0.05, rho_m + 0.05], rho_t[5:]])
+    a, b = _closure_column(n_thick), _closure_column(n_thick + 2)
+    us2s, us2b = np.array([[1e-4]]), np.array([[2e-5]])
+    for _ in range(60):
+        a.update(u_t[:, None, None], 0 * u_t[:, None, None], np.full((n_thick, 1, 1), dz), rho_t[:, None, None],
+                 us2s, us2b)
+        b.update(u[:, None, None], 0 * u[:, None, None], h[:, None, None], rho[:, None, None], us2s, us2b)
+    for name in ("akv", "tke"):
+        va, vb = getattr(a.gls, name), getattr(b.gls, name)
+        assert np.isfinite(vb).all(), name
+        assert vb.max() <= 1.5 * va.max(), (name, h_thin, vb.max() / va.max())
+    assert a.gls.akv.max() > 1e-4                                     # turbulent, not at the floor
+
+
+def test_gls_active_layers_top_cluster():
+    # N3 task 9c: which layers open a merged layer (k = 0 at the bed); threshold 4 cm, h_massless 1 mm
+    from core.components.closure import active_layers, thin_layer_threshold
+
+    h = np.array([[0.0, 5.0, 5.0, 5.0],                              # vanished bed layer
+                  [5.0, 0.02, 5.0, 5.0],                             # interior thin layer
+                  [5.0, 5.0, 0.01, 1e-12],                           # thin top layers: 2 cm vs 2e-12 m together
+                  [5.0, 5.0, 0.01, 1e-12]])
+    thr = np.full(4, 0.04)
+    act = active_layers(h, thr, 1e-3)
+    np.testing.assert_array_equal(act[:, 0], [False, True, True, True])
+    np.testing.assert_array_equal(act[:, 1], [True, False, True, True])
+    np.testing.assert_array_equal(act[:, 2], [True, True, True, False])   # the 2 cm top cluster stays its own layer
+    np.testing.assert_array_equal(act[:, 3], [True, True, False, False])  # 1e-12 m top layers join the layer below
+    # threshold: 1 % of D/N between 1 mm and 10 cm
+    d = np.array([[0.05, 1.0, 100.0]]).repeat(10, axis=0)
+    np.testing.assert_allclose(thin_layer_threshold(d), [1e-3, 1e-2, 0.1])
+
+
 HYB_NZ = 12
 
 
@@ -221,6 +270,9 @@ def test_gls_hybrid_column_with_massless_layers_stays_finite():
     assert g.tke.min() >= g.tke_min and g.eps.min() >= g.psi_min
     assert st.closure["akv"].max() < 1.0 and np.isfinite(st.u).all() and np.isfinite(st.T).all()
     assert 10.0 - 1e-9 <= st.T.min() and st.T.max() <= 14.0 + 1e-9
+    # the 1 cm z* floor at the top stays a merged surface layer of its own (MOM6 top cluster, N3 task 9c): the wind
+    # gets a turbulent surface ν; merged into the 25 m layer below it got the floor 1e-5 and 8 m/s in the top 4 cm
+    assert st.closure["akv"][-1].min() > 1e-4 and np.abs(st.u).max() < 1.0
 
 
 # ---------------------------------------------------------------- restart (Review Focus 3)
@@ -315,9 +367,10 @@ def test_gls_production_preflight():
 # ---------------------------------------------------------------- compiled merge path (N3 task 10a)
 def _thin_columns(n: int = 14, seed: int = 3):
     """Columns (N, M) with thin layers at the bed, the top, inside, everywhere (c = 0), all but one (c = 1), all but
-    two (c = 2), plus two columns without thin layers; random sheared, stably stratified u, v, ρ."""
+    two (c = 2), plus two columns without thin layers and one whose 1 cm top layers form their own merged layer
+    (N3 task 9c); random sheared, stably stratified u, v, ρ."""
     rng = np.random.default_rng(seed)
-    h = rng.uniform(0.5, 6.0, (n, 12))
+    h = rng.uniform(0.5, 6.0, (n, 13))
     h[:3, 0] = 0.0                                                   # z*-like vanished bed layers
     h[-4:, 1] = 1e-12                                                # hybrid-like massless top layers
     h[2:n:3, 2] = 1e-10                                              # vanished interior layers
@@ -330,6 +383,7 @@ def _thin_columns(n: int = 14, seed: int = 3):
     h[0, 7], h[-1, 7], h[6, 7] = 1e-4, 9e-4, 0.0
     h[1::2, 8] = 2e-4
     h[[0, -1], 9] = 0.0
+    h[-3:, 12] = 0.01                                                # thin top cluster (3 cm ≥ h_massless)
     zc = np.cumsum(h, axis=0) - 0.5 * h
     u = 0.3 * np.tanh((zc - 15.0) / 6.0) + 0.05 * rng.standard_normal(h.shape)
     v = 0.1 * rng.standard_normal(h.shape)

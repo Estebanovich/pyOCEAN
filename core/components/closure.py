@@ -42,8 +42,74 @@ from physics.mixing.gls_merged import merged_columns
 from physics.mixing.kpp_cvmix import KPPParams, kpp_column
 
 STATE_PREFIX = "closure_"
-H_MASSLESS = 1e-3          # [m] ALE: thinner layers are merged for the GLS column (HYCOM onemm, mxkprf.F90:1866-1878)
+H_MASSLESS = 1e-3          # [m] ALE: floor of the GLS thin-layer threshold (HYCOM onemm, mxkprf.F90:1866-1878)
+THIN_FRACTION = 0.01       # [-] ALE: thin = thinner than this fraction of the column's mean layer D/N (N3 task 9c)
+H_THIN_MAX = 0.1           # [m] ALE: cap of the threshold (HYCOM tencm, mxkprf.F90:1871-1875 without MASSLESS_1MM)
 PRODUCTIONS = ("croco", "energy")
+
+
+def thin_layer_threshold(h: np.ndarray, h_massless: float = H_MASSLESS, fraction: float = THIN_FRACTION,
+                         h_max: float = H_THIN_MAX) -> np.ndarray:
+    """
+    Thin-layer threshold of the ALE GLS column (N3 task 9c): a layer with h < h_thin is merged for the closure.
+
+        h_thin = min(h_max, max(h_massless, fraction · D/N)),   D = Σ_k h_k,
+
+    with the defaults 1 mm ≤ 1 % of the mean layer thickness ≤ 10 cm.
+
+    h : (N, …) layer thicknesses [m]; returns h_thin (…) [m].
+
+    Why relative to D/N (the choice is pyOCEAN's; the two reference models use absolute thresholds):
+
+    * MOM6 (git 0e9a561, ``src/parameterizations/vertical/MOM_kappa_shear.F90``) merges layers with
+      ``h_2d(i,k) > dz_massless`` false into the cluster above (l. 254-268, ``KAPPA_SHEAR_ELIM_MASSLESS``) with
+      ``k0dt = dt*CS%kappa_0`` and ``dz_massless = 0.1*sqrt((US%Z_to_m*GV%m_to_H)*k0dt)`` (l. 220-221), κ₀ =
+      ``KD_KAPPA_SHEAR_0`` defaulting to max(KD, 1e-7 m² s⁻¹) (l. 2170-2173): the depth a background diffusivity
+      reaches in one step, times 0.1.  With pyOCEAN's κ_t floor 1e-6 m² s⁻¹ that is 0.77 mm at Lorenz's Δt ≈ 60 s
+      and 2.4 mm at DOME's 600 s — below the 5 mm–2 cm layers that spike (task-5 review probe: 25× ν, 100× k), so
+      the Δt-aware form does not solve the problem it is wanted for here.
+    * HYCOM 2.3 (``mxkprf.F90``) clips thicknesses with ``dpmm(k) = max(onemm, dp(i,j,k,m))`` and takes the lowest
+      "substantial" layer as the deepest one with ``dpmm(k).gt.onemm`` when compiled with MASSLESS_1MM, else
+      ``dpmm(k).gt.tencm`` (l. 1866-1878; onemm = 1 mm, tencm = 10 cm, mod_cb_arrays.F90:847-849): 10 cm by default.
+    * An absolute threshold above a few mm fails in shallow σ-like columns: Lorenz ALE-σ has 60 layers of D/N ≥
+      7.5 cm, so a 10 cm threshold would merge every layer (and freeze the column).  The relative form never merges
+      a uniform column (D/N ≥ fraction · D/N), scales with the vertical resolution, and keeps HYCOM's 1 mm and 10 cm
+      as floor and cap: Lorenz ALE-σ (D ≥ 4.5 m, N = 60) 1 mm, the CROCO diurnal column (150 m, N = 150) 1 cm, DOME
+      10 km hybrid (600–3600 m, N = 25) 10 cm.  A collapsed hybrid layer sits at the regrid's h_min = 1 mm
+      (``core.vertical.regrid``), so a threshold of exactly 1 mm left such layers (1.000000000005 mm) unmerged.
+    """
+    h = np.asarray(h, float)
+    d_mean = h.sum(axis=0) / h.shape[0]
+    return np.minimum(h_max, np.maximum(h_massless, fraction * d_mean))
+
+
+def active_layers(dz: np.ndarray, h_thin: np.ndarray, h_massless: float = H_MASSLESS) -> np.ndarray:
+    """
+    Layers that open a merged layer of the ALE GLS column (N3 task 9c), (N, M) bool from dz (N, M) [m] and the
+    per-column threshold h_thin (M,) [m]; every other layer joins the nearest open layer above it (k' ≥ k), else
+    the nearest below.
+
+    * a layer with h ≥ h_thin;
+    * the lowest of the thin layers above the topmost such layer, when those top thin layers hold ≥ ``h_massless``
+      together: they form their own merged surface layer instead of joining the thick layer below.  This is MOM6's
+      clustering (MOM_kappa_shear.F90:256-265: the first layer always opens cluster 1, a thin layer joins the
+      cluster above it, ``nzc = nzc+1`` only for ``h_2d(i,k) > dz_massless`` once ``h_lay(nzc) > 0.0``), so thin
+      layers at the surface stay a cluster of their own.  It matters for the wind: a z* floor of 1 cm layers merged
+      into a 25 m layer leaves the surface ν extrapolated from an interior interface (CROCO's boundary ν), the
+      stress stays in the top 1 cm and accelerates it (8 m s⁻¹ in 150 steps of the ``tests/test_gls_ale.py``
+      hybrid column, against 0.58 with the 1 mm threshold).  pyOCEAN departs from MOM6 for a top cluster thinner
+      than ``h_massless`` (1e-12 m massless top layers): it joins the layer below, as in N3 task 5.
+    Bed thin layers join the first thick layer above them in both models.
+    """
+    act = dz >= h_thin[None]
+    n = dz.shape[0]
+    any_act = act.any(axis=0)
+    kt = np.where(any_act, n - 1 - np.argmax(act[::-1], axis=0), -1)        # topmost thick layer, −1 if none
+    above = np.arange(n)[:, None] > kt[None]
+    top = np.where(above, dz, 0.0).sum(axis=0)
+    cols = np.flatnonzero(any_act & (kt < n - 1) & (top >= h_massless))
+    act[kt[cols] + 1, cols] = True
+    return act
 
 
 class Closure:
@@ -142,20 +208,25 @@ class GLSClosure(Closure):
         'energy' — the energy-conserving form of Burchard (2002, Ocean Modell. 4, 347–361, eq. 16), given by the
         driver as the kinetic energy that the implicit vertical viscosity removed at each interface (``shear_work``,
         ``core.model.driver``), divided by the interface cell height ½(h_k−1 + h_k) of the k equation.
-    h_massless : ALE only: layers thinner than this [m] are merged for the closure column (``update``).
+    h_massless, thin_fraction, h_thin_max : ALE only: floor [m], fraction of D/N [-] and cap [m] of the per-column
+        thin-layer threshold (``thin_layer_threshold``, N3 task 9c; defaults 1 mm, 0.01, 10 cm): layers thinner
+        than it are merged for the closure column (``update``).
 
     ALE mode (``bind_ale``, N3 task 5; spec §3 and decisions 2–4)
     -------------------------------------------------------------
-    * **Thin layers** (``_update_ale``): before N², S² and the solve, every layer with h < ``h_massless`` is merged
-      with the nearest layer with mass above it (below it at the top of the column), with thickness-weighted u, v
+    * **Thin layers** (``_update_ale``): before N², S² and the solve, every layer with h < h_thin is merged
+      with the nearest layer with mass above it (the thin layers at the top form their own merged layer when they
+      hold ≥ h_massless together, else join the one below; ``active_layers``, N3 task 9c), with thickness-weighted u, v
       and ρ — MOM6 ``eliminate_massless`` (MOM_kappa_shear.F90:254-307: a massless layer joins the cluster of the
       layer above it, sums of h, u·h, T·h).  The GLS is then solved on the merged column (the same
       ``GLSKEpsilon`` code as σ) and its interface values are put back on every model interface by linear
       interpolation in the fractional height within the merged layer (MOM_kappa_shear.F90:355-363, ``kf``), so an
       interface between a vanished layer and its neighbour takes the value of the merged interface it sits on.  A
       vanished layer can therefore not create an N² or shear spike (its Δz never enters), and the bed distance of
-      the log-layer ψ flux is the first layer with mass.  The threshold 1 mm is HYCOM's ``onemm`` (mxkprf.F90:
-      1866-1878 with MASSLESS_1MM; MOM6 uses 0.1 √(Δt κ₀), MOM_kappa_shear.F90:221, ≈ 8 mm for Δt = 600 s).  A
+      the log-layer ψ flux is the first layer with mass.  The threshold is per column (N3 task 9c,
+      ``thin_layer_threshold``): h_thin = min(10 cm, max(1 mm, 1 % of D/N)) — HYCOM's onemm and tencm as floor and
+      cap (mxkprf.F90:1866-1878), relative in between because MOM6's 0.1 √(κ₀ Δt) (MOM_kappa_shear.F90:220-221) is
+      < 3 mm in pyOCEAN's configurations while stale-velocity spikes reach 2 cm layers (task-5 review: 25× ν).  A
       column with one merged layer has no interior interface: k, ε, ν, κ_t go to their floors.  Only the columns
       with thin layers are merged (N3 task 10a), in the compiled kernel ``physics.mixing.gls_merged.merged_columns``
       (one column per thread task; the NumPy form ``_update_ale_numpy`` is its oracle, rtol 1e-13); every other
@@ -177,12 +248,17 @@ class GLSClosure(Closure):
 
     def __init__(self, n_layers: int, shape: tuple[int, int], dt: float, z0: float | None = None,
                  stratified: bool = False, rho0: float = 1000.0, g: float = 9.81, kt_min: float = KT_MIN,
-                 production: str = "croco", h_massless: float = H_MASSLESS) -> None:
+                 production: str = "croco", h_massless: float = H_MASSLESS, thin_fraction: float = THIN_FRACTION,
+                 h_thin_max: float = H_THIN_MAX) -> None:
         self.n, self.shape, self.dt = int(n_layers), tuple(shape), dt
         self.stratified, self.rho0, self.g = bool(stratified), rho0, g
         if production not in PRODUCTIONS:
             raise ValueError(f"unknown gls_production {production!r}; use one of {PRODUCTIONS}")
         self.production, self.h_massless = production, float(h_massless)
+        self.thin_fraction, self.h_thin_max = float(thin_fraction), float(h_thin_max)
+        if not (0.0 < self.h_massless <= self.h_thin_max and self.thin_fraction >= 0.0):
+            raise ValueError(f"GLS thin-layer threshold needs 0 < h_massless ≤ h_thin_max and thin_fraction ≥ 0, got "
+                             f"{h_massless!r}, {h_thin_max!r}, {thin_fraction!r}")
         self.z0 = z0
         self.ale, self.remap_code = False, None
         self._n2 = None                                                # N² (N+1, M) of the last update, for remap
@@ -225,10 +301,16 @@ class GLSClosure(Closure):
         rh = None if rho is None else np.asarray(rho, float).reshape(n, -1)
         us2s = None if (ustar2_sfc is None or not self.stratified) else np.asarray(ustar2_sfc).ravel()
         work = None if shear_work is None else np.asarray(shear_work, float).reshape(n - 1, -1)
-        if self.ale and not (dz >= self.h_massless).all():
-            self._update_ale(uc, vc, dz, rh, us2s, us2b, work)
-            return
+        if self.ale:
+            thr = self.thin_threshold(dz)
+            if not (dz >= thr).all():
+                self._update_ale(uc, vc, dz, rh, us2s, us2b, work, thr)
+                return
         self._step_direct(uc, vc, dz, rh, us2s, us2b, work)
+
+    def thin_threshold(self, dz: np.ndarray) -> np.ndarray:
+        """Per-column thin-layer threshold h_thin (M,) [m] of the layers ``dz`` (N, M) (``thin_layer_threshold``)."""
+        return thin_layer_threshold(dz, self.h_massless, self.thin_fraction, self.h_thin_max)
 
     def _step_direct(self, uc: np.ndarray, vc: np.ndarray, dz: np.ndarray, rh: np.ndarray | None,
                      us2s: np.ndarray | None, us2b: np.ndarray, work: np.ndarray | None) -> None:
@@ -243,15 +325,18 @@ class GLSClosure(Closure):
             self.gls.step(uc, vc, dz, us2b, self.dt, prod=prod)
 
     def _update_ale(self, uc: np.ndarray, vc: np.ndarray, dz: np.ndarray, rho: np.ndarray | None,
-                    us2s: np.ndarray | None, us2b: np.ndarray, work: np.ndarray | None) -> None:
+                    us2s: np.ndarray | None, us2b: np.ndarray, work: np.ndarray | None,
+                    thr: np.ndarray | None = None) -> None:
         """
         ALE step when some columns have thin layers (N3 task 10a): the columns without thin layers take the direct
         GLS step (``_step_direct`` on that subset: the same elementwise arithmetic as a column of a σ run, so σ ≡
         ALE holds column by column), the columns with thin layers the merged step of the compiled kernel
         ``physics.mixing.gls_merged.merged_columns`` (class docstring; oracle ``_update_ale_numpy``).
+        thr : (M,) thin-layer threshold [m] (default ``thin_threshold(dz)``).
         """
         gls, n = self.gls, self.n
-        thin = (dz < self.h_massless).any(axis=0)
+        thr = self.thin_threshold(dz) if thr is None else thr
+        thin = (dz < thr).any(axis=0)
         tc, cc = np.flatnonzero(thin), np.flatnonzero(~thin)
         tke, eps, akv = gls.tke.copy(), gls.eps.copy(), gls.akv.copy()
         akt = gls.akt.copy() if self.stratified else None
@@ -291,7 +376,8 @@ class GLSClosure(Closure):
                            np.ascontiguousarray(gls.tke[:, tc]), np.ascontiguousarray(gls.eps[:, tc]),
                            np.ascontiguousarray(gls.akv[:, tc]),
                            np.ascontiguousarray(gls.akt[:, tc]) if self.stratified else dummy,
-                           self.h_massless, float(self.dt), self.stratified, work is not None, float(self.rho0),
+                           np.ascontiguousarray(thr[tc], dtype=float), self.h_massless, float(self.dt),
+                           self.stratified, work is not None, float(self.rho0),
                            float(self.g), gls.cm0, gls.tke_min, gls.psi_min, gls.eps_min, gls.nu_min, gls.kt_min,
                            gls.galp, gls.z0s_min, gls.chk, gls.z0_bed, gls.alpha_n_min, *o, o_prod)
             tke[:, tc], eps[:, tc], akv[:, tc] = o[0], o[1], o[2]
@@ -313,10 +399,10 @@ class GLSClosure(Closure):
         columns with the same number c of merged layers together, interpolate back to the model interfaces.
         """
         gls, n = self.gls, self.n
-        act = dz >= self.h_massless                                    # layers with mass, (N, M)
+        act = active_layers(dz, self.thin_threshold(dz), self.h_massless)   # layers that open a merged layer
         cnt = act.sum(axis=0)
         k_idx = np.arange(n)[:, None]
-        # owner layer of each layer: the nearest layer with mass above it (k' ≥ k), else the nearest below
+        # owner layer of each layer: the nearest active layer above it (k' ≥ k), else the nearest below
         above = np.minimum.accumulate(np.where(act, k_idx, n)[::-1], axis=0)[::-1]
         below = np.maximum.accumulate(np.where(act, k_idx, -1), axis=0)
         owner = np.where(above < n, above, below)

@@ -125,11 +125,14 @@ max |ALE − σ| / max |σ| en toda la corrida:
   máximos del 10-50 % en k, ν, κ_t están en la base de la capa de mezcla, donde las interfaces colapsan: es el máximo
   sobre una interpolación a niveles fijos de un perfil con un salto. Las magnitudes integrales: D_m en Kato a 0.1 % de σ,
   Willis −0.36 m (k) / +1 m (T, una celda), ciclo diurno D_m 06 h día 8 26.42 contra 26.67 m. RMS de D_m híbrido − σ
-  en el ciclo diurno 0.72 m (8 días); la mayor diferencia, −5.1 m a las 08 h del día 8, cuando la convección nocturna
-  se apaga: en ese momento hay una capa de 1.0 mm justo en la base de la capa de mezcla y ν cae a 1.9e-4 bajo ella
-  (σ: 9.3e-3). Las capas de 1 mm–2 cm aparecen en 102 de 193 horas del ciclo diurno (hasta 4 a la vez). Es el umbral
-  de fusión de capas delgadas de la GLS (1 mm, `H_MASSLESS`): una capa de exactamente `h_min` = 1 mm no se fusiona.
-  Ver "Qué debe mejorar".
+  en el ciclo diurno 0.72 m (8 días) con el umbral de fusión de 1 mm de la tarea 5; la mayor diferencia, −5.1 m a las
+  08 h del día 8, cuando la convección nocturna se apaga: había una capa de 1.0 mm (= `h_min` del regrid, no fusionada
+  porque la regla es h < 1 mm) justo en la base de la capa de mezcla y ν cayó a 1.9e-4 bajo ella (σ: 9.3e-3).
+  **Tarea 9c** (umbral por columna h_thin = min(10 cm, max(1 mm, 1 % de D/N)) = 1 cm aquí, y las capas delgadas de
+  superficie como capa fusionada propia, como MOM6; `core/components/closure.py`, `thin_layer_threshold`,
+  `active_layers`): RMS 0.48 m; el día 8 a las 08 h D_m = 25.8 m (σ 26.2, antes 21.1); la mayor diferencia es ahora
+  −2.85 m a las 08 h del día 4 (17.2 contra 20.0 m), igual que antes de la tarea 9c: dos capas de 1 mm en la base de
+  la capa de mezcla, ya fusionadas — es la malla distinta (clase c), no el umbral.
 - La conservación de ∫k en el remapeo está probada a 1e-12 en `tests/test_gls_ale.py`; aquí no hay un diagnóstico
   aparte de mezcla numérica de k (anti-objetivo 3): la diferencia híbrido − σ en D_m (≤ 0.1 % en Kato con regrid) es la
   cota disponible.
@@ -184,7 +187,7 @@ celdas de la advección periódica (31 × 31 celdas para una columna 5 × 5).
 | FORCED_EKBBL: ángulo de la capa del fondo 62.8° contra 75.8°, k máx −7 %, κ_t 4 % | **(a) nuestro** | El arrastre log de pyOCEAN usa la velocidad de la propia componente en cada cara (C_d \|u\| u, C_d \|v\| v), CROCO usa \|U\| = √(u² + v²) (nota del ledger, tarea 4). En la capa del fondo CROCO tiene (u, v) = (0.60, 2.36) m/s, pyOCEAN (1.18, 2.31): con \|u\| = 1.18 en vez de \|U\| ≈ 2.4 el esfuerzo sobre u sale a la mitad y u del fondo al doble. En DBLEEK (u ≈ v pequeños) el efecto es 0.3°, en los casos sin rotación (solo v) cero. **Corregido en la tarea 9b**: σ y z* dan 76.0° (CROCO 75.8°), k máx 0.130 (0.131); DBLEEK 63.2° (63.1°). |
 | CROCO-KPP con EOS lineal: B₀ × ρ₀ | **(d) CROCO** | `alfabeta.F:133` vs `:116-118`; corregido localmente (arriba). |
 | KPP de pyOCEAN contra CROCO-KPP: h_bl −20 % (Kato), −13 % (Willis), −27 % (ciclo diurno 06 h) | **(c)** | CVMix (Ri_c = 0.3, sin núcleo Kern) contra el KPP 2005 "if-less" de CROCO (Ric = 0.45, 0.15 diurno, `lmd_skpp2005.F:95-117`) y el preset con Ri interior y convección. pyOCEAN queda más cerca de Price (−3.7 %) y de la teoría de Willis (13.4 contra 11.3–13.3 m). |
-| Híbrido − σ: D_m −5.1 m en una hora del ciclo diurno; ν, κ_t en la base de la capa de mezcla | **(c)**, con un punto abierto | Malla distinta (capas que colapsan en la base). La capa de 1 mm sin fusionar justo en la base es el umbral de 1 mm de la tarea 5. |
+| Híbrido − σ: D_m −5.1 m en una hora del ciclo diurno; ν, κ_t en la base de la capa de mezcla | **(c)**; el punto abierto (umbral de 1 mm) **corregido en la tarea 9c** | Malla distinta (capas que colapsan en la base). Con el umbral relativo (1 cm aquí) RMS 0.72 → 0.48 m y la peor hora −5.1 → −2.85 m (otro día, con las capas delgadas ya fusionadas). |
 | FORCED_OSCNONROTBBL: k, ε 3-5 % del rango a media corrida | **(c)** | En las fases de inversión del flujo, k pequeño; la amplitud y fase de v̄ coinciden a 0.4 % y 0°. |
 | FORCED_NONROTBBL v̄ 0.7 % menor que CROCO | **(c)** | Cambia la discretización temporal del esfuerzo de fondo (σ de pyOCEAN: C_d \|u*\| linealizado sobre u + Δt G) — no investigado más; está dentro del 1 %. |
 
@@ -193,9 +196,10 @@ celdas de la advección periódica (31 × 31 celdas para una columna 5 × 5).
 1. ✅ **Arrastre log con la rapidez completa** √(u² + v̄²) en cada cara (como CROCO y MOM6) en σ y ALE: hecho en la
    tarea 9b (`physics.bottom_friction.cross_velocity_at_faces`); el ángulo de la capa de Ekman de fondo pasó de 62.8° a
    76.0° (CROCO 75.8°). Cambia Lorenz/DOME/regional con rotación y z0. (clase a)
-2. **Umbral de fusión de capas delgadas de la GLS** (1 mm): en el híbrido las capas de 1 mm–2 cm aparecen la mitad del
-   tiempo en la base de la capa de mezcla diurna, y una de 1.0 mm sin fusionar cortó la mezcla 5 m durante una hora.
-   Evaluar el umbral relativo/dependiente de Δt de MOM6 (≈ 8 mm) antes de DOME híbrido.
+2. ✅ **Umbral de fusión de capas delgadas de la GLS**: hecho en la tarea 9c. h_thin = min(10 cm, max(1 mm, 1 % de
+   D/N)) por columna (piso y tope = onemm y tencm de HYCOM, mxkprf.F90:1866-1878; la forma 0.1 √(κ₀ Δt) de MOM6,
+   MOM_kappa_shear.F90:220-221, da < 3 mm en Lorenz y DOME) y las capas delgadas de superficie como capa fusionada
+   propia (MOM_kappa_shear.F90:256-265). Ciclo diurno híbrido: RMS de D_m contra σ 0.72 → 0.48 m. (clase a)
 3. **Costo de las columnas periódicas:** 10-25 × CROCO; un camino sin gradientes horizontales (o un halo mínimo) para
    columnas haría baratas las calibraciones y las columnas de MOM6 (tarea 9).
 4. **Fuerza de cuerpo y flujo de calor de fondo como entradas del paso** (hoy en el arnés): las necesitan las columnas y

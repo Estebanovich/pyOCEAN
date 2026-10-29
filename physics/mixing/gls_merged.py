@@ -1,10 +1,12 @@
 """
 Compiled GLS k-ε step on ALE columns with thin layers (N3 task 10a; carry from the task-5 review).
 
-``GLSClosure._update_ale`` (core/components/closure.py) merges every layer thinner than ``h_massless`` with the
-nearest layer with mass above it (below it at the top of the column), steps the k-ε GLS on the merged column and
-interpolates the interface values back to the model interfaces (MOM6 ``eliminate_massless``,
-MOM_kappa_shear.F90:254-307 and 355-363; class docstring of ``GLSClosure``).  Its NumPy form groups the columns by
+``GLSClosure._update_ale`` (core/components/closure.py) merges every layer thinner than the column's thin-layer
+threshold ``h_thin`` (``core.components.closure.thin_layer_threshold``, N3 task 9c) with the nearest layer with mass
+above it (the thin layers at the top of the column form their own merged layer, or join the one below when they hold
+< h_massless together; ``active_layers``), steps the k-ε GLS on the merged column and interpolates the interface
+values back to the model interfaces (MOM6 ``eliminate_massless``, MOM_kappa_shear.F90:254-307 and 355-363; class
+docstring of ``GLSClosure``).  Its NumPy form groups the columns by
 the number of merged layers and builds one ``GLSKEpsilon`` per group every step; this module does the same per
 column in one Numba kernel (``merged_columns``, threads over the columns), with the arithmetic of
 ``GLSKEpsilon.step`` / ``_step_stratified`` / ``_solve`` (CROCO gls_mixing.F port, ``physics.mixing.gls``) written
@@ -202,24 +204,40 @@ def _scatter(xc, kc, kf, c, out, j):
 
 
 @njit(cache=True, parallel=True)
-def merged_columns(dz, uc, vc, rho, us2s, us2b, work, tke, eps, akv, akt, h_massless, dt, stratified, energy,
-                   rho0, g, cm0, tke_min, psi_min, eps_min, nu_min, kt_min, galp, z0s_min, chk, z0_bed, alpha_n_min,
-                   o_tke, o_eps, o_akv, o_akt, o_n2, o_prod):
+def merged_columns(dz, uc, vc, rho, us2s, us2b, work, tke, eps, akv, akt, h_thin, h_massless, dt, stratified,
+                   energy, rho0, g, cm0, tke_min, psi_min, eps_min, nu_min, kt_min, galp, z0s_min, chk, z0_bed,
+                   alpha_n_min, o_tke, o_eps, o_akv, o_akt, o_n2, o_prod):
     """
     GLS step of the columns of ``dz`` (N, M) [m] with thin layers (module docstring), one column per thread task.
 
     uc, vc, rho : (N, M) layer velocities [m s⁻¹] and density [kg m⁻³] (rho unused if not ``stratified``);
     us2s, us2b : (M,) surface and bed u*² [m² s⁻²]; work : (N−1, M) interface kinetic-energy loss [m³ s⁻³]
-    (``energy``) or unused; tke, eps, akv, akt : (N+1, M) old state (akt unused if not ``stratified``).
+    (``energy``) or unused; tke, eps, akv, akt : (N+1, M) old state (akt unused if not ``stratified``);
+    h_thin : (M,) thin-layer threshold of each column [m] (a layer with h < h_thin is merged); h_massless : [m]
+    the least total thickness of the thin layers at the top that keeps them as their own merged layer.
     Outputs (N+1, M): o_tke, o_eps, o_akv, o_akt, o_n2 (N² of the merged column on the model interfaces, N2_FLOOR
-    where c ≤ 1); o_prod (N−1, M) the P used (0 where c ≤ 1).  A column with no layer ≥ h_massless keeps its
+    where c ≤ 1); o_prod (N−1, M) the P used (0 where c ≤ 1).  A column with no layer ≥ h_thin keeps its
     state; one with a single such layer goes to the floors (no interior interface).
     """
     n, mcol = dz.shape
     for j in prange(mcol):
+        # layers that open a merged layer (``core.components.closure.active_layers``): h ≥ h_thin, plus the lowest
+        # of the thin layers above the topmost such layer when they hold ≥ h_massless together (MOM6 top cluster)
+        act = np.zeros(n, np.bool_)
+        kt = -1
+        for k in range(n):
+            if dz[k, j] >= h_thin[j]:
+                act[k] = True
+                kt = k
+        if 0 <= kt < n - 1:
+            top = 0.0
+            for k in range(kt + 1, n):
+                top += dz[k, j]
+            if top >= h_massless:
+                act[kt + 1] = True
         c = 0
         for k in range(n):
-            if dz[k, j] >= h_massless:
+            if act[k]:
                 c += 1
         for i in range(n + 1):
             o_n2[i, j] = N2_FLOOR
@@ -240,14 +258,14 @@ def merged_columns(dz, uc, vc, rho, us2s, us2b, work, tke, eps, akv, akt, h_mass
         lay = np.empty(n, np.int64)
         nxt = -1
         for k in range(n - 1, -1, -1):
-            if dz[k, j] >= h_massless:
+            if act[k]:
                 nxt = k
             lay[k] = nxt
         prv = -1
         rank = np.empty(n, np.int64)
         r = -1
         for k in range(n):
-            if dz[k, j] >= h_massless:
+            if act[k]:
                 prv = k
                 r += 1
             rank[k] = r
