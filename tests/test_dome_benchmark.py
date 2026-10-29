@@ -156,3 +156,37 @@ def test_pyocean_default_time_step_is_the_stable_one():
     assert run_pyocean.default_dt(cases.get(10.0)) == 600.0
     assert run_pyocean.default_dt(cases.get(5.0)) == 600.0
     assert cases.get(10.0).dt == 1200.0
+
+
+def test_dome_gls_short_run():
+    """
+    ``--closure gls`` (N3 task 10, spec decision 10): the hybrid DOME with the stratified GLS instead of the constant
+    ν_v — only the closure changes: the quadratic drag C_d over hbbl is the baseline's, kv = 0 so κ_t keeps the GLS
+    floor 1e-6.  Coarse 50 km grid, 6 steps: dye enters with the exact transport, the GLS mixes, T stays in its
+    initial range (FCT), no CFL truncation.
+    """
+    import warnings
+    from validation.dome import run_pyocean
+    warnings.simplefilter("ignore")
+    c = cases.get(50.0)
+    m, st = run_pyocean.build(c, "hybrid", closure="gls")
+    m0, _ = run_pyocean.build(c, "hybrid")
+    assert (m.core.closure, m.gls_stratified, m.kv) == ("gls", True, 0.0)
+    assert m._closure.gls.kt_min == 1e-6                                # the GLS (CROCO nuws) floor of κ_t
+    assert m0.core.closure == "constant"
+    for name in ("cd", "hbbl"):                                          # the drag of the baseline
+        assert getattr(m._bed_drag, name) == getattr(m0._bed_drag, name) == getattr(c, name)
+    T0 = (np.nanmin(st.T[:, m.fs.active]), np.nanmax(st.T[:, m.fs.active]))
+    for _ in range(6):
+        st = m.step(st)
+    assert np.isfinite(st.u).all() and st.tr.max() > 0.0
+    np.testing.assert_allclose(st.Qy[:, -1, :].sum(), cases.inflow_profile(c)["transport"].sum(), rtol=1e-10)
+    akt = st.closure["akt"]
+    assert np.isfinite(akt).all() and akt.min() >= 1e-6 and akt.max() > 1e-4      # the GLS mixes
+    T = st.T[:, m.fs.active]
+    inflow_T = cases.inflow_profile(c)["T"]
+    lo, hi = min(T0[0], np.min(inflow_T)), max(T0[1], np.max(inflow_T))
+    assert lo - 1e-9 <= T.min() and T.max() <= hi + 1e-9
+    assert st.n_trunc == 0
+    with pytest.raises(ValueError, match="nu-v"):
+        run_pyocean.closure_kwargs(c, "gls", nu_v=0.5)

@@ -29,11 +29,16 @@ Umlauf, L. & Burchard, H. (2003). A generic length-scale equation for geophysica
 """
 from __future__ import annotations
 
+import copy
+
+import numba
 import numpy as np
 
+from core.model import threads
 from core.model.contract import BuildContext, Issue, Role
 from core.vertical import remap as rm
 from physics.mixing.gls import KT_MIN, N2_FLOOR, RM, RN, RP, GLSKEpsilon, buoyancy_frequency2
+from physics.mixing.gls_merged import merged_columns
 from physics.mixing.kpp_cvmix import KPPParams, kpp_column
 
 STATE_PREFIX = "closure_"
@@ -151,8 +156,11 @@ class GLSClosure(Closure):
       vanished layer can therefore not create an N² or shear spike (its Δz never enters), and the bed distance of
       the log-layer ψ flux is the first layer with mass.  The threshold 1 mm is HYCOM's ``onemm`` (mxkprf.F90:
       1866-1878 with MASSLESS_1MM; MOM6 uses 0.1 √(Δt κ₀), MOM_kappa_shear.F90:221, ≈ 8 mm for Δt = 600 s).  A
-      column with one merged layer has no interior interface: k, ε, ν, κ_t go to their floors.  Without thin layers
-      the GLS is stepped on the model columns directly (no merging arithmetic: σ ≡ ALE with fixed layers).
+      column with one merged layer has no interior interface: k, ε, ν, κ_t go to their floors.  Only the columns
+      with thin layers are merged (N3 task 10a), in the compiled kernel ``physics.mixing.gls_merged.merged_columns``
+      (one column per thread task; the NumPy form ``_update_ale_numpy`` is its oracle, rtol 1e-13); every other
+      column is stepped on its model layers directly (no merging arithmetic: σ ≡ ALE with fixed layers, column by
+      column).
     * **Remap** (``remap``): k, ε, ν, κ_t (and the N² of the last update) live at the interfaces; each interface i
       owns the dual cell between the centres of layers i−1 and i, w_i = ½(h_i−1 + h_i) (half layers at the bed and
       surface), which tile the column.  After the regrid the interface values are remapped as cell means of the dual
@@ -220,6 +228,11 @@ class GLSClosure(Closure):
         if self.ale and not (dz >= self.h_massless).all():
             self._update_ale(uc, vc, dz, rh, us2s, us2b, work)
             return
+        self._step_direct(uc, vc, dz, rh, us2s, us2b, work)
+
+    def _step_direct(self, uc: np.ndarray, vc: np.ndarray, dz: np.ndarray, rh: np.ndarray | None,
+                     us2s: np.ndarray | None, us2b: np.ndarray, work: np.ndarray | None) -> None:
+        """GLS step on the model columns as they are (σ, and ALE columns without thin layers)."""
         prod = None if work is None else work / (0.5 * (dz[:-1] + dz[1:]))
         if self.stratified:
             n2 = buoyancy_frequency2(rh, dz, self.rho0, self.g)
@@ -232,8 +245,72 @@ class GLSClosure(Closure):
     def _update_ale(self, uc: np.ndarray, vc: np.ndarray, dz: np.ndarray, rho: np.ndarray | None,
                     us2s: np.ndarray | None, us2b: np.ndarray, work: np.ndarray | None) -> None:
         """
-        GLS step on columns with thin layers (class docstring, MOM6 eliminate_massless): merge, solve the columns
-        with the same number c of merged layers together, interpolate back to the model interfaces.
+        ALE step when some columns have thin layers (N3 task 10a): the columns without thin layers take the direct
+        GLS step (``_step_direct`` on that subset: the same elementwise arithmetic as a column of a σ run, so σ ≡
+        ALE holds column by column), the columns with thin layers the merged step of the compiled kernel
+        ``physics.mixing.gls_merged.merged_columns`` (class docstring; oracle ``_update_ale_numpy``).
+        """
+        gls, n = self.gls, self.n
+        thin = (dz < self.h_massless).any(axis=0)
+        tc, cc = np.flatnonzero(thin), np.flatnonzero(~thin)
+        tke, eps, akv = gls.tke.copy(), gls.eps.copy(), gls.akv.copy()
+        akt = gls.akt.copy() if self.stratified else None
+        n2_full = np.full((n + 1, dz.shape[1]), N2_FLOOR) if self.stratified else None
+        last_prod = np.zeros((n - 1, dz.shape[1]))
+        if cc.size:
+            sub = copy.copy(gls)                                       # shallow: constants shared, state sliced
+            sub.tke, sub.eps, sub.akv = gls.tke[:, cc], gls.eps[:, cc], gls.akv[:, cc]
+            if self.stratified:
+                sub.akt = gls.akt[:, cc]
+            saved = self._n2
+            self.gls = sub
+            try:
+                self._step_direct(uc[:, cc], vc[:, cc], dz[:, cc], None if rho is None else rho[:, cc],
+                                  None if us2s is None else us2s[cc], us2b[cc],
+                                  None if work is None else work[:, cc])
+            finally:
+                self.gls = gls
+            tke[:, cc], eps[:, cc], akv[:, cc] = sub.tke, sub.eps, sub.akv
+            if akt is not None:
+                akt[:, cc] = sub.akt
+                n2_full[:, cc] = self._n2
+            last_prod[:, cc] = sub.last_prod
+            self._n2 = saved
+        if tc.size:
+            dummy = np.zeros((1, 1))
+            mt = tc.size
+            o = [np.empty((n + 1, mt)) for _ in range(5)]
+            o_prod = np.empty((n - 1, mt))
+            numba.set_num_threads(threads._THREADS[0])
+            merged_columns(np.ascontiguousarray(dz[:, tc]), np.ascontiguousarray(uc[:, tc]),
+                           np.ascontiguousarray(vc[:, tc]),
+                           dummy if rho is None else np.ascontiguousarray(rho[:, tc]),
+                           np.zeros(mt) if us2s is None else np.ascontiguousarray(us2s[tc], dtype=float),
+                           np.ascontiguousarray(us2b[tc], dtype=float),
+                           dummy if work is None else np.ascontiguousarray(work[:, tc]),
+                           np.ascontiguousarray(gls.tke[:, tc]), np.ascontiguousarray(gls.eps[:, tc]),
+                           np.ascontiguousarray(gls.akv[:, tc]),
+                           np.ascontiguousarray(gls.akt[:, tc]) if self.stratified else dummy,
+                           self.h_massless, float(self.dt), self.stratified, work is not None, float(self.rho0),
+                           float(self.g), gls.cm0, gls.tke_min, gls.psi_min, gls.eps_min, gls.nu_min, gls.kt_min,
+                           gls.galp, gls.z0s_min, gls.chk, gls.z0_bed, gls.alpha_n_min, *o, o_prod)
+            tke[:, tc], eps[:, tc], akv[:, tc] = o[0], o[1], o[2]
+            if akt is not None:
+                akt[:, tc] = o[3]
+                n2_full[:, tc] = o[4]
+            last_prod[:, tc] = o_prod
+        gls.tke, gls.eps, gls.akv = tke, eps, akv
+        if akt is not None:
+            gls.akt = akt
+        gls.last_prod = last_prod
+        self._n2 = n2_full
+
+    def _update_ale_numpy(self, uc: np.ndarray, vc: np.ndarray, dz: np.ndarray, rho: np.ndarray | None,
+                          us2s: np.ndarray | None, us2b: np.ndarray, work: np.ndarray | None) -> None:
+        """
+        NumPy form of the merged step, every column through the merging (the N3 task-5 code, kept as the oracle of
+        the compiled kernel, ``tests/test_gls_ale.py::test_gls_merge_numba_matches_numpy``): merge, solve the
+        columns with the same number c of merged layers together, interpolate back to the model interfaces.
         """
         gls, n = self.gls, self.n
         act = dz >= self.h_massless                                    # layers with mass, (N, M)

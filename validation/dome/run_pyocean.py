@@ -5,7 +5,15 @@ pyOCEAN runs of the DOME benchmark (spec 2026-10-14-dome-overflow §5): ALE z*, 
 of the case (Laplacian ν_h, ν_v, no tracer diffusion, quadratic drag C_d over hbbl), one passive tracer s (the inflow
 dye), the interior sponges of MOM6 DOME and the north inflow as a 'clamped' edge with its exact transport.
 
+``--closure gls`` (N3 task 10, spec 2026-10-29-n3-turbulence-closures decision 10): the stratified k-ε GLS
+(``closure='gls'``, ``gls_stratified=True``) gives ν and the tracer diffusivity κ_t instead of the constant ν_v; only
+the closure changes from the baseline — the quadratic drag C_d over ``hbbl`` is the same, and its u*² is the bed
+condition of the GLS (``core.model.driver._ale_bed_ustar2``); ``kv`` = 0, so κ_t keeps the GLS floor (CROCO nuws
+= 1e-6 m² s⁻¹, gls_mixing.F:152), and ν its floor 1e-5.  Its outputs go to the run directory with the tag 'gls'
+(``--tag`` replaces it), next to the baseline.
+
 Usage: NUMBA_NUM_THREADS=5 python validation/dome/run_pyocean.py 10 zstar [--dt 600 (default)] [--days 50] [--tag x]
+           [--closure {constant,gls}]
 """
 from __future__ import annotations
 
@@ -33,8 +41,27 @@ def default_dt(case: cases.Case) -> float:
     return min(case.dt, DT_MAX)
 
 
-def build(case: cases.Case, coord: str, dt: float | None = None, nu_v: float | None = None):
-    """The ALE model of ``case`` in ``coord`` ∈ {'zstar', 'sigma', 'hybrid'} and its resting initial state."""
+CLOSURES = ("constant", "gls")
+
+
+def closure_kwargs(case: cases.Case, closure: str, nu_v: float | None = None) -> dict:
+    """
+    Model arguments of the vertical closure: 'constant' (the baseline, ν = ν_v, no tracer diffusion) or 'gls'
+    (module docstring; spec decision 10: kv = 0 → the GLS κ_t floor 1e-6, nothing else changes).
+    """
+    if closure == "constant":
+        return dict(closure="constant", nu_const=case.nu_v if nu_v is None else nu_v)
+    if closure == "gls":
+        if nu_v is not None:
+            raise ValueError("--nu-v applies to closure 'constant' only (the GLS computes ν)")
+        return dict(closure="gls", gls_stratified=True, kv=0.0)
+    raise ValueError(f"unknown closure {closure!r}; use one of {CLOSURES}")
+
+
+def build(case: cases.Case, coord: str, dt: float | None = None, nu_v: float | None = None,
+          closure: str = "constant"):
+    """The ALE model of ``case`` in ``coord`` ∈ {'zstar', 'sigma', 'hybrid'} with the vertical ``closure``
+    ∈ {'constant', 'gls'} and its resting initial state."""
     hg = create_cartesian_grid(nx=case.nx, ny=case.ny, dx=case.dx, dy=case.dx, f0=case.f0)
     nz = case.nz
     dz = np.full(nz, cases.HMAX / nz)                                  # 25 × 144 m (Legg's MITgcm levels)
@@ -53,13 +80,13 @@ def build(case: cases.Case, coord: str, dt: float | None = None, nu_v: float | N
                                 tracers=prof["s"][None], transport=prof["transport"])}
     zs = -np.linspace(0.0, cases.HMAX, 361)
     m = SigmaBaroclinic(hg, case.H.copy(), dt=default_dt(case) if dt is None else dt, n_layers=nz, rho0=cases.RHO0,
-                        t_coef=cases.ALPHA, t_ref=cases.T_REF, z0=None, closure="constant",
-                        nu_const=case.nu_v if nu_v is None else nu_v, ah=case.nu_h, g=cases.G, pgf="fv",
+                        t_coef=cases.ALPHA, t_ref=cases.T_REF, z0=None, ah=case.nu_h, g=cases.G, pgf="fv",
                         vertical_coordinate="ale", regrid=coord, regrid_params=params, n_tracers=1,
                         open_boundaries=("north",), open_boundary_mode={"north": "clamped"},
                         open_boundary_state=state, sponge_rate=cases.sponge_rate(case),
                         sponge_T=cases.T_ambient(0.5 * (zs[1:] + zs[:-1])), sponge_zw=zs,
-                        bottom_drag="quadratic", cd=case.cd, hbbl=case.hbbl)
+                        bottom_drag="quadratic", cd=case.cd, hbbl=case.hbbl,
+                        **closure_kwargs(case, closure, nu_v))
     eta = np.zeros((case.ny, case.nx))
     if coord == "hybrid":                                             # T on 10-m levels as the source (MOM6 Z_INIT)
         zf = np.arange(0.0, cases.HMAX + 10.0, 10.0)[:, None, None]
@@ -78,16 +105,21 @@ def record(m, st) -> dict:
                 u=st.u[::-1].copy(), v=st.v[::-1].copy(), eta=st.eta.copy())
 
 
-def run(res_km: float, coord: str, dt: float | None = None, days: float | None = None, tag: str = "",
-        threads: int = 5, nu_v: float | None = None) -> Path:
-    """Run and write cases.run_dir(res_km, 'pyocean', coord, tag)/series.npz; returns its path."""
+def run(res_km: float, coord: str, dt: float | None = None, days: float | None = None, tag: str | None = None,
+        threads: int = 5, nu_v: float | None = None, closure: str = "constant", write: bool = True) -> Path | dict:
+    """Run and write cases.run_dir(res_km, 'pyocean', coord, tag)/series.npz; returns its path.  ``tag`` None:
+    '' for the constant closure, 'gls' for the GLS.  ``write`` False (cost measurement): nothing is written and the
+    run metadata are returned."""
     set_threads(threads)
     c = cases.get(res_km)
+    if tag is None:
+        tag = "" if closure == "constant" else closure
     out = cases.run_dir(res_km, "pyocean", coord, tag) / "series.npz"
-    out.unlink(missing_ok=True)
+    if write:
+        out.unlink(missing_ok=True)
     dt = default_dt(c) if dt is None else dt
     days = c.days if days is None else days
-    m, st = build(c, coord, dt, nu_v)
+    m, st = build(c, coord, dt, nu_v, closure)
     n_steps = int(round(days * 86400.0 / dt))
     every = max(1, int(round(c.out_s / dt)))
     recs, times, tic = [record(m, st)], [0.0], None
@@ -103,7 +135,10 @@ def run(res_km: float, coord: str, dt: float | None = None, days: float | None =
     s.update(t=np.array(times), x=c.x, y=c.y, dx=np.full(c.nx, c.dx), dy=np.full(c.ny, c.dx), H=c.H)
     meta = dict(model="pyOCEAN", coord=coord, res_km=res_km, dt=dt, n_steps=n_steps, wall_s=wall, threads=threads,
                 n_trunc=int(st.n_trunc), n_limited=int(st.n_limited),
-                nu_v=c.nu_v if nu_v is None else nu_v)
+                nu_v=(c.nu_v if nu_v is None else nu_v) if closure == "constant" else None, closure=closure, T_min=float(np.nanmin(s["T"])),
+                T_max=float(np.nanmax(s["T"])))
+    if not write:
+        return meta
     return series.save(out, s, meta)
 
 
@@ -113,11 +148,13 @@ def main() -> None:
     ap.add_argument("coord", choices=["zstar", "sigma", "hybrid"])
     ap.add_argument("--dt", type=float)
     ap.add_argument("--days", type=float)
-    ap.add_argument("--tag", default="")
+    ap.add_argument("--tag", default=None, help="run-directory tag (default '' constant, 'gls' GLS)")
     ap.add_argument("--threads", type=int, default=5)
     ap.add_argument("--nu-v", type=float)
+    ap.add_argument("--closure", choices=CLOSURES, default="constant")
+    ap.add_argument("--cost", action="store_true", help="cost measurement: write nothing, print the metadata")
     a = ap.parse_args()
-    print(run(a.res_km, a.coord, a.dt, a.days, a.tag, a.threads, a.nu_v))
+    print(run(a.res_km, a.coord, a.dt, a.days, a.tag, a.threads, a.nu_v, a.closure, write=not a.cost))
 
 
 if __name__ == "__main__":

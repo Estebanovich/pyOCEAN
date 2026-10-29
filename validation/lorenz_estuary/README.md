@@ -40,20 +40,22 @@ Un canal 2-D con evaporación, precipitación, río y marea, donde la mezcla tot
 | κ_v de S (σ + GLS) | κ_t del k-ε estratificado, piso 1e-6 m²/s (`kv` = 0, Task 8c) | el fondo de CROCO con GLS (`nuws`, gls_mixing.F:152); el más cercano al fondo cero de GETM [verificar] |
 | ν_h | 0 | **[no dado en el artículo]**; `Am = 0` de GETM [verificar] |
 | κ_h | 0 | lo exige la identidad exacta (el flujo difusivo en el transecto no tiene volumen y TEF no lo puede clasificar) |
-| Rugosidad del fondo | z0 = 1e-3 m (σ + GLS, ley log); C_d = [κ/(ln(D/z0) − 1)]² = 2.37e-3 con D = 10 m sobre la velocidad media de la columna (ALE-σ, `hbbl` = 20 m) | **[no dado en el artículo]**; el mismo z0 en las dos configuraciones (derivado, no ajustado) |
+| Rugosidad del fondo | z0 = 1e-3 m (σ + GLS y ALE-σ + GLS, ley log en la capa de fondo); C_d = [κ/(ln(D/z0) − 1)]² = 2.37e-3 con D = 10 m sobre la velocidad media de la columna (ALE-σ, `hbbl` = 20 m) | **[no dado en el artículo]**; el mismo z0 en las tres configuraciones (derivado, no ajustado) |
 | Esponja oeste | 10 celdas (2 km), perfil MITgcm, τ = (1200, 60) s | **[no dado en el artículo]**; GETM impone S en la frontera sin esponja; su borde interior (x = 2 km) queda a 31.4 km del transecto de B–D (x = 33.4 km) y a 48 km del de A |
 | Estado inicial | reposo, η = 0, S = 30 en todo el canal | **[no dado en el artículo]** |
 | f | 0 (corte 2-D de una fila) | **[no dado en el artículo]** |
 | Δt | T_M2/746 ≈ 59.9 s (`sigma_gls`) y T_M2/498 ≈ 89.8 s (`ale_sigma`), número entero de pasos por ciclo | búsqueda abajo (σ + GLS bajó de T_M2/373 tras las corridas largas con el GLS estratificado) |
 
-**Configuraciones de pyOCEAN** (spec §6, Esteban):
+**Configuraciones de pyOCEAN** (spec §6, Esteban; `ale_sigma_gls` de N3 Task 10, criterio 4 del spec N3):
 
-| | `sigma_gls` | `ale_sigma` |
-|---|---|---|
-| Coordenada | σ euleriana | ALE con regla σ, PGF de volumen finito |
-| Cierre | GLS k-ε estratificado (Canuto A con flotabilidad, Task 8c): ν para el momento y κ_t para S | ν y κ constantes |
-| Fondo | ley logarítmica, z0 = 1e-3 m | arrastre cuadrático, C_d = 2.37e-3 |
-| Trazadores | WENO5, SSP-RK3 | WENO5 + FCT, SSP-RK3, remapeo PPM_H4 |
+| | `sigma_gls` | `ale_sigma` | `ale_sigma_gls` |
+|---|---|---|---|
+| Coordenada | σ euleriana | ALE con regla σ, PGF de volumen finito | ALE con regla σ, PGF de volumen finito |
+| Cierre | GLS k-ε estratificado (Canuto A con flotabilidad, Task 8c): ν para el momento y κ_t para S | ν y κ constantes | el GLS de `sigma_gls` en ALE (N3 Task 5), `kv` = 0 |
+| Fondo | ley logarítmica, z0 = 1e-3 m | arrastre cuadrático, C_d = 2.37e-3 | ley logarítmica, z0 = 1e-3 m, sobre la capa de fondo d_b = max(h_b, min(`hbbl`, D)) con `hbbl` = 0.05 m |
+| Trazadores | WENO5, SSP-RK3 | WENO5 + FCT, SSP-RK3, remapeo PPM_H4 | como `ale_sigma` |
+
+**`hbbl` de `ale_sigma_gls`.** La ley de pared de ALE (N3 Task 4, `core/components/bottom_drag.py`) actúa sobre una capa de fondo de grosor d_b = max(h_b, min(`hbbl`, D)). Con el `hbbl` = 20 m de `ale_sigma`, toda la columna sería la capa de fondo. Con `hbbl` ≤ h_b en todas partes, d_b = h_b y la ley es la de σ (C_d de la primera capa sola, `test_ale_loglaw_matches_sigma_column`). h_b = D/60 vale 0.083 m en el extremo del río (D = 5 m) y la marea más baja deja D ≥ 4.5 m; 0.05 m queda por debajo de h_b hasta D = 3 m.
 
 **Diferencias ya conocidas antes de correr:**
 - **GLS con flotabilidad y sobre los trazadores (resuelto, Task 8c; reemplaza el Review Focus 5 de N2a).** Antes, en `sigma_gls` S se difundía con la constante `kv` y el GLS no tenía flotabilidad (N² = 0): con Ri ≈ 80 el cierre daba ν ≈ 1e-3–1e-2 m²/s y frenaba la circulación de intercambio; A σ+GLS no llegaba a un estado cuasi estacionario (S_max 191 g/kg). Ahora el k-ε es el de CROCO `gls_mixing.F` (N² de ρ(S), B = −κ_t N², β₃⁻ = −0.4, α_N en Canuto A, límite de Galperin) y su κ_t difunde S, como el k-ε de GETM (`tests/test_lorenz_estuary.py::test_gls_config_uses_gls_tracer_diffusivity`; `tests/test_gls_stratified.py`). Smoke de 50 ciclos de A abajo.
@@ -87,7 +89,16 @@ La búsqueda de arriba se hizo con el GLS sin flotabilidad (antes de Task 8c) y 
 
 Diagnóstico (repetición desde el checkpoint): el GLS estratificado deja ν ≈ 1e-5 m²/s bajo la haloclina, así que en la vaciante se forma un chorro superficial de 1–1.5 m/s cerca de x ≈ 68 km (el borde este de la zona de evaporación). Ahí \|u\| Δt/Δx = 0.75–0.9, más allá del límite de la advección de momento en forma de flujo AB3 + WENO5 con A_h = 0. Un modo de 3–4 Δx crece ×1.3 por paso, y luego la matriz de la superficie libre se vuelve singular (`spsolve`: "Matrix is exactly singular"). En σ no hay un respaldo como el `truncate_cfl` de ALE. Con T_M2/746 ≈ 59.9 s el número de Courant se reduce a la mitad: ≤ 0.36 en A–C y 0.46 en el pico de la intrusión de D. Es una elección numérica (c): no cambia la física, y A, que completó a 120 s, da Me 294.6 contra 270.2 a 60 s (9 %, dentro de la variabilidad de A; ver Estacionariedad).
 
-Se usa **Δt = T_M2/746 ≈ 59.9 s en `sigma_gls`** y **T_M2/498 ≈ 89.8 s en `ale_sigma`**: 120 s ya deja \|u\| Δt/Δx = 0.47 junto al umbral de truncamiento de 0.5. El runner revisa que los campos sean finitos cada ¼ de ciclo y antes de cada checkpoint, y guarda uno cada 25 ciclos.
+**`ale_sigma_gls` (N3 Task 10a):**
+
+| Config | Exp. | Δt [s] (N) | Resultado (150 ciclos) |
+|---|---|---|---|
+| `ale_sigma_gls` | D | 89.8 (498) | se detiene en el ciclo 131 por truncamientos CFL (> 1000): el chorro superficial de vaciante, u = −1.17 m/s en la capa 57 de la cara i = 259 (\|u\| Δt/Δx = 0.53); \|u\|max registrado 1.10 m/s |
+| `ale_sigma_gls` | D | 59.9 (746) | completa: \|u\|max 1.03 m/s (\|u\| Δt/Δx ≤ 0.31), n_limited 0, \|Me − M\|/M 1.4e-10 |
+
+Es el mismo chorro de 1–1.5 m/s de `sigma_gls` (el GLS deja ν ≈ 1e-5 bajo la haloclina); en ALE lo detiene `truncate_cfl` en vez de reventar. Se usa T_M2/746, como en `sigma_gls` (c).
+
+Se usa **Δt = T_M2/746 ≈ 59.9 s en `sigma_gls` y `ale_sigma_gls`** y **T_M2/498 ≈ 89.8 s en `ale_sigma`**: 120 s ya deja \|u\| Δt/Δx = 0.47 junto al umbral de truncamiento de 0.5. El runner revisa que los campos sean finitos cada ¼ de ciclo y antes de cada checkpoint, y guarda uno cada 25 ciclos.
 
 ## Costo (2 h simuladas, 5 hilos, TEF y balance de varianza activos; 600 ciclos M2)
 
@@ -109,7 +120,9 @@ Medido con la máquina cargada (promedio de carga 17–20) y antes de fijar los 
 | `sigma_gls` | T_M2/746 ≈ 59.9 s | 447 600 | 0.0133–0.0137 | 1.65–1.71 h |
 | `ale_sigma` | T_M2/498 ≈ 89.8 s | 298 800 | 0.0153–0.0160 | 1.27–1.33 h |
 
-Las 8 corridas suman ≈ 12 h. Al principio, el pool de hilos de OpenBLAS giraba junto a los 5 hilos de Numba y la corrida iba 4× más lenta (`progress.md`, 2026-10-28).
+Las 8 corridas suman ≈ 12 h.
+
+`ale_sigma_gls` (N3 Task 10a, 2 h simuladas, Δt = T_M2/746, 447 600 pasos por corrida): A 0.0186 s/paso → 2.3 h; B 0.0194 → 2.4 h; D en la búsqueda de Δt, 150 ciclos: 0.020 → 2.5 h. Las cuatro ≈ 10 h, una a la vez. Al principio, el pool de hilos de OpenBLAS giraba junto a los 5 hilos de Numba y la corrida iba 4× más lenta (`progress.md`, 2026-10-28).
 
 ## Cómo reproducirlo
 
@@ -117,6 +130,7 @@ Las 8 corridas suman ≈ 12 h. Al principio, el pool de hilos de OpenBLAS giraba
 python validation/lorenz_estuary/run_pyocean.py B sigma_gls --hours 2           # costo: 2 h simuladas, no escribe nada
 python validation/lorenz_estuary/run_pyocean.py B sigma_gls                     # 600 ciclos, promedio de los últimos 100
 python validation/lorenz_estuary/run_pyocean.py B sigma_gls --resume            # sigue desde el último checkpoint
+python validation/lorenz_estuary/run_pyocean.py B ale_sigma_gls                 # ALE-σ + GLS (N3 Task 10)
 python validation/lorenz_estuary/compare.py                                     # Tabla 2: GETM contra pyOCEAN
 ```
 

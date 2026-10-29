@@ -49,7 +49,7 @@ GETM = {   # Lorenz et al. (2021) Table 2, in the order of ROWS
     "D": [24.04, 13.98, 24.05, 15.24, 0.30, 8.48, -35.16, 946.8, 2445, 2884, 2193, 2628, 2445, 2413, 32],
 }
 
-CONFIGS = ("sigma_gls", "ale_sigma")
+CONFIGS = case.CONFIGS                       # sigma_gls, ale_sigma, ale_sigma_gls (N3 task 10)
 
 # Classification of each difference (CLAUDE.md, Validation Strategy): (a) our bug, (b) missing physics,
 # (c) numerical / configuration choice, (d) reference-model error; "?" marks a hypothesis.  Per experiment: (row keys,

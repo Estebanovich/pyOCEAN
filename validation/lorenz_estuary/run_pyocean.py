@@ -15,7 +15,7 @@ GETM does during the run.  Outputs (never in the repository) go to ``--out``/<ex
 Progress lines go to stdout (flushed), so a background run can be followed with ``tail -f``.
 
 Usage:
-    python validation/lorenz_estuary/run_pyocean.py {A,B,C,D} {sigma_gls,ale_sigma} [--cycles 600] [--avg 100]
+    python validation/lorenz_estuary/run_pyocean.py {A,B,C,D} {sigma_gls,ale_sigma,ale_sigma_gls} [--cycles 600] [--avg 100]
         [--out DIR] [--dt S] [--threads 5] [--checkpoint 25] [--resume] [--hours H]
 ``--hours H`` runs H simulated hours only and prints the cost per step (README, cost table); nothing is written.
 """
@@ -150,7 +150,7 @@ def run(exp: str, config: str, cycles: float, avg: float, out: Path | None, dt: 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("exp", choices=sorted(case.TABLE_1))
-    p.add_argument("config", choices=["sigma_gls", "ale_sigma"])
+    p.add_argument("config", choices=case.CONFIGS)
     p.add_argument("--cycles", type=float, default=case.SPINUP_CYCLES + case.AVG_CYCLES)
     p.add_argument("--avg", type=float, default=case.AVG_CYCLES)
     p.add_argument("--out", type=Path, default=case.RUNS)

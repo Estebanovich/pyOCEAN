@@ -310,3 +310,69 @@ def test_gls_production_preflight():
         _column("zstar", gls_production="ad_hoc")
     with pytest.warns(Warning, match="gls_production"):
         _column("zstar", closure="constant", gls_production="energy")
+
+
+# ---------------------------------------------------------------- compiled merge path (N3 task 10a)
+def _thin_columns(n: int = 14, seed: int = 3):
+    """Columns (N, M) with thin layers at the bed, the top, inside, everywhere (c = 0), all but one (c = 1), all but
+    two (c = 2), plus two columns without thin layers; random sheared, stably stratified u, v, ρ."""
+    rng = np.random.default_rng(seed)
+    h = rng.uniform(0.5, 6.0, (n, 12))
+    h[:3, 0] = 0.0                                                   # z*-like vanished bed layers
+    h[-4:, 1] = 1e-12                                                # hybrid-like massless top layers
+    h[2:n:3, 2] = 1e-10                                              # vanished interior layers
+    h[5:9, 3] = 5e-4                                                 # thin (< 1 mm) block
+    h[:, 4] = 0.0                                                    # dry column: c = 0
+    h[:, 5] = 1e-6
+    h[7, 5] = 3.0                                                    # c = 1
+    h[:, 6] = 1e-6
+    h[[0, 9], 6] = 2.0                                               # c = 2
+    h[0, 7], h[-1, 7], h[6, 7] = 1e-4, 9e-4, 0.0
+    h[1::2, 8] = 2e-4
+    h[[0, -1], 9] = 0.0
+    zc = np.cumsum(h, axis=0) - 0.5 * h
+    u = 0.3 * np.tanh((zc - 15.0) / 6.0) + 0.05 * rng.standard_normal(h.shape)
+    v = 0.1 * rng.standard_normal(h.shape)
+    rho = 1026.0 - 0.02 * zc + 0.01 * rng.standard_normal(h.shape)
+    return h, u, v, rho
+
+
+@pytest.mark.parametrize("stratified", [True, False])
+@pytest.mark.parametrize("production", ["croco", "energy"])
+def test_gls_merge_numba_matches_numpy(stratified, production):
+    """
+    The compiled merged-column step (``GLSClosure._update_ale`` → ``physics.mixing.gls_merged.merged_columns``)
+    equals the NumPy oracle ``_update_ale_numpy`` (the task-5 code) step by step from the same state, to rtol 1e-13,
+    in k, ε, ν, κ_t, the N² kept for the remap and the P used; columns without thin layers take the direct step.
+    """
+    n = 14
+    h, u, v, rho = _thin_columns(n)
+    m = h.shape[1]
+    rng = np.random.default_rng(7)
+
+    def make() -> GLSClosure:
+        cl = GLSClosure(n, (1, m), 30.0, stratified=stratified, rho0=1000.0, production=production)
+        cl.bind_ale(rm.PPM_H4)
+        return cl
+    a, b = make(), make()
+    for step in range(25):
+        us2s, us2b = rng.uniform(0, 2e-4, (1, m)), rng.uniform(0, 5e-5, (1, m))
+        uu = u * (1 + 0.1 * np.sin(step))
+        work = rng.uniform(-2e-7, 2e-6, (n - 1, 1, m)) if production == "energy" else None
+        kw = dict(shear_work=work)
+        b.gls.tke, b.gls.eps, b.gls.akv = a.gls.tke.copy(), a.gls.eps.copy(), a.gls.akv.copy()
+        if stratified:
+            b.gls.akt = a.gls.akt.copy()
+        a.update(uu[:, None], v[:, None], h[:, None], rho[:, None], us2s, us2b, **kw)
+        # oracle: the same inputs through the NumPy merge path
+        dz, us2s_r = h, (us2s.ravel() if stratified else None)
+        b._update_ale_numpy(uu, v, dz, rho if stratified else rho, us2s_r, us2b.ravel(),
+                            None if work is None else work.reshape(n - 1, m))
+        names = ("tke", "eps", "akv", "last_prod") + (("akt",) if stratified else ())
+        for name in names:
+            np.testing.assert_allclose(getattr(a.gls, name), getattr(b.gls, name), rtol=1e-13, atol=0,
+                                       err_msg=f"{name} step {step}")
+        if stratified:
+            np.testing.assert_allclose(a._n2, b._n2, rtol=1e-13, atol=0, err_msg=f"n2 step {step}")
+    assert a.gls.akv.max() > 1e-4                                     # turbulent, not only floors
+    assert (a.gls.tke[:, 4] == a.gls.tke_min).all()                   # dry column unchanged from the floors

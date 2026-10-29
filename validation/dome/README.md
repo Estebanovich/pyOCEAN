@@ -187,6 +187,18 @@ Las filas de pyOCEAN a 5 km son anteriores a la corrección de la fricción; por
 - **Tinte de MOM6 (d).** Para comparar la híbrida con MOM6 ρ hace falta que el tinte entre. Hay dos opciones: compilar una copia parcheada de MOM6 (registrar el trazador del segmento con su `OBC_scalar`), como se hizo con la copia de HYCOM, o reportarlo a los desarrolladores. No se tocó el código de MOM6.
 - **Esponjas de MOM6 en modo capa.** Mueven masa entre clases. Con un tinte real esto dejaría de importar para las métricas; si no, una corrida de MOM6 en ALE ρ con esponja ALE aislaría el efecto.
 
+## Híbrida + GLS (N3 Task 10, criterio 5 del spec N3)
+
+`--closure gls` cambia solo el cierre respecto a la línea base (decisión 10 del spec N3): GLS k-ε estratificado (`closure='gls'`, `gls_stratified=True`) para ν y κ_t; el arrastre cuadrático C_d = 2e-3 sobre `hbbl` = 10 m queda igual y su u*² es la condición de fondo del GLS; `kv` = 0, así que κ_t tiene el piso del GLS (1e-6 m²/s, `nuws` de CROCO) y ν el suyo (1e-5). Las salidas van a `RUNS/10km/pyocean_hybrid_gls/`.
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 MKL_NUM_THREADS=1 \
+  python validation/dome/run_pyocean.py 10 hybrid --closure gls          # 50 días, Δt 600 s, 5 hilos
+python validation/dome/run_pyocean.py 10 hybrid --closure gls --days 1 --cost   # costo, no escribe nada
+```
+
+Costo (10 km, 1 día, Δt 600 s, 5 hilos): 23.0 s por día con GLS contra 15.7 de la línea base (constante); 50 días ≈ 19 min. Con la ruta NumPy anterior de las capas delgadas (todas las columnas por la fusión) eran 26.0 s por día; ahora solo las columnas con capas < 1 mm se fusionan, en un kernel de Numba (`physics/mixing/gls_merged.py`). En el primer día: sin truncamientos, T en el rango inicial. Resultados: Task 10b.
+
 ## Referencias
 
 - Legg, S., Hallberg, R. W., Girton, J. B. (2006). Comparison of entrainment in overflows simulated by z-coordinate, isopycnal and non-hydrostatic models. *Ocean Modell.* 11, 69–97. [10.1016/j.ocemod.2004.11.006](https://doi.org/10.1016/j.ocemod.2004.11.006)

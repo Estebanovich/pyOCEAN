@@ -19,12 +19,16 @@ Table 1 (m³ s⁻¹, m):  Exp  Q_r  Q_evap  Q_precip  M2
                        C   0.0   −5.0     5.0     0.5     E middle third, P east third
                        D   5.0   −5.0     5.0     0.5     E middle third, P east third
 
-Two pyOCEAN configurations (spec §6, Esteban):
+Three pyOCEAN configurations (spec §6, Esteban; the third from N3 task 10):
   * ``sigma_gls``: Eulerian σ, stratified k-ε GLS (Canuto A with buoyancy, physics/mixing/gls.py, N2a task 8c:
     N² from ρ(S), B = −κ_t N², α_N in the stability functions) for ν and for the vertical diffusivity κ_t of S,
     as GETM's k-ε (GOTM); log-law bed drag z0 = 1e-3 m; ``kv`` = 0, so κ_t keeps CROCO's floor 1e-6 m² s⁻¹
     (task 8c supersedes N2a Review Focus 5, where S had the constant ``kv`` and GLS had no buoyancy);
-  * ``ale_sigma``: ALE with the σ grid rule, constant ν and κ, quadratic bed drag over the whole column.
+  * ``ale_sigma``: ALE with the σ grid rule, constant ν and κ, quadratic bed drag over the whole column;
+  * ``ale_sigma_gls`` (N3 task 10, spec criterion 4): ALE with the σ grid rule and the physics of ``sigma_gls`` —
+    the stratified k-ε GLS in ALE (N3 task 5) for ν and κ_t, ``kv`` = 0, and the first-layer law of the wall with
+    the same z0 (``LogLawBedDrag``, N3 task 4) on a bed layer of thickness max(h_b, min(hbbl, D)) with
+    ``hbbl`` = H_BBL_GLS ≤ the thinnest σ bed layer, so the bed layer alone carries the stress, as in σ.
 
 Lorenz's exact relation (eq. 32) needs, in pyOCEAN (diagnostics/tef.py, task 7 report): kh = 0 (the diffusive
 transect flux has no volume, TEF cannot bin it), no sponge cells in the region, and every open face of the region a
@@ -90,6 +94,13 @@ AH = 0.0                                    # [m² s⁻¹] horizontal viscosity 
 KH = 0.0                                    # [m² s⁻¹] horizontal diffusivity: 0 (needed by the exact TEF relation)
 Z0 = 1e-3                                   # [m] bed roughness, sigma_gls log law [no dado en el artículo] (brief)
 H_BBL = 20.0                                # [m] ALE: drag on the depth-mean velocity (hbbl ≥ the deepest column)
+H_BBL_GLS = 0.05                            # [m] ale_sigma_gls: the law-of-the-wall bed layer is
+                                            #   d_b = max(h_b, min(hbbl, D)) (core/components/bottom_drag.py); with
+                                            #   hbbl ≤ h_b everywhere d_b = h_b, the σ first-layer law of sigma_gls
+                                            #   (C_d(h_b/2, z0) on the bed layer alone).  h_b = D/60 ≥ 4.99/60 =
+                                            #   0.083 m at the river end; 0.05 keeps hbbl < h_b down to D = 3 m (the
+                                            #   lowest tide, −0.5 m, leaves D ≥ 4.5 m).  H_BBL = 20 m would make the
+                                            #   whole column the bed layer (Task 5 note).
 SPONGE_CELLS = 10                           # west sponge (2 km) [no dado en el artículo]; GETM prescribes S at the
                                             #   boundary without a sponge; pyOCEAN's tested Orlanski +
                                             #   sponge (spec §6); its inner edge (x = 2 km) is
@@ -104,7 +115,9 @@ INIT_S = S_OCEAN                            # initial S uniform at rest [no dado
 #     (A ran 600 cycles at 120 s; all four use 60 s);
 #   ale_sigma: T_M2/498 ≈ 89.8 s — B stops at 150 s (CFL velocity truncation, |u| dt/dx > 0.5, of the 0.67 m/s ebb at
 #     the mouth face) and is stable at 120 s, where the 0.78 m/s peak already gives |u| dt/dx = 0.47
-DT_DEFAULT = {"sigma_gls": T_M2 / 746, "ale_sigma": T_M2 / 498}
+#   ale_sigma_gls: T_M2/746 — like sigma_gls (task 10a search, README): the GLS lowers ν under the halocline as in σ
+DT_DEFAULT = {"sigma_gls": T_M2 / 746, "ale_sigma": T_M2 / 498, "ale_sigma_gls": T_M2 / 746}
+CONFIGS = tuple(DT_DEFAULT)
 
 
 def cd_loglaw(D: float = 10.0, z0: float = Z0, kappa: float = 0.4) -> float:
@@ -173,12 +186,15 @@ def config_kwargs(config: str) -> dict:
     if config == "ale_sigma":
         return dict(vertical_coordinate="ale", regrid="sigma", pgf="fv", closure="constant", nu_const=NU_ALE, z0=None,
                     kv=KV, bottom_drag="quadratic", cd=cd_loglaw(), hbbl=H_BBL)
-    raise ValueError(f"unknown config {config!r}; use 'sigma_gls' or 'ale_sigma'")
+    if config == "ale_sigma_gls":
+        return dict(vertical_coordinate="ale", regrid="sigma", pgf="fv", closure="gls", gls_stratified=True, z0=Z0,
+                    kv=KV_GLS, bottom_drag=None, hbbl=H_BBL_GLS)
+    raise ValueError(f"unknown config {config!r}; use one of {CONFIGS}")
 
 
 def build(exp: str, config: str, dt: float | None = None, S_init: np.ndarray | None = None, **overrides):
     """
-    The model of experiment ``exp`` ∈ {A, B, C, D} in ``config`` ∈ {sigma_gls, ale_sigma}, its initial state (rest,
+    The model of experiment ``exp`` ∈ {A, B, C, D} in ``config`` ∈ CONFIGS, its initial state (rest,
     η = 0, S = 30, T constant) and ``forcing(n) → dict(tau_x=None, tau_y=None, fw=…)`` for step n (fw constant).
     The model carries salinity, the exact variance budget and the in-model TEF on the transect of ``exp``.
     ``S_init`` (nz, ny, nx) replaces the uniform initial S (tests); other keywords override model arguments.

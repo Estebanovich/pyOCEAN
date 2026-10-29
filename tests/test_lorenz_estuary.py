@@ -239,5 +239,33 @@ def test_compare_table_from_summary(tmp_path):
     (tmp_path / "D_ale_sigma").mkdir()
     (tmp_path / "D_ale_sigma" / "summary.json").write_text(json.dumps(summ))
     txt = compare.table(tmp_path, "D")
-    assert "| Class |" in txt and "| s_in [g/kg] | 24.04 | nan | 2 | c |" in txt
+    assert "| Class |" in txt and "| s_in [g/kg] | 24.04 | nan | 2 | nan | c |" in txt
     assert "| 1.0e-11 |" in txt and "Classes:" in txt
+
+
+def test_ale_sigma_gls_short_run_closes_budget():
+    """
+    ``ale_sigma_gls`` (N3 task 10): ALE σ grid with the stratified GLS and the σ law of the wall.  Its arguments are
+    those of ``sigma_gls`` (closure, buoyancy, kv, z0) with the ALE grid of ``ale_sigma``, and hbbl below the thinnest
+    σ bed layer (so the bed layer alone carries the stress, as in σ).  Experiment A, 50 steps from the front of
+    ``test_short_run_closes_budget_and_identity``: the s² budget closes step by step (≤ 100 ε Σ V S², well inside
+    the 5e-10 of the spec), Lorenz's identity Me = M_model_tot holds, the GLS mixes and the exchange is inverse.
+    """
+    warnings.simplefilter("ignore")
+    kw = case.config_kwargs("ale_sigma_gls")
+    ref = case.config_kwargs("sigma_gls")
+    assert (kw["closure"], kw["gls_stratified"], kw["kv"], kw["z0"]) == \
+        (ref["closure"], ref["gls_stratified"], ref["kv"], ref["z0"])
+    assert kw["vertical_coordinate"] == "ale" and kw["regrid"] == "sigma" and kw["bottom_drag"] is None
+    assert kw["hbbl"] <= 3.0 / case.NZ                    # ≤ h_b = D/60 down to D = 3 m (lowest tide: D ≥ 4.5 m)
+    assert case.DT_DEFAULT["ale_sigma_gls"] in (case.T_M2 / 746, case.T_M2 / 498)
+    x = (np.arange(case.NX) + 0.5) * case.DX
+    S0 = (33.0 + 3.0 * np.tanh((x - 50e3) / 2e3)) * np.ones((case.NZ, case.NY, 1))
+    r, bulk, m = _short_run("A", "ale_sigma_gls", S0)
+    from core.components.bottom_drag import LogLawBedDrag
+    assert m.core.closure == "gls" and m.ale and isinstance(m._bed_drag, LogLawBedDrag)
+    assert (m._bed_drag.z0, m._bed_drag.hbbl) == (case.Z0, case.H_BBL_GLS)
+    assert m.dt == case.DT_DEFAULT["ale_sigma_gls"]
+    assert bulk["Q_in"] > 0 > bulk["Q_out"] and bulk["s_out"] > bulk["s_in"]   # inverse exchange, as in A
+    st_akt = m._closure.tracer_diffusivity()
+    assert np.isfinite(st_akt).all() and st_akt.max() > 1e-5                      # the GLS mixes (front)
