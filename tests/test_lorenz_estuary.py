@@ -8,8 +8,8 @@ pyOCEAN benchmark (validation/lorenz_estuary/).
 2. A short run of experiment A in both configurations closes the discrete s² budget of the region east of the
    transect step by step (task 6 + the TEF transect flux of task 7), and Lorenz's exact relation (eq. 32) equals the
    region's model mixing.
-3. In ``sigma_gls`` the vertical diffusivity of S is the constant ``kv`` while GLS sets the momentum viscosity: GLS
-   has no buoyancy term and does not act on tracers (N2a Review Focus 5, class (b) missing physics, pinned here).
+3. In ``sigma_gls`` the vertical diffusivity of S is the GLS κ_t (stratified k-ε, N2a task 8c; before 8c it was the
+   constant ``kv`` and GLS had no buoyancy term, N2a Review Focus 5, now superseded).
 Index order (k, j, i), k = 0 at the bed.
 """
 from __future__ import annotations
@@ -159,10 +159,10 @@ def test_short_run_with_river_closes_budget_and_identity(config):
     assert bulk["Q_in"] > 0 > bulk["Q_out"] and bulk["s_in"] > bulk["s_out"]   # classical exchange
 
 
-def test_gls_config_uses_constant_tracer_kv(monkeypatch):
+def test_gls_config_uses_gls_tracer_diffusivity(monkeypatch):
     """
-    sigma_gls: the implicit vertical diffusion of T and S uses the constant ``kv`` at every interface, while GLS
-    sets a varying momentum viscosity (N2a Review Focus 5; Lorenz's GETM uses k-ε for tracers too — class (b)).
+    sigma_gls (N2a task 8c, supersedes Review Focus 5): the implicit vertical diffusion of T and S uses the
+    stratified GLS diffusivity κ_t = max(c_μ′ k²/ε, 1e-6) (CROCO gls_mixing.F), as GETM's k-ε mixes S.
     """
     warnings.simplefilter("ignore")
     import core.model.driver as drv
@@ -174,14 +174,13 @@ def test_gls_config_uses_constant_tracer_kv(monkeypatch):
         return orig(c, dz, nu, r_bed, dt, *a, **kw)
 
     m, st, forcing = case.build("B", "sigma_gls")
-    assert m.core.closure == "gls" and m.kv == case.KV > 0
+    assert m.core.closure == "gls" and m.gls_stratified and m.kv == case.KV_GLS == 0.0
     monkeypatch.setattr(drv, "vertical_implicit", spy)
     for n in range(40):
         calls.clear()
         st = m.step(st, **forcing(n))
     assert len(calls) == 2                                                  # T and S, σ tracer path
     for nu in calls:
-        assert np.all(nu == case.KV)
-    akv = m.core.gls.akv
-    wet = akv[1:-1]
-    assert wet.min() < case.KV < wet.max()                                  # GLS sets ν ≠ kv on momentum
+        np.testing.assert_array_equal(nu, m.core.gls.akt)
+    akt = m.core.gls.akt[1:-1]
+    assert akt.min() >= 1e-6 and akt.max() > 1e-4                           # κ_t from the closure, not constant

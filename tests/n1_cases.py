@@ -137,7 +137,7 @@ def _case_builders() -> dict[str, Callable[[], Case]]:
     c["sigma_jacobian"] = lambda: _start(_sigma(pgf="jacobian"), True)
     c["sigma_twoterm"] = lambda: _start(_sigma(pgf="twoterm"), False)
     c["sigma_fv"] = lambda: _start(_sigma(pgf="fv"), True)
-    c["sigma_gls"] = lambda: _start(_sigma(closure="gls", z0=1e-3), True)
+    c["sigma_gls"] = lambda: _start(_sigma(closure="gls", z0=1e-3, gls_stratified=False), True)   # pre-8c GLS
     c["sigma_parabolic"] = lambda: _start(_sigma(closure="parabolic", z0=1e-3), False)
     c["sigma_loglaw"] = lambda: _start(_sigma(z0=1e-3), True)
     c["sigma_pc"] = lambda: _start(_sigma(tracer_time="pc"), False)

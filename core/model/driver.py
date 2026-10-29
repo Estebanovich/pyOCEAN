@@ -286,9 +286,12 @@ class Driver:
 
     def _sigma_implicit_and_free_surface(self, ctx: StepContext) -> None:
         m, st = self.m, ctx.st
+        extra = {}
+        if m.core.gls_stratified:                                      # N² from ρ(Tⁿ, Sⁿ) (N2a task 8c)
+            extra["rho"] = m._eos.density(st.T, st.S if m.salinity else None)
         eta_new, u_new, v_new, fluxes, closure = m._free_surface.step(st.eta, st.u, st.v, ctx.gu_ab, ctx.gv_ab, ctx.tu,
                                                                       ctx.tv, st.closure, m._ob.flather_args(ctx.ext),
-                                                                      fw=ctx.fw)
+                                                                      fw=ctx.fw, **extra)
         ctx.set(eta_new=eta_new, u_new=u_new, v_new=v_new, fluxes=fluxes, closure=closure)
 
     def _sigma_boundary_velocity(self, ctx: StepContext) -> None:
@@ -327,11 +330,14 @@ class Driver:
             if bud is not None:
                 bud.operator("T_phy_h", V1, T_a, T_new)
                 bud.operator("S_phy_h", V1, S_a, S_new)
-        if m.kv > 0:
+        gls_kt = m.core.gls_stratified                                 # GLS κ_t on the tracers (N2a task 8c)
+        if m.kv > 0 or gls_kt:
             T_a, S_a = T_new, S_new
             D1 = np.maximum(np.nan_to_num(m.H + ctx.eta_new, nan=m.fs.d_min), m.fs.d_min)
             dz = (D1[None] * m.ds[:, None, None]).reshape(n, -1)
-            kvz, zero = np.full((n + 1, dz.shape[1]), m.kv), np.zeros(dz.shape[1])
+            zero = np.zeros(dz.shape[1])
+            # CROCO: one Akt = max(c_μ′ k²/ε, nuws) for T, S (t3dmix_tridiagonal.h:73-75); kv is its floor
+            kvz = m.core.gls.akt if gls_kt else np.full((n + 1, dz.shape[1]), m.kv)
             T_new = vertical_implicit(T_new.reshape(n, -1), dz, kvz, zero, dt).reshape(T_new.shape)
             if sal:
                 S_new = vertical_implicit(S_new.reshape(n, -1), dz, kvz, zero, dt).reshape(S_new.shape)

@@ -62,6 +62,40 @@ def test_restart_is_bit_for_bit(tmp_path, closure):
         assert np.array_equal(m2.core.gls.tke, ref_gls)
 
 
+def test_restart_stratified_gls_with_salinity_bit_for_bit(tmp_path):
+    """N2a task 8c: closure='gls', salinity, gls_stratified — k, ε, ν and κ_t (``gls_akt``) round trip exactly."""
+    kw = dict(salinity=True, s_coef=0.78, s_ref=30.0, gls_stratified=True)
+
+    def start(m):
+        x = np.arange(NX)
+        T = np.where(x < NX // 2, 10.0, 15.0)[None, None, :].repeat(NZ, 0) + np.linspace(0, 2, NZ)[:, None, None]
+        S = 30.0 - 0.5 * np.linspace(0, 1, NZ)[:, None, None] * np.ones((1, 1, NX))
+        m.core.gls.tke[:], m.core.gls.eps[:] = 1e-4, 1e-7          # turbulent start (references in st.closure)
+        return m.initial_state(0.1 * np.cos(np.pi * x / NX)[None, :], T, S=S)
+
+    m = _model(**kw)
+    st = start(m)
+    for _ in range(40):
+        st = m.step(st)
+    m1 = _model(**kw)
+    st1 = start(m1)
+    for _ in range(15):
+        st1 = m1.step(st1)
+    write_restart(tmp_path / "rst.nc", m1, st1)
+    m2 = _model(**kw)
+    st2 = read_restart(tmp_path / "rst.nc", m2)
+    assert set(st2.closure) == {"tke", "eps", "akv", "akt"}
+    for _ in range(25):
+        st2 = m2.step(st2)
+    _assert_identical(st2, st)
+    assert np.array_equal(st2.S, st.S)
+    for name in ("tke", "eps", "akv", "akt"):
+        assert np.array_equal(st2.closure[name], st.closure[name]), name
+    assert st.closure["akt"].max() > 2e-6                           # κ_t from the closure, above the floor 1e-6
+    with pytest.raises(ValueError, match="gls_stratified"):
+        read_restart(tmp_path / "rst.nc", _model(salinity=True, s_coef=0.78, s_ref=30.0, gls_stratified=False))
+
+
 def test_restart_covers_the_ab3_start_up(tmp_path):
     # restarting after 1 step (AB history incomplete) must also reproduce the continuous run
     m = _model()

@@ -20,9 +20,10 @@ Table 1 (m³ s⁻¹, m):  Exp  Q_r  Q_evap  Q_precip  M2
                        D   5.0   −5.0     5.0     0.5     E middle third, P east third
 
 Two pyOCEAN configurations (spec §6, Esteban):
-  * ``sigma_gls``: Eulerian σ, k-ε GLS (Canuto A, no buoyancy term, physics/mixing/gls.py) on momentum, log-law
-    bed drag z0 = 1e-3 m; S diffused vertically with the constant ``kv`` (GLS does not act on tracers in pyOCEAN:
-    class (b) missing physics, N2a Review Focus 5 — GETM's k-ε mixes S too);
+  * ``sigma_gls``: Eulerian σ, stratified k-ε GLS (Canuto A with buoyancy, physics/mixing/gls.py, N2a task 8c:
+    N² from ρ(S), B = −κ_t N², α_N in the stability functions) for ν and for the vertical diffusivity κ_t of S,
+    as GETM's k-ε (GOTM); log-law bed drag z0 = 1e-3 m; ``kv`` = 0, so κ_t keeps CROCO's floor 1e-6 m² s⁻¹
+    (task 8c supersedes N2a Review Focus 5, where S had the constant ``kv`` and GLS had no buoyancy);
   * ``ale_sigma``: ALE with the σ grid rule, constant ν and κ, quadratic bed drag over the whole column.
 
 Lorenz's exact relation (eq. 32) needs, in pyOCEAN (diagnostics/tef.py, task 7 report): kh = 0 (the diffusive
@@ -77,10 +78,12 @@ S_COEF = 0.78                               # [kg m⁻³ (g kg⁻¹)⁻¹] β [n
                                             #   whose β at S ≈ 30, T = 10 °C is ≈ 0.77
 S_REF = S_OCEAN                             # [g kg⁻¹] S₀ of the linear EOS (only shifts ρ; no dynamical effect)
 T_CONST = 10.0                              # [°C] constant temperature [no dado en el artículo]; α = 0
-KV = 1e-4                                   # [m² s⁻¹] vertical diffusivity of S (both configs) and ALE viscosity ν
+KV = 1e-4                                   # [m² s⁻¹] ale_sigma: vertical diffusivity of S and viscosity ν
                                             #   [no dado en el artículo] — GETM: GOTM k-ε + background avmback =
                                             #   avhback = 0 [verificar] plus molecular; 1e-4 is pyOCEAN's default
                                             #   nu_const, the simplest constant (not tuned)
+KV_GLS = 0.0                                # [m² s⁻¹] sigma_gls: floor of the GLS κ_t; 0 = CROCO's nuws = 1e-6
+                                            #   (gls_mixing.F:152), closest to GETM's zero background [verificar]
 NU_ALE = KV                                 # [m² s⁻¹] ALE constant viscosity (same choice)
 AH = 0.0                                    # [m² s⁻¹] horizontal viscosity [no dado en el artículo]; 0 = GETM Am
                                             #   default [verificar]
@@ -162,7 +165,7 @@ def open_boundary_state(exp: str, H: np.ndarray) -> Callable[[float], dict]:
 def config_kwargs(config: str) -> dict:
     """Model arguments of the two configurations (module docstring)."""
     if config == "sigma_gls":
-        return dict(vertical_coordinate="sigma_eulerian", closure="gls", z0=Z0, kv=KV)
+        return dict(vertical_coordinate="sigma_eulerian", closure="gls", z0=Z0, kv=KV_GLS, gls_stratified=True)
     if config == "ale_sigma":
         return dict(vertical_coordinate="ale", regrid="sigma", pgf="fv", closure="constant", nu_const=NU_ALE, z0=None,
                     kv=KV, bottom_drag="quadratic", cd=cd_loglaw(), hbbl=H_BBL)

@@ -88,6 +88,7 @@ from numba import njit, prange
 from core.dynamics import vector_invariant as vi
 from core.dynamics.nonlinear import _spacings_u, _spacings_v, advection_u, advection_v, laplacian_3d
 from core.dynamics.sigma_wd import SigmaWetDry, vertical_implicit
+from physics.mixing.gls import KT_MIN
 from diagnostics.mixing import reference_potential_energy
 from diagnostics.tef import TEFRegion, TEFTransect
 from core.vertical import regrid as rg
@@ -137,7 +138,7 @@ class SigmaState:
     n_trunc: int = 0                                         # CFL velocity truncations so far (ALE, counted faces)
     n_limited: int = 0                                       # cell-layers scaled by the outflow limiter so far (ALE)
     tr: np.ndarray | None = None                             # passive tracers (ntr, N, ny, nx), ALE only
-    closure: dict | None = None                              # turbulence-closure state (GLS: tke, eps, akv), N1
+    closure: dict | None = None                              # turbulence-closure state (GLS: tke, eps, akv[, akt]), N1
     S: np.ndarray | None = None                              # salinity (N, ny, nx) [g kg⁻¹], ``salinity=True`` (N2a)
     budget: dict | None = None                               # variance budget of the last step (N2a, variance_budget)
 
@@ -943,6 +944,15 @@ class SigmaBaroclinic:
           the region every step (needs ``variance_budget=True``); ``diagnostics.tef.lorenz_mixing`` then gives
           Lorenz's M_e, equal to the region's M_tot to round-off
     ah : horizontal Laplacian viscosity [m² s⁻¹] (free slip)
+    kv : vertical tracer diffusivity [m² s⁻¹] (implicit; 0 = none).  With closure='gls' and ``gls_stratified``
+          it is not a constant but the floor (background) of the GLS diffusivity, κ_t = max(c_μ′ k²/ε, kv), and
+          kv = 0 (default) keeps CROCO's floor nuws = 1e-6 (gls_mixing.F:152, 872-880; CROCO does not read Akt_bak
+          with GLS_MIXING, read_inp.F:2463-2471)
+    gls_stratified : closure 'gls' only (N2a task 8c, physics/mixing/gls.py): True (default) — the stratified
+          k-ε of CROCO gls_mixing.F (N² from the model EOS ρ(Tⁿ, Sⁿ), buoyancy B = −κ_t N² in the k and ψ
+          equations, α_N in the Canuto A stability functions, Galperin limit with N, wind stress in the surface
+          k) whose κ_t diffuses T and S vertically; False — the homogeneous closure before 8c, bit for bit
+          (N² = 0, tracers diffused with the constant ``kv``)
     adv : momentum advection: 'flux' (default; momentum-conserving flux form with WENO5,
           as CROCO) or the advective form 'upwind3' / 'centred' of core.dynamics.nonlinear
     vertical_coordinate : 'sigma_eulerian' (default; σ-layers with vertical advection) or 'ale'
@@ -1044,7 +1054,8 @@ class SigmaBaroclinic:
                  sponge_tr: np.ndarray | None = None, bottom_drag: str | None = None, cd: float = 2.5e-3,
                  drag_bg_vel: float = 0.0, hbbl: float = 10.0, salinity: bool = False, s_coef: float = 0.0,
                  s_ref: float = 35.0, sponge_S: np.ndarray | None = None, variance_budget: bool = False,
-                 tef_face: int | None = None, tef_sign: int = 1, tef_region: np.ndarray | None = None) -> None:
+                 tef_face: int | None = None, tef_sign: int = 1, tef_region: np.ndarray | None = None,
+                 gls_stratified: bool = True) -> None:
         _args = {k: v for k, v in locals().items() if k != "self"}
         raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
         if ke_scheme == "godunov":                                      # correct spelling; the kernels use 'gudonov'
@@ -1122,7 +1133,9 @@ class SigmaBaroclinic:
         self.core = SigmaWetDry(h_grid, bathy, dt=dt, n_layers=n_layers, z0=z0, closure=closure,
                                 nu_const=nu_const, theta=theta, g=g, d_min=d_min, dsigma=dsigma, solver=solver,
                                 flather_u=fl_u if self.open else None, flather_v=fl_v if self.open else None,
-                                clamped_u=cl_u, clamped_v=cl_v)
+                                clamped_u=cl_u, clamped_v=cl_v, gls_stratified=gls_stratified, rho0=rho0,
+                                gls_kt_min=float(kv) if kv > 0 else KT_MIN)
+        self.gls_stratified = self.core.gls_stratified                 # True only with closure='gls' (N2a 8c)
         sponged = tuple(e for e in self.open if self.obc_mode[e] != "clamped")  # a Dirichlet edge needs no sponge
         self._sp_c, self._sp_u, self._sp_v = _sponge_rates(act.shape, sponged, sponge_cells if sponged else 0,
                                                            *sponge_tau)

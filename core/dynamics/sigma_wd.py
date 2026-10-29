@@ -42,7 +42,7 @@ from numba import njit, prange
 
 from core.dynamics.wetting_drying import WetDryFreeSurface
 from physics.bottom_friction import first_layer_cd
-from physics.mixing.gls import GLSKEpsilon
+from physics.mixing.gls import KT_MIN, GLSKEpsilon, buoyancy_frequency2
 from physics.mixing.parabolic import parabolic_viscosity
 
 G = 9.81
@@ -165,6 +165,11 @@ class SigmaWetDry:
     closure : 'gls' (k-ε, Canuto A, as CROCO; state at cell centres), 'parabolic'
               (ν = κ u* z(1 − z/D)), 'constant' (ν = nu_const) or 'none'
     theta, g, d_min, flather_u, flather_v, solver, clamped_u, clamped_v : as ``WetDryFreeSurface``
+    gls_stratified : closure 'gls' with buoyancy (N2a task 8c, physics/mixing/gls.py): ``step`` then needs the
+        layer density ``rho`` and the closure also gives the tracer diffusivity ``gls.akt``; False (default) is the
+        homogeneous closure of this module, unchanged
+    rho0 : reference density ρ₀ of N² = −(g/ρ₀) ∂ρ/∂z [kg m⁻³] (gls_stratified only)
+    gls_kt_min : floor (background) of the GLS tracer diffusivity κ_t [m² s⁻¹] (CROCO nuws = 1e-6)
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, n_layers: int = 10,
@@ -172,7 +177,8 @@ class SigmaWetDry:
                  nu_min: float = 1e-5, theta: float = 0.6, g: float = G, d_min: float = 0.05,
                  flather_u: np.ndarray | None = None, flather_v: np.ndarray | None = None,
                  solver: str = "direct", cd_max: float = 0.1, dsigma: np.ndarray | None = None,
-                 clamped_u: np.ndarray | None = None, clamped_v: np.ndarray | None = None) -> None:
+                 clamped_u: np.ndarray | None = None, clamped_v: np.ndarray | None = None,
+                 gls_stratified: bool = False, rho0: float = 1000.0, gls_kt_min: float = KT_MIN) -> None:
         if closure not in CLOSURES:
             raise ValueError(f"unknown closure {closure!r}; use one of {CLOSURES}")
         self.fs = WetDryFreeSurface(h_grid, bathy, dt=dt, theta=theta, g=g, d_min=d_min,
@@ -192,7 +198,13 @@ class SigmaWetDry:
         ny, nx = self.H.shape
         self._fl_u = np.zeros((ny, nx + 1), bool) if flather_u is None else np.asarray(flather_u, bool)
         self._fl_v = np.zeros((ny + 1, nx), bool) if flather_v is None else np.asarray(flather_v, bool)
-        self.gls = GLSKEpsilon(n_layers, ny * nx, z0_bed=z0 or 1e-4) if closure == "gls" else None
+        self.gls_stratified, self.rho0, self.g = bool(gls_stratified) and closure == "gls", float(rho0), g
+        if closure != "gls":
+            self.gls = None
+        elif self.gls_stratified:
+            self.gls = GLSKEpsilon(n_layers, ny * nx, z0_bed=z0 or 1e-4, stratified=True, kt_min=gls_kt_min)
+        else:
+            self.gls = GLSKEpsilon(n_layers, ny * nx, z0_bed=z0 or 1e-4)
 
     # ------------------------------------------------------------------ columns
     def column_step(self, u: np.ndarray, G_k: np.ndarray | None, depth: np.ndarray,
@@ -282,7 +294,7 @@ class SigmaWetDry:
              hv_drag: np.ndarray | None = None, hu_mean: np.ndarray | None = None,
              hv_mean: np.ndarray | None = None, r_u: np.ndarray | None = None,
              r_v: np.ndarray | None = None, flather_q=None,
-             fw: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+             fw: np.ndarray | None = None, rho: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Advance η and the layer velocities u (N, ny, nx+1), v (N, ny+1, nx) one step.
         G_u, G_v : explicit tendencies per layer [m s⁻²] (advection, Coriolis, body force).
@@ -299,6 +311,8 @@ class SigmaWetDry:
         flather_q : prescribed volume fluxes at Flather faces (WetDryFreeSurface.step).
         fw : (ny, nx) surface freshwater flux P − E [m s⁻¹] as a real volume source of the free surface
             (WetDryFreeSurface.step; N2a); None: none.
+        rho : (N, ny, nx) layer density [kg m⁻³] for N² of the stratified GLS (``gls_stratified``; the model EOS at
+            the old tracers, as CROCO's rho_eos before step3d_uv2 and gls_mixing, step.F:954-1094).
         Returns η^{n+1}, u^{n+1}, v^{n+1}.
         """
         ds = self.dsigma[:, None, None]
@@ -321,7 +335,10 @@ class SigmaWetDry:
         u_new = np.where(wet_u, u_hat + (ubar_new - ubar_hat), 0.0)
         v_new = np.where(wet_v, v_hat + (vbar_new - vbar_hat), 0.0)
         if self.gls is not None:
-            self._gls_update(eta_new, u_new, v_new)
+            if self.gls_stratified:
+                self._gls_update_stratified(eta_new, u_new, v_new, rho, tau_u, tau_v)
+            else:
+                self._gls_update(eta_new, u_new, v_new)
         return eta_new, u_new, v_new
 
     # ------------------------------------------------------------------ GLS coupling
@@ -336,6 +353,39 @@ class SigmaWetDry:
         nu_v[:, 1:-1] = 0.5 * (nu[:, :-1] + nu[:, 1:])
         nu_v[:, 0], nu_v[:, -1] = nu[:, 0], nu[:, -1]
         return nu_u, nu_v
+
+    def _gls_update_stratified(self, eta: np.ndarray, u: np.ndarray, v: np.ndarray, rho: np.ndarray | None,
+                               tau_u: np.ndarray | None, tau_v: np.ndarray | None) -> None:
+        """
+        Stratified k-ε update (N2a task 8c): as ``_gls_update`` plus N² from the layer density ``rho``
+        (``buoyancy_frequency2``, CROCO rho_eos.F:404-411) and the surface stress u*² = |τ_s|/ρ₀ averaged from the
+        faces to the cell centres (CROCO gls_mixing.F:556-562), which sets the surface k = u*²/c_μ⁰² and the
+        Charnock roughness.  The homogeneous ``_gls_update`` (unchanged, bit for bit) has u*²_s = 0.
+        """
+        if rho is None:
+            raise ValueError("closure='gls' with gls_stratified=True needs the layer density rho in step()")
+        n = self.n_layers
+        D = np.maximum(np.nan_to_num(self.H + eta, nan=self.d_min), self.d_min)
+        dz = (D[None] * self.dsigma[:, None, None]).reshape(n, -1)
+        n2 = buoyancy_frequency2(np.asarray(rho, float).reshape(n, -1), dz, self.rho0, self.g)
+        uc = 0.5 * (u[:, :, :-1] + u[:, :, 1:])
+        vc = 0.5 * (v[:, :-1, :] + v[:, 1:, :])
+        Du, Dv = self.face_depths(eta)
+        cdu = first_layer_cd(np.maximum(np.nan_to_num(Du, nan=self.d_min), self.d_min) * self.dsigma[0],
+                             self.z0 or 1e-4, cd_max=self.cd_max)
+        cdv = first_layer_cd(np.maximum(np.nan_to_num(Dv, nan=self.d_min), self.d_min) * self.dsigma[0],
+                             self.z0 or 1e-4, cd_max=self.cd_max)
+        tau_bu = cdu * np.abs(u[0]) * u[0] if self.z0 is not None else 0.0 * u[0]
+        tau_bv = cdv * np.abs(v[0]) * v[0] if self.z0 is not None else 0.0 * v[0]
+        bx = 0.5 * (tau_bu[:, :-1] + tau_bu[:, 1:])
+        by = 0.5 * (tau_bv[:-1, :] + tau_bv[1:, :])
+        ny, nx = self.H.shape
+        tsu = np.zeros((ny, nx + 1)) if tau_u is None else np.broadcast_to(np.nan_to_num(tau_u), (ny, nx + 1))
+        tsv = np.zeros((ny + 1, nx)) if tau_v is None else np.broadcast_to(np.nan_to_num(tau_v), (ny + 1, nx))
+        sx = 0.5 * (tsu[:, :-1] + tsu[:, 1:])
+        sy = 0.5 * (tsv[:-1, :] + tsv[1:, :])
+        self.gls.step(uc.reshape(n, -1), vc.reshape(n, -1), dz, np.hypot(bx, by).ravel(), self.dt,
+                      ustar2_sfc=np.hypot(sx, sy).ravel(), n2=n2)
 
     def _gls_update(self, eta: np.ndarray, u: np.ndarray, v: np.ndarray) -> None:
         """

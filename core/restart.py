@@ -74,6 +74,8 @@ def _config(model: SigmaBaroclinic) -> dict:
                 salinity=int(model.salinity), s_coef=model.s_coef, s_ref=model.s_ref,
                 theta_bc=model.theta_bc,
                 ny=int(model.H.shape[0]), nx=int(model.H.shape[1]))
+    if core.closure == "gls":                                   # N2a task 8c: stratified or homogeneous k-ε
+        cfg.update(gls_stratified=int(getattr(model, "gls_stratified", False)))
     if getattr(model, "ale", False):                           # ALE (Plan D): the rule and every scheme choice
         cfg.update(vertical_coordinate="ale", regrid=model.regrid_rule, remap=int(model.remap_code),
                    thickness_flux=model.thickness_flux, momentum=model.momentum, ke_scheme=model.ke_scheme,
@@ -98,7 +100,8 @@ def _config(model: SigmaBaroclinic) -> dict:
 
 
 # configuration entries added after files were written: a file without them was written with these values
-_CONFIG_DEFAULTS = {"salinity": 0, "s_coef": 0.0, "s_ref": 35.0, "sponge_S": "none"}         # N2a: files before salinity
+_CONFIG_DEFAULTS = {"salinity": 0, "s_coef": 0.0, "s_ref": 35.0, "sponge_S": "none",         # N2a: files before salinity
+                    "gls_stratified": 0}                                                    # N2a 8c: homogeneous GLS
 
 _SECTIONS = {"ab_hist": "time_stepper", "gls_": "closure", "T_ext": "open_boundary", "h_ext": "open_boundary",
              "tr_ext": "open_boundary", "S_ext": "open_boundary", "fs_lu_": "free_surface", "rho_ref_": "pgf"}
@@ -130,10 +133,12 @@ def write_restart(path: str | Path, model: SigmaBaroclinic, state: SigmaState) -
         data["ab_hist_v"] = xr.Variable(("hist", "layer", "yv", "x"), np.stack([g[1] for g in state.g_hist]),
                                         {"units": "m s-2", "long_name": "AB history of explicit v tendencies, newest first"})
     closure = state.closure if state.closure is not None else (
-        None if model.core.gls is None else {n: getattr(model.core.gls, n) for n in ("tke", "eps", "akv")})
+        None if model.core.gls is None else model._free_surface.closure_out())
     if closure is not None:
         ny, nx = model.H.shape
-        for name, units in (("tke", "m2 s-2"), ("eps", "m2 s-3"), ("akv", "m2 s-1")):
+        for name, units in (("tke", "m2 s-2"), ("eps", "m2 s-3"), ("akv", "m2 s-1"), ("akt", "m2 s-1")):
+            if name not in closure:                                  # akt: stratified GLS only (N2a task 8c)
+                continue
             data[f"gls_{name}"] = xr.Variable(("level", "y", "x"), closure[name].reshape(-1, ny, nx),
                                               {"units": units, "long_name": f"GLS {name} at layer interfaces"})
     if (model.open or getattr(model, "ale", False)) and model.T_ext is not None:
@@ -203,7 +208,9 @@ def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
             raise ValueError("restart has no GLS state but the model uses closure='gls'")
         gls = model.core.gls
         gls.tke, gls.eps, gls.akv = (ds[f"gls_{n}"].values.reshape(gls.tke.shape).copy() for n in ("tke", "eps", "akv"))
-        closure = {"tke": gls.tke, "eps": gls.eps, "akv": gls.akv}
+        if gls.stratified:                                           # κ_t of the last step (N2a task 8c)
+            gls.akt = ds["gls_akt"].values.reshape(gls.tke.shape).copy()
+        closure = model._free_surface.closure_out()
     else:
         closure = None
     if model.open:

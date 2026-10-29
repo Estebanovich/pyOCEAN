@@ -4,8 +4,9 @@ Free surface plus vertical viscosity of the 3-D core (N1, role FREE_SURFACE).
 In N1 this component wraps ``core.dynamics.sigma_wd.SigmaWetDry.step`` unchanged: the implicit vertical viscosity
 with bed drag and the wind as a top flux, the θ-implicit free surface (Casulli & Cheng 1992; MITgcm's θ-method)
 with Flather faces, the barotropic correction and — closure 'gls' — the GLS update (Umlauf & Burchard 2003; port
-of CROCO gls_mixing.F).  Splitting it into viscosity, drag, free surface and closure is planned for N2/N3
-(spec 2026-10-28 §2), once the closure also gives κ to the tracers.
+of CROCO gls_mixing.F; with ``gls_stratified`` (N2a task 8c) the closure also takes the layer density ``rho`` for
+N² and gives the tracer diffusivity κ_t, ``closure['akt']``).  Splitting it into viscosity, drag, free surface and
+closure is planned for N2/N3 (spec 2026-10-28 §2).
 
 What the free surface leaves behind for the rest of the step (the faces that carried flow, the upwind face depths
 used in the fluxes, the Flather fluxes and depths at the open faces) is **returned** as ``BarotropicFluxes``
@@ -60,11 +61,17 @@ class FreeSurfaceVerticalViscosity:
         gls = self.core.gls
         if gls is not None and closure is not None:
             gls.tke, gls.eps, gls.akv = closure["tke"], closure["eps"], closure["akv"]
+            if "akt" in closure:                                       # stratified GLS (N2a task 8c)
+                gls.akt = closure["akt"]
 
     def closure_out(self) -> dict | None:
         """The closure state to carry to the next step (references to the GLS arrays), or None."""
         gls = self.core.gls
-        return None if gls is None else {"tke": gls.tke, "eps": gls.eps, "akv": gls.akv}
+        if gls is None:
+            return None
+        if gls.stratified:                                             # κ_t is state: B of the next step uses it
+            return {"tke": gls.tke, "eps": gls.eps, "akv": gls.akv, "akt": gls.akt}
+        return {"tke": gls.tke, "eps": gls.eps, "akv": gls.akv}
 
     def step(self, eta: np.ndarray, u: np.ndarray, v: np.ndarray, gu_ab: np.ndarray, gv_ab: np.ndarray, tu, tv,
              closure: dict | None, flather: dict, fw: np.ndarray | None = None, **visc) -> tuple[np.ndarray, np.ndarray, np.ndarray,

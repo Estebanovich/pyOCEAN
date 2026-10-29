@@ -171,6 +171,13 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
                                  "anomaly T − T_ref(z) of the reference profile (a density profile does not split "
                                  "into T_ref and S_ref), so along sloping σ-layers it also mixes the mean "
                                  "stratification")
+    # stratified GLS (N2a task 8c)
+    if "gls_stratified" in given and a["closure"] != "gls":
+        warn("closure", f"gls_stratified={a['gls_stratified']!r} is ignored with closure={a['closure']!r} (it applies "
+                        "to closure='gls' only)")
+    if a["closure"] == "gls" and a.get("gls_stratified", True) and a.get("kv", 0.0) > 0:
+        warn("closure", f"closure='gls' with gls_stratified=True: kv={a['kv']!r} is the floor of the GLS tracer "
+                        "diffusivity, κ_t = max(c_μ′ k²/ε, kv), not a constant (kv = 0 keeps CROCO's floor 1e-6)")
     if a["sponge_rate"] is None and ({"sponge_T", "sponge_zw", "sponge_tr", "sponge_S"} & given):
         warn("interior_sponge", "sponge_T / sponge_zw / sponge_tr / sponge_S are ignored without sponge_rate")
     return out

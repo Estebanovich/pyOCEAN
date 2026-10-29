@@ -49,6 +49,8 @@ _SPECS = [
             "turbulent kinetic energy (GLS k-ε)"),
     VarSpec("closure.eps", ("kw", "y", "x"), "w", "m2 s-3", None, "component_state", "dissipation rate (GLS k-ε)"),
     VarSpec("closure.akv", ("kw", "y", "x"), "w", "m2 s-1", None, "component_state", "eddy viscosity (GLS k-ε)"),
+    VarSpec("closure.akt", ("kw", "y", "x"), "w", "m2 s-1", None, "component_state",
+            "eddy tracer diffusivity (stratified GLS k-ε, gls_stratified; N2a task 8c)"),
 ]
 
 REGISTRY: dict[str, VarSpec] = {s.name: s for s in _SPECS}

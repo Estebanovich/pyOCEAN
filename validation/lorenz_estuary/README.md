@@ -36,7 +36,8 @@ Un canal 2-D con evaporación, precipitación, río y marea, donde la mezcla tot
 |---|---|---|
 | ρ₀ | 1025 kg/m³ | **[no dado en el artículo]**; `rho_0` de GETM [verificar] |
 | β (EOS lineal) | 0.78 kg m⁻³ (g/kg)⁻¹, S₀ = 30 | **[no dado en el artículo]**; `dsr0` de la EOS lineal de GETM [verificar]. GETM puede usar UNESCO por defecto (β ≈ 0.77 a S = 30, T = 10 °C) |
-| κ_v de S (las dos configuraciones) y ν (ALE-σ) | 1e-4 m²/s constante | **[no dado en el artículo]**; GETM usa k-ε de GOTM para todo y fondo `avmback = avhback = 0` [verificar]; 1e-4 es el `nu_const` por defecto de pyOCEAN, la constante más simple |
+| κ_v de S y ν (ALE-σ) | 1e-4 m²/s constante | **[no dado en el artículo]**; GETM usa k-ε de GOTM para todo y fondo `avmback = avhback = 0` [verificar]; 1e-4 es el `nu_const` por defecto de pyOCEAN, la constante más simple |
+| κ_v de S (σ + GLS) | κ_t del k-ε estratificado, piso 1e-6 m²/s (`kv` = 0, Task 8c) | el fondo de CROCO con GLS (`nuws`, gls_mixing.F:152); el más cercano al fondo cero de GETM [verificar] |
 | ν_h | 0 | **[no dado en el artículo]**; `Am = 0` de GETM [verificar] |
 | κ_h | 0 | lo exige la identidad exacta (el flujo difusivo en el transecto no tiene volumen y TEF no lo puede clasificar) |
 | Rugosidad del fondo | z0 = 1e-3 m (σ + GLS, ley log); C_d = [κ/(ln(D/z0) − 1)]² = 2.37e-3 con D = 10 m sobre la velocidad media de la columna (ALE-σ, `hbbl` = 20 m) | **[no dado en el artículo]**; el mismo z0 en las dos configuraciones (derivado, no ajustado) |
@@ -50,12 +51,12 @@ Un canal 2-D con evaporación, precipitación, río y marea, donde la mezcla tot
 | | `sigma_gls` | `ale_sigma` |
 |---|---|---|
 | Coordenada | σ euleriana | ALE con regla σ, PGF de volumen finito |
-| Cierre | GLS k-ε (Canuto A) en el momento; S con κ_v constante | ν y κ constantes |
+| Cierre | GLS k-ε estratificado (Canuto A con flotabilidad, Task 8c): ν para el momento y κ_t para S | ν y κ constantes |
 | Fondo | ley logarítmica, z0 = 1e-3 m | arrastre cuadrático, C_d = 2.37e-3 |
 | Trazadores | WENO5, SSP-RK3 | WENO5 + FCT, SSP-RK3, remapeo PPM_H4 |
 
 **Diferencias ya conocidas antes de correr:**
-- **GLS no actúa sobre los trazadores (b).** En `sigma_gls`, la difusividad vertical de S es la constante `kv`, aunque GLS cambie ν (N2a Review Focus 5; `tests/test_lorenz_estuary.py::test_gls_config_uses_constant_tracer_kv`). Además nuestro GLS no tiene término de flotabilidad (`physics/mixing/gls.py:12`). En GETM el k-ε mezcla también la sal. Es física faltante conocida; no se "corrige" en N2a: la diferencia medida es el insumo de N3.
+- **GLS con flotabilidad y sobre los trazadores (resuelto, Task 8c; reemplaza el Review Focus 5 de N2a).** Antes, en `sigma_gls` S se difundía con la constante `kv` y el GLS no tenía flotabilidad (N² = 0): con Ri ≈ 80 el cierre daba ν ≈ 1e-3–1e-2 m²/s y frenaba la circulación de intercambio; A σ+GLS no llegaba a un estado cuasi estacionario (S_max 191 g/kg). Ahora el k-ε es el de CROCO `gls_mixing.F` (N² de ρ(S), B = −κ_t N², β₃⁻ = −0.4, α_N en Canuto A, límite de Galperin) y su κ_t difunde S, como el k-ε de GETM (`tests/test_lorenz_estuary.py::test_gls_config_uses_gls_tracer_diffusivity`; `tests/test_gls_stratified.py`). Smoke de 50 ciclos de A abajo.
 - **Advección (c).** GETM usa TVD Superbee (Pietrzak 1998); pyOCEAN, WENO5 (más FCT en ALE).
 - **Marea en la frontera (resuelto, R4).** Con Flather hacia η_ext = 0.5 sin ωt y ū_ext = 0 (la primera versión), la celda oceánica tenía 0.16 m de amplitud y la cabeza 0.50 m: el canal mide ≈ 0.225 λ_M2, cerca del cuarto de onda, y la boca queda casi en un nodo. Con la elevación prescrita (modo `'eta'`), la celda oceánica tiene 0.500 m y la cabeza 1.03 m (ALE-σ) y 1.07 m (σ + GLS) en B, en el cuarto ciclo; las corrientes llegan a 0.8 m/s.
 
@@ -101,6 +102,18 @@ python validation/lorenz_estuary/compare.py                                     
 ```
 
 Las salidas van a `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/lorenz_estuary/<exp>_<config>/`, nunca al repositorio: `summary.json`, `section.npz`, `series.npz` y el checkpoint (`restart.nc` + `restart_extra.pkl`, con los acumuladores de TEF que `core/restart.py` no guarda). Reanudar reproduce bit a bit la corrida sin interrumpir (verificado en B, las dos configuraciones, 0.5 ciclos); `--resume` se niega si `--cycles`, `--avg` o Δt no son los del checkpoint.
+
+## Smoke de A σ + GLS antes y después de Task 8c (50 ciclos M2, Δt = T_M2/373, 2 hilos)
+
+| | antes de 8c (`gls_stratified=False`, `kv` = 1e-4) | después (`gls_stratified=True`, `kv` = 0) |
+|---|---|---|
+| mediana de ν bajo la zona de evaporación, ciclo 50 | 2.4e-3 m²/s | 2.0e-3 m²/s (κ_t: 2.7e-3 m²/s) |
+| \|u\|max, ciclo 50 | 0.031 m/s | 0.095 m/s |
+| pendiente de S_reg, ciclos 40–50 | +0.089 por ciclo | +0.041 por ciclo (ciclos 1–10: +0.087) |
+| S_max, ciclo 50 | 37.6 g/kg | 37.5 g/kg |
+| costo por paso (mediana de 20) | 0.0185 s | 0.0195 s (+5 %) |
+
+En A, la evaporación hace más salada el agua de superficie, así que la columna queda inestable (N² < 0). Con flotabilidad, el k-ε convecciona y mezcla S (κ_t ~ 3e-3 m²/s). La circulación de intercambio se triplica y la sal se acumula a la mitad de ritmo. Falta ver si llega a un estado cuasi estacionario: eso requiere la corrida de 600 ciclos.
 
 ## Resultados
 
