@@ -231,7 +231,8 @@ class GLSKEpsilon:
         return np.maximum(out, floor) if n > 1 else out
 
     def step(self, u: np.ndarray, v: np.ndarray, dz: np.ndarray, ustar2_bot: np.ndarray, dt: float,
-             ustar2_sfc: np.ndarray | None = None, n2: np.ndarray | None = None) -> np.ndarray:
+             ustar2_sfc: np.ndarray | None = None, n2: np.ndarray | None = None,
+             prod: np.ndarray | None = None) -> np.ndarray:
         """
         Advance k and ε one step and return the new viscosity ν (N+1, M).
 
@@ -239,25 +240,32 @@ class GLSKEpsilon:
         ustar2_bot, ustar2_sfc : |τ|/ρ₀ at the bed and surface [m² s⁻²]
         n2 : (N−1, M) N² at the interior interfaces [s⁻²] (``buoyancy_frequency2``); used, and required, only
             with ``stratified=True`` (then also ``akt`` is updated)
+        prod : (N−1, M) shear production P at the interior interfaces [m² s⁻³] computed by the caller (N3 task 5:
+            the energy-conserving form of Burchard 2002, eq. 16, ``GLSClosure(production='energy')``); None: CROCO's
+            P = ν_old S² with the new shear (gls_mixing.F:621), the default, bit for bit.  A given P is split as
+            Patankar (1980): P⁺ = max(P, 0) explicit, P⁻ = min(P, 0) in the diagonal as −P⁻/k (k) and −β₁ P⁻/k (ψ),
+            so k and ψ stay positive (Burchard's P can be < 0 where the shear reverses within the step).
+        The P used is kept in ``last_prod`` (diagnostic).
         """
         if self.stratified:
             if n2 is None:
                 raise ValueError("GLSKEpsilon(stratified=True).step needs n2, the N² at the interior interfaces")
-            return self._step_stratified(u, v, dz, ustar2_bot, dt, ustar2_sfc, n2)
+            return self._step_stratified(u, v, dz, ustar2_bot, dt, ustar2_sfc, n2, prod)
         cm0 = self.cm0
         us2s = np.zeros(dz.shape[1]) if ustar2_sfc is None else ustar2_sfc
         h = 0.5 * (dz[:-1] + dz[1:])
         shear2 = ((u[1:] - u[:-1]) ** 2 + (v[1:] - v[:-1]) ** 2) / h**2      # (N−1, M)
         k_old, psi_old, akv_old = self.tke[1:-1], self.eps[1:-1], self.akv
         diss = np.maximum(cm0**E1 * k_old**E2 * psi_old**E3, self.eps_min)
-        prod = akv_old[1:-1] * shear2
+        prod, p_sink = self._production(prod, akv_old, shear2, k_old)
 
         # --- k: P explicit, ε/k · k implicit; zero flux, Dirichlet k = u*²/c_μ⁰² stored at 0 and N
         tke_new = self.tke.copy()
         tke_new[0] = np.maximum(self.tke_min, us2s * 0 + ustar2_bot / cm0**2)
         tke_new[-1] = np.maximum(self.tke_min, us2s / cm0**2)
         zero = np.zeros(dz.shape[1])
-        tke_new[1:-1] = self._solve(self.tke, prod, diss / k_old, SIG_K_INV, akv_old, dz, dt, zero, zero,
+        dcoef = diss / k_old if p_sink is None else diss / k_old + p_sink
+        tke_new[1:-1] = self._solve(self.tke, prod, dcoef, SIG_K_INV, akv_old, dz, dt, zero, zero,
                                     self.tke_min)
 
         # --- ψ: β₁ (ψ/k) P explicit, β₂ (ε/k) ψ implicit; log-layer flux at the bed and surface
@@ -271,7 +279,8 @@ class GLSKEpsilon:
         psi_new = self.eps.copy()
         psi_new[-1] = np.maximum(self.psi_min, cm0**RP * ls**RN * ks**RM)
         psi_new[0] = np.maximum(self.psi_min, cm0**RP * lb**RN * tke_new[0] ** RM)
-        psi_new[1:-1] = self._solve(self.eps, BETA1 * psi_old / k_old * prod, BETA2 * diss / k_old, SIG_PSI_INV,
+        dco_psi = BETA2 * diss / k_old if p_sink is None else BETA2 * diss / k_old + BETA1 * p_sink
+        psi_new[1:-1] = self._solve(self.eps, BETA1 * psi_old / k_old * prod, dco_psi, SIG_PSI_INV,
                                     akv_old, dz, dt, flux_bot, flux_top, self.psi_min)
 
         # --- viscosity from the stability functions (N² = 0)
@@ -296,8 +305,25 @@ class GLSKEpsilon:
         self.tke, self.eps, self.akv = tke_new, psi_new, akv
         return akv
 
+    def _production(self, prod: np.ndarray | None, akv_old: np.ndarray, shear2: np.ndarray,
+                    k_old: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
+        """
+        Shear production P at the interior interfaces and its implicit part (``step``, ``prod``).
+
+        CROCO (``prod`` None): P = ν_old S² (gls_mixing.F:621), no implicit part.  Given P (Burchard 2002 eq. 16):
+        P⁺ = max(P, 0) explicit and the rate −P⁻/k_old [s⁻¹] for the diagonal (Patankar 1980, Sec. 7.2-2).
+        """
+        if prod is None:
+            prod = akv_old[1:-1] * shear2
+            self.last_prod = prod
+            return prod, None
+        prod = np.asarray(prod, float)
+        self.last_prod = prod
+        return np.maximum(prod, 0.0), -np.minimum(prod, 0.0) / k_old
+
     def _step_stratified(self, u: np.ndarray, v: np.ndarray, dz: np.ndarray, ustar2_bot: np.ndarray, dt: float,
-                         ustar2_sfc: np.ndarray | None, n2: np.ndarray) -> np.ndarray:
+                         ustar2_sfc: np.ndarray | None, n2: np.ndarray,
+                         prod: np.ndarray | None = None) -> np.ndarray:
         """
         One step of the stratified k-ε (CROCO gls_mixing.F, module docstring); the same sequence and, where B = 0,
         the same arithmetic as the homogeneous branch, so N² = 0 reproduces it.
@@ -316,7 +342,7 @@ class GLSKEpsilon:
         n2 = np.nan_to_num(np.asarray(n2, float))                           # dry/wall columns: no stratification
         k_old, psi_old, akv_old, akt_old = self.tke[1:-1], self.eps[1:-1], self.akv, self.akt
         diss = np.maximum(cm0**E1 * k_old**E2 * psi_old**E3, self.eps_min)
-        prod = akv_old[1:-1] * shear2
+        prod, p_sink = self._production(prod, akv_old, shear2, k_old)
         n2_pos, n2_neg = np.maximum(n2, 0.0), np.minimum(n2, 0.0)
 
         # --- k: B = −κ_t N² (cff3m = cff3p = 1 for k), gls_mixing.F:639-640
@@ -324,6 +350,8 @@ class GLSKEpsilon:
         pos = (buoy + prod) > 0.0
         sprod = np.where(pos, prod + buoy, prod)
         dcoef = np.where(pos, diss / k_old, diss / k_old - buoy / k_old)
+        if p_sink is not None:                                         # Burchard P < 0: implicit (Patankar)
+            dcoef = dcoef + p_sink
         tke_new = self.tke.copy()
         tke_new[0] = np.maximum(self.tke_min, ustar2_bot / cm0**2)
         tke_new[-1] = np.maximum(self.tke_min, us2s / cm0**2)
@@ -346,6 +374,8 @@ class GLSKEpsilon:
         pos = (buoy_psi + sprod_psi) > 0.0
         src_psi = np.where(pos, sprod_psi + buoy_psi, sprod_psi)
         dco_psi = np.where(pos, BETA2 * diss / k_old, BETA2 * diss / k_old - buoy_psi / psi_old)
+        if p_sink is not None:
+            dco_psi = dco_psi + BETA1 * p_sink
         psi_new[1:-1] = self._solve(self.eps, src_psi, dco_psi, SIG_PSI_INV, akv_old, dz, dt, flux_bot, flux_top,
                                     self.psi_min)
 

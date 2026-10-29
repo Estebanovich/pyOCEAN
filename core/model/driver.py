@@ -12,7 +12,8 @@ One time step is ten named phases, the same order in σ and ALE (phases 8–9 do
  6 layer_transport            layer volume transports (σ: Fz from continuity; ALE: Lagrangian h†)
  7 tracers                    advection (SSP-RK3/FCT or 'pc'), mixing diagnostic, K_h, K_v, boundary sponge
                               (T, the salinity S with ``salinity=True`` and the passive tracers, one stack)
- 8 vertical_coordinate        ALE: regrid + remap (and the remap part of the mixing diagnostic)
+ 8 vertical_coordinate        ALE: regrid + remap (and the remap part of the mixing diagnostic); GLS k, ε, ν, κ_t
+                              remapped to the new layers (N3 task 5)
  9 interior_sponge            ALE: interior sponge after the remap
 10 finalize                   ALE: velocity remap in face-fraction space, CFL backstop; the new state
 
@@ -336,7 +337,15 @@ class Driver:
         # bed u*² of the closure (N3 task 4): one source, the first-layer log law at the new velocities
         ustar2_bot = m.core.bed_ustar2(eta_new, u_new, v_new)
         if cl.stateful:                                                # then the closure with the new u, v
-            cl.update(rho=rho, **m.core.closure_forcing(eta_new, u_new, v_new, ctx.tu, ctx.tv, ustar2_bot=ustar2_bot))
+            kw = {}
+            if getattr(cl, "production", "croco") == "energy":         # Burchard (2002) eq. 16 (N3 task 5)
+                Du, Dv = m.core.face_depths(st.eta)                    # the column_step thickness D(ηⁿ) Δσ
+                ds = m.ds[:, None, None]
+                hu = np.maximum(np.nan_to_num(Du, nan=m.fs.d_min), m.fs.d_min)[None] * ds
+                hv = np.maximum(np.nan_to_num(Dv, nan=m.fs.d_min), m.fs.d_min)[None] * ds
+                kw["shear_work"] = self._shear_work(ctx, u_new, v_new, nu_u, nu_v, hu, hv)
+            cl.update(rho=rho, **m.core.closure_forcing(eta_new, u_new, v_new, ctx.tu, ctx.tv, ustar2_bot=ustar2_bot),
+                      **kw)
         ctx.set(eta_new=eta_new, u_new=u_new, v_new=v_new, fluxes=fluxes, closure=cl.state(), ustar2_bot=ustar2_bot)
 
     def _sigma_boundary_velocity(self, ctx: StepContext) -> None:
@@ -450,13 +459,70 @@ class Driver:
             visc.update(r_u=r_u, r_v=r_v)                              # on the bed layer d_b (≥ min(hbbl, D))
             if "hu_mean" not in visc:
                 visc.update(hu_mean=hu, hv_mean=hv)
-        nu = m._closure.viscosity(st)                                  # None for the constant closures of ALE
+        cl = m._closure
+        rho = None
+        if cl.stateful and m.core.gls_stratified:                      # N² from ρ(Tⁿ, Sⁿ), as σ (N3 task 5)
+            rho = m._eos.density(st.T, st.S if m.salinity else None)
+            cl.gls.kt_min = m.kv if m.kv > 0 else KT_MIN
+        nu = cl.viscosity(st)                                          # None for the constant closures of ALE
         nu_u, nu_v = (None, None) if nu is None else nu
         eta_new, u_new, v_new, fluxes = m._free_surface.step(st.eta, st.u, st.v, ctx.gu_ab, ctx.gv_ab, ctx.tu, ctx.tv,
                                                              m._ob.flather_args(ctx.ext), fw=ctx.fw, wu=ctx.wu,
                                                              wv=ctx.wv, nu_u=nu_u, nu_v=nu_v, **visc)
-        ctx.set(eta_new=eta_new, u_new=u_new, v_new=v_new, fluxes=fluxes,
-                ustar2_bot=self._ale_bed_ustar2(ctx, u_new, v_new, visc))
+        ustar2_bot = self._ale_bed_ustar2(ctx, u_new, v_new, visc)
+        ctx.set(eta_new=eta_new, u_new=u_new, v_new=v_new, fluxes=fluxes, ustar2_bot=ustar2_bot)
+        if cl.stateful:                                                # GLS on the layers hⁿ (N3 task 5)
+            kw = {}
+            if cl.production == "energy":                              # the viscous solve's own face thickness
+                kw["shear_work"] = self._shear_work(ctx, u_new, v_new, nu_u, nu_v, visc["hu"], visc["hv"])
+            cl.update(**self._ale_closure_forcing(ctx, u_new, v_new, ustar2_bot), rho=rho, **kw)
+            ctx.set(closure=cl.state())
+
+    def _ale_closure_forcing(self, ctx: StepContext, u_new: np.ndarray, v_new: np.ndarray,
+                             ustar2_bot: np.ndarray) -> dict:
+        """
+        Inputs of ``Closure.update`` in ALE (N3 task 5): the new velocities averaged to the cell centres, the layer
+        thicknesses hⁿ on which they live (not D Δσ: ``SigmaWetDry.closure_forcing`` is σ only), the bed u*² of
+        the step and — stratified GLS — the surface u*²_s = |τ_s|/ρ₀ averaged from the faces as σ (CROCO
+        gls_mixing.F:556-562; same arithmetic as ``closure_forcing``).  [m s⁻¹, m, m² s⁻²]
+        """
+        m = self.m
+        uc = 0.5 * (u_new[:, :, :-1] + u_new[:, :, 1:])
+        vc = 0.5 * (v_new[:, :-1, :] + v_new[:, 1:, :])
+        ny, nx = m.H.shape
+        if not m.core.gls_stratified:
+            return dict(u=uc, v=vc, h=ctx.st.h, ustar2_sfc=None, ustar2_bot=ustar2_bot)
+        tsu = np.zeros((ny, nx + 1)) if ctx.tu is None else np.broadcast_to(np.nan_to_num(ctx.tu), (ny, nx + 1))
+        tsv = np.zeros((ny + 1, nx)) if ctx.tv is None else np.broadcast_to(np.nan_to_num(ctx.tv), (ny + 1, nx))
+        sx = 0.5 * (tsu[:, :-1] + tsu[:, 1:])
+        sy = 0.5 * (tsv[:-1, :] + tsv[1:, :])
+        return dict(u=uc, v=vc, h=ctx.st.h, ustar2_sfc=np.hypot(sx, sy), ustar2_bot=ustar2_bot)
+
+    def _shear_work(self, ctx: StepContext, u_new: np.ndarray, v_new: np.ndarray, nu_u: np.ndarray,
+                    nu_v: np.ndarray, hu: np.ndarray, hv: np.ndarray) -> np.ndarray:
+        """
+        Kinetic energy per unit area removed by the implicit vertical viscosity at each interior interface in this
+        step, at the cell centres (N−1, ny, nx) [m³ s⁻³] — the production of ``gls_production='energy'``.
+
+        Burchard (2002, Ocean Modell. 4, 347–361, eqs. 14 and 16) with the fully implicit viscous step (r = 1, so
+        ū = û): multiplying the layer equation h_k (û_k − u*_k)/Δt = F_{k+½} − F_{k−½}, F = ν (û_{k+1} − û_k)/Δz_{k+½},
+        by ũ_k = ½(û_k + u*_k) and summing gives the discrete KE loss Σ ν_{k+½} (û_{k+1} − û_k)(ũ_{k+1} − ũ_k)/Δz_{k+½}.
+        Evaluated at the u- and v-faces with the ν, the thickness h (Δz_{k+½} = ½(h_k + h_{k+1})) and the velocities
+        of ``SigmaWetDry.column_step``: u* = uⁿ + Δt G (the input of the solve) and û = uⁿ⁺¹ (a depth-uniform
+        barotropic or δ correction does not change the shear).  Each face is shared ½–½ by its two cells (the
+        weighted average of Burchard's §3 for momentum and TKE at different points); the closure divides by its
+        interface cell height to get P.  Wall faces (u = 0) give 0; periodic wrap faces are stored twice, ½ each.
+        """
+        m, st = self.m, ctx.st
+        dt = m.core.dt
+
+        def face(nu, u0, g, u1, h):
+            us = u0 if g is None else u0 + dt * g
+            d1 = u1[1:] - u1[:-1]
+            return nu[1:-1] * d1 * (0.5 * (d1 + (us[1:] - us[:-1]))) / (0.5 * (h[1:] + h[:-1]))
+        eu = face(nu_u, st.u, ctx.gu_ab, u_new, hu)
+        ev = face(nu_v, st.v, ctx.gv_ab, v_new, hv)
+        return 0.5 * (eu[:, :, :-1] + eu[:, :, 1:]) + 0.5 * (ev[:, :-1, :] + ev[:, 1:, :])
 
     def _ale_bed_ustar2(self, ctx: StepContext, u_new: np.ndarray, v_new: np.ndarray, visc: dict) -> np.ndarray:
         """
@@ -540,10 +606,12 @@ class Driver:
             if bud is not None:
                 bud.operator("T_phy_h", V1, T_a, T_lag)
                 bud.operator("S_phy_h", V1, S_a, S_lag)
-        if m.kv > 0:
+        kt = m._closure.tracer_diffusivity()                           # GLS κ_t on every tracer (N3 task 5; CROCO
+        if m.kv > 0 or kt is not None:                                 # t3dmix_tridiagonal.h:73-75), kv its floor
             T_a, S_a = T_lag, S_lag
             dz = np.maximum(h_lag, DZ_FLOOR).reshape(n, -1)
-            kvz, zero = np.full((n + 1, dz.shape[1]), m.kv), np.zeros(dz.shape[1])
+            kvz = kt.reshape(n + 1, -1) if kt is not None else np.full((n + 1, dz.shape[1]), m.kv)
+            zero = np.zeros(dz.shape[1])
             T_lag = vertical_implicit(T_lag.reshape(n, -1), dz, kvz, zero, dt).reshape(T_lag.shape)
             if sal:
                 S_lag = vertical_implicit(S_lag.reshape(n, -1), dz, kvz, zero, dt).reshape(S_lag.shape)
@@ -573,6 +641,10 @@ class Driver:
         fields = _stack_fields(lay, T_lag, ctx.S_lag, ctx.tr_lag)       # remapped in the stack order
         h_src = ctx.vals.get("h_fw", ctx.lf.h_dagger)                  # h† + fw Δt on the top layer (N2a)
         h_new, rem = m._vertical.regrid_remap(eta_new, h_src, fields, T_lag, ctx.S_lag)
+        cl = m._closure
+        if cl.stateful:                                                # k, ε, ν, κ_t to the new layers (N3 task 5)
+            cl.remap(h_src, h_new)
+            ctx.set(closure=cl.state())
         T_new = rem[0]
         S_new = rem[lay["S"]] if m.salinity else None
         tr_new = np.stack(rem[lay["tr"]:]) if ntr else None
@@ -613,5 +685,5 @@ class Driver:
                                    omega=None, mix_num=ctx.mix, Qx=lf.Qx, Qy=lf.Qy, Fz=lf.Fz, time=st.time + dt,
                                    n_trunc=n_trunc,
                                    n_limited=st.n_limited + lf.n_limited + ctx.vals.get("n_limited_fw", 0),
-                                   tr=ctx.tr_new,
+                                   tr=ctx.tr_new, closure=ctx.vals.get("closure"),
                                    S=ctx.S_new, budget=self._budget_terms(ctx)))

@@ -120,7 +120,7 @@ def test_gls_closure_interface():
     assert nu_u.shape == (nc.NZ + 1, nc.NY, nc.NX + 1) and nu_v.shape == (nc.NZ + 1, nc.NY + 1, nc.NX)
     assert c.tracer_diffusivity().shape == (nc.NZ + 1, nc.NY, nc.NX)
     assert c.nonlocal_flux() is None
-    with pytest.raises(NotImplementedError):
-        c.remap(np.ones(1), np.ones(1))                                 # GLS in ALE: N3 task 5
+    with pytest.raises(RuntimeError, match="ALE"):
+        c.remap(np.ones(1), np.ones(1))                                 # σ model: no remap (ALE: N3 task 5)
     m2 = nc._sigma(closure="gls", z0=1e-3, gls_stratified=False)
     assert m2._closure.tracer_diffusivity() is None                    # homogeneous GLS: kv as before

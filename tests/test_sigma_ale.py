@@ -35,7 +35,7 @@ def _ale_box(rule="zstar", nx=32, nz=10, depth=20.0, dx=2000.0, dt=30.0, bathy=N
     (dict(regrid="isopycnal"), "regrid"),
     (dict(remap_scheme="pqm"), "remap_scheme"),
     (dict(z0=1e-3, bottom_drag="quadratic"), "z0"),               # two bed drags (z0 alone: N3 task 4)
-    (dict(closure="gls"), "closure"),
+    (dict(closure="parabolic"), "closure"),                     # GLS is valid in ALE since N3 task 5
     (dict(params={}), "dz_top"),
     (dict(momentum="weno"), "momentum"),
     (dict(ke_scheme="weno"), "ke_scheme"),

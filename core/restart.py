@@ -78,7 +78,8 @@ def _config(model: SigmaBaroclinic) -> dict:
                 ny=int(model.H.shape[0]), nx=int(model.H.shape[1]),
                 periodic=",".join(model.periodic.axes) or "none")              # N3 task 3: periodic axes
     if core.closure == "gls":                                   # N2a task 8c: stratified or homogeneous k-ε
-        cfg.update(gls_stratified=int(getattr(model, "gls_stratified", False)))
+        cfg.update(gls_stratified=int(getattr(model, "gls_stratified", False)),
+                   gls_production=str(getattr(model, "gls_production", "croco")))   # N3 task 5
     if getattr(model, "ale", False):                           # ALE (Plan D): the rule and every scheme choice
         cfg.update(vertical_coordinate="ale", regrid=model.regrid_rule, remap=int(model.remap_code),
                    thickness_flux=model.thickness_flux, momentum=model.momentum, ke_scheme=model.ke_scheme,
@@ -105,6 +106,7 @@ def _config(model: SigmaBaroclinic) -> dict:
 # configuration entries added after files were written: a file without them was written with these values
 _CONFIG_DEFAULTS = {"salinity": 0, "s_coef": 0.0, "s_ref": 35.0, "sponge_S": "none",         # N2a: files before salinity
                     "gls_stratified": 0,                                                    # N2a 8c: homogeneous GLS
+                    "gls_production": "croco",                                              # N3 task 5: CROCO P
                     "periodic": "none"}                                                     # N3 task 3: no periodic axis
 
 _SECTIONS = {"ab_hist": "time_stepper", "gls_": "closure", "T_ext": "open_boundary", "h_ext": "open_boundary",
@@ -138,10 +140,12 @@ def write_restart(path: str | Path, model: SigmaBaroclinic, state: SigmaState) -
                                         {"units": "m s-2", "long_name": "AB history of explicit v tendencies, newest first"})
     closure = state.closure if state.closure is not None else model._closure.state()
     if closure is not None:
+        # the closure's own fields (``Closure.state_fields`` names without the prefix: tke, eps, akv[, akt]), in σ
+        # and ALE (N3 task 5); the file names keep the gls_ prefix that ``read_restart`` reads back
         ny, nx = model.H.shape
-        for name, units in (("tke", "m2 s-2"), ("eps", "m2 s-3"), ("akv", "m2 s-1"), ("akt", "m2 s-1")):
-            if name not in closure:                                  # akt: stratified GLS only (N2a task 8c)
-                continue
+        units_of = {"tke": "m2 s-2", "eps": "m2 s-3", "akv": "m2 s-1", "akt": "m2 s-1"}
+        for name in (k[len(CLOSURE_PREFIX):] for k in model._closure.state_fields()):
+            units = units_of.get(name, "1")
             data[f"gls_{name}"] = xr.Variable(("level", "y", "x"), closure[name].reshape(-1, ny, nx),
                                               {"units": units, "long_name": f"GLS {name} at layer interfaces"})
     if (model.open or getattr(model, "ale", False)) and model.T_ext is not None:

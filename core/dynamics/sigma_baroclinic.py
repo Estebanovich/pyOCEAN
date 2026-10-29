@@ -957,7 +957,11 @@ class SigmaBaroclinic:
           k-ε of CROCO gls_mixing.F (N² from the model EOS ρ(Tⁿ, Sⁿ), buoyancy B = −κ_t N² in the k and ψ
           equations, α_N in the Canuto A stability functions, Galperin limit with N, wind stress in the surface
           k) whose κ_t diffuses T and S vertically; False — the homogeneous closure before 8c, bit for bit
-          (N² = 0, tracers diffused with the constant ``kv``)
+          (N² = 0, tracers diffused with the constant ``kv``).  In ALE (N3 task 5) the same GLS runs on the
+          layers h (thin layers merged, MOM6 eliminate_massless) and k, ε, ν, κ_t are remapped after each regrid
+          (``core.components.closure.GLSClosure``)
+    gls_production : closure 'gls' only (N3 task 5): 'croco' (default, P = ν S² as CROCO, bit for bit) or 'energy'
+          (Burchard 2002, eq. 16: P is the kinetic energy the implicit vertical viscosity removed in the step)
     adv : momentum advection: 'flux' (default; momentum-conserving flux form with WENO5,
           as CROCO) or the advective form 'upwind3' / 'centred' of core.dynamics.nonlinear
     vertical_coordinate : 'sigma_eulerian' (default; σ-layers with vertical advection) or 'ale'
@@ -1075,7 +1079,7 @@ class SigmaBaroclinic:
                  s_ref: float = 35.0, sponge_S: np.ndarray | None = None, variance_budget: bool = False,
                  tef_face: int | None = None, tef_sign: int = 1, tef_region: np.ndarray | None = None,
                  gls_stratified: bool = True, cp: float = 3985.0, jerlov: str = "I",
-                 periodic: tuple[str, ...] = ()) -> None:
+                 periodic: tuple[str, ...] = (), gls_production: str = "croco") -> None:
         _args = {k: v for k, v in locals().items() if k != "self"}
         raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
         self.periodic = Periodic(periodic)                              # N3 task 3 (class docstring)
@@ -1159,6 +1163,7 @@ class SigmaBaroclinic:
                                 gls_kt_min=float(kv) if kv > 0 else KT_MIN, external_closure=True,
                                 periodic=self.periodic)
         self.gls_stratified = self.core.gls_stratified                 # True only with closure='gls' (N2a 8c)
+        self.gls_production = gls_production                           # 'croco' or 'energy' (N3 task 5)
         # turbulence closure as its own component (N3 task 1), stepped by the driver (phases 4 and 7); the core
         # keeps a reference only for the ``core.gls`` path
         self._closure = make_closure(self)
@@ -1202,6 +1207,8 @@ class SigmaBaroclinic:
                                        self.fs.du, self.fs.dv, self.layer_heights)
         self._setup_ale(vertical_coordinate, regrid, regrid_params, remap_scheme, z0, closure, h_thin_bed,
                         init_iterations, act, momentum, ke_scheme, max_truncations, thickness_flux)
+        if self.ale:                                                    # GLS on the ALE layers + remap (N3 task 5)
+            self._closure.bind_ale(self.remap_code)
         self._vertical = (ALECoordinate(H=self.H, active=self.fs.active, n_layers=n_layers, rule=self.regrid_rule,
                                         params=self.regrid_params, remap_code=self.remap_code,
                                         h_thin_bed=self.h_thin_bed, max_truncations=self.max_truncations,
@@ -1308,9 +1315,9 @@ class SigmaBaroclinic:
             raise ValueError(f"unknown regrid rule {regrid!r}; use 'sigma', 'zstar' or 'hybrid'")
         if remap_scheme not in REMAP_SCHEMES:
             raise ValueError(f"unknown remap_scheme {remap_scheme!r}; use one of {sorted(REMAP_SCHEMES)}")
-        if closure not in ("constant", "none"):
-            raise ValueError("vertical_coordinate='ale' needs closure 'constant' or 'none' for now "
-                             "(GLS and the parabolic ν assume σ-layers)")
+        if closure not in ("constant", "none", "gls"):
+            raise ValueError("vertical_coordinate='ale' needs closure 'constant', 'none' or 'gls' (the parabolic ν "
+                             "assumes σ-layers)")
         params = dict(regrid_params or {})
         params.setdefault("dsigma", self.ds)
         for key in {"sigma": (), "zstar": ("dz_top",), "hybrid": ("dz_top", "rho_target")}[regrid]:

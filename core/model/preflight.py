@@ -147,9 +147,9 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
         elif a["z0"] is not None and not (a["z0"] > 0 and a.get("hbbl", 10.0) > 0):
             err("bottom_drag", f"z0={a['z0']!r}, hbbl={a.get('hbbl', 10.0)!r}: the ALE law-of-the-wall drag needs "
                                "z0 > 0 and hbbl > 0 [m]")
-        if a["closure"] not in ("constant", "none"):
-            err("closure", "vertical_coordinate='ale' needs closure 'constant' or 'none' for now "
-                           "(GLS and the parabolic ν assume σ-layers)")
+        if a["closure"] not in ("constant", "none", "gls"):
+            err("closure", "vertical_coordinate='ale' needs closure 'constant', 'none' or 'gls' (the parabolic ν "
+                           "assumes σ-layers)")
         params = a["regrid_params"] or {}
         for key in {"sigma": (), "zstar": ("dz_top",), "hybrid": ("dz_top", "rho_target")}.get(rule, ()):
             if key not in params:
@@ -202,6 +202,12 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
     if a["closure"] == "gls" and a.get("gls_stratified", True) and a.get("kv", 0.0) > 0:
         warn("closure", f"closure='gls' with gls_stratified=True: kv={a['kv']!r} is the floor of the GLS tracer "
                         "diffusivity, κ_t = max(c_μ′ k²/ε, kv), not a constant (kv = 0 keeps CROCO's floor 1e-6)")
+    gp = a.get("gls_production", "croco")                              # N3 task 5
+    if gp not in ("croco", "energy"):
+        err("closure", f"unknown gls_production {gp!r}; use 'croco' (P = ν S², CROCO) or 'energy' (Burchard 2002)")
+    elif "gls_production" in given and a["closure"] != "gls":
+        warn("closure", f"gls_production={gp!r} is ignored with closure={a['closure']!r} (it applies to "
+                        "closure='gls' only)")
     if a["sponge_rate"] is None and ({"sponge_T", "sponge_zw", "sponge_tr", "sponge_S"} & given):
         warn("interior_sponge", "sponge_T / sponge_zw / sponge_tr / sponge_S are ignored without sponge_rate")
     return out
