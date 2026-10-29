@@ -106,6 +106,7 @@ from core.components.momentum import Momentum, sum_terms
 from core.components.open_boundary import CONFIG as _OB_CONFIG, OpenBoundary
 from core.components.bottom_drag import LogLawBedDrag, QuadraticBedDrag
 from core.components.closure import make_closure
+from physics.mixing.kpp_cvmix import KPPParams
 from core.components.free_surface import FreeSurfaceVerticalViscosity
 from core.components.layer_transport import ALELayerTransport, SigmaLayerTransport
 from core.components.tracers import TracerAdvection, TracerDiffusion
@@ -962,6 +963,13 @@ class SigmaBaroclinic:
           (``core.components.closure.GLSClosure``)
     gls_production : closure 'gls' only (N3 task 5): 'croco' (default, P = ν S² as CROCO, bit for bit) or 'energy'
           (Burchard 2002, eq. 16: P is the kinetic energy the implicit vertical viscosity removed in the step)
+    kpp_params : closure 'kpp' only (N3 task 7): ``physics.mixing.kpp_cvmix.KPPParams`` (None: the CVMix/MOM6
+          defaults, no background ν or κ).  closure='kpp' (σ and ALE) is the K-profile parameterisation as CVMix
+          computes it for MOM6 (``core.components.closure.KPPClosure``): every step, after the tracer advection,
+          the boundary-layer depth from the bulk Richardson number, κ_s for T, S and passive tracers, the non-local
+          redistribution of the non-solar surface heat (and freshwater-dilution salt) flux of ``heat``/``fw``, and
+          ν for the next step's vertical viscosity; u* from the wind stress.  ``kv`` and ``nu_const`` are not used
+          (backgrounds: ``KPPParams.kappa_bg``, ``nu_bg``)
     adv : momentum advection: 'flux' (default; momentum-conserving flux form with WENO5,
           as CROCO) or the advective form 'upwind3' / 'centred' of core.dynamics.nonlinear
     vertical_coordinate : 'sigma_eulerian' (default; σ-layers with vertical advection) or 'ale'
@@ -1079,7 +1087,8 @@ class SigmaBaroclinic:
                  s_ref: float = 35.0, sponge_S: np.ndarray | None = None, variance_budget: bool = False,
                  tef_face: int | None = None, tef_sign: int = 1, tef_region: np.ndarray | None = None,
                  gls_stratified: bool = True, cp: float = 3985.0, jerlov: str = "I",
-                 periodic: tuple[str, ...] = (), gls_production: str = "croco") -> None:
+                 periodic: tuple[str, ...] = (), gls_production: str = "croco",
+                 kpp_params: KPPParams | None = None) -> None:
         _args = {k: v for k, v in locals().items() if k != "self"}
         raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
         self.periodic = Periodic(periodic)                              # N3 task 3 (class docstring)
@@ -1164,10 +1173,6 @@ class SigmaBaroclinic:
                                 periodic=self.periodic)
         self.gls_stratified = self.core.gls_stratified                 # True only with closure='gls' (N2a 8c)
         self.gls_production = gls_production                           # 'croco' or 'energy' (N3 task 5)
-        # turbulence closure as its own component (N3 task 1), stepped by the driver (phases 4 and 7); the core
-        # keeps a reference only for the ``core.gls`` path
-        self._closure = make_closure(self)
-        self.core.turbulence = self._closure
         sponged = tuple(e for e in self.open if self.obc_mode[e] != "clamped")  # a Dirichlet edge needs no sponge
         self._sp_c, self._sp_u, self._sp_v = _sponge_rates(act.shape, sponged, sponge_cells if sponged else 0,
                                                            *sponge_tau)
@@ -1207,8 +1212,6 @@ class SigmaBaroclinic:
                                        self.fs.du, self.fs.dv, self.layer_heights)
         self._setup_ale(vertical_coordinate, regrid, regrid_params, remap_scheme, z0, closure, h_thin_bed,
                         init_iterations, act, momentum, ke_scheme, max_truncations, thickness_flux)
-        if self.ale:                                                    # GLS on the ALE layers + remap (N3 task 5)
-            self._closure.bind_ale(self.remap_code)
         self._vertical = (ALECoordinate(H=self.H, active=self.fs.active, n_layers=n_layers, rule=self.regrid_rule,
                                         params=self.regrid_params, remap_code=self.remap_code,
                                         h_thin_bed=self.h_thin_bed, max_truncations=self.max_truncations,
@@ -1228,6 +1231,13 @@ class SigmaBaroclinic:
                              "WENO5 tracer_scheme")
         self.tracer_limiter = tracer_limiter
         self.cp, self.jerlov = float(cp), jerlov                       # heat flux: c_p [J kg⁻¹ K⁻¹], Jerlov type
+        # turbulence closure as its own component (N3 task 1), stepped by the driver (phases 4 and 7); the core
+        # keeps a reference only for the ``core.gls`` path.  Built here, after the EOS and c_p that KPP uses
+        self.kpp_params = kpp_params                                    # closure='kpp' (N3 task 7)
+        self._closure = make_closure(self)
+        self.core.turbulence = self._closure
+        if self.ale:                                                    # GLS on the ALE layers + remap (N3 task 5)
+            self._closure.bind_ale(self.remap_code)
         self.n_tracers = int(n_tracers)
         if self.n_tracers < 0 or (self.n_tracers and not self.ale):
             raise ValueError(f"n_tracers={n_tracers!r}: passive tracers need vertical_coordinate='ale' and n ≥ 0")
@@ -1315,9 +1325,9 @@ class SigmaBaroclinic:
             raise ValueError(f"unknown regrid rule {regrid!r}; use 'sigma', 'zstar' or 'hybrid'")
         if remap_scheme not in REMAP_SCHEMES:
             raise ValueError(f"unknown remap_scheme {remap_scheme!r}; use one of {sorted(REMAP_SCHEMES)}")
-        if closure not in ("constant", "none", "gls"):
-            raise ValueError("vertical_coordinate='ale' needs closure 'constant', 'none' or 'gls' (the parabolic ν "
-                             "assumes σ-layers)")
+        if closure not in ("constant", "none", "gls", "kpp"):
+            raise ValueError("vertical_coordinate='ale' needs closure 'constant', 'none', 'gls' or 'kpp' (the "
+                             "parabolic ν assumes σ-layers)")
         params = dict(regrid_params or {})
         params.setdefault("dsigma", self.ds)
         for key in {"sigma": (), "zstar": ("dz_top",), "hybrid": ("dz_top", "rho_target")}[regrid]:

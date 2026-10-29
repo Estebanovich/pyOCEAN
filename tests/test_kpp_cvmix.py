@@ -392,3 +392,28 @@ def test_kpp_vanished_layers_stay_finite():
         out.append(res)
     assert abs(out[0].obl_depth[0] - out[1].obl_depth[0]) < 5.0
     assert out[1].kappa_s.max() <= 1.01 * out[0].kappa_s.max() + 1e-12
+
+
+def test_kpp_vanished_layers_at_crossing_and_uniform_column_no_warning():
+    # N3 task 7 (Task 6 carry): two consecutive zero-thickness layers bracketing the Ri_c crossing put two centres
+    # at the same height (zero spacing in the interpolation polynomial); a uniform column has a flat Ri_b ≡ 0
+    # polynomial.  Neither may divide by zero (RuntimeWarning raises under -W error); the crossing is at the
+    # vanished layers' height.
+    import warnings
+    hs = [2.0] * 5 + [0.0, 0.0] + [2.0] * 10                          # surface-down
+    Ts = [15.0] * 5 + [15.0, 10.0] + [10.0] * 10
+    h = np.array(hs[::-1])[:, None]
+    n = h.shape[0]
+    z = np.concatenate([[0.0], np.cumsum(h[:, 0])])[:, None]
+    b = 9.81 * 2e-4 * np.array(Ts[::-1])[:, None]
+    zero = np.zeros((n, 1))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        for interp in ("linear", "quadratic", "cubic"):
+            r = kpp_column(h, z, zero, zero, b, np.zeros(1), np.full(1, 0.01), None, None,
+                           KPPParams(interp_type=interp))
+            assert r.obl_depth[0] == pytest.approx(10.0) and np.isfinite(r.kappa_s).all()
+        for bf, us in ((-1e-7, 0.01), (0.0, 0.01), (1e-7, 0.0), (-1e-7, 0.0)):
+            r = kpp_column(np.ones((4, 1)), np.arange(5.0)[:, None], np.zeros((4, 1)), np.zeros((4, 1)),
+                           np.zeros((4, 1)), np.full(1, bf), np.full(1, us), None, None)
+            assert np.isfinite(r.obl_depth).all() and np.isfinite(r.kappa_s).all()

@@ -47,7 +47,7 @@ from physics.mixing.gls import KT_MIN
 from physics.mixing.parabolic import parabolic_viscosity
 
 G = 9.81
-CLOSURES = ("gls", "parabolic", "constant", "none")
+CLOSURES = ("gls", "parabolic", "constant", "none", "kpp")       # 'kpp': SigmaBaroclinic only (N3 task 7)
 
 
 @njit(cache=True, parallel=True)
@@ -189,6 +189,8 @@ class SigmaWetDry:
                  external_closure: bool = False, periodic=None) -> None:
         if closure not in CLOSURES:
             raise ValueError(f"unknown closure {closure!r}; use one of {CLOSURES}")
+        if closure == "kpp" and not external_closure:
+            raise ValueError("closure='kpp' needs a stratified model with tracers (SigmaBaroclinic)")
         self.fs = WetDryFreeSurface(h_grid, bathy, dt=dt, theta=theta, g=g, d_min=d_min,
                                     flather_u=flather_u, flather_v=flather_v, solver=solver,
                                     clamped_u=clamped_u, clamped_v=clamped_v, periodic=periodic)

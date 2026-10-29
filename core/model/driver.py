@@ -10,8 +10,10 @@ One time step is ten named phases, the same order in σ and ALE (phases 8–9 do
                               closure update (core.components.closure)
  5 boundary_velocity          sponge on u′, Orlanski; ALE: thin bed layers, optional blending
  6 layer_transport            layer volume transports (σ: Fz from continuity; ALE: Lagrangian h†)
- 7 tracers                    advection (SSP-RK3/FCT or 'pc'), mixing diagnostic, K_h, K_v, boundary sponge
-                              (T, the salinity S with ``salinity=True`` and the passive tracers, one stack)
+ 7 tracers                    advection (SSP-RK3/FCT or 'pc'), mixing diagnostic, freshwater, heat flux, K_h,
+                              K_v, boundary sponge (T, the salinity S with ``salinity=True`` and the passive
+                              tracers, one stack); closure='kpp' (N3 task 7): KPP update after the freshwater and
+                              before the heat flux (MOM6 diabatic order), its non-local term right before K_v
  8 vertical_coordinate        ALE: regrid + remap (and the remap part of the mixing diagnostic); GLS k, ε, ν, κ_t
                               remapped to the new layers (N3 task 5)
  9 interior_sponge            ALE: interior sponge after the remap
@@ -263,22 +265,87 @@ class Driver:
         active and H + ηⁿ > d_min).  Sets ``ctx.bflux`` (for the closure) and the budget term ``T_surf``:
         V¹ (Tⁿᵉʷ² − Tᵒˡᵈ²)/Δt, a source of Σ V T².
         """
-        heat = ctx.heat
-        if heat is None:
-            return
+        self._heat_apply(ctx, C, V1, bud, self._heat_fluxes(ctx, V1))
+
+    def _wet_thickness(self, ctx: StepContext, V1: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """The surface-flux mask (active, H + ηⁿ > d_min, area > 0; as the free-surface fw) and the layer
+        thicknesses h = V¹/A there, zero elsewhere (N, ny, nx) [m]."""
         m = self.m
         A = np.nan_to_num(m.area)
         wet = m.fs.active & (m.fs.H + ctx.st.eta > m.fs.d_min) & (A > 0)
-        h = np.where(wet[None] & (V1 > 0), V1 / np.where(A > 0, A, 1.0)[None], 0.0)
+        return wet, np.where(wet[None] & (V1 > 0), V1 / np.where(A > 0, A, 1.0)[None], 0.0)
+
+    def _heat_fluxes(self, ctx: StepContext, V1: np.ndarray):
+        """Layer heating of the step (``layer_heating``) and ``ctx.bflux``; None without ``heat``."""
+        heat = ctx.heat
+        if heat is None:
+            return None
+        m = self.m
+        wet, h = self._wet_thickness(ctx, V1)
         Q_ns = np.where(wet, heat["Q_ns"], 0.0)
         Q_sw = None if heat.get("Q_sw") is None else np.where(wet, heat["Q_sw"], 0.0)
         q, f = layer_heating(h, Q_ns, Q_sw, m.jerlov)
+        ctx.bflux = {"Q_ns": Q_ns, "Q_sw": Q_sw, "sw_frac_iface": f}
+        return h, q
+
+    def _heat_apply(self, ctx: StepContext, C: np.ndarray, V1: np.ndarray, bud, fl) -> None:
+        """Add the layer heating ``fl`` = (h, q) of ``_heat_fluxes`` to T (stack member 0); budget term T_surf."""
+        if fl is None:
+            return
+        m = self.m
+        h, q = fl
         T_old = C[0].copy() if bud is not None else None
         pos = h > 0                                                    # vanished layers get q = 0 (layer_heating)
         C[0] += np.where(pos, q * m.dt / (m.rho0 * m.cp * np.where(pos, h, 1.0)), 0.0)
         if bud is not None:
             bud.source("T_surf", V1 * (C[0] ** 2 - T_old**2) / m.dt)
-        ctx.bflux = {"Q_ns": Q_ns, "Q_sw": Q_sw, "sw_frac_iface": f}
+
+    # ------------------------------------------------------------------ KPP (N3 task 7)
+    def _kpp_update(self, ctx: StepContext, C: np.ndarray, lay: dict[str, int], V1: np.ndarray) -> None:
+        """
+        KPP update in phase 7 (``KPPClosure``; MOM6 order, MOM_diabatic_driver.F90:784-848): from the advected
+        (and freshened) T, S on the volumes V¹, the new velocities at the cell centres, the surface u*² = |τ_s|/ρ₀
+        and the surface fluxes of the step (``ctx.bflux`` of the heat flux, the freshwater ``fw`` with the top-layer
+        S).  Dry and land columns (the heat-flux mask) get h = 0 and are skipped by the closure.
+        """
+        m, cl = self.m, self.m._closure
+        _, h = self._wet_thickness(ctx, V1)
+        sal = m.salinity
+        S = C[lay["S"]] if sal else None
+        rho = m._eos.density(C[0], S)
+        u, v = ctx.u_new, ctx.v_new
+        uc = 0.5 * (u[:, :, :-1] + u[:, :, 1:])
+        vc = 0.5 * (v[:, :-1, :] + v[:, 1:, :])
+        fw = getattr(ctx.fluxes, "fw", None) if sal else None
+        bflux = None
+        if ctx.bflux is not None or fw is not None:
+            bf = ctx.bflux or {}
+            bflux = {"Q_ns": bf.get("Q_ns", np.zeros(m.H.shape)), "Q_sw": bf.get("Q_sw"),
+                     "sw_frac_iface": bf.get("sw_frac_iface"), "fw": fw, "S_sfc": None if S is None else S[-1]}
+        cl.update(uc, vc, h, rho, self._surface_ustar2(ctx), ctx.ustar2_bot, bflux=bflux)
+        ctx.set(closure=cl.state(), kpp_h=h)
+
+    def _surface_ustar2(self, ctx: StepContext) -> np.ndarray:
+        """|τ_s|/ρ₀ (ny, nx) [m² s⁻²] at the cell centres from the kinematic face stresses (as the GLS surface u*²,
+        CROCO gls_mixing.F:556-562)."""
+        ny, nx = self.m.H.shape
+        tsu = np.zeros((ny, nx + 1)) if ctx.tu is None else np.broadcast_to(np.nan_to_num(ctx.tu), (ny, nx + 1))
+        tsv = np.zeros((ny + 1, nx)) if ctx.tv is None else np.broadcast_to(np.nan_to_num(ctx.tv), (ny + 1, nx))
+        return np.hypot(0.5 * (tsu[:, :-1] + tsu[:, 1:]), 0.5 * (tsv[:-1, :] + tsv[1:, :]))
+
+    def _kpp_nonlocal(self, ctx: StepContext, T: np.ndarray, S: np.ndarray | None):
+        """
+        The KPP non-local term on T (and S with freshwater), explicit, before the implicit κ_s diffusion
+        (MOM_diabatic_driver.F90:845-848, then 1053-1059): Δc_k = Δt F (γ_{k+1} − γ_k)/h_k with the non-solar
+        F_T and the dilution flux F_S (``KPPClosure.nonlocal_tendency``); the column content is unchanged.
+        """
+        m, cl = self.m, self.m._closure
+        h = ctx.kpp_h
+        if np.any(cl.F_T != 0.0):
+            T = T + cl.nonlocal_tendency(h, cl.F_T, m.dt)
+        if S is not None and np.any(cl.F_S != 0.0):
+            S = S + cl.nonlocal_tendency(h, cl.F_S, m.dt)
+        return T, S
 
     def _budget_advection(self, ctx: StepContext, C: np.ndarray, lay: dict[str, int], V1: np.ndarray):
         """
@@ -336,7 +403,7 @@ class Driver:
                                                              nu_v=nu_v)
         # bed u*² of the closure (N3 task 4): one source, the first-layer log law at the new velocities
         ustar2_bot = m.core.bed_ustar2(eta_new, u_new, v_new)
-        if cl.stateful:                                                # then the closure with the new u, v
+        if cl.stateful and cl.update_phase == "implicit":              # then the closure with the new u, v
             kw = {}
             if getattr(cl, "production", "croco") == "energy":         # Burchard (2002) eq. 16 (N3 task 5)
                 Du, Dv = m.core.face_depths(st.eta)                    # the column_step thickness D(ηⁿ) Δσ
@@ -372,7 +439,11 @@ class Driver:
             self._freshwater(ctx, C, lay, lf.V1, lf.V_fw)
             self._budget_surface(ctx, bud, C, lf.V1, lf.V_fw)
             V1 = lf.V_fw                                               # = layer_volumes(ηⁿ⁺¹)
-        self._heat(ctx, C, V1, bud)                                    # prescribed surface heat flux (N3 task 2)
+        kpp = m._closure.update_phase == "tracers"
+        fl = self._heat_fluxes(ctx, V1)                                # prescribed surface heat flux (N3 task 2)
+        if kpp:                                                        # KPP from the state before the fluxes (task 7)
+            self._kpp_update(ctx, C, lay, V1)
+        self._heat_apply(ctx, C, V1, bud, fl)
         T_new = C[0]
         S_new = C[lay["S"]] if sal else None
         if m.kh > 0:
@@ -388,6 +459,8 @@ class Driver:
         kt = m._closure.tracer_diffusivity()                           # closure κ_t on the tracers (N2a task 8c)
         if m.kv > 0 or kt is not None:
             T_a, S_a = T_new, S_new
+            if kpp:                                                    # non-local term (in the phy_v budget term)
+                T_new, S_new = self._kpp_nonlocal(ctx, T_new, S_new)
             D1 = np.maximum(np.nan_to_num(m.H + ctx.eta_new, nan=m.fs.d_min), m.fs.d_min)
             dz = (D1[None] * m.ds[:, None, None]).reshape(n, -1)
             zero = np.zeros(dz.shape[1])
@@ -471,7 +544,7 @@ class Driver:
                                                              wv=ctx.wv, nu_u=nu_u, nu_v=nu_v, **visc)
         ustar2_bot = self._ale_bed_ustar2(ctx, u_new, v_new, visc)
         ctx.set(eta_new=eta_new, u_new=u_new, v_new=v_new, fluxes=fluxes, ustar2_bot=ustar2_bot)
-        if cl.stateful:                                                # GLS on the layers hⁿ (N3 task 5)
+        if cl.stateful and cl.update_phase == "implicit":              # GLS on the layers hⁿ (N3 task 5)
             kw = {}
             if cl.production == "energy":                              # the viscous solve's own face thickness
                 kw["shear_work"] = self._shear_work(ctx, u_new, v_new, nu_u, nu_v, visc["hu"], visc["hv"])
@@ -590,7 +663,11 @@ class Driver:
             self._freshwater(ctx, C, lay, V1, lf.V_fw)
             self._budget_surface(ctx, bud, C, V1, lf.V_fw)
             h_lag, V1 = lf.h_fw, lf.V_fw                               # diffusion and sponge on h† + fw Δt
-        self._heat(ctx, C, V1, bud)                                    # prescribed surface heat flux (N3 task 2)
+        kpp = m._closure.update_phase == "tracers"
+        fl = self._heat_fluxes(ctx, V1)                                # prescribed surface heat flux (N3 task 2)
+        if kpp:                                                        # KPP from the state before the fluxes (task 7)
+            self._kpp_update(ctx, C, lay, V1)
+        self._heat_apply(ctx, C, V1, bud, fl)
         T_lag = C[0]
         S_lag = C[lay["S"]] if sal else None
         tr_lag = [C[lay["tr"] + i] for i in range(ntr)]
@@ -609,6 +686,8 @@ class Driver:
         kt = m._closure.tracer_diffusivity()                           # GLS κ_t on every tracer (N3 task 5; CROCO
         if m.kv > 0 or kt is not None:                                 # t3dmix_tridiagonal.h:73-75), kv its floor
             T_a, S_a = T_lag, S_lag
+            if kpp:                                                    # non-local term (in the phy_v budget term)
+                T_lag, S_lag = self._kpp_nonlocal(ctx, T_lag, S_lag)
             dz = np.maximum(h_lag, DZ_FLOOR).reshape(n, -1)
             kvz = kt.reshape(n + 1, -1) if kt is not None else np.full((n + 1, dz.shape[1]), m.kv)
             zero = np.zeros(dz.shape[1])

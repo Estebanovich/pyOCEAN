@@ -48,7 +48,7 @@ _SPECS = [
     VarSpec("closure.tke", ("kw", "y", "x"), "w", "m2 s-2", None, "component_state",
             "turbulent kinetic energy (GLS k-ε)"),
     VarSpec("closure.eps", ("kw", "y", "x"), "w", "m2 s-3", None, "component_state", "dissipation rate (GLS k-ε)"),
-    VarSpec("closure.akv", ("kw", "y", "x"), "w", "m2 s-1", None, "component_state", "eddy viscosity (GLS k-ε)"),
+    VarSpec("closure.akv", ("kw", "y", "x"), "w", "m2 s-1", None, "component_state", "eddy viscosity (GLS k-ε, or KPP of the last step: N3 task 7)"),
     VarSpec("closure.akt", ("kw", "y", "x"), "w", "m2 s-1", None, "component_state",
             "eddy tracer diffusivity (stratified GLS k-ε, gls_stratified; N2a task 8c)"),
 ]

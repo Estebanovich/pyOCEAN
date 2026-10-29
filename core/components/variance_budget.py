@@ -15,7 +15,10 @@ of all of them is the tendency of Σ V c² to round-off.  Per cell, in [c² m³ 
                      ``core.components.freshwater.apply_freshwater`` (Lorenz et al. 2021 eq. 43); T keeps its
                      value, so (V_fw − V_adv) T²/Δt.  A source (> 0 increases Σ V c²);
   ``{c}_phy_h``      V (c_a² − c_b²)/Δt of the horizontal (along-layer) K_h diffusion;
-  ``{c}_phy_v``      V (c_a² − c_b²)/Δt of the implicit vertical K_v diffusion;
+  ``{c}_phy_v``      V (c_a² − c_b²)/Δt of the implicit vertical K_v diffusion; with closure='kpp' (N3 task 7)
+                     c_a is taken before the explicit KPP non-local term, which is applied right before the
+                     diffusion, so the term is the vertical physics of KPP (it can be negative where the
+                     non-local flux sharpens a gradient);
   ``{c}_num_remap``  ALE only: V_new (⟨c²⟩_remap − c_new²)/Δt with c² remapped with the stack (as ``mix_num``);
   ``{c}_sponge``     V (c_a² − c_b²)/Δt of the edge tracer sponge (on the advected volumes) and of the ALE interior
                      sponge (on the new volumes).

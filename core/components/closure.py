@@ -34,6 +34,7 @@ import numpy as np
 from core.model.contract import BuildContext, Issue, Role
 from core.vertical import remap as rm
 from physics.mixing.gls import KT_MIN, N2_FLOOR, RM, RN, RP, GLSKEpsilon, buoyancy_frequency2
+from physics.mixing.kpp_cvmix import KPPParams, kpp_column
 
 STATE_PREFIX = "closure_"
 H_MASSLESS = 1e-3          # [m] ALE: thinner layers are merged for the GLS column (HYCOM onemm, mxkprf.F90:1866-1878)
@@ -51,6 +52,8 @@ class Closure:
     reads = ("u", "v", "closure")
     writes = ("closure",)
     stateful = False
+    update_phase = "implicit"     # phase whose driver calls ``update``: 'implicit' (4, GLS) or 'tracers' (7, KPP)
+    restart_prefix = ""           # file-variable prefix of the restart state (``core.restart``)
 
     def viscosity(self, st) -> tuple[np.ndarray, np.ndarray] | None:
         """ν at the interfaces of the u- and v-faces, (N+1, ny, nx+1) and (N+1, ny+1, nx) [m² s⁻¹], from the
@@ -162,6 +165,7 @@ class GLSClosure(Closure):
       unchanged grid (h_src == h_dst) is not remapped.
     """
     stateful = True
+    restart_prefix = "gls_"       # file names of the restarts written before N3 (``core.restart``)
 
     def __init__(self, n_layers: int, shape: tuple[int, int], dt: float, z0: float | None = None,
                  stratified: bool = False, rho0: float = 1000.0, g: float = 9.81, kt_min: float = KT_MIN,
@@ -189,20 +193,7 @@ class GLSClosure(Closure):
         ``per``: the mean of cells n−1 and 0)."""
         if st is not None:
             self.load(getattr(st, "closure", None))
-        ny, nx = self.shape
-        nu = self.gls.akv.reshape(self.n + 1, ny, nx)
-        nu_u = np.empty((self.n + 1, ny, nx + 1))
-        nu_u[:, :, 1:-1] = 0.5 * (nu[:, :, :-1] + nu[:, :, 1:])
-        nu_u[:, :, 0], nu_u[:, :, -1] = nu[:, :, 0], nu[:, :, -1]
-        nu_v = np.empty((self.n + 1, ny + 1, nx))
-        nu_v[:, 1:-1] = 0.5 * (nu[:, :-1] + nu[:, 1:])
-        nu_v[:, 0], nu_v[:, -1] = nu[:, 0], nu[:, -1]
-        per = getattr(self, "per", None)
-        if per is not None and per.x:
-            nu_u[:, :, 0] = nu_u[:, :, -1] = 0.5 * (nu[:, :, -1] + nu[:, :, 0])
-        if per is not None and per.y:
-            nu_v[:, 0] = nu_v[:, -1] = 0.5 * (nu[:, -1] + nu[:, 0])
-        return nu_u, nu_v
+        return centre_to_faces(self.gls.akv.reshape(self.n + 1, *self.shape), getattr(self, "per", None))
 
     def update(self, u: np.ndarray, v: np.ndarray, h: np.ndarray, rho: np.ndarray | None,
                ustar2_sfc: np.ndarray | None, ustar2_bot: np.ndarray, bflux: dict | None = None,
@@ -390,6 +381,26 @@ class GLSClosure(Closure):
             gls.akt = np.asarray(d[STATE_PREFIX + "akt"]).reshape(shape).copy()
 
 
+def centre_to_faces(nu: np.ndarray, per=None) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Interface values at the cell centres (N+1, ny, nx) averaged to the u- and v-faces, (N+1, ny, nx+1) and
+    (N+1, ny+1, nx): the mean of the two cells; edge faces take the inner cell; periodic wrap faces (``per``) the
+    mean of cells n−1 and 0 (CROCO gls_mixing.F averages Akv to the faces the same way).
+    """
+    n1, ny, nx = nu.shape
+    nu_u = np.empty((n1, ny, nx + 1))
+    nu_u[:, :, 1:-1] = 0.5 * (nu[:, :, :-1] + nu[:, :, 1:])
+    nu_u[:, :, 0], nu_u[:, :, -1] = nu[:, :, 0], nu[:, :, -1]
+    nu_v = np.empty((n1, ny + 1, nx))
+    nu_v[:, 1:-1] = 0.5 * (nu[:, :-1] + nu[:, 1:])
+    nu_v[:, 0], nu_v[:, -1] = nu[:, 0], nu[:, -1]
+    if per is not None and per.x:
+        nu_u[:, :, 0] = nu_u[:, :, -1] = 0.5 * (nu[:, :, -1] + nu[:, :, 0])
+    if per is not None and per.y:
+        nu_v[:, 0] = nu_v[:, -1] = 0.5 * (nu[:, -1] + nu[:, 0])
+    return nu_u, nu_v
+
+
 def dual_thickness(h: np.ndarray) -> np.ndarray:
     """
     Thickness of the dual cells of the interfaces (N+1, ...) from the layers h (N, ...) [m]: interface i owns
@@ -407,6 +418,195 @@ def _pad_interfaces(x: np.ndarray) -> np.ndarray:
     return np.concatenate([x[:1], x, x[-1:]]) if x.shape[0] else np.full((2,) + x.shape[1:], N2_FLOOR)
 
 
+class KPPClosure(Closure):
+    """
+    K-profile parameterisation (Large, McWilliams & Doney 1994) as CVMix computes it for MOM6
+    (``physics.mixing.kpp_cvmix.kpp_column``; N3 task 7, spec §4 and decisions 6–7), in σ and ALE.
+
+    Parameters
+    ----------
+    n_layers : N
+    shape : (ny, nx) of the tracer grid
+    params : ``KPPParams`` (None: the CVMix/MOM6 defaults, no background ν or κ)
+    rho0, g : ρ₀ [kg m⁻³], g [m s⁻²] of the buoyancy b = −g (ρ − ρ₀)/ρ₀
+    t_coef, s_coef : the linear EOS ρ = ρ₀ − α (T − T₀) + β (S − S₀): α [kg m⁻³ °C⁻¹], β [kg m⁻³ (g kg⁻¹)⁻¹]
+    cp : heat capacity c_p [J kg⁻¹ K⁻¹] of the heat-flux conversion (the model's ``cp``)
+
+    Place in the step (MOM6 diabatic_ALE_legacy, MOM_diabatic_driver.F90:784-848, 991, 1053-1059; read in
+    ``docs/design/n2c_refs/kpp_mom6_cvmix.md`` §1): ``update`` is called by the driver in **phase 7** (tracers),
+    after the advection and the freshwater substep and before the surface heat flux enters T, with the layer
+    thicknesses, velocities and density of that moment (MOM6 computes K and γ from the state at the start of the
+    diabatic step; the only difference is that pyOCEAN's along-layer K_h comes after, MOM6's before).  Then
+
+    1. the non-local term redistributes the surface fluxes (``nonlocal_flux`` × F_T, F_S; the driver applies it
+       explicitly, MOM_CVMix_KPP.F90:1899-1907 — it changes no column content);
+    2. the surface heat flux heats T (N3 task 2);
+    3. κ_s (``tracer_diffusivity``) diffuses T, S and passive tracers implicitly, as the GLS κ_t;
+    4. ν (``viscosity``) is the implicit vertical viscosity of the **next** step's momentum (MOM6: Kv_KPP is added
+       to visc%Kv_shear and used by the next dynamics step, MOM_CVMix_KPP.F90:1015-1021).  ν is therefore the only
+       state carried between steps (``SigmaState.closure['akv']``, restart variable ``kpp_akv``); h, κ_s and γ are
+       recomputed every step, as in MOM6 (OBLdepth is in MOM6's restart only for FPMIX, MOM_CVMix_KPP.F90:241-243).
+
+    Surface forcing (spec decision 6: for KPP the heat flux enters as a surface buoyancy flux), positive =
+    stabilising (MOM6/CVMix, cvmix_kpp.F90:821):
+
+        F_T = Q_ns / (ρ₀ c_p) [K m s⁻¹],      F_S = −S₁ (P − E) [g kg⁻¹ m s⁻¹] (salinity and ``fw`` only),
+        B_ns = (g/ρ₀)(α F_T − β F_S),          B_sw = (g/ρ₀) α Q_sw / (ρ₀ c_p)
+
+    with S₁ the top-layer salinity: pyOCEAN's freshwater is a real volume flux, and its effect on the surface
+    buoyancy is the dilution −S₁ (P − E), the term MOM6 adds to netSalt for KPP (MOM_forcing_type.F90:1028-1151).
+    Only the shortwave absorbed above the trial depth enters B_f (L94 A3–A4 through CVMix's
+    ``buoyFlux(1) − buoyFlux(k+1)``, MOM_CVMix_KPP.F90:1383, and ``KPP_SHORTWAVE_METHOD = MXL_SW`` for K and γ,
+    837-845), with the Paulson & Simpson fractions ``sw_frac_iface`` of the step.  u* = (|τ_s|/ρ₀)^{1/2} from the
+    wind stress (MOM6 ``find_ustar``, MOM_forcing_type.F90:1187-1249).  The non-local term uses the non-solar fluxes
+    F_T, F_S (MOM6 KPP_temp_flux = net heat minus SW, KPP_salt_flux; MOM_diabatic_driver.F90:845-848).
+
+    Columns: only wet columns (``h`` summing to > 0; the driver zeroes the dry and land columns, as the heat flux)
+    are computed; elsewhere ν = κ = γ = 0.  The bed (k = 0) and surface (k = N) interface values are set to zero:
+    with h reaching the bed CVMix writes the enhanced K and γ at the bed interface (Task 6), which must not become
+    a flux through the bed (the implicit solver ignores them; γ would break the conservation of the column).
+
+    ALE: ν is kept by interface index through the regrid, as MOM6 keeps visc%Kv_shear (only halo-updated in
+    ALE_regridding_and_remapping, MOM.F90:1964-1965); the KPP state is not remapped.
+    Interior Richardson-number mixing (L94 §4) is not part of 'kpp' (MOM6 adds it from its own interior schemes;
+    spec item 4 leaves it optional, decided here: off).  Index order (k, j, i), k = 0 at the bed; interfaces N+1.
+    """
+    stateful = True
+    update_phase = "tracers"
+    restart_prefix = "kpp_"
+
+    def __init__(self, n_layers: int, shape: tuple[int, int], params: KPPParams | None = None,
+                 rho0: float = 1000.0, g: float = 9.81, t_coef: float = 0.2, s_coef: float = 0.0,
+                 cp: float = 3985.0) -> None:
+        self.n, self.shape = int(n_layers), tuple(shape)
+        self.params = KPPParams() if params is None else params
+        self.rho0, self.g, self.t_coef, self.s_coef, self.cp = float(rho0), float(g), float(t_coef), float(s_coef), \
+            float(cp)
+        m = self.shape[0] * self.shape[1]
+        self.akv = np.zeros((self.n + 1, m))                          # ν of the last update [m² s⁻¹]
+        self.akt = np.zeros((self.n + 1, m))                          # κ_s of the last update [m² s⁻¹]
+        self.gamma = np.zeros((self.n + 1, m))                        # γ of the last update [1]
+        self.obl_depth = np.zeros(m)                                  # h [m]
+        self.F_T = np.zeros(m)                                        # non-solar F_T [K m s⁻¹]
+        self.F_S = np.zeros(m)                                        # F_S [g kg⁻¹ m s⁻¹]
+        self.f = None                                                 # Coriolis at the centres (Ekman limit)
+
+    def viscosity(self, st) -> tuple[np.ndarray, np.ndarray]:
+        """ν of the last update averaged to the u- and v-faces (``centre_to_faces``)."""
+        if st is not None:
+            self.load(getattr(st, "closure", None))
+        return centre_to_faces(self.akv.reshape(self.n + 1, *self.shape), getattr(self, "per", None))
+
+    def buoyancy_fluxes(self, Q_ns: np.ndarray, Q_sw: np.ndarray | None, fw: np.ndarray | None,
+                        S_sfc: np.ndarray | None) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Kinematic surface fluxes and buoyancy fluxes (class docstring), all (M,):
+        F_T [K m s⁻¹], F_S [g kg⁻¹ m s⁻¹], B_ns, B_sw [m² s⁻³] (positive = stabilising).
+        """
+        rc = self.rho0 * self.cp
+        F_T = np.asarray(Q_ns, float).ravel() / rc
+        F_S = np.zeros_like(F_T) if (fw is None or S_sfc is None) else \
+            -np.asarray(S_sfc, float).ravel() * np.asarray(fw, float).ravel()
+        go = self.g / self.rho0
+        B_ns = go * (self.t_coef * F_T - self.s_coef * F_S)
+        B_sw = np.zeros_like(F_T) if Q_sw is None else go * self.t_coef * np.asarray(Q_sw, float).ravel() / rc
+        return F_T, F_S, B_ns, B_sw
+
+    def update(self, u: np.ndarray, v: np.ndarray, h: np.ndarray, rho: np.ndarray | None,
+               ustar2_sfc: np.ndarray | None, ustar2_bot: np.ndarray, bflux: dict | None = None) -> None:
+        """
+        KPP on the wet columns (``kpp_column``).
+
+        u, v : (N, ny, nx) velocities at the cell centres [m s⁻¹];  h : (N, ny, nx) layer thicknesses [m], zero
+            in dry and land columns;  rho : (N, ny, nx) layer density of the model EOS [kg m⁻³];
+        ustar2_sfc : (ny, nx) |τ_s|/ρ₀ [m² s⁻²] (None: 0);  ustar2_bot : unused (no bed boundary layer);
+        bflux : None (no surface flux) or {"Q_ns", "Q_sw" (or None), "sw_frac_iface" (N+1, ny, nx), "fw" (or None),
+            "S_sfc" (or None)} [W m⁻², m s⁻¹, g kg⁻¹].
+        """
+        if rho is None:
+            raise ValueError("closure='kpp' needs the layer density rho")
+        n = self.n
+        m = self.shape[0] * self.shape[1]
+        hh = np.asarray(h, float).reshape(n, m)
+        wet = np.flatnonzero(hh.sum(axis=0) > 0.0)
+        akv, akt, gam = np.zeros((n + 1, m)), np.zeros((n + 1, m)), np.zeros((n + 1, m))
+        obl, F_T, F_S = np.zeros(m), np.zeros(m), np.zeros(m)
+        if wet.size:
+            hw = hh[:, wet]
+            zw = np.concatenate([np.zeros((1, wet.size)), np.cumsum(hw, axis=0)])
+            b = -self.g * (np.asarray(rho, float).reshape(n, m)[:, wet] - self.rho0) / self.rho0
+            us = np.zeros(wet.size) if ustar2_sfc is None else np.sqrt(np.asarray(ustar2_sfc, float).ravel()[wet])
+            if bflux is None:
+                bns, bsw, frac = np.zeros(wet.size), None, None
+            else:
+                ft, fs, bns_a, bsw_a = self.buoyancy_fluxes(bflux["Q_ns"], bflux.get("Q_sw"), bflux.get("fw"),
+                                                            bflux.get("S_sfc"))
+                F_T[wet], F_S[wet], bns = ft[wet], fs[wet], bns_a[wet]
+                bsw = None if bflux.get("Q_sw") is None else bsw_a[wet]
+                frac = None if bsw is None else np.asarray(bflux["sw_frac_iface"], float).reshape(n + 1, m)[:, wet]
+            f = None if self.f is None else np.asarray(self.f, float).ravel()[wet]
+            r = kpp_column(hw, zw, np.asarray(u, float).reshape(n, m)[:, wet],
+                           np.asarray(v, float).reshape(n, m)[:, wet], b, bns, us, frac, f, self.params,
+                           bflux_sw=bsw)
+            akv[:, wet], akt[:, wet], gam[:, wet], obl[wet] = r.kappa_m, r.kappa_s, r.nonlocal_, r.obl_depth
+        for x in (akv, akt, gam):                                      # no flux through the bed or the surface
+            x[0] = 0.0
+            x[n] = 0.0
+        self.akv, self.akt, self.gamma, self.obl_depth, self.F_T, self.F_S = akv, akt, gam, obl, F_T, F_S
+
+    def tracer_diffusivity(self) -> np.ndarray:
+        """κ_s (N+1, ny, nx) of the last update [m² s⁻¹] (heat, salt and passive tracers; SimpleShapes: κ_T = κ_S)."""
+        return self.akt.reshape(self.n + 1, *self.shape)
+
+    def nonlocal_flux(self) -> np.ndarray:
+        """γ (N+1, ny, nx) of the last update [1]: the fraction of the non-solar surface flux carried down through
+        each interface (zero at the bed and the surface)."""
+        return self.gamma.reshape(self.n + 1, *self.shape)
+
+    def nonlocal_tendency(self, h: np.ndarray, flux: np.ndarray, dt: float) -> np.ndarray:
+        """
+        Change of a tracer by the non-local term in one step (MOM_CVMix_KPP.F90:1899-1907, model orientation):
+
+            Δc_k = Δt F (γ_{k+1} − γ_k) / h_k        [c]
+
+        h : (N, ny, nx) layer thicknesses [m];  flux : (ny, nx) or (M,) kinematic surface flux F into the ocean
+        [c m s⁻¹] (F_T or F_S).  γ_0 = γ_N = 0, so Σ_k h_k Δc_k = 0: the term only redistributes.  A layer with
+        h_k = 0 (ALE) cannot hold its share Δt F (γ_{k+1} − γ_k); it is passed to the nearest layer with mass
+        below (above at the bed), so the column content is unchanged (MOM6 divides by h + H_subroundoff instead).
+        """
+        n = self.n
+        hh = np.asarray(h, float).reshape(n, -1)
+        g = self.gamma
+        q = dt * np.asarray(flux, float).ravel()[None] * (g[1:] - g[:-1])        # content change h Δc, (N, M)
+        empty = hh <= 0.0
+        if empty.any():
+            q = q.copy()
+            for k in range(n - 1, 0, -1):                             # downward: to the layer below
+                mv = empty[k]
+                q[k - 1] += np.where(mv, q[k], 0.0)
+                q[k] = np.where(mv, 0.0, q[k])
+            for k in range(n - 1):                                    # vanished bed layers: upward
+                mv = empty[k] & ~empty[k + 1:].all(axis=0)
+                q[k + 1] += np.where(mv, q[k], 0.0)
+                q[k] = np.where(mv, 0.0, q[k])
+        out = np.zeros_like(hh)
+        np.divide(q, hh, out=out, where=~empty)
+        return out.reshape((n,) + self.shape)
+
+    def load(self, closure: dict | None) -> None:
+        if closure is not None:
+            self.akv = closure["akv"]
+
+    def state(self) -> dict:
+        return {"akv": self.akv}
+
+    def state_fields(self) -> dict[str, np.ndarray]:
+        return {STATE_PREFIX + "akv": self.akv}
+
+    def load_state(self, d: dict[str, np.ndarray]) -> None:
+        self.akv = np.asarray(d[STATE_PREFIX + "akv"]).reshape(self.n + 1, -1).copy()
+
+
 def make_closure(model) -> Closure:
     """
     The closure component of a ``SigmaBaroclinic`` model, from its core settings: 'gls' → ``GLSClosure``
@@ -414,6 +614,13 @@ def make_closure(model) -> Closure:
     ``ConstantClosure``.
     """
     core = model.core
+    if core.closure == "kpp":
+        cl = KPPClosure(core.n_layers, core.H.shape, params=getattr(model, "kpp_params", None), rho0=core.rho0,
+                        g=core.g, t_coef=model.t_coef, s_coef=model.s_coef if model.salinity else 0.0, cp=model.cp)
+        fq = getattr(model, "_fq", None)
+        if fq is not None:                                             # f at the centres: mean of the 4 corners
+            cl.f = 0.25 * (fq[:-1, :-1] + fq[:-1, 1:] + fq[1:, :-1] + fq[1:, 1:])
+        return cl
     if core.closure != "gls":
         return ConstantClosure(core.closure)
     kv = float(getattr(model, "kv", 0.0))

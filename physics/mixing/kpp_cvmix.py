@@ -548,12 +548,25 @@ def compute_obl_depth(
         k0 = np.maximum(kk - 2, 0)
         x0 = zt[k0, cols]
         y0 = ri[k0, cols]
-        has3 = kk >= 2
+        # Vanished layers (ALE/hybrid, h = 0) put two centres at the same height: the crossing is then at that
+        # height, and a zero spacing must not reach the polynomial (pyOCEAN guard, N3 task 7; CVMix has none —
+        # MOM6 avoids it only with CVMix_ZERO_H_WORK_AROUND > 0, MOM_CVMix_KPP.F90:1240-1248)
+        same = x2 == x1
+        x2s = np.where(same, x1 - 1.0, x2)
+        has3 = (kk >= 2) & (x1 != x0)
         with np.errstate(invalid="ignore", divide="ignore"):
             slope0 = np.where(has3, (y1 - y0) / np.where(has3, x1 - x0, 1.0), 0.0)
-        coeffs = _poly_interp(p.interp_type, x1, x2, y1, y2, slope0)
+        coeffs = _poly_interp(p.interp_type, x1, x2s, y1, y2, slope0)
         coeffs[0] = coeffs[0] - p.ri_crit
-        h_int = -_cubic_root_find(coeffs, 0.5 * (x1 + x2))
+        # Newton only where a crossing is interpolated (1 ≤ k ≤ n−1): elsewhere the polynomial may be flat (a
+        # uniform column, Ri_b ≡ 0) and the iteration would overflow (pyOCEAN guard, N3 task 7; per-column
+        # arithmetic unchanged)
+        root = 0.5 * (x1 + x2s)
+        need = (k >= 1) & (k <= n - 1)
+        if need.any():
+            root[need] = _cubic_root_find(coeffs[:, need], root[need])
+        h_int = -root
+        h_int = np.where(same, -x1, h_int)
         h_int = np.where(kk == 1, np.maximum(h_int, -zt[0]), h_int)
         h_int = np.minimum(h_int, limit)
     else:

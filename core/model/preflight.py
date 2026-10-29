@@ -13,6 +13,7 @@ from __future__ import annotations
 import numpy as np
 
 from core.model.contract import Issue
+from physics.mixing.kpp_cvmix import KPPParams
 from physics.surface.shortwave import JERLOV
 
 EDGES = ("west", "east", "south", "north")
@@ -147,9 +148,9 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
         elif a["z0"] is not None and not (a["z0"] > 0 and a.get("hbbl", 10.0) > 0):
             err("bottom_drag", f"z0={a['z0']!r}, hbbl={a.get('hbbl', 10.0)!r}: the ALE law-of-the-wall drag needs "
                                "z0 > 0 and hbbl > 0 [m]")
-        if a["closure"] not in ("constant", "none", "gls"):
-            err("closure", "vertical_coordinate='ale' needs closure 'constant', 'none' or 'gls' (the parabolic ν "
-                           "assumes σ-layers)")
+        if a["closure"] not in ("constant", "none", "gls", "kpp"):
+            err("closure", "vertical_coordinate='ale' needs closure 'constant', 'none', 'gls' or 'kpp' (the "
+                           "parabolic ν assumes σ-layers)")
         params = a["regrid_params"] or {}
         for key in {"sigma": (), "zstar": ("dz_top",), "hybrid": ("dz_top", "rho_target")}.get(rule, ()):
             if key not in params:
@@ -208,6 +209,17 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
     elif "gls_production" in given and a["closure"] != "gls":
         warn("closure", f"gls_production={gp!r} is ignored with closure={a['closure']!r} (it applies to "
                         "closure='gls' only)")
+    # KPP (N3 task 7)
+    kp = a.get("kpp_params")
+    if kp is not None and not isinstance(kp, KPPParams):
+        err("closure", f"kpp_params must be a physics.mixing.kpp_cvmix.KPPParams, got {type(kp).__name__}")
+    elif "kpp_params" in given and kp is not None and a["closure"] != "kpp":
+        warn("closure", f"kpp_params is ignored with closure={a['closure']!r} (it applies to closure='kpp' only)")
+    if a["closure"] == "kpp":
+        for name, bg in (("kv", "kappa_bg"), ("nu_const", "nu_bg")):
+            if name in given:
+                warn("closure", f"{name}={a[name]!r} is ignored with closure='kpp' (ν and κ come from KPP; a "
+                                f"background is KPPParams.{bg})")
     if a["sponge_rate"] is None and ({"sponge_T", "sponge_zw", "sponge_tr", "sponge_S"} & given):
         warn("interior_sponge", "sponge_T / sponge_zw / sponge_tr / sponge_S are ignored without sponge_rate")
     return out
