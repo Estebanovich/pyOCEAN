@@ -1,7 +1,7 @@
 # Tracer transport and spurious mixing
 
-The stratified model `SigmaBaroclinic` carries one active tracer, the temperature $T$, which sets the density
-through the linear equation of state ([Pressure gradient](pressure-gradient.md#physics)). This page describes its
+The stratified model `SigmaBaroclinic` carries the temperature $T$ and, since N2a, an optional active salinity $S$;
+they set the density through the linear equation of state or TEOS-10 ([Pressure gradient](pressure-gradient.md#physics)). This page describes its
 transport: the flux-form equation on layers, the horizontal and vertical advection schemes (`tracer_scheme`), the
 Zalesak flux-corrected transport of the ALE step (`tracer_limiter`), the values on open boundaries, the explicit
 along-layer diffusion `kh` and the implicit vertical diffusion `kv`, and the two diagnostics that measure the mixing
@@ -283,6 +283,62 @@ halves the tracer work and leaves `mix_num = None` ($T$ is unchanged, `test_mixi
 
 Details on [Idealised benchmarks](../validation/idealised.md).
 
+## Salinity, freshwater and the variance budget
+
+**Salinity.** With `salinity=True` the state holds $S$ (g/kg, index order $(k, j, i)$). It is advected with the same
+fluxes and scheme as $T$, diffused by `kh` and `kv`, relaxed by the sponges, remapped in ALE and saved in the restart.
+Density is $\rho(T, S)$ in every consumer: linear EOS $\rho = \rho_0[1 - \alpha(T - T_0) + \beta(S - S_0)]$
+(Vallis 2006, eq. 1.156) or TEOS-10, in the pressure gradient (the finite-volume PGF `fv_pgf_rho` works with
+$\rho$, without $1/\alpha$), the stratification $N^2$ of the closure and the diagnostics.
+
+**Real freshwater flux.** Precipitation minus evaporation $fw = P - E$ [m/s, positive into the ocean] is a volume
+source of the free surface (Huang 1993; MITgcm `useRealFreshWaterFlux`):
+$\partial_t \eta = \dots + fw$. For the tracers the incoming water has $S = 0$ and the temperature of the top
+layer (MOM6 `applyBoundaryFluxesInOut`, `MOM_diabatic_aux.F90:1013-1117`), so in each layer whose volume changes
+from $V_{\rm adv}$ to $V_{\rm fw}$
+
+$$
+\begin{aligned}
+S,\ S^2,\ \text{passive:}\quad & c_{\rm new} = c\,V_{\rm adv}/V_{\rm fw} \quad(\text{content } Vc \text{ unchanged}),\\
+T,\ T^2:\quad & \text{unchanged.}
+\end{aligned}
+$$
+
+There is no virtual salt flux. A river is a `'clamped'` open-boundary inflow with $S = 0$ and a prescribed transport (as in the Lorenz case); there is no separate river source. The
+substep sits between the advection and the vertical diffusion ([time step](../architecture/time-step.md)).
+
+**Exact discrete variance budget.** With `variance_budget=True` each operator that changes a tracer $c$ on volumes
+$V$ reports its contribution to $\sum V c^2$, per cell, in $c^2\,{\rm m^3\,s^{-1}}$ (Klingbeil et al. 2014, §2.2;
+Burchard & Rennau 2008, eq. 24):
+
+| Term | Operator | Meaning |
+|---|---|---|
+| `{c}_num_adv` | advection | $V^1(\langle c^2\rangle_{\rm adv} - c_{\rm adv}^2)/\Delta t$: numerical mixing |
+| `{c}_surf` | freshwater substep | source of variance from rescaling at fixed content |
+| `{c}_phy_h`, `{c}_phy_v` | `kh`, `kv` | $V(c_a^2 - c_b^2)/\Delta t$: physical mixing |
+| `{c}_num_remap` | ALE remap | numerical mixing of the remapping |
+| `{c}_sponge` | boundary and interior sponges | relaxation sink |
+
+Their sum is the tendency of $\sum V c^2$ to round-off (`tests/test_n2a_budget.py`).
+
+**Total exchange flow and Lorenz's relation.** `diagnostics/tef.py` classifies the flux through a transect into
+250 salinity bins at every step (from the effective face fluxes of the advection) and gives the bulk in/out
+salinities. With the region budget, the exact mixing of Lorenz et al. (2021), eq. 32,
+
+$$
+M_e = \frac{s_{\rm out}\,(s^2)_{\rm in} - s_{\rm in}\,(s^2)_{\rm out}}{s_{\rm in} - s_{\rm out}}\,(Q_r - dV + Q_{\rm surf})
+$$
+
+equals the total mixing of the model inside the estuary to $10^{-10}$ in relative terms
+(`validation/lorenz_estuary/`). Horizontal diffusion must be zero for the identity to be exact. The TEF
+accumulators are not saved in the restart.
+
+**Stratified GLS.** With `gls_stratified` (default True, closure `gls`) the k–ε model includes the buoyancy
+production $B = -\kappa_t N^2$, $\alpha_N = (k/\varepsilon)^2 N^2$ in the Canuto A stability functions and the
+Galperin limit $l \le 0.53\sqrt{2k}/N$ (CROCO `gls_mixing.F:829-860`); the tracer diffusivity $\kappa_t$ replaces the
+constant `kv` for $T$ and $S$ (floor $10^{-6}$ m²/s, CROCO `nuws`). Details in
+[Turbulence and friction](turbulence-friction.md).
+
 ## In the code: order inside one step
 
 | σ mode (`step`, `:2084`) | ALE (`_step_ale`, `:1977`) |
@@ -317,11 +373,11 @@ Details on [Idealised benchmarks](../validation/idealised.md).
 
 ## Known limitations
 
-- One tracer ($T$), linear EOS, no salinity, no surface heat or freshwater flux in `SigmaBaroclinic`.
+- Salinity and the real freshwater flux exist (N2a); there is still no surface heat or shortwave flux in `SigmaBaroclinic` (N2b). The ALE mode has no turbulence closure (constant or none) and the constant closure has no convective adjustment.
 - The WENO/UP3 reconstructions assume uniform spacing (in x, y and in layer index).
 - FCT only in ALE with SSP-RK3 and WENO5; σ mode has no limiter (WENO5 can make small new extrema).
 - `kh` is forward Euler (no stability check) and Laplacian only (no isoneutral/GM).
-- No turbulence closure for tracers (`kv` constant).
+- Tracer diffusivity is the constant `kv`, except in σ with the stratified GLS (`gls_stratified`: $\kappa_t$).
 - `SigmaBaroclinic.rpe` assumes a flat bottom.
 - The lock exchange mixes 1.3–1.5× more than CROCO with the same tracer scheme (candidates on the momentum side).
 
@@ -341,6 +397,8 @@ Details on [Idealised benchmarks](../validation/idealised.md).
 - Klingbeil, K., Mohammadi-Aragh, M., Gräwe, U. & Burchard, H. (2014). Quantification of spurious dissipation and
     mixing – discrete variance decay in a finite-volume framework. *Ocean Modell.* 81, 49–64.
     doi:[10.1016/j.ocemod.2014.06.001](https://doi.org/10.1016/j.ocemod.2014.06.001)
+- Lorenz, M., Klingbeil, K. & Burchard, H. (2021). Impact of evaporation and precipitation on estuarine mixing.
+    *J. Phys. Oceanogr.* 51, 1319–1333. doi:[10.1175/jpo-d-20-0158.1](https://doi.org/10.1175/jpo-d-20-0158.1)
 - Leonard, B.P. (1979). A stable and accurate convective modelling procedure based on quadratic upstream
     interpolation. *Comput. Methods Appl. Mech. Eng.* 19, 59–98.
 - Marsaleix, P., Auclair, F. & Estournel, C. (2006). Considerations on open boundary conditions for regional and

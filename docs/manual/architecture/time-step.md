@@ -38,6 +38,29 @@ methods of `SigmaBaroclinic`, which remain as delegates to the components listed
 the first phase that departs from a reference run; `model._driver.keep_terms = True` keeps the named momentum
 terms of the last step (`last_terms`).
 
+## Since N2a (2026-10-29): salinity and the freshwater substep
+
+Phase 7 (`tracers`) now advances a **stack** `[T, (T²), S, (S²), tr…]` (`Driver._stack_layout`): T² is carried in σ
+always and in ALE with `mix_diagnostic` or `variance_budget`; S with `salinity`; S² with `variance_budget` or
+`tef_face`; the passive tracers last. S follows the path of T at every stage (advection, `kh`, `kv`, sponge, ALE
+remap). Inside the phase the order is:
+
+1. advection of the stack on the layer fluxes (SSP-RK3 with WENO5, FCT in ALE);
+2. **variance budget** (`variance_budget=True`): `VarianceBudget` records the numerical mixing of the advection,
+   $V^{1}(\langle c^2\rangle - c^2)/\Delta t$, from the advected stack, *before* the freshwater substep;
+3. **freshwater substep** (`apply_freshwater`, only with a surface flux $fw = P - E$): the volume of every layer
+   changes from $V_{\rm adv}$ to $V_{\rm fw}$; salt-like members are rescaled at fixed content
+   ($c_{\rm new} = c\,V_{\rm adv}/V_{\rm fw}$), T is unchanged (the water enters at the top-layer T). An
+   evaporation deficit larger than the top layer takes the rest from the layers below (counted in `n_limited`);
+4. `kh`, `kv` (implicit; with `gls_stratified` the tracer diffusivity is the GLS $\kappa_t$ instead of the constant),
+   boundary sponge; in ALE the regrid–remap of the stack.
+
+The free surface sees the same flux as a **volume source** in its continuity equation (phase 4), so the layer
+thicknesses, the tracer volumes $V_{\rm fw}$ and η agree to round-off. In the stratified GLS mode (phase 4 → 7) the
+buoyancy frequency $N^2$ comes from $\rho(T, S)$ of the current state. Optional `tef_face` and `tef_region` accumulate
+the total exchange flow of a transect from the step's effective face fluxes. See
+[Tracer transport](../theory/tracers.md#salinity-freshwater-and-the-variance-budget).
+
 ## The model object and the state
 
 A run is a loop over
