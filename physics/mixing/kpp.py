@@ -60,7 +60,7 @@ Diffusivities:
 Non-local transport
 -------------------
 A counter-gradient scalar flux (L94, eq. 21–22) is included for T and S
-in unstable conditions (b_flux > 0):
+in unstable conditions (cooling; the helpers take b_flux = −B_f > 0):
 
     γ_s = c_g × <w'θ'>_sfc / (w_s × h_bl)
 
@@ -171,7 +171,7 @@ def _velocity_scales(
     u_star : np.ndarray, shape (ny, nx) or scalar
         Friction velocity [m/s], u* = sqrt(|τ|/ρ₀).
     b_flux : np.ndarray, shape (ny, nx) or scalar
-        Surface buoyancy flux [m²/s³].  Positive → destabilising (warming).
+        Surface buoyancy flux [m²/s³].  Positive → destabilising (cooling; kpp_tendency passes −B_f).
     depth : np.ndarray (ny, nx) or float
         Depth(s) below surface [m] at which to evaluate the scales.
 
@@ -665,11 +665,20 @@ def kpp_tendency(
     # Use surface salinity S(k=0) as the reference salinity.
     wS_sfc = S_np[0] * E_P                      # (ny, nx)
 
-    # Surface buoyancy flux: b_f = g(α_T <w'T'> − β_S <w'S'>)   [m²/s³]
+    # Surface buoyancy flux: B_f = g(α_T <w'T'> − β_S <w'S'>)   [m²/s³]
+    # with the fluxes positive into the ocean, so B_f > 0 is a buoyancy gain
+    # (heating) = STABILISING forcing (L94 §2; MOM6/CVMix convention,
+    # cvmix_kpp.F90:865 lstable = surf_buoy > 0).
     # Use linear-EOS coefficients (appropriate for Phase 1).
     alpha_T = 2.0e-4   # K⁻¹  thermal expansion (Vallis 2006, §1.6)
     beta_S  = 7.4e-4   # PSU⁻¹ haline contraction
-    b_flux = G * (alpha_T * wT_sfc - beta_S * wS_sfc)   # (ny, nx)
+    B_f = G * (alpha_T * wT_sfc - beta_S * wS_sfc)   # (ny, nx), + = stabilising
+    # The helpers below (_velocity_scales, obl_depth, _blmix) take their
+    # ``b_flux`` argument as positive = DESTABILISING (ζ = −κ d b_flux/u*³,
+    # nonlocal term for b_flux > 0), so they receive −B_f.  Before N3 they
+    # received +B_f and treated heating as convection (sign fix, N3 task 6;
+    # docs/design/n2c_refs/kpp_mom6_cvmix.md §8 A1).
+    b_flux = -B_f
 
     # ---- Step 1: OBL depth -------------------------------------------------
     h_bl = obl_depth(rho, u_t, v_t, z_t, u_star, b_flux)   # (ny, nx)

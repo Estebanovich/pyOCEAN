@@ -24,7 +24,7 @@ Covers
   kpp_tendency        : shape and dims, zero tendency for uniform T/S/u/v,
                         column tracer conservation (no surface flux),
                         sign of mixing (smooth T profile → down-gradient flux),
-                        non-local warming of surface layer when Q_net > 0
+                        heating is stabilising (no nonlocal term), cooling is not
 """
 
 import numpy as np
@@ -486,26 +486,47 @@ class TestKppTendency:
         # Layer below should warm (positive tendency)
         assert np.all(dT[1] >= 0.0 - 1e-15), "Layer below warm surface should gain heat"
 
-    def test_surface_heating_produces_nonlocal_warming(self, hgrid, vgrid):
+    def test_old_kpp_heating_is_stabilising(self, hgrid, vgrid, monkeypatch):
         """
-        Downward heat flux (Q_net > 0 → wT_sfc > 0 → b_flux > 0) with
-        unstable b_flux → non-local γ > 0 → additional warming in surface layer.
+        Surface heating (Q_net > 0) is a buoyancy gain, i.e. stabilising forcing
+        (Large et al. 1994 §2: B_f > 0 stable; MOM6/CVMix ``lstable = surf_buoy > 0``,
+        cvmix_kpp.F90:865).  It must give neither the nonlocal term nor the
+        convective (unstable) branch of the velocity scales; cooling must give both.
+
+        This replaces ``test_surface_heating_produces_nonlocal_warming``, which
+        pinned the sign error of Phase 1 (heating treated as convective,
+        N3 spec item 4, kpp_mom6_cvmix.md §8 A1).  The internal helpers keep their
+        "positive = destabilising" argument; ``kpp_tendency`` must pass them
+        −B_f.
         """
+        import physics.mixing.kpp as kpp_mod
+
         st = ModelState.from_grids(hgrid, vgrid, T_init=15.0, S_init=35.0)
-        # Small stable stratification so mixing stays active
         T_np = st.T.values.copy()
         for k in range(NZ):
             T_np[k] = 15.0 - 0.1 * k
         st.T = xr.DataArray(T_np, dims=st.T.dims, coords=st.T.coords, attrs=st.T.attrs)
 
-        Q_strong = np.full((NY, NX), 500.0)   # 500 W/m² warming
-        tend = kpp_tendency(st, vgrid, Q_net=Q_strong)
-        dT = tend.T.values
-        # With non-local warming + surface stratification, surface dT/dt can be positive
-        # (non-local term redistributes heat downward in OBL, but surface layer net
-        #  flux from non-local term should contribute positively in at least some columns)
-        # This is a non-regression test: tendency should not be NaN or Inf.
-        assert np.all(np.isfinite(dT)), "Non-finite values in T tendency with surface heating"
+        seen = {}
+        original = kpp_mod._blmix
+
+        def spy(h_bl, K_m_int, K_s_int, z_f, dz, u_star, b_flux, wT_sfc, wS_sfc):
+            out = original(h_bl, K_m_int, K_s_int, z_f, dz, u_star, b_flux, wT_sfc, wS_sfc)
+            seen["b_flux"] = np.array(b_flux)
+            seen["gamma_T"] = out[2]
+            return out
+
+        monkeypatch.setattr(kpp_mod, "_blmix", spy)
+        tau = np.full((NY, NX), 0.05)
+
+        tend = kpp_tendency(st, vgrid, tau_x=tau, Q_net=np.full((NY, NX), 500.0))
+        assert np.all(np.isfinite(tend.T.values))
+        assert np.all(seen["b_flux"] < 0.0), "heating must reach the helpers as stable forcing"
+        assert np.all(seen["gamma_T"] == 0.0), "heating must not switch on the nonlocal term"
+
+        kpp_tendency(st, vgrid, tau_x=tau, Q_net=np.full((NY, NX), -500.0))
+        assert np.all(seen["b_flux"] > 0.0), "cooling must reach the helpers as unstable forcing"
+        assert np.any(seen["gamma_T"] != 0.0), "cooling must switch on the nonlocal term"
 
     def test_no_nan_with_random_state(self, hgrid, vgrid):
         """No NaN or Inf in output for a random but physically reasonable state."""
