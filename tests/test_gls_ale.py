@@ -222,6 +222,40 @@ def test_gls_thin_layers_5mm_to_2cm_no_spike(h_thin):
     assert a.gls.akv.max() > 1e-4                                     # turbulent, not at the floor
 
 
+def test_gls_regrid_minimum_layers_merged_at_the_floor():
+    """
+    N3 task 9c fix 1 (review I1): a shallow z* column (5 m, 50 levels of 1 m) has 45 bed layers collapsed to the
+    regrid minimum 1 mm, which come out at 1 mm + 3e-16 m (1.000000000000334 mm); the threshold sits at its 1 mm
+    floor (1 % of D/N = 1 mm).
+    A layer at the threshold is thin (MOM6 opens a cluster only for h > dz_massless, MOM_kappa_shear.F90:262), so
+    the stack is merged and ν equals (to 5 %) that of the column with only the 5 thick layers.
+    """
+    from core.components.closure import thin_layer_threshold
+    from core.vertical.regrid import zstar_column
+
+    n, depth = 50, 5.0
+    zw = np.empty(n + 1)
+    zstar_column(depth, 0.0, np.full(n, 1.0), 1e-3, zw)
+    h = np.diff(zw)
+    thick = h > 0.5
+    assert thick.sum() == 5 and (h[~thick] > 1e-3).all()             # round-off above the regrid minimum
+    assert thin_layer_threshold(h[:, None])[0] == pytest.approx(1e-3, rel=1e-6)
+    zc = np.cumsum(h) - 0.5 * h
+    u = 0.3 * np.tanh((zc - 2.5) / 1.0) + np.where(thick, 0.0, 0.01 * (-1) ** np.arange(n))
+    rho = 1025.0 - 0.02 * zc
+    a, b = _closure_column(5), _closure_column(n)
+    us2s, us2b = np.array([[1e-4]]), np.array([[2e-5]])
+    for _ in range(60):
+        a.update(u[thick, None, None], 0 * u[thick, None, None], h[thick, None, None], rho[thick, None, None],
+                 us2s, us2b)
+        b.update(u[:, None, None], 0 * u[:, None, None], h[:, None, None], rho[:, None, None], us2s, us2b)
+    # interfaces nb … n of the full column sit on the thick-only column (the merged stack adds its 45 mm and its
+    # velocities to the bed layer, so equal to a few %; unmerged, ν above the stack was 4e-4 against 0.17)
+    nb = n - 5
+    np.testing.assert_allclose(b.gls.akv[nb:, 0], a.gls.akv[:, 0], rtol=0.05)
+    assert a.gls.akv.max() > 1e-3
+
+
 def test_gls_active_layers_top_cluster():
     # N3 task 9c: which layers open a merged layer (k = 0 at the bed); threshold 4 cm, h_massless 1 mm
     from core.components.closure import active_layers, thin_layer_threshold

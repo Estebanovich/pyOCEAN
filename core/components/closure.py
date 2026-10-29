@@ -42,9 +42,10 @@ from physics.mixing.gls_merged import merged_columns
 from physics.mixing.kpp_cvmix import KPPParams, kpp_column
 
 STATE_PREFIX = "closure_"
-H_MASSLESS = 1e-3          # [m] ALE: floor of the GLS thin-layer threshold (HYCOM onemm, mxkprf.F90:1866-1878)
+H_MASSLESS = 1e-3          # [m] ALE: floor of pyOCEAN's GLS thin-layer threshold (the value of HYCOM's onemm)
 THIN_FRACTION = 0.01       # [-] ALE: thin = thinner than this fraction of the column's mean layer D/N (N3 task 9c)
-H_THIN_MAX = 0.1           # [m] ALE: cap of the threshold (HYCOM tencm, mxkprf.F90:1871-1875 without MASSLESS_1MM)
+H_THIN_MAX = 0.1           # [m] ALE: cap of the threshold (the value of HYCOM's tencm)
+THIN_RTOL = 1e-9           # [-] a layer within this relative tolerance of the threshold is thin (N3 task 9c fix 1)
 PRODUCTIONS = ("croco", "energy")
 
 
@@ -53,9 +54,16 @@ def thin_layer_threshold(h: np.ndarray, h_massless: float = H_MASSLESS, fraction
     """
     Thin-layer threshold of the ALE GLS column (N3 task 9c): a layer with h < h_thin is merged for the closure.
 
-        h_thin = min(h_max, max(h_massless, fraction · D/N)),   D = Σ_k h_k,
+        h_thin = min(h_max, max(h_massless, fraction · D/N)) · (1 + THIN_RTOL),   D = Σ_k h_k,
 
-    with the defaults 1 mm ≤ 1 % of the mean layer thickness ≤ 10 cm.
+    with the defaults 1 mm ≤ 1 % of the mean layer thickness ≤ 10 cm.  The rule is pyOCEAN's own construction; the
+    1 % is a judgement, not a calibration.  A layer is thick only for h ≥ h_thin, so a layer *at* the threshold is
+    thin, as in MOM6 (a cluster opens only for ``h_2d(i,k) > dz_massless``, MOM_kappa_shear.F90:262-263) and HYCOM
+    (``dpmm(k).gt.onemm``, mxkprf.F90:1871-1872).  The relative tolerance THIN_RTOL makes this hold under round-off:
+    layers collapsed to the regrid minimum 1 mm come out at 1 mm ± a few 1e-16 m (a shallow z* column of 50 levels
+    at D = 5 m: 1.000000000000334 mm), and where the threshold sits at its 1 mm floor (D/N ≤ 10 cm) the last bit of
+    the bed depth used to decide whether the collapsed stack was merged (N3 task 9c review I1:
+    ν 100× too small above an unmerged stack).  Applied here, it reaches the kernel and the oracle alike.
 
     h : (N, …) layer thicknesses [m]; returns h_thin (…) [m].
 
@@ -68,19 +76,22 @@ def thin_layer_threshold(h: np.ndarray, h_massless: float = H_MASSLESS, fraction
       reaches in one step, times 0.1.  With pyOCEAN's κ_t floor 1e-6 m² s⁻¹ that is 0.77 mm at Lorenz's Δt ≈ 60 s
       and 2.4 mm at DOME's 600 s — below the 5 mm–2 cm layers that spike (task-5 review probe: 25× ν, 100× k), so
       the Δt-aware form does not solve the problem it is wanted for here.
-    * HYCOM 2.3 (``mxkprf.F90``) clips thicknesses with ``dpmm(k) = max(onemm, dp(i,j,k,m))`` and takes the lowest
-      "substantial" layer as the deepest one with ``dpmm(k).gt.onemm`` when compiled with MASSLESS_1MM, else
-      ``dpmm(k).gt.tencm`` (l. 1866-1878; onemm = 1 mm, tencm = 10 cm, mod_cb_arrays.F90:847-849): 10 cm by default.
+    * HYCOM 2.3 (``mxkprf.F90``, ``mxmyaij``) does not merge layers: it clips thicknesses with
+      ``dpmm(k) = max(onemm, dp(i,j,k,m))`` (thin layers stay in the column with Δz = 1 mm) and drops only the bed
+      layers below the deepest "substantial" one, ``dpmm(k).gt.onemm`` with MASSLESS_1MM (on in the shipped build,
+      Make_global.csh:100), else ``dpmm(k).gt.tencm`` (l. 1866-1878; onemm = 1 mm, tencm = 10 cm,
+      mod_cb_arrays.F90:847-849).  pyOCEAN borrows only the two numbers as floor and cap.
     * An absolute threshold above a few mm fails in shallow σ-like columns: Lorenz ALE-σ has 60 layers of D/N ≥
       7.5 cm, so a 10 cm threshold would merge every layer (and freeze the column).  The relative form never merges
-      a uniform column (D/N ≥ fraction · D/N), scales with the vertical resolution, and keeps HYCOM's 1 mm and 10 cm
-      as floor and cap: Lorenz ALE-σ (D ≥ 4.5 m, N = 60) 1 mm, the CROCO diurnal column (150 m, N = 150) 1 cm, DOME
-      10 km hybrid (600–3600 m, N = 25) 10 cm.  A collapsed hybrid layer sits at the regrid's h_min = 1 mm
-      (``core.vertical.regrid``), so a threshold of exactly 1 mm left such layers (1.000000000005 mm) unmerged.
+      a uniform column (D/N ≥ fraction · D/N), scales with the vertical resolution, and is clamped between 1 mm and
+      10 cm (the values of HYCOM's onemm and tencm): Lorenz ALE-σ (D ≥ 4.5 m, N = 60) 1 mm, the CROCO diurnal
+      column (150 m, N = 150) 1 cm, DOME 10 km hybrid (600–3600 m, N = 25) 10 cm.  A collapsed hybrid layer sits
+      at the regrid's h_min = 1 mm (``core.vertical.regrid``), so a threshold of exactly 1 mm compared without
+      tolerance left such layers (1.000000000005 mm) unmerged.
     """
     h = np.asarray(h, float)
     d_mean = h.sum(axis=0) / h.shape[0]
-    return np.minimum(h_max, np.maximum(h_massless, fraction * d_mean))
+    return np.minimum(h_max, np.maximum(h_massless, fraction * d_mean)) * (1.0 + THIN_RTOL)
 
 
 def active_layers(dz: np.ndarray, h_thin: np.ndarray, h_massless: float = H_MASSLESS) -> np.ndarray:
@@ -223,10 +234,12 @@ class GLSClosure(Closure):
       interpolation in the fractional height within the merged layer (MOM_kappa_shear.F90:355-363, ``kf``), so an
       interface between a vanished layer and its neighbour takes the value of the merged interface it sits on.  A
       vanished layer can therefore not create an N² or shear spike (its Δz never enters), and the bed distance of
-      the log-layer ψ flux is the first layer with mass.  The threshold is per column (N3 task 9c,
-      ``thin_layer_threshold``): h_thin = min(10 cm, max(1 mm, 1 % of D/N)) — HYCOM's onemm and tencm as floor and
-      cap (mxkprf.F90:1866-1878), relative in between because MOM6's 0.1 √(κ₀ Δt) (MOM_kappa_shear.F90:220-221) is
-      < 3 mm in pyOCEAN's configurations while stale-velocity spikes reach 2 cm layers (task-5 review: 25× ν).  A
+      the log-layer ψ flux is the first layer with mass.  The threshold is per column and pyOCEAN's own rule (N3
+      task 9c, ``thin_layer_threshold``): h_thin = min(10 cm, max(1 mm, 1 % of D/N)), a layer at the threshold
+      counting as thin (relative tolerance, fix 1).  The 1 mm and 10 cm are the values of HYCOM's onemm and tencm,
+      which HYCOM uses as a thickness clip and a bed-truncation level (mxkprf.F90:1866-1878), not as a merge
+      threshold; the relative part is used because MOM6's 0.1 √(κ₀ Δt) (MOM_kappa_shear.F90:220-221) is < 3 mm in
+      pyOCEAN's configurations while stale-velocity spikes reach 2 cm layers (task-5 review: 25× ν).  A
       column with one merged layer has no interior interface: k, ε, ν, κ_t go to their floors.  Only the columns
       with thin layers are merged (N3 task 10a), in the compiled kernel ``physics.mixing.gls_merged.merged_columns``
       (one column per thread task; the NumPy form ``_update_ale_numpy`` is its oracle, rtol 1e-13); every other

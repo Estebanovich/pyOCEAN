@@ -128,9 +128,9 @@ max |ALE − σ| / max |σ| en toda la corrida:
   en el ciclo diurno 0.72 m (8 días) con el umbral de fusión de 1 mm de la tarea 5; la mayor diferencia, −5.1 m a las
   08 h del día 8, cuando la convección nocturna se apaga: había una capa de 1.0 mm (= `h_min` del regrid, no fusionada
   porque la regla es h < 1 mm) justo en la base de la capa de mezcla y ν cayó a 1.9e-4 bajo ella (σ: 9.3e-3).
-  **Tarea 9c** (umbral por columna h_thin = min(10 cm, max(1 mm, 1 % de D/N)) = 1 cm aquí, y las capas delgadas de
-  superficie como capa fusionada propia, como MOM6; `core/components/closure.py`, `thin_layer_threshold`,
-  `active_layers`): RMS 0.48 m; el día 8 a las 08 h D_m = 25.8 m (σ 26.2, antes 21.1); la mayor diferencia es ahora
+  **Tarea 9c** (umbral por columna propio de pyOCEAN, h_thin = min(10 cm, max(1 mm, 1 % de D/N)) = 1 cm aquí, y
+  las capas delgadas de superficie como capa fusionada propia, como MOM6; `core/components/closure.py`,
+  `thin_layer_threshold`, `active_layers`): RMS 0.48 m; el día 8 a las 08 h D_m = 25.8 m (σ 26.2, antes 21.1); la mayor diferencia es ahora
   −2.85 m a las 08 h del día 4 (17.2 contra 20.0 m), igual que antes de la tarea 9c: dos capas de 1 mm en la base de
   la capa de mezcla, ya fusionadas — es la malla distinta (clase c), no el umbral.
 - La conservación de ∫k en el remapeo está probada a 1e-12 en `tests/test_gls_ale.py`; aquí no hay un diagnóstico
@@ -196,10 +196,14 @@ celdas de la advección periódica (31 × 31 celdas para una columna 5 × 5).
 1. ✅ **Arrastre log con la rapidez completa** √(u² + v̄²) en cada cara (como CROCO y MOM6) en σ y ALE: hecho en la
    tarea 9b (`physics.bottom_friction.cross_velocity_at_faces`); el ángulo de la capa de Ekman de fondo pasó de 62.8° a
    76.0° (CROCO 75.8°). Cambia Lorenz/DOME/regional con rotación y z0. (clase a)
-2. ✅ **Umbral de fusión de capas delgadas de la GLS**: hecho en la tarea 9c. h_thin = min(10 cm, max(1 mm, 1 % de
-   D/N)) por columna (piso y tope = onemm y tencm de HYCOM, mxkprf.F90:1866-1878; la forma 0.1 √(κ₀ Δt) de MOM6,
-   MOM_kappa_shear.F90:220-221, da < 3 mm en Lorenz y DOME) y las capas delgadas de superficie como capa fusionada
-   propia (MOM_kappa_shear.F90:256-265). Ciclo diurno híbrido: RMS de D_m contra σ 0.72 → 0.48 m. (clase a)
+2. ✅ **Umbral de fusión de capas delgadas de la GLS**: hecho en la tarea 9c, con una regla propia de pyOCEAN:
+   h_thin = min(10 cm, max(1 mm, 1 % de D/N)) por columna; una capa en el umbral cuenta como delgada (tolerancia
+   relativa 1e-9, como el `>` de MOM6 y HYCOM: las capas colapsadas al mínimo del regrid salen a 1 mm ± redondeo).
+   El 1 mm y los 10 cm son solo los valores de onemm y tencm de HYCOM, que allí son un recorte de espesor y el nivel
+   de truncamiento del fondo (mxkprf.F90:1866-1878), no un umbral de fusión; el 1 % es un juicio, no una
+   calibración. La forma 0.1 √(κ₀ Δt) de MOM6 (MOM_kappa_shear.F90:220-221) da < 3 mm en Lorenz y DOME. Las capas
+   delgadas de superficie forman su propia capa fusionada (MOM_kappa_shear.F90:256-265). Ciclo diurno híbrido: RMS
+   de D_m contra σ 0.72 → 0.48 m (igual con la tolerancia del arreglo 1). (clase a)
 3. **Costo de las columnas periódicas:** 10-25 × CROCO; un camino sin gradientes horizontales (o un halo mínimo) para
    columnas haría baratas las calibraciones y las columnas de MOM6 (tarea 9).
 4. **Fuerza de cuerpo y flujo de calor de fondo como entradas del paso** (hoy en el arnés): las necesitan las columnas y
