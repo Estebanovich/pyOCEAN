@@ -1,5 +1,5 @@
 """
-CROCO single-column cases in pyOCEAN (N3 task 8; validation/turbulence_columns/, spec
+CROCO single-column cases in pyOCEAN (N3 tasks 8 and 9; validation/turbulence_columns/, spec
 docs/superpowers/specs/2026-10-29-n3-turbulence-closures-design.md criterion 1).
 
 * the seven case definitions (grid, forcing, initial N²) equal CROCO's (docs/design/n2c_refs/croco_column_cases.md,
@@ -132,3 +132,57 @@ def test_kato_phillips_price_law_short():
     dm = mixed_depth(zw, np.asarray(st.closure["tke"]).reshape(101, -1)[:, 0])
     price = price_depth(6 * 3600.0)                                   # 15.43 m
     assert abs(dm / price - 1.0) < 0.10, (dm, price)
+
+
+# ------------------------------------------------------------------ MOM6/CVMix SCM columns (N3 task 9, criterion 2)
+# case: (CONST_WIND_TAUX [Pa], GUST_CONST [Pa], SENSIBLE_HEAT_FLUX [W m⁻²], SCM_L2_DTDZ [K m⁻¹]) — the MOM_override
+# of MOM6-examples/ocean_only/CVmix_SCM_tests/<case>/KPP (WIND_CONFIG/BUOY_CONFIG "zero" = 0); common_KPP/MOM_input:
+# NK = 400, MAXIMUM_DEPTH = 400, NIGLOBAL = NJGLOBAL = 2, DT = 1200, DAYMAX = 5, F_0 = 1e-4, G_EARTH = 9.80616,
+# RHO_0 = 1000, DRHO_DT = −0.255, C_P = 3992.10322329649, SCM_L2_TEMP = 15, INTERP_TYPE = "cubic"
+MOM_OVERRIDE = {"wind_only": (0.1, 0.0, 0.0, 0.01), "cooling_only": (0.0, 0.0, -100.0, 0.01),
+                "mech_only": (0.0, 0.05, 0.0, 0.01), "skin_warming_wind": (0.1, 0.0, 100.0, 0.0)}
+
+
+@pytest.mark.parametrize("name", list(MOM_OVERRIDE))
+def test_mom6_scm_cases_match_mom_override(name):
+    from validation.turbulence_columns import mom6_scm as M
+    taux, gust, q, dtdz = MOM_OVERRIDE[name]
+    c = M.CASES[name]
+    assert (c.taux, c.gust, c.q, c.dtdz) == (taux, gust, q, dtdz)
+    assert (M.NK, M.DEPTH, M.NXY, M.DT, M.DAYS, M.F0, M.G, M.RHO0, M.DRHO_DT, M.CP) == (
+        400, 400.0, 2, 1200.0, 5.0, 1e-4, 9.80616, 1000.0, -0.255, 3992.10322329649)
+    assert c.n_steps == 360
+    np.testing.assert_allclose(c.ustar, np.sqrt((taux + gust) / 1000.0), rtol=1e-15)
+    # B_f = −(g/ρ₀) dρ/dT Q/(ρ₀ c_p): ∓6.2638e-8 m² s⁻³ at ∓100 W m⁻² (MOM6 KPP_buoyFlux of the runs)
+    np.testing.assert_allclose(c.bflux, 9.80616 / 1000.0 * 0.255 * q / (1000.0 * 3992.10322329649), rtol=1e-14)
+    for coord in M.COORDS:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            m, st, tx, ty, heat = M.build(name, coord)
+        assert m.H.shape == (2, 2) and np.all(m.H == 400.0) and m.periodic.x and m.periodic.y
+        assert m.core.n_layers == 400 and m.dt == 1200.0 and m.rho0 == 1000.0 and m.cp == 3992.10322329649
+        assert m.core.g == 9.80616 and m.t_coef == 0.255 and m.kv == 0.0 and m.core.z0 is None
+        assert m._closure.params.interp_type == "cubic" and m._closure.params.ri_crit == 0.3
+        np.testing.assert_allclose(m.hg["f_q"].values, 1e-4, rtol=1e-12, atol=0)
+        h = st.h if st.h is not None else m.layer_volumes(st.eta) / m.area[None]
+        np.testing.assert_allclose(h, 1.0, rtol=1e-12)
+        zc = -400.0 + np.arange(400) + 0.5
+        np.testing.assert_allclose(st.T[:, 0, 0], np.maximum(4.0, 15.0 + dtdz * zc), rtol=0, atol=1e-12)
+        np.testing.assert_allclose(tx, taux) and np.testing.assert_allclose(ty, 0.0)
+        assert (heat is None) == (q == 0.0) and (heat is None or np.all(heat["Q_ns"] == q))
+        if gust:                                                      # u*² = gust/ρ₀ reaches the KPP update
+            st = m.step(st, tx, ty, heat=heat)
+            M.check_gust(m, c)
+            assert np.all(st.u == 0.0) and np.all(st.v == 0.0)       # the gust carries no momentum
+
+
+def test_mld_003_definition():
+    # MOM6 diagnoseMLDbyDensityDifference: Δρ = 0.255 (T_s − T) between centres, 0.03 kg m⁻³ interpolated
+    from validation.turbulence_columns.mom6_scm import mld_003
+    zw = -np.arange(11.0)[::-1]                                       # bed first, 1 m layers
+    Ts = np.array([15.0, 15.0, 15.0, 14.9, 14.8, 14.0, 14.0, 14.0, 14.0, 14.0])
+    T = Ts[::-1]                                                      # bed first
+    # Δρ at the centres 0.5, 1.5, …: 0, 0, 0, 0.0255, 0.051 → crossing between 3.5 and 4.5 m
+    a = (0.03 - 0.0255) / 0.0255
+    assert mld_003(zw, T) == pytest.approx(3.5 + a)
+    assert mld_003(zw, np.full(10, 15.0)) == pytest.approx(9.5)      # never reached: the deepest centre

@@ -201,8 +201,80 @@ celdas de la advección periódica (31 × 31 celdas para una columna 5 × 5).
 5. **Diagnóstico de mezcla numérica de k y ε en el remapeo** (anti-objetivo 3): no existe todavía; aquí solo la cota
    indirecta de D_m.
 
+## Columnas MOM6/CVMix (KPP, tarea 9; criterio 2 del spec)
+
+Los cuatro casos KPP de `MOM6-examples/ocean_only/CVmix_SCM_tests` con la configuración exacta de MOM6
+(`common_KPP/MOM_input` + el `KPP/MOM_override` de cada caso; decisión 9 del spec): 400 capas de 1 m, 2 × 2 reentrante,
+Δt 1200 s, 5 días, f = 1e-4 s⁻¹, g = 9.80616, ρ₀ = 1000, EOS lineal dρ/dT = −0.255 (S = 35 uniforme y sin flujo de sal:
+pyOCEAN corre sin salinidad, la densidad que ve KPP es la misma), T = max(4, 15 + 0.01 z) (isoterma 15 °C en
+`skin_warming_wind`: `#override SCM_L2_DTDZ = 0.0`, confirmado en su `MOM_parameter_doc.all`), KPP con los valores por
+defecto de CVMix e `INTERP_TYPE = "cubic"`, sin mezcla interior (KD = KV = 0), sin arrastre de fondo, sin onda corta.
+**c_p = 3992.10322329649 J kg⁻¹ K⁻¹**, el `C_P` de este MOM_input (no el 3985 de CROCO ni el valor por defecto de MOM6):
+así Q → F_T → B_f son los mismos números (B_f = ∓6.2638e-8 m² s⁻³ a ∓100 W m⁻², igual a `KPP_buoyFlux` de MOM6).
+pyOCEAN en ALE z* (la coordenada de MOM6) y en σ (los mismos niveles en una columna plana). Nada se ajustó.
+
+```bash
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 MKL_NUM_THREADS=1
+validation/turbulence_columns/mom6/run_mom6.sh wind_only                  # ≈ 8 s por caso, 1 proceso
+python -m validation.turbulence_columns.mom6_scm run --all                # 8 corridas, ≈ 3 min
+python -m validation.turbulence_columns.mom6_scm compare [--series]
+```
+
+Salidas: `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/turbulence_columns/{mom6/<caso>/,pyocean_mom6/}` (nunca en el repo).
+MOM6: `~/pyOCEAN_refs/MOM6/.testing/build/symmetric/MOM6` (git 0e9a561, CVMix fce4221), archivos de MOM6-examples sin
+cambios (copiados al directorio de corrida).
+
+**u\* con ráfaga (`mech_only`).** MOM6 usa u\* = ((|τ| + GUST_CONST)/ρ₀)^½ (`solo_driver/MOM_surface_forcing.F90:459`);
+la ráfaga entra solo en u\*, no en el momento. `step()` de pyOCEAN no tiene ráfaga: el arnés suma gust/ρ₀ al u\*² que el
+driver pasa a `KPPClosure.update` (`_install_gust`, solo esa instancia; `check_gust` falla si no llegó), como la fuerza de
+cuerpo de la tarea 8. El modelo no cambia.
+
+**Definiciones (iguales para los dos modelos).**
+- h_OBL: la profundidad de la capa límite de KPP de cada paso (MOM6 `KPP_OBLdepth`, pyOCEAN `KPPClosure.obl_depth`),
+  promediada en las ventanas de 2 h como hace el `diag_table` de MOM6 (`time_avg = .true.`, 6 pasos).
+- MLD₀₀₃: el algoritmo de MOM6 `diagnoseMLDbyDensityDifference` (`MOM_diagnose_MLD.F90:34-247`, `HREF_FOR_MLD = 0`):
+  profundidad, interpolada linealmente entre centros de capa, donde ρ − ρ(capa superior) llega a 0.03 kg m⁻³; el centro
+  más profundo si no llega. Se calcula con `mld_003` sobre las fotos de T cada 2 h de ambos modelos (MOM6 `prog.nc`, con
+  `MOM_IC.nc` en t = 0); entre paréntesis el `MLD_003` propio de MOM6 (promedio de ventana), que `mld_003` reproduce.
+- "Δ final" = día 5 (última ventana); "máx |Δ|" = máximo sobre las salidas de los días 1-5.
+
+| caso | coord | h_OBL MOM6 [m] | h_OBL pyOCEAN | Δ final | máx \|Δ\| d 1-5 | MLD MOM6 (diag) [m] | MLD pyOCEAN | Δ final | máx \|Δ\| d 1-5 | SST MOM6 / py [°C] | u sup. MOM6 / py [m/s] | ±5 % |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| wind_only | z\* y σ | 27.81 | 27.81 | −0.0 % | 0.3 % | 28.33 (28.32) | 28.33 | −0.0 % | 0.2 % | 14.861 / 14.861 | 0.0505 / 0.0510 | **pasa** |
+| cooling_only | z\* y σ | 50.70 | 50.70 | −0.0 % | 0.0 % | 58.96 (58.79) | 58.96 | +0.0 % | 0.0 % | 14.528 / 14.528 | 0 / 0 | **pasa** |
+| mech_only | z\* y σ | 9.85 | 9.85 | +0.0 % | 0.0 % | 16.79 (16.78) | 16.79 | −0.0 % | 0.0 % | 14.950 / 14.950 | 0 / 0 | **pasa** |
+| skin_warming_wind | z\* y σ | 26.69 | 26.69 | −0.0 % | 0.0 % | 26.69 (26.69) | 26.69 | +0.0 % | 0.3 % | 15.416 / 15.416 | 0.0685 / 0.0689 | (se reporta) |
+
+Perfiles completos, cada 2 h durante 5 días: `cooling_only` y `mech_only` max |T_py − T_MOM6| = 4.8e-7 °C, el redondeo
+del `float32` de `prog.nc` (packing 2): **igual a MOM6 a la precisión de la salida**. `wind_only`: max |ΔT| 6.8e-3 °C,
+max |Δu| 1.7e-3 m/s de 0.13 (1.3 %), |Δv| 2.0e-3; `skin_warming_wind`: |ΔT| 9.2e-5 °C, |Δu| 7.6e-4 de 0.12. h_OBL y
+MLD a ≤ 0.3 % en todo momento después del día 1. σ = z\* a 4e-12 (T), 2e-12 m/s (u), 8e-9 m (h_OBL). La columna 2 × 2 se
+queda 1-D (dispersión 0).
+
+**Criterio 2: cumplido** en `wind_only`, `cooling_only` y `mech_only`, en z\* y en σ (|Δ| ≤ 0.3 % en h_OBL y MLD, a 5 días
+y en cualquier salida de los días 1-5). `skin_warming_wind` igual (0.0 % final, 0.3 % máx).
+
+| diferencia | clase | evidencia |
+|---|---|---|
+| Casos con viento: u, v de la oscilación inercial ~1.3 % (wind_only), ~0.6 % (skin_warming_wind); T ≤ 6.8e-3 °C | **(c)** probable, no aislado | Solo aparece donde hay momento (los casos sin viento son iguales a la precisión de salida, así que KPP, el flujo de calor, la NLT y la difusión implícita coinciden). El esquema temporal del momento difiere: MOM6 `SPLIT = False` (dinámica no partida, predictor–corrector) contra AB3 + viscosidad implícita de pyOCEAN, con fΔt = 0.12. No se aisló con una oscilación inercial sin viscosidad. El efecto en h_OBL y MLD es ≤ 0.3 %. |
+| Primera ventana de `skin_warming_wind`: h_OBL = 100.8 m (MOM6) | igual en pyOCEAN | Columna isoterma en reposo: Ri_b = 0 en toda la columna, h = fondo (399.5 m) en el primer paso, como CVMix. |
+
+**Qué debe mejorar pyOCEAN (de esta tarea).**
+1. **u\* con ráfaga como entrada del paso** (`GUST_CONST`; hoy en el arnés): la necesitan KPP y cualquier forzamiento
+   con viento débil (u\* = 0 apaga la mezcla mecánica).
+2. **Diagnósticos de KPP en el registro de variables** (`KPP_OBLdepth`, MLD₀₀₃, Ri_b, V_t², w_s) con promedio de ventana
+   como MOM6: hoy el arnés lee `KPPClosure.obl_depth` cada paso.
+3. **Costo de la columna:** 38-79 ms/paso (400 capas, 2 × 2 con halo periódico) contra ≈ 16 ms/paso de MOM6 (5.8-6.4 s por
+   360 pasos, un proceso); KPP es NumPy (decisión de la tarea 7).
+4. Aislar la diferencia de la oscilación inercial (AB3 contra el predictor–corrector de MOM6) con una prueba sin mezcla.
+
+Tiempos de reloj (5 hilos Numba): wind_only z\* 28.4 s (79 ms/paso), σ 23.5 s (65); cooling_only 17.5 / 13.9 s;
+mech_only 17.0 / 13.6 s; skin_warming_wind 28.0 / 23.4 s. MOM6: 5.8-6.4 s de "Total runtime" por caso (8-9 s de reloj
+con el arranque de MPI).
+
 ## Archivos
 
 `cases.py` (definición de los casos y `build`), `run_pyocean.py` (corridas, fotos horarias), `compare.py` (métricas y
-tablas), `croco/build_croco.sh`, `croco/run_croco.sh`; test `tests/test_turbulence_columns.py` (casos = CROCO, fuerza
-de cuerpo, definición de D_m, Kato–Phillips 6 h a ±10 % de Price).
+tablas), `croco/build_croco.sh`, `croco/run_croco.sh`; `mom6_scm.py` (casos MOM6/CVMix, corridas, MLD₀₀₃,
+comparación), `mom6/run_mom6.sh`; test `tests/test_turbulence_columns.py` (casos = CROCO, fuerza
+de cuerpo, definición de D_m, Kato–Phillips 6 h a ±10 % de Price; casos MOM6 = MOM_override, definición de MLD₀₀₃).
