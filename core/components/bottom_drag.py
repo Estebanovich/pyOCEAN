@@ -8,6 +8,27 @@ min(dh, bbl_thick)).  The rates enter the implicit vertical viscosity as per-lay
 
 The σ law-of-the-wall drag (C_d(z₀) on the bed layer, Soulsby 1997) is applied inside the free-surface wrapper
 (``SigmaWetDry.column_step``) in N1.  Moved unchanged from ``SigmaBaroclinic._bed_drag_rates``.
+
+``LogLawBedDrag`` (ALE with ``z0``, N3 task 4): the first-layer law of the wall of σ (``first_layer_cd``,
+CROCO / Soulsby 1997 §3) on a bed layer that cannot vanish.  Its thickness is
+
+    d_b = max( h_b , min(hbbl, D_f) ),
+
+h_b the thickness of the lowest face layer with mass (h > ``h_neglect``), D_f the face column; the drag acts on the
+thickness-weighted mean velocity of the bottom d_b metres, weights min(h_k, d_b − Σ_{j<k} h_j)⁺ / d_b with the
+vanished layers skipped, as MOM6 averages the velocity of the bottom HBBL for its quadratic drag
+(MOM_set_viscosity.F90:651-685, MOM6 0e9a561: ``hweight = MIN(Hbbl − htot_vel, h_at_vel)``, layers thinner than
+1.5 Angstrom skipped), and C_d = [κ / ln(d_b / 2 z₀)]² (``first_layer_cd(d_b)``).  So
+
+* a bed layer with mass at least ``hbbl`` thick carries the whole stress with C_d(h_b): exactly σ's first-layer
+  law (``test_ale_loglaw_matches_sigma_column``);
+* a thin or vanished bed layer (z* under a shallow column, a thin hybrid bed layer) does not set C_d alone:
+  C_d ≤ C_d(hbbl) and the stress is spread over the layers of the bottom hbbl metres (as ``QuadraticBedDrag``);
+* d_b is continuous in h_b (at h_b = hbbl both branches give the bed layer alone).
+
+The stress is linearised as in σ, r = C_d |u_b*| with u_b* the bbl mean of u + Δt G (the velocity the implicit
+solve starts from; σ: ``SigmaWetDry.column_step``), and spread as per-layer Rayleigh rates r_k = r w_k.  Like σ it
+uses the speed of the face's own component only.
 """
 from __future__ import annotations
 
@@ -15,6 +36,7 @@ import numpy as np
 
 from core.model.contract import BuildContext, Issue, Role
 from core.model.periodic import NONE
+from physics.bottom_friction import first_layer_cd
 
 
 class QuadraticBedDrag:
@@ -51,6 +73,74 @@ class QuadraticBedDrag:
             u_at_v[0, :] = u_at_v[-1, :] = 0.5 * (uc[-1, :] + uc[0, :])
         bg2 = self.drag_bg_vel**2
         return self.cd * np.sqrt(ub**2 + v_at_u**2 + bg2), self.cd * np.sqrt(vb**2 + u_at_v**2 + bg2), fu, fv
+
+    def check(self, ctx: BuildContext) -> list[Issue]:
+        return []
+
+    def state_fields(self) -> dict[str, np.ndarray]:
+        return {}
+
+
+def bed_ustar2(tau_u: np.ndarray, tau_v: np.ndarray) -> np.ndarray:
+    """
+    u*²_b = |τ_b|/ρ₀ (ny, nx) [m² s⁻²] at the cell centres from the kinematic bed stress at u-faces (ny, nx+1) and
+    v-faces (ny+1, nx), each averaged from its two faces, as ``SigmaWetDry.closure_forcing`` (CROCO gls_mixing.F).
+    With periodic axes the wrap faces are stored twice and equal, so cells 0 and n−1 see the shared face.
+    """
+    tx = 0.5 * (tau_u[:, :-1] + tau_u[:, 1:])
+    ty = 0.5 * (tau_v[:-1, :] + tau_v[1:, :])
+    return np.hypot(tx, ty)
+
+
+class LogLawBedDrag:
+    """
+    Law-of-the-wall bed drag of the ALE mode (N3 task 4; rule in the module docstring).
+
+    z0 : bed roughness length [m]
+    hbbl : bottom boundary-layer thickness of the minimum bed layer [m] (the ``hbbl`` of the quadratic drag)
+    cd_max : upper bound of C_d (``SigmaWetDry.cd_max``, CROCO Cdb_max)
+    h_neglect : thinner face layers are vanished: no weight, not the bed layer [m] (``core.vertical.ale.DZ_FLOOR``)
+    """
+    name = "loglaw_bed_drag"
+    role = Role.BOTTOM_DRAG
+    reads = ("u", "v", "h")
+    writes = ()
+    per = NONE                       # no horizontal stencil: each face uses its own component
+
+    def __init__(self, z0: float, hbbl: float, cd_max: float = 0.1, h_neglect: float = 1e-6) -> None:
+        self.z0, self.hbbl, self.cd_max, self.h_neglect = float(z0), float(hbbl), float(cd_max), float(h_neglect)
+
+    def bed_layer(self, h: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        (d_b, w, C_d) of face columns h (N, ...) [m], k = 0 at the bed: the bed-layer thickness d_b (...) [m], the
+        weights w (N, ...) of the bottom d_b metres (Σ_k w_k = 1; a face without water: w_0 = 1) and C_d(d_b) [–].
+        """
+        hm = np.where(h > self.h_neglect, h, 0.0)                     # vanished layers skipped (MOM6 Angstrom)
+        has = hm > 0
+        kb = np.argmax(has, axis=0)                                   # lowest layer with mass
+        hb = np.take_along_axis(hm, kb[None], axis=0)[0]              # 0 on a face without water
+        db = np.maximum(hb, np.minimum(self.hbbl, hm.sum(axis=0)))
+        below = np.concatenate([np.zeros((1,) + hm.shape[1:]), np.cumsum(hm, axis=0)[:-1]])
+        w = np.clip(np.minimum(hm, db - below), 0.0, None)
+        wet = db > 0
+        w = np.where(wet, w / np.where(wet, db, 1.0), 0.0)
+        w[0] = np.where(wet, w[0], 1.0)
+        cd = first_layer_cd(np.where(wet, db, 0.0), self.z0, cd_max=self.cd_max)   # dry: cd_max (no water)
+        return db, w, cd
+
+    def rates(self, uu: np.ndarray, vv: np.ndarray, hu: np.ndarray, hv: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Per-layer linear bed rates r_k = C_d |u_b| w_k at u- and v-faces (N, ...) [m s⁻¹] for the implicit
+        vertical viscosity (``SigmaWetDry.column_step`` ``r_bed``), with u_b = Σ_k w_k uu_k the bbl mean of the
+        face's own component.  uu, vv : velocities the implicit solve starts from (u + Δt G) [m s⁻¹]; hu, hv : face
+        layer thicknesses (the mean, clipped face column of ``face_fractions``) [m].
+        """
+        out = []
+        for c, h in ((uu, hu), (vv, hv)):
+            _, w, cd = self.bed_layer(h)
+            ub = np.nan_to_num((w * c).sum(axis=0))
+            out.append((cd * np.abs(ub))[None] * w)
+        return out[0], out[1]
 
     def check(self, ctx: BuildContext) -> list[Issue]:
         return []

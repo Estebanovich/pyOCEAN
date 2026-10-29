@@ -104,7 +104,7 @@ from core.components.geometry import LayerGeometry
 from core.components.pgf import PressureGradient
 from core.components.momentum import Momentum, sum_terms
 from core.components.open_boundary import CONFIG as _OB_CONFIG, OpenBoundary
-from core.components.bottom_drag import QuadraticBedDrag
+from core.components.bottom_drag import LogLawBedDrag, QuadraticBedDrag
 from core.components.closure import make_closure
 from core.components.free_surface import FreeSurfaceVerticalViscosity
 from core.components.layer_transport import ALELayerTransport, SigmaLayerTransport
@@ -923,7 +923,10 @@ class SigmaBaroclinic:
 
     Parameters
     ----------
-    h_grid, bathy, dt, n_layers, z0, closure, nu_const, theta, d_min, g : as ``SigmaWetDry``
+    h_grid, bathy, dt, n_layers, z0, closure, nu_const, theta, d_min, g : as ``SigmaWetDry``; in ALE ``z0`` is the
+        law-of-the-wall drag on a bed layer of thickness max(h_b, min(hbbl, D)), h_b the lowest face layer with
+        mass, spread over the bottom metres it covers (N3 task 4, ``core.components.bottom_drag.LogLawBedDrag``;
+        MOM6 HBBL averaging); exclusive with ``bottom_drag='quadratic'``
     rho0 : reference density [kg m⁻³];  t_coef : α [kg m⁻³ °C⁻¹];  t_ref : T₀ [°C]
     salinity : carry salinity S [g kg⁻¹] in the state (N2a, spec 2026-10-28-n2a-salinity-freshwater); the EOS is
           then ρ = ρ₀ − α (T − T₀) + β (S − S₀) (Vallis 2006, eq. 1.156) and ``initial_state`` needs S.  S is
@@ -1033,7 +1036,8 @@ class SigmaBaroclinic:
         'quadratic': τ_b/ρ₀ = −r u_b, r = C_d √(ū_bbl² + v̄_bbl² + u_bg²), with ū_bbl the thickness-weighted mean of the
         face column over the bottom ``hbbl`` metres (MOM6 HBBL, MOM_set_viscosity.F90) — a vanished bed layer does
         not set the drag alone; applied implicitly at the bed of the coupled viscous solve (the depth-mean correction
-        δ of SigmaWetDry.column_step includes it).  Legg et al. 2006: C_d = 2e-3
+        δ of SigmaWetDry.column_step includes it).  Legg et al. 2006: C_d = 2e-3.  ``hbbl`` is also the minimum bed
+        layer of the ALE law-of-the-wall drag (``z0``)
     periodic : periodic horizontal axes, ``("x",)``, ``("y",)`` or ``("x", "y")`` (N3 task 3; default none, bit for
         bit), in σ and ALE.  Arrays keep their shapes: with "x" the u-faces of columns 0 and nx are **one** face,
         between cell nx−1 and cell 0, stored twice and always equal (likewise the v-face rows 0 and ny with "y",
@@ -1266,7 +1270,12 @@ class SigmaBaroclinic:
         if bottom_drag and not self.ale:
             raise ValueError("bottom_drag='quadratic' needs vertical_coordinate='ale' (σ uses z0, the log-law)")
         self.bottom_drag, self.cd, self.drag_bg_vel, self.hbbl = bottom_drag, float(cd), float(drag_bg_vel), float(hbbl)
-        self._bed_drag = QuadraticBedDrag(cd, drag_bg_vel, hbbl)
+        if self.ale and z0 is not None and bottom_drag:
+            raise ValueError("z0 (law-of-the-wall drag) and bottom_drag='quadratic' are two bed drags; give one")
+        if self.ale and z0 is not None:                                 # law of the wall in ALE (N3 task 4)
+            self._bed_drag = LogLawBedDrag(z0, hbbl, cd_max=self.core.cd_max, h_neglect=DZ_FLOOR)
+        else:
+            self._bed_drag = QuadraticBedDrag(cd, drag_bg_vel, hbbl)
         if self.periodic:                                               # every horizontal operator sees the wrap
             for name in ("_momentum", "_pgf", "_tracer_advection", "_tracer_diffusion", "_layer_transport",
                          "_vertical", "_bed_drag", "_closure"):
@@ -1299,9 +1308,6 @@ class SigmaBaroclinic:
             raise ValueError(f"unknown regrid rule {regrid!r}; use 'sigma', 'zstar' or 'hybrid'")
         if remap_scheme not in REMAP_SCHEMES:
             raise ValueError(f"unknown remap_scheme {remap_scheme!r}; use one of {sorted(REMAP_SCHEMES)}")
-        if z0 is not None:
-            raise ValueError("vertical_coordinate='ale' needs z0=None for now: the law-of-the-wall drag uses "
-                             "the bed layer, which can vanish under z*")
         if closure not in ("constant", "none"):
             raise ValueError("vertical_coordinate='ale' needs closure 'constant' or 'none' for now "
                              "(GLS and the parabolic ν assume σ-layers)")

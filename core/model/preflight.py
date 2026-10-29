@@ -141,9 +141,12 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
             err("vertical_coordinate", f"unknown regrid rule {rule!r}; use 'sigma', 'zstar' or 'hybrid'")
         if a["remap_scheme"] not in REMAP:
             err("vertical_coordinate", f"unknown remap_scheme {a['remap_scheme']!r}; use one of {sorted(REMAP)}")
-        if a["z0"] is not None:
-            err("bottom_drag", "vertical_coordinate='ale' needs z0=None for now: the law-of-the-wall drag uses "
-                               "the bed layer, which can vanish under z*")
+        if a["z0"] is not None and bd == "quadratic":
+            err("bottom_drag", "z0 (law-of-the-wall drag) and bottom_drag='quadratic' are two bed drags; give one "
+                               "(z0=None for the quadratic drag)")
+        elif a["z0"] is not None and not (a["z0"] > 0 and a.get("hbbl", 10.0) > 0):
+            err("bottom_drag", f"z0={a['z0']!r}, hbbl={a.get('hbbl', 10.0)!r}: the ALE law-of-the-wall drag needs "
+                               "z0 > 0 and hbbl > 0 [m]")
         if a["closure"] not in ("constant", "none"):
             err("closure", "vertical_coordinate='ale' needs closure 'constant' or 'none' for now "
                            "(GLS and the parabolic ν assume σ-layers)")

@@ -365,7 +365,8 @@ class SigmaWetDry:
 
     # ------------------------------------------------------------------ closure coupling
     def closure_forcing(self, eta: np.ndarray, u: np.ndarray, v: np.ndarray, tau_u: np.ndarray | None = None,
-                        tau_v: np.ndarray | None = None) -> dict[str, np.ndarray | None]:
+                        tau_v: np.ndarray | None = None,
+                        ustar2_bot: np.ndarray | None = None) -> dict[str, np.ndarray | None]:
         """
         Inputs of ``Closure.update`` after the step (N3 task 1; before N3 inside ``_gls_update`` and
         ``_gls_update_stratified``, same arithmetic): the new layer velocities averaged to the cell centres
@@ -373,17 +374,36 @@ class SigmaWetDry:
         u*²_b = |τ_b|/ρ₀ with τ_b/ρ₀ = C_d |u₁| u₁ of the first-layer log law averaged from the faces (CROCO
         gls_mixing.F), and — stratified GLS only — the surface stress u*²_s = |τ_s|/ρ₀ averaged from the faces
         to the centres (CROCO gls_mixing.F:556-562); homogeneous GLS: u*²_s None (zero).  [m s⁻¹, m, m² s⁻²]
+        ``ustar2_bot``: the bed u*² already computed by the caller (``bed_ustar2``, the driver's ``ctx.ustar2_bot``,
+        N3 task 4); None: computed here.
         """
         D = np.maximum(np.nan_to_num(self.H + eta, nan=self.d_min), self.d_min)
         h = D[None] * self.dsigma[:, None, None]
         uc = 0.5 * (u[:, :, :-1] + u[:, :, 1:])
         vc = 0.5 * (v[:, :-1, :] + v[:, 1:, :])
+        if ustar2_bot is None:
+            ustar2_bot = self.bed_ustar2(eta, u, v)
+        ny, nx = self.H.shape
+        if not self.gls_stratified:                                    # homogeneous GLS (pre-N2a 8c arithmetic)
+            return dict(u=uc, v=vc, h=h, ustar2_sfc=None, ustar2_bot=ustar2_bot)
+        tsu = np.zeros((ny, nx + 1)) if tau_u is None else np.broadcast_to(np.nan_to_num(tau_u), (ny, nx + 1))
+        tsv = np.zeros((ny + 1, nx)) if tau_v is None else np.broadcast_to(np.nan_to_num(tau_v), (ny + 1, nx))
+        sx = 0.5 * (tsu[:, :-1] + tsu[:, 1:])
+        sy = 0.5 * (tsv[:-1, :] + tsv[1:, :])
+        return dict(u=uc, v=vc, h=h, ustar2_sfc=np.hypot(sx, sy), ustar2_bot=ustar2_bot)
+
+    def bed_ustar2(self, eta: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.ndarray:
+        """
+        Bed stress u*²_b = |τ_b|/ρ₀ (ny, nx) [m² s⁻²] at the cell centres from the layer velocities u, v after the
+        step: τ_b/ρ₀ = C_d |u₁| u₁ of the first-layer log law (``z0``; C_d on the bed layer D Δσ₀ at η), averaged
+        from the faces (CROCO gls_mixing.F); zero without ``z0``.  The single source of ``ctx.ustar2_bot`` in σ
+        (N3 task 4), the same arithmetic as ``closure_forcing`` before (homogeneous and stratified branches).
+        """
         Du, Dv = self.face_depths(eta)
         cdu = first_layer_cd(np.maximum(np.nan_to_num(Du, nan=self.d_min), self.d_min) * self.dsigma[0],
                              self.z0 or 1e-4, cd_max=self.cd_max)
         cdv = first_layer_cd(np.maximum(np.nan_to_num(Dv, nan=self.d_min), self.d_min) * self.dsigma[0],
                              self.z0 or 1e-4, cd_max=self.cd_max)
-        ny, nx = self.H.shape
         if not self.gls_stratified:                                    # homogeneous GLS (pre-N2a 8c arithmetic)
             speed_u = np.hypot(u[0], 0.0)
             speed_v = np.hypot(v[0], 0.0)
@@ -391,13 +411,9 @@ class SigmaWetDry:
             tbv = cdv * speed_v * v[0] if self.z0 is not None else 0.0 * v[0]
             tx = 0.5 * (tbu[:, :-1] + tbu[:, 1:])
             ty = 0.5 * (tbv[:-1, :] + tbv[1:, :])
-            return dict(u=uc, v=vc, h=h, ustar2_sfc=None, ustar2_bot=np.hypot(tx, ty))
+            return np.hypot(tx, ty)
         tau_bu = cdu * np.abs(u[0]) * u[0] if self.z0 is not None else np.zeros_like(u[0])
         tau_bv = cdv * np.abs(v[0]) * v[0] if self.z0 is not None else np.zeros_like(v[0])
         bx = 0.5 * (tau_bu[:, :-1] + tau_bu[:, 1:])
         by = 0.5 * (tau_bv[:-1, :] + tau_bv[1:, :])
-        tsu = np.zeros((ny, nx + 1)) if tau_u is None else np.broadcast_to(np.nan_to_num(tau_u), (ny, nx + 1))
-        tsv = np.zeros((ny + 1, nx)) if tau_v is None else np.broadcast_to(np.nan_to_num(tau_v), (ny + 1, nx))
-        sx = 0.5 * (tsu[:, :-1] + tsu[:, 1:])
-        sy = 0.5 * (tsv[:-1, :] + tsv[1:, :])
-        return dict(u=uc, v=vc, h=h, ustar2_sfc=np.hypot(sx, sy), ustar2_bot=np.hypot(bx, by))
+        return np.hypot(bx, by)

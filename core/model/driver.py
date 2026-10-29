@@ -50,6 +50,7 @@ from typing import Any
 import numba
 import numpy as np
 
+from core.components.bottom_drag import bed_ustar2
 from core.components.freshwater import apply_freshwater
 from physics.surface.shortwave import layer_heating
 from core.components.variance_budget import VarianceBudget
@@ -332,9 +333,11 @@ class Driver:
         eta_new, u_new, v_new, fluxes = m._free_surface.step(st.eta, st.u, st.v, ctx.gu_ab, ctx.gv_ab, ctx.tu, ctx.tv,
                                                              m._ob.flather_args(ctx.ext), fw=ctx.fw, nu_u=nu_u,
                                                              nu_v=nu_v)
+        # bed u*² of the closure (N3 task 4): one source, the first-layer log law at the new velocities
+        ustar2_bot = m.core.bed_ustar2(eta_new, u_new, v_new)
         if cl.stateful:                                                # then the closure with the new u, v
-            cl.update(rho=rho, **m.core.closure_forcing(eta_new, u_new, v_new, ctx.tu, ctx.tv))
-        ctx.set(eta_new=eta_new, u_new=u_new, v_new=v_new, fluxes=fluxes, closure=cl.state())
+            cl.update(rho=rho, **m.core.closure_forcing(eta_new, u_new, v_new, ctx.tu, ctx.tv, ustar2_bot=ustar2_bot))
+        ctx.set(eta_new=eta_new, u_new=u_new, v_new=v_new, fluxes=fluxes, closure=cl.state(), ustar2_bot=ustar2_bot)
 
     def _sigma_boundary_velocity(self, ctx: StepContext) -> None:
         self.m._ob.relax_velocity(ctx.st.u, ctx.st.v, ctx.u_new, ctx.v_new, ctx.ext, ctx.fluxes)
@@ -439,12 +442,37 @@ class Driver:
             visc.update(r_u=r_u[None] * f_u, r_v=r_v[None] * f_v)      # stress spread over hbbl
             if "hu_mean" not in visc:                                  # δ needs the depth-mean column with drag
                 visc.update(hu_mean=hu, hv_mean=hv)
+        elif m.core.z0 is not None:                                    # law of the wall (N3 task 4, LogLawBedDrag)
+            dt = m.core.dt                                             # rates at u + Δt G, as σ's column_step
+            uu = st.u if ctx.gu_ab is None else st.u + dt * ctx.gu_ab
+            vv = st.v if ctx.gv_ab is None else st.v + dt * ctx.gv_ab
+            r_u, r_v = m._bed_drag.rates(uu, vv, hu, hv)
+            visc.update(r_u=r_u, r_v=r_v)                              # on the bed layer d_b (≥ min(hbbl, D))
+            if "hu_mean" not in visc:
+                visc.update(hu_mean=hu, hv_mean=hv)
         nu = m._closure.viscosity(st)                                  # None for the constant closures of ALE
         nu_u, nu_v = (None, None) if nu is None else nu
         eta_new, u_new, v_new, fluxes = m._free_surface.step(st.eta, st.u, st.v, ctx.gu_ab, ctx.gv_ab, ctx.tu, ctx.tv,
                                                              m._ob.flather_args(ctx.ext), fw=ctx.fw, wu=ctx.wu,
                                                              wv=ctx.wv, nu_u=nu_u, nu_v=nu_v, **visc)
-        ctx.set(eta_new=eta_new, u_new=u_new, v_new=v_new, fluxes=fluxes)
+        ctx.set(eta_new=eta_new, u_new=u_new, v_new=v_new, fluxes=fluxes,
+                ustar2_bot=self._ale_bed_ustar2(ctx, u_new, v_new, visc))
+
+    def _ale_bed_ustar2(self, ctx: StepContext, u_new: np.ndarray, v_new: np.ndarray, visc: dict) -> np.ndarray:
+        """
+        Bed u*²_b = |τ_b|/ρ₀ (ny, nx) [m² s⁻²] of the closure in ALE (N3 task 4): τ_b/ρ₀ = Σ_k r_k u_k at the faces,
+        averaged to the centres (``bottom_drag.bed_ustar2``).  Law of the wall: r_k recomputed at the new velocities
+        (C_d |u_b| u_b, as σ's ``SigmaWetDry.bed_ustar2``; C_d on the face geometry of hⁿ); quadratic drag: the
+        rates of the step (from uⁿ) times the new velocities; no bed drag: zero.
+        """
+        m = self.m
+        if m.bottom_drag != "quadratic" and m.core.z0 is None:
+            return np.zeros(m.H.shape)
+        if m.bottom_drag == "quadratic":
+            r_u, r_v = visc["r_u"], visc["r_v"]
+        else:
+            r_u, r_v = m._bed_drag.rates(u_new, v_new, ctx.hu, ctx.hv)
+        return bed_ustar2((r_u * u_new).sum(axis=0), (r_v * v_new).sum(axis=0))
 
     def _ale_boundary_velocity(self, ctx: StepContext) -> None:
         m, st = self.m, ctx.st
