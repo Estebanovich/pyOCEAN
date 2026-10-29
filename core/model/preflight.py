@@ -166,6 +166,10 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
     if not sal and a.get("s_coef", 0.0) != 0.0:
         warn("salinity", f"s_coef={a['s_coef']!r} is ignored with salinity=False (there is no S in the density); "
                          "pass salinity=True")
+    if sal and a.get("s_coef", 0.0) == 0.0:
+        warn("salinity", "salinity=True with s_coef = 0: S is carried but does not enter the density "
+                         "(ρ = ρ₀ − α (T − T₀) + β (S − S₀) with β = s_coef); pass s_coef (e.g. 0.78) for an active "
+                         "salinity")
     if sal and a.get("rho_ref") is not None and a.get("kh", 0.0) > 0:
         warn("tracer_diffusion", "salinity=True with rho_ref and kh > 0: K_h diffuses T and S themselves, not the "
                                  "anomaly T − T_ref(z) of the reference profile (a density profile does not split "

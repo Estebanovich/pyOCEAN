@@ -61,3 +61,12 @@ def test_driver_accepts_a_single_rate_only():
     m, _, _ = nc.CASES["zstar_vi_arakawa"]()
     with pytest.raises(ConfigurationError, match="single rate"):
         Driver(m, dt_tracer=2 * m.dt)
+
+
+def test_salinity_without_s_coef_warns():
+    """salinity=True with the default s_coef = 0 leaves S out of ρ: say so before the run (N2a final review I1)."""
+    with pytest.warns(PyOceanConfigWarning, match="s_coef = 0"):
+        nc._sigma(salinity=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", PyOceanConfigWarning)
+        nc._sigma(salinity=True, s_coef=0.78, s_ref=30.0)
