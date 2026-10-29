@@ -75,7 +75,8 @@ def _config(model: SigmaBaroclinic) -> dict:
                 rho0=model.rho0, t_coef=model.t_coef, t_ref=model.t_ref, ah=model.ah,
                 salinity=int(model.salinity), s_coef=model.s_coef, s_ref=model.s_ref,
                 theta_bc=model.theta_bc,
-                ny=int(model.H.shape[0]), nx=int(model.H.shape[1]))
+                ny=int(model.H.shape[0]), nx=int(model.H.shape[1]),
+                periodic=",".join(model.periodic.axes) or "none")              # N3 task 3: periodic axes
     if core.closure == "gls":                                   # N2a task 8c: stratified or homogeneous k-ε
         cfg.update(gls_stratified=int(getattr(model, "gls_stratified", False)))
     if getattr(model, "ale", False):                           # ALE (Plan D): the rule and every scheme choice
@@ -103,7 +104,8 @@ def _config(model: SigmaBaroclinic) -> dict:
 
 # configuration entries added after files were written: a file without them was written with these values
 _CONFIG_DEFAULTS = {"salinity": 0, "s_coef": 0.0, "s_ref": 35.0, "sponge_S": "none",         # N2a: files before salinity
-                    "gls_stratified": 0}                                                    # N2a 8c: homogeneous GLS
+                    "gls_stratified": 0,                                                    # N2a 8c: homogeneous GLS
+                    "periodic": "none"}                                                     # N3 task 3: no periodic axis
 
 _SECTIONS = {"ab_hist": "time_stepper", "gls_": "closure", "T_ext": "open_boundary", "h_ext": "open_boundary",
              "tr_ext": "open_boundary", "S_ext": "open_boundary", "fs_lu_": "free_surface", "rho_ref_": "pgf"}

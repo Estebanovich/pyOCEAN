@@ -23,6 +23,7 @@ import numpy as np
 
 from core.components.freshwater import freshwater_volumes
 from core.model.contract import BuildContext, Issue, Role
+from core.model.periodic import NONE
 from core.vertical.ale import (DZ_FLOOR, lagrangian_thickness, limit_outflow, ppm_transport_x, transport_velocity,
                                upwind_transport_x)
 
@@ -100,6 +101,7 @@ class ALELayerTransport:
     role = Role.LAYER_TRANSPORT
     reads = ("u", "v", "eta", "h")
     writes = ("Qx", "Qy", "Fz", "h")
+    per = NONE                       # periodic axes (core.model.periodic), set by the model
 
     def __init__(self, *, fs, H: np.ndarray, area: np.ndarray, dt: float, thickness_flux: str, vi_geom: dict,
                  layer_volumes: Callable, ob) -> None:
@@ -116,16 +118,28 @@ class ALELayerTransport:
         uty, Qby = transport_velocity(v_new, st.v, fluxes.wet_v, wv, self.fs.Lv, fluxes.Dv, th, tb)
         if self.thickness_flux == "ppm":
             dx_t, dy_t = self.vi_geom["dx_t"], self.vi_geom["dy_t"]
-            Qx = ppm_transport_x(st.h, utx, self.fs.Lu, Qbx, qe, qw, act, dt, dx_t)
-            Qy = ppm_transport_x(st.h.swapaxes(1, 2), uty.swapaxes(1, 2), self.fs.Lv.T, Qby.T, qn, qs, act.T,
-                                 dt, dy_t.T).swapaxes(1, 2)
+            if self.per:                                                # periodic: pad–crop, halo 4 (PPM edges)
+                sw = lambda a: a.swapaxes(1, 2)                         # noqa: E731
+                Qx, Qy = self.per.apply(
+                    lambda h, ux, uy, Lu, Lv, bx, by, e, w, n_, s_, a, dx, dy: (
+                        ppm_transport_x(h, ux, Lu, bx, e, w, a, dt, dx),
+                        sw(ppm_transport_x(sw(h), sw(uy), Lv.T, by.T, sw(n_), sw(s_), a.T, dt, dy.T))),
+                    (st.h, utx, uty, self.fs.Lu, self.fs.Lv, Qbx, Qby, qe, qw, sw(qn), sw(qs), act, dx_t, dy_t),
+                    ("c", "u", "v", "u", "v", "u", "v", "u", "u", "v", "v", "c", "c", "c"), ("u", "v"), 4)
+            else:
+                Qx = ppm_transport_x(st.h, utx, self.fs.Lu, Qbx, qe, qw, act, dt, dx_t)
+                Qy = ppm_transport_x(st.h.swapaxes(1, 2), uty.swapaxes(1, 2), self.fs.Lv.T, Qby.T, qn, qs, act.T,
+                                     dt, dy_t.T).swapaxes(1, 2)
         else:
             Qx = upwind_transport_x(qe, qw, utx, self.fs.Lu, Qbx)
             Qy = upwind_transport_x(qn, qs, uty.swapaxes(1, 2), self.fs.Lv.T, Qby.T).swapaxes(1, 2)
         if open_:                                                       # old velocity unmasked: the wet flag is False at edges
             self.ob.open_face_transports(Qx, Qy, st.h, st.u, st.v, u_new, v_new, fluxes)
         # outflow limiter: no layer loses more than it holds; Σ_k Q_k unchanged (core.vertical.ale.limit_outflow)
-        Qx, Qy, n_lim = limit_outflow(st.h, Qx, Qy, self.area, dt, act)
+        if self.per:
+            Qx, Qy, n_lim = limit_outflow(st.h, Qx, Qy, self.area, dt, act, periodic=(self.per.x, self.per.y))
+        else:
+            Qx, Qy, n_lim = limit_outflow(st.h, Qx, Qy, self.area, dt, act)
         divh = Qx[..., 1:] - Qx[..., :-1] + Qy[:, 1:, :] - Qy[:, :-1, :]
         h_lag = lagrangian_thickness(st.h, divh, dt, self.area)
         V0, V1 = self.layer_volumes(st.eta, st.h), self.layer_volumes(eta_new, h_lag)

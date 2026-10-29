@@ -155,31 +155,38 @@ def truncate_cfl_numpy(u: np.ndarray, dt: float, dx_t: np.ndarray, h_face: np.nd
 
 
 @numba.njit(parallel=True, cache=True)
-def _truncate_kernel(u, dt, dx_t, h_face, h_count, cfl, out, counted):  # pragma: no cover
-    """truncate_cfl_numpy with the same arithmetic, parallel over (layer, row)."""
+def _truncate_kernel(u, dt, dx_t, h_face, h_count, cfl, out, counted, periodic):  # pragma: no cover
+    """truncate_cfl_numpy with the same arithmetic, parallel over (layer, row); ``periodic``: the edge faces take
+    the donor across the wrap (cell nx−1 west of face 0, cell 0 east of face nx)."""
     n, ny, nx1 = u.shape
     nx = nx1 - 1
     for p in numba.prange(n * ny):
         k, j = p // ny, p % ny
         for i in range(nx1):
             x = u[k, j, i]
-            dxd = dx_t[j, max(i - 1, 0)] if x >= 0 else dx_t[j, min(i, nx - 1)]
+            if periodic:
+                dxd = dx_t[j, (i - 1) % nx] if x >= 0 else dx_t[j, i % nx]
+            else:
+                dxd = dx_t[j, max(i - 1, 0)] if x >= 0 else dx_t[j, min(i, nx - 1)]
             over = abs(x) * dt / dxd > cfl
             out[k, j, i] = np.sign(x) * 0.9 * cfl * dxd / dt if over else x
             counted[k, j, i] = over and h_face[k, j, i] > h_count
 
 
 def truncate_cfl(u: np.ndarray, dt: float, dx_t: np.ndarray, h_face: np.ndarray, h_count: float,
-                 cfl: float = 0.5) -> tuple[np.ndarray, int, tuple[int, int, int] | None]:
+                 cfl: float = 0.5, periodic: bool = False) -> tuple[np.ndarray, int, tuple[int, int, int] | None]:
     """
     CFL truncation of the layer velocities (MOM6 vertvisc_limit_vel; see truncate_cfl_numpy, the reference).
     Returns (u, count of truncations at faces thicker than h_count, first counted (k, j, i) or None).
     Numba kernel; threads set by the caller (the ALE step).  For v call it on swapped axes with dy_t.T.
+    ``periodic`` (N3 task 3): the axis wraps; faces 0 and nx (one wrap face) are truncated alike and counted once.
     """
     out = np.empty(np.shape(u))
     counted = np.empty(np.shape(u), np.bool_)
     _truncate_kernel(np.asarray(u, float), float(dt), np.asarray(dx_t, float), np.asarray(h_face, float),
-                     float(h_count), float(cfl), out, counted)
+                     float(h_count), float(cfl), out, counted, bool(periodic))
+    if periodic:
+        counted[..., -1] = False                                       # face nx is face 0
     c = int(counted.sum())
     first = tuple(int(a[0]) for a in np.nonzero(counted)) if c else None
     return out, c, first

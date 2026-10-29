@@ -96,13 +96,20 @@ class WetDryFreeSurface:
         'jacobi' is the diagonal.  On the 96 273-cell northern Gulf of
         California nest: 1–3 iterations and 7–19 ms per solve vs 97–117
         iterations and ~50 ms with Jacobi (factorisation 0.19 s).
+    periodic : core.model.periodic.Periodic, tuple of 'x'/'y', optional
+        Periodic axes (N3 task 3).  With 'x' the u-faces 0 and nx are the same face, between cell nx−1 and
+        cell 0: H_f = min(H_{nx−1}, H_0), the upwind η, the gradient (η_0 − η_{nx−1})/δ_f and one matrix
+        coupling c_f between the two cells (the system stays SPD; with nx = 1 the coupling cancels).  Flather
+        faces on a periodic edge are refused.  Default: none (bit for bit).
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, theta: float = 0.6,
                  g: float = G, d_min: float = 0.05, flather_u: np.ndarray | None = None,
                  flather_v: np.ndarray | None = None, solver: str = "direct", cg_rtol: float = 1e-10,
                  precond: str = "lu", refactor_iterations: int = 5, clamped_u: np.ndarray | None = None,
-                 clamped_v: np.ndarray | None = None) -> None:
+                 clamped_v: np.ndarray | None = None, periodic=None) -> None:
+        from core.model.periodic import Periodic
+        self.per = periodic if isinstance(periodic, Periodic) else Periodic(periodic or ())
         if not 0.5 <= theta <= 1.0:
             raise ValueError(f"theta must be in [0.5, 1], got {theta}")
         if solver not in ("direct", "cg"):
@@ -133,6 +140,15 @@ class WetDryFreeSurface:
         self.H_u[:, 1:-1][~(self.active[:, :-1] & self.active[:, 1:])] = np.nan
         self.H_v[1:-1, :] = np.fmin(H[:-1, :], H[1:, :])
         self.H_v[1:-1, :][~(self.active[:-1, :] & self.active[1:, :])] = np.nan
+        if self.per.x:                                       # the wrap face between cells nx−1 and 0
+            hw = np.where(self.active[:, -1] & self.active[:, 0], np.fmin(H[:, -1], H[:, 0]), np.nan)
+            self.H_u[:, 0] = self.H_u[:, -1] = hw
+        if self.per.y:
+            hw = np.where(self.active[-1, :] & self.active[0, :], np.fmin(H[-1, :], H[0, :]), np.nan)
+            self.H_v[0, :] = self.H_v[-1, :] = hw
+        for name, mask, ax in (("flather_u", flather_u, "x"), ("flather_v", flather_v, "y")):
+            if mask is not None and ax in self.per.axes and np.asarray(mask, bool).any():
+                raise ValueError(f"{name}: Flather (open) faces on the periodic axis {ax!r}")
         self.index = -np.ones((ny, nx), dtype=np.int64)
         self.index[self.active] = np.arange(self.active.sum())
         self.last_clip_volume = 0.0
@@ -183,8 +199,14 @@ class WetDryFreeSurface:
         hi = np.full(Hf.shape, np.nan)
         if axis == 1:
             lo[:, 1:-1], hi[:, 1:-1] = eta[:, :-1], eta[:, 1:]
+            if self.per.x:
+                lo[:, 0] = lo[:, -1] = eta[:, -1]
+                hi[:, 0] = hi[:, -1] = eta[:, 0]
         else:
             lo[1:-1, :], hi[1:-1, :] = eta[:-1, :], eta[1:, :]
+            if self.per.y:
+                lo[0, :] = lo[-1, :] = eta[-1, :]
+                hi[0, :] = hi[-1, :] = eta[0, :]
         up = np.where(vel > 0, lo, np.where(vel < 0, hi, np.fmax(lo, hi)))
         D = Hf + up
         wet = np.isfinite(D) & (D > self.d_min)
@@ -195,6 +217,10 @@ class WetDryFreeSurface:
         gy = np.zeros(self.H_v.shape)
         gx[:, 1:-1] = (eta[:, 1:] - eta[:, :-1]) / self.du[:, 1:-1]
         gy[1:-1, :] = (eta[1:, :] - eta[:-1, :]) / self.dv[1:-1, :]
+        if self.per.x:
+            gx[:, 0] = gx[:, -1] = (eta[:, 0] - eta[:, -1]) / self.du[:, 0]
+        if self.per.y:
+            gy[0, :] = gy[-1, :] = (eta[0, :] - eta[-1, :]) / self.dv[0, :]
         return gx, gy
 
     def _divergence(self, fu: np.ndarray, fv: np.ndarray) -> np.ndarray:
@@ -206,8 +232,13 @@ class WetDryFreeSurface:
         if extra_diag is not None:
             diag += extra_diag
         rows, cols, vals = [], [], []
-        for c, a, b in ((cu[:, 1:-1], self.index[:, :-1], self.index[:, 1:]),
-                        (cv[1:-1, :], self.index[:-1, :], self.index[1:, :])):
+        pairs = [(cu[:, 1:-1], self.index[:, :-1], self.index[:, 1:]),
+                 (cv[1:-1, :], self.index[:-1, :], self.index[1:, :])]
+        if self.per.x:                                       # the wrap face, once (face nx is face 0)
+            pairs.append((cu[:, :1], self.index[:, -1:], self.index[:, :1]))
+        if self.per.y:
+            pairs.append((cv[:1, :], self.index[-1:, :], self.index[:1, :]))
+        for c, a, b in pairs:
             m = (c > 0) & (a >= 0) & (b >= 0)
             ca, ia, ib = c[m], a[m], b[m]
             np.add.at(diag, ia, ca)

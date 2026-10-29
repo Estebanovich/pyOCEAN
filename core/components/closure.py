@@ -137,7 +137,8 @@ class GLSClosure(Closure):
 
     # ------------------------------------------------------------------ interface
     def viscosity(self, st) -> tuple[np.ndarray, np.ndarray]:
-        """Cell-centre ν (N+1, ny, nx) averaged to u- and v-faces (edge faces: the inner cell)."""
+        """Cell-centre ν (N+1, ny, nx) averaged to u- and v-faces (edge faces: the inner cell; periodic wrap faces,
+        ``per``: the mean of cells n−1 and 0)."""
         if st is not None:
             self.load(getattr(st, "closure", None))
         ny, nx = self.shape
@@ -148,6 +149,11 @@ class GLSClosure(Closure):
         nu_v = np.empty((self.n + 1, ny + 1, nx))
         nu_v[:, 1:-1] = 0.5 * (nu[:, :-1] + nu[:, 1:])
         nu_v[:, 0], nu_v[:, -1] = nu[:, 0], nu[:, -1]
+        per = getattr(self, "per", None)
+        if per is not None and per.x:
+            nu_u[:, :, 0] = nu_u[:, :, -1] = 0.5 * (nu[:, :, -1] + nu[:, :, 0])
+        if per is not None and per.y:
+            nu_v[:, 0] = nu_v[:, -1] = 0.5 * (nu[:, -1] + nu[:, 0])
         return nu_u, nu_v
 
     def update(self, u: np.ndarray, v: np.ndarray, h: np.ndarray, rho: np.ndarray | None,

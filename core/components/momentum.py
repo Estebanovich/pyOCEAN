@@ -16,6 +16,9 @@ Explicit momentum terms of the 3-D core (N1, role MOMENTUM), moved unchanged fro
 This is the pattern of MOM6 (the stepper sums ``(CAu + PFu) + diffu`` in a fixed order,
 MOM_dynamics_split_RK2.F90:575-581) and Oceananigans (one function per term, summed by the tendency kernel;
 docs/design/n1_refs/).  Index order (k, j, i), k = 0 at the bed.
+
+Periodic axes (N3 task 3, ``per``; ``core.model.periodic``): every term is computed on inputs padded with wrapped
+halos and cropped (pad–crop), except the σ vertical advection, whose ω at the wrap faces is averaged natively.
 """
 from __future__ import annotations
 
@@ -28,6 +31,7 @@ from core.dynamics import vector_invariant as vi
 from core.dynamics.nonlinear import _spacings_u, _spacings_v, advection_u, advection_v, laplacian_3d
 from core.model import threads
 from core.model.contract import BuildContext, Issue, Role
+from core.model.periodic import MOMENTUM_HALO, NONE
 
 Term = tuple[str, np.ndarray, np.ndarray, str]
 
@@ -48,6 +52,26 @@ def sum_terms(terms: list[Term], wet_u: np.ndarray, wet_v: np.ndarray) -> tuple[
     return np.where(wet_u[None], gu, 0.0), np.where(wet_v[None], gv, 0.0)
 
 
+def _flux_advection(u, v, Qx, Qy, Fz, V, wet_u, wet_v, lim: float = 0.0) -> tuple[np.ndarray, np.ndarray]:
+    """Flux-form momentum advection at u- and v-faces (``_flux_form_u`` on u, and on v with x and y swapped)."""
+    from core.dynamics.sigma_baroclinic import _flux_form_u
+    au = _flux_form_u(u, Qx, Qy, Fz, V, wet_u[None], lim)
+    swap = lambda a: np.swapaxes(a, 1, 2)                                       # noqa: E731
+    av = swap(_flux_form_u(swap(v), swap(Qy), swap(Qx), swap(Fz), swap(V), swap(wet_v[None]), lim))
+    return au, av
+
+
+def _coriolis(u: np.ndarray, v: np.ndarray, fq: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """The energy-conserving C-grid Coriolis terms of ``Momentum.coriolis`` (interior faces; edge faces 0)."""
+    cu = np.zeros_like(u)
+    cv = np.zeros_like(v)
+    cu[..., 1:-1] = 0.25 * (fq[:-1, 1:-1] * (v[:, :-1, :-1] + v[:, :-1, 1:])
+                            + fq[1:, 1:-1] * (v[:, 1:, :-1] + v[:, 1:, 1:]))
+    cv[:, 1:-1, :] = -0.25 * (fq[1:-1, :-1] * (u[:, :-1, :-1] + u[:, 1:, :-1])
+                              + fq[1:-1, 1:] * (u[:, :-1, 1:] + u[:, 1:, 1:]))
+    return cu, cv
+
+
 class Momentum:
     """
     Explicit momentum terms.  ``form`` 'flux' (flux-form or advective-form advection plus energy-conserving
@@ -58,6 +82,7 @@ class Momentum:
     role = Role.MOMENTUM
     reads = ("u", "v", "eta", "T", "h", "Qx", "Qy", "Fz", "omega")
     writes = ()
+    per = NONE                       # periodic axes (core.model.periodic), set by the model
 
     def __init__(self, *, form: str, adv: str, ah: float, ke_scheme: str, ale: bool, dt: float, hg, fq: np.ndarray,
                  fs, ds: np.ndarray, vi_geom: dict | None, mean_face_thickness: Callable,
@@ -80,33 +105,49 @@ class Momentum:
         so the operator is antisymmetric and does no work (Sadourny 1975; Arakawa &
         Lamb 1977).  u (N, ny, nx+1), v (N, ny+1, nx).
         """
-        fq = self.fq
-        cu = np.zeros_like(u)
-        cv = np.zeros_like(v)
-        cu[..., 1:-1] = 0.25 * (fq[:-1, 1:-1] * (v[:, :-1, :-1] + v[:, :-1, 1:])
-                                + fq[1:, 1:-1] * (v[:, 1:, :-1] + v[:, 1:, 1:]))
-        cv[:, 1:-1, :] = -0.25 * (fq[1:-1, :-1] * (u[:, :-1, :-1] + u[:, 1:, :-1])
-                                  + fq[1:-1, 1:] * (u[:, :-1, 1:] + u[:, 1:, 1:]))
-        return cu, cv
+        if self.per:
+            return self.per.apply(_coriolis, (u, v, self.fq), ("u", "v", "q"), ("u", "v"), 1)
+        return _coriolis(u, v, self.fq)
+
+    def _padded_vi_geometry(self) -> dict:
+        """Vector-invariant geometry with periodic halos of 2 (corner area and mask rebuilt on the padded grid)."""
+        if getattr(self, "_vi_pad", None) is None:
+            p, g, H = self.per, self.vi_geom, 2
+            out = {k: p.pad(g[k], kind, H) for k, kind in (("dx_u", "u"), ("dy_v", "v"), ("area_t", "c"),
+                                                           ("area_u", "u"), ("area_v", "v"))}
+            out["active"] = p.pad(self.fs.active, "c", H)
+            out["area_q"] = vi.corner_area(out["dx_u"], out["dy_v"])
+            out["mask_q"] = vi.corner_mask(out["active"])
+            out["fq"] = p.pad(self.fq, "q", H)
+            self._vi_pad = out
+        return self._vi_pad
 
     def vector_invariant(self, st: SigmaState) -> tuple[np.ndarray, np.ndarray]:
         """
         Vector-invariant momentum terms of the ALE step (spec 2026-10-12 §3): Sadourny (1975) energy
         PV flux q·(vh, −uh) with BOUND_CORIOLIS, minus ∇K (core.dynamics.vector_invariant).  The
         transports are those of the last Lagrangian step (as MOM6 uses the uh of its last continuity);
-        the first step uses L u h̄.
+        the first step uses L u h̄.  Periodic: on halos of 2 (ζ and q at corners, then the faces).
         """
-        g = self.vi_geom
-        numba.set_num_threads(threads._THREADS[0])                                 # vector-invariant kernels
-        zeta, q = vi.vorticity_and_pv(st.u, st.v, g["dx_u"], g["dy_v"], g["area_q"], g["mask_q"], self.fq, st.h,
-                                      g["area_t"], self.fs.active)
         Qx, Qy = st.Qx, st.Qy
         if Qx is None or Qy is None:
             hu, hv = self.mean_face_thickness(st.h)
             Qx, Qy = self.fs.Lu[None] * st.u * hu, self.fs.Lv[None] * st.v * hv
-        cu, cv = vi.coriolis_pv(q, self.fq[None] + zeta, Qx, Qy, st.u, st.v, g["dx_u"], g["dy_v"], bound=True)
+        if self.per:
+            g = self._padded_vi_geometry()
+            return self.per.apply(lambda u, v, h, qx, qy: self._vector_invariant(u, v, h, qx, qy, g, g["fq"],
+                                                                                 g["active"]),
+                                  (st.u, st.v, st.h, Qx, Qy), ("u", "v", "c", "u", "v"), ("u", "v"), 2)
+        return self._vector_invariant(st.u, st.v, st.h, Qx, Qy, self.vi_geom, self.fq, self.fs.active)
+
+    def _vector_invariant(self, u, v, h, Qx, Qy, g: dict, fq: np.ndarray, active: np.ndarray):
+        """The terms of ``vector_invariant`` on the given arrays and geometry (unchanged arithmetic)."""
+        numba.set_num_threads(threads._THREADS[0])                                 # vector-invariant kernels
+        zeta, q = vi.vorticity_and_pv(u, v, g["dx_u"], g["dy_v"], g["area_q"], g["mask_q"], fq, h, g["area_t"],
+                                      active)
+        cu, cv = vi.coriolis_pv(q, fq[None] + zeta, Qx, Qy, u, v, g["dx_u"], g["dy_v"], bound=True)
         ke = "gudonov" if self.ke_scheme == "godunov" else self.ke_scheme              # kernel spelling
-        K = vi.kinetic_energy(st.u, st.v, g["area_u"], g["area_v"], g["area_t"], ke)
+        K = vi.kinetic_energy(u, v, g["area_u"], g["area_v"], g["area_t"], ke)
         kx, ky = vi.ke_gradient(K, g["dx_u"], g["dy_v"])
         return cu + kx, cv + ky
 
@@ -130,34 +171,57 @@ class Momentum:
         else:
             cu, cv = self.coriolis(st.u, st.v)
             out.append(("coriolis", cu, cv, "+"))
+        per = self.per
         if self.adv == "flux" and not vinv:
             if st.Qx is not None:
-                from core.dynamics.sigma_baroclinic import _flux_form_u
                 V = self.layer_volumes(st.eta, st.h)
                 lim = self.dt if self.ale else 0.0                                      # vanished-cell limiter
-                au = _flux_form_u(st.u, st.Qx, st.Qy, st.Fz, V, wet_u[None], lim)
-                swap = lambda a: np.swapaxes(a, 1, 2)                                   # noqa: E731
-                av = swap(_flux_form_u(swap(st.v), swap(st.Qy), swap(st.Qx), swap(st.Fz), swap(V),
-                                       swap(wet_v[None]), lim))
+                args = (st.u, st.v, st.Qx, st.Qy, st.Fz, V, wet_u, wet_v)
+                if per:
+                    au, av = per.apply(_flux_advection, args, ("u", "v", "u", "v", "c", "c", "u", "v"), ("u", "v"),
+                                       MOMENTUM_HALO, lim=lim)
+                else:
+                    au, av = _flux_advection(*args, lim=lim)
                 out.append(("advection", au, av, "+"))
         if self.adv != "flux" and not vinv:
-            au = np.empty_like(st.u)
-            av = np.empty_like(st.v)
+            hg, H = self.hg, 2
+            if per:                                                     # advective form on halos of 2
+                if getattr(self, "_hg_pad", None) is None:
+                    self._hg_pad = per.pad_dataset(self.hg, H)
+                hg = self._hg_pad
+            u_, v_, wu_, wv_ = st.u, st.v, wet_u, wet_v
+            if per:
+                u_, v_, wu_, wv_ = per.pad(st.u, "u", H), per.pad(st.v, "v", H), per.pad(wet_u, "u", H), \
+                    per.pad(wet_v, "v", H)
+            au = np.empty_like(u_)
+            av = np.empty_like(v_)
             for k in range(n):
-                au[k] = advection_u(st.u[k], st.v[k], self.hg, wet_u, scheme=self.adv)
-                av[k] = advection_v(st.u[k], st.v[k], self.hg, wet_v, scheme=self.adv)
+                au[k] = advection_u(u_[k], v_[k], hg, wu_, scheme=self.adv)
+                av[k] = advection_v(u_[k], v_[k], hg, wv_, scheme=self.adv)
+            if per:
+                au, av = per.crop(au, "u", H), per.crop(av, "v", H)
             out.append(("advection", au, av, "-"))
         if self.ah > 0:                                                 # spacings built once (performance task 5.2)
             if self._lap is None:
-                self._lap = (_spacings_u(self.hg), _spacings_v(self.hg))
+                hg = per.pad_dataset(self.hg, 1) if per else self.hg   # periodic: spacings on halos of 1
+                self._lap = (_spacings_u(hg), _spacings_v(hg))
             numba.set_num_threads(threads._THREADS[0])
-            out.append(("hviscosity", self.ah * laplacian_3d(st.u, wet_u, *self._lap[0]),
-                        self.ah * laplacian_3d(st.v, wet_v, *self._lap[1]), "+"))
+            if per:
+                lu = per.crop(laplacian_3d(per.pad(st.u, "u", 1), per.pad(wet_u, "u", 1), *self._lap[0]), "u", 1)
+                lv = per.crop(laplacian_3d(per.pad(st.v, "v", 1), per.pad(wet_v, "v", 1), *self._lap[1]), "v", 1)
+                out.append(("hviscosity", self.ah * lu, self.ah * lv, "+"))
+            else:
+                out.append(("hviscosity", self.ah * laplacian_3d(st.u, wet_u, *self._lap[0]),
+                            self.ah * laplacian_3d(st.v, wet_v, *self._lap[1]), "+"))
         if st.omega is not None and self.adv != "flux":
             om_u = np.zeros((n + 1,) + Du.shape)
             om_u[:, :, 1:-1] = 0.5 * (st.omega[:, :, 1:] + st.omega[:, :, :-1])
             om_v = np.zeros((n + 1,) + Dv.shape)
             om_v[:, 1:-1, :] = 0.5 * (st.omega[:, 1:, :] + st.omega[:, :-1, :])
+            if per.x:                                                   # ω at the wrap faces
+                om_u[:, :, 0] = om_u[:, :, -1] = 0.5 * (st.omega[:, :, 0] + st.omega[:, :, -1])
+            if per.y:
+                om_v[:, 0, :] = om_v[:, -1, :] = 0.5 * (st.omega[:, 0, :] + st.omega[:, -1, :])
             out.append(("vadvection",
                         self.vertical_advection(st.u, om_u, np.nan_to_num(Du)[None] * self.ds[:, None, None]),
                         self.vertical_advection(st.v, om_v, np.nan_to_num(Dv)[None] * self.ds[:, None, None]), "-"))

@@ -14,6 +14,7 @@ from __future__ import annotations
 import numpy as np
 
 from core.model.contract import BuildContext, Issue, Role
+from core.model.periodic import NONE
 
 
 class QuadraticBedDrag:
@@ -21,6 +22,7 @@ class QuadraticBedDrag:
     role = Role.BOTTOM_DRAG
     reads = ("u", "v", "h")
     writes = ()
+    per = NONE                       # periodic axes (core.model.periodic), set by the model
 
     def __init__(self, cd: float, drag_bg_vel: float, hbbl: float) -> None:
         self.cd, self.drag_bg_vel, self.hbbl = float(cd), float(drag_bg_vel), float(hbbl)
@@ -43,6 +45,10 @@ class QuadraticBedDrag:
         v_at_u[:, 1:-1] = 0.5 * (vc[:, :-1] + vc[:, 1:])
         u_at_v = np.zeros_like(vb)
         u_at_v[1:-1, :] = 0.5 * (uc[:-1, :] + uc[1:, :])
+        if self.per.x:                                      # wrap faces: cells nx−1 and 0
+            v_at_u[:, 0] = v_at_u[:, -1] = 0.5 * (vc[:, -1] + vc[:, 0])
+        if self.per.y:
+            u_at_v[0, :] = u_at_v[-1, :] = 0.5 * (uc[-1, :] + uc[0, :])
         bg2 = self.drag_bg_vel**2
         return self.cd * np.sqrt(ub**2 + v_at_u**2 + bg2), self.cd * np.sqrt(vb**2 + u_at_v**2 + bg2), fu, fv
 

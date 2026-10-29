@@ -329,7 +329,8 @@ def _outflow_exceeds(h: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, area: np.nda
 
 
 def limit_outflow(h: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, area: np.ndarray, dt: float, active: np.ndarray,
-                  h_floor: float = H_PPM_MIN, max_pass: int = 50) -> tuple[np.ndarray, np.ndarray, int]:
+                  h_floor: float = H_PPM_MIN, max_pass: int = 50,
+                  periodic: tuple[bool, bool] = (False, False)) -> tuple[np.ndarray, np.ndarray, int]:
     """
     Outflow limiter of the Lagrangian step (spec 2026-10-14-hybrid-robustness §2): no layer of a cell may lose
     more than it holds in Δt,
@@ -353,6 +354,8 @@ def limit_outflow(h: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, area: np.ndarra
 
     h (N, ny, nx) [m]; Qx (N, ny, nx+1), Qy (N, ny+1, nx) [m³ s⁻¹], edge faces included (open boundaries);
     area (ny, nx) [m²]; active (ny, nx).  Returns (Qx, Qy, n_limited); the inputs themselves when nothing exceeds.
+    ``periodic`` (x, y) (N3 task 3): the edge faces of a periodic axis are one wrap face between cells n−1 and 0
+    (its donor on either side is a model cell), cut and given back identically at both copies.
     """
     A = np.where(active, area, 0.0)[None]
     room0 = np.maximum(h - h_floor, 0.0) * A / dt                      # what each cell-layer can give [m³ s⁻¹]
@@ -366,14 +369,14 @@ def limit_outflow(h: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, area: np.ndarra
     for _ in range(max_pass):
         n_lim += int(over.sum())
         r = np.where(over, room0 / np.where(O > 0, O, 1.0), 1.0)
-        for Q, ax in ((Qx, 2), (Qy, 1)):
+        for Q, ax, wrap in ((Qx, 2, periodic[0]), (Qy, 1, periodic[1])):
             one = np.ones_like(np.take(r, [0], axis=ax))
-            r_lo = np.concatenate([one, r], axis=ax)                   # cell on the low side of each face
-            r_hi = np.concatenate([r, one], axis=ax)                   # cell on the high side
+            r_lo = np.concatenate([np.take(r, [-1], axis=ax) if wrap else one, r], axis=ax)   # low-side cell
+            r_hi = np.concatenate([r, np.take(r, [0], axis=ax) if wrap else one], axis=ax)    # high-side cell
             new = np.where(Q > 0, Q * r_lo, np.where(Q < 0, Q * r_hi, Q))
             delta = (Q - new).sum(axis=0)                              # net cut per face (sign = flow removed)
             Q[...] = new
-            _give_back(Q, delta, room0 - outflow(Qx, Qy), ax, room0)
+            _give_back(Q, delta, room0 - outflow(Qx, Qy), ax, room0, wrap)
         O = outflow(Qx, Qy)
         over = active[None] & (O > room0 * (1.0 + 1e-12))
         if not over.any():
@@ -392,7 +395,8 @@ def limit_outflow(h: np.ndarray, Qx: np.ndarray, Qy: np.ndarray, area: np.ndarra
                        f"barotropic CFL")
 
 
-def _give_back(Q: np.ndarray, delta: np.ndarray, room: np.ndarray, ax: int, full: np.ndarray) -> None:
+def _give_back(Q: np.ndarray, delta: np.ndarray, room: np.ndarray, ax: int, full: np.ndarray,
+               wrap: bool = False) -> None:
     """
     Put the net cut ``delta`` (one value per face, the sign of the removed flow) back on the layers of each face,
     in place: first to layers already flowing that way (donor room shared in proportion), then by reducing layers
@@ -401,11 +405,13 @@ def _give_back(Q: np.ndarray, delta: np.ndarray, room: np.ndarray, ax: int, full
     their whole content ``full``, and the next pass of limit_outflow cuts those other faces.  Raises only if the
     donor column holds no water at all (barotropic CFL).
     ``room`` (N, ny, nx): what each donor cell-layer can still give [m³ s⁻¹]; ``full``: its whole content
-    (h − h_floor)⁺ A / Δt; ``ax`` the face axis of Q (2: x, 1: y).
+    (h − h_floor)⁺ A / Δt; ``ax`` the face axis of Q (2: x, 1: y); ``wrap``: that axis is periodic (the edge faces
+    take the cell across the wrap as donor).
     """
     zero = np.zeros_like(np.take(room, [0], axis=ax))
-    room_lo = np.maximum(np.concatenate([zero, room], axis=ax), 0.0)   # donor of eastward/northward flow
-    room_hi = np.maximum(np.concatenate([room, zero], axis=ax), 0.0)   # donor of westward/southward flow
+    lo_edge, hi_edge = (np.take(room, [-1], axis=ax), np.take(room, [0], axis=ax)) if wrap else (zero, zero)
+    room_lo = np.maximum(np.concatenate([lo_edge, room], axis=ax), 0.0)   # donor of eastward/northward flow
+    room_hi = np.maximum(np.concatenate([room, hi_edge], axis=ax), 0.0)   # donor of westward/southward flow
     s = np.sign(delta)[None]
     same = (np.sign(Q) == s) & (Q != 0.0) & (s != 0.0)
     rm = np.where(same, np.where(s > 0, room_lo, room_hi), 0.0)
@@ -423,8 +429,9 @@ def _give_back(Q: np.ndarray, delta: np.ndarray, room: np.ndarray, ax: int, full
     rest = rest - np.minimum(rest, cap)
     if not (rest > 0).any():
         return
-    full_lo = np.concatenate([np.zeros_like(np.take(full, [0], axis=ax)), full], axis=ax)
-    full_hi = np.concatenate([full, np.zeros_like(np.take(full, [0], axis=ax))], axis=ax)
+    z0 = np.zeros_like(np.take(full, [0], axis=ax))
+    full_lo = np.concatenate([np.take(full, [-1], axis=ax) if wrap else z0, full], axis=ax)
+    full_hi = np.concatenate([full, np.take(full, [0], axis=ax) if wrap else z0], axis=ax)
     fm = np.where(s > 0, full_lo, full_hi) * (rest > 0)[None]
     tot = fm.sum(axis=0)
     if ((rest > 0) & (tot <= 0)).any():

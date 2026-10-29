@@ -114,6 +114,7 @@ from core.components.vertical_coordinate import ALECoordinate
 from core.model.driver import Driver
 from core.model.contract import ConfigurationError, Issue, raise_issues
 from core.model.preflight import preflight
+from core.model.periodic import Periodic, periodic_grid
 from core.components.time_stepper import AB3, AB3Momentum, _ab3_kernel, ab3_combine  # noqa: F401  (re-exported)
 from core.model.threads import _THREADS, set_threads  # noqa: F401  (one shared list; re-exported)
 
@@ -1033,6 +1034,19 @@ class SigmaBaroclinic:
         face column over the bottom ``hbbl`` metres (MOM6 HBBL, MOM_set_viscosity.F90) — a vanished bed layer does
         not set the drag alone; applied implicitly at the bed of the coupled viscous solve (the depth-mean correction
         δ of SigmaWetDry.column_step includes it).  Legg et al. 2006: C_d = 2e-3
+    periodic : periodic horizontal axes, ``("x",)``, ``("y",)`` or ``("x", "y")`` (N3 task 3; default none, bit for
+        bit), in σ and ALE.  Arrays keep their shapes: with "x" the u-faces of columns 0 and nx are **one** face,
+        between cell nx−1 and cell 0, stored twice and always equal (likewise the v-face rows 0 and ny with "y",
+        and the corner rows/columns); the grid's wrap-face metrics become Δx_u = ½(Δx_t[nx−1] + Δx_t[0])
+        (``core.model.periodic.periodic_grid``).  Every horizontal operator sees the wrap: the implicit free
+        surface (face depth, gradient and one matrix coupling between cells nx−1 and 0), face depths, Coriolis,
+        flux-form and vector-invariant momentum, advective form and Laplacian viscosity, σ vertical advection,
+        Jacobian/two-term and finite-volume PGF, tracer advection with WENO5/UP3/'pc' and the FCT, K_h
+        diffusion, σ and ALE layer transports (PPM thickness flux, outflow limiter), ALE face thicknesses and CFL
+        truncation, quadratic bed drag and the GLS face viscosity.  Stencil kernels run on inputs padded with
+        wrapped halos and are cropped (as MOM6/MITgcm halo exchanges, ``core.model.periodic``); NumPy pair
+        operators compute the wrap face natively.  Pre-flight refuses an open boundary on a periodic axis.  Used by
+        the doubly periodic single-column cases (CROCO 5×5, MOM6 2×2) and for channels
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, n_layers: int = 10,
@@ -1056,9 +1070,12 @@ class SigmaBaroclinic:
                  drag_bg_vel: float = 0.0, hbbl: float = 10.0, salinity: bool = False, s_coef: float = 0.0,
                  s_ref: float = 35.0, sponge_S: np.ndarray | None = None, variance_budget: bool = False,
                  tef_face: int | None = None, tef_sign: int = 1, tef_region: np.ndarray | None = None,
-                 gls_stratified: bool = True, cp: float = 3985.0, jerlov: str = "I") -> None:
+                 gls_stratified: bool = True, cp: float = 3985.0, jerlov: str = "I",
+                 periodic: tuple[str, ...] = ()) -> None:
         _args = {k: v for k, v in locals().items() if k != "self"}
         raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
+        self.periodic = Periodic(periodic)                              # N3 task 3 (class docstring)
+        h_grid = periodic_grid(h_grid, self.periodic)                   # wrap-face metrics; unchanged without
         if ke_scheme == "godunov":                                      # correct spelling; the kernels use 'gudonov'
             ke_scheme = "gudonov"
         self._ob = OpenBoundary()                                       # N1: open-boundary component
@@ -1135,7 +1152,8 @@ class SigmaBaroclinic:
                                 nu_const=nu_const, theta=theta, g=g, d_min=d_min, dsigma=dsigma, solver=solver,
                                 flather_u=fl_u if self.open else None, flather_v=fl_v if self.open else None,
                                 clamped_u=cl_u, clamped_v=cl_v, gls_stratified=gls_stratified, rho0=rho0,
-                                gls_kt_min=float(kv) if kv > 0 else KT_MIN, external_closure=True)
+                                gls_kt_min=float(kv) if kv > 0 else KT_MIN, external_closure=True,
+                                periodic=self.periodic)
         self.gls_stratified = self.core.gls_stratified                 # True only with closure='gls' (N2a 8c)
         # turbulence closure as its own component (N3 task 1), stepped by the driver (phases 4 and 7); the core
         # keeps a reference only for the ``core.gls`` path
@@ -1249,6 +1267,12 @@ class SigmaBaroclinic:
             raise ValueError("bottom_drag='quadratic' needs vertical_coordinate='ale' (σ uses z0, the log-law)")
         self.bottom_drag, self.cd, self.drag_bg_vel, self.hbbl = bottom_drag, float(cd), float(drag_bg_vel), float(hbbl)
         self._bed_drag = QuadraticBedDrag(cd, drag_bg_vel, hbbl)
+        if self.periodic:                                               # every horizontal operator sees the wrap
+            for name in ("_momentum", "_pgf", "_tracer_advection", "_tracer_diffusion", "_layer_transport",
+                         "_vertical", "_bed_drag", "_closure"):
+                comp = getattr(self, name, None)
+                if comp is not None:
+                    comp.per = self.periodic
 
     def _setup_ale(self, vertical_coordinate, regrid, regrid_params, remap_scheme, z0, closure, h_thin_bed,
                    init_iterations, act, momentum=None, ke_scheme="arakawa", max_truncations=1000,

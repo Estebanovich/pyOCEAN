@@ -19,6 +19,7 @@ import numpy as np
 from core.dynamics import vector_invariant as vi
 from core.model import threads
 from core.model.contract import BuildContext, Issue, Role
+from core.model.periodic import NONE
 from core.vertical import regrid as rg
 from core.vertical import remap as rm
 from core.vertical.ale import face_fractions, face_transport_thickness
@@ -29,6 +30,7 @@ class ALECoordinate:
     role = Role.VERTICAL_COORDINATE
     reads = ("h", "T", "S", "eta")
     writes = ("h",)
+    per = NONE                       # periodic axes (core.model.periodic), set by the model
 
     def __init__(self, *, H: np.ndarray, active: np.ndarray, n_layers: int, rule: str, params: dict, remap_code,
                  h_thin_bed: float, max_truncations: int, vi_geom: dict, eos) -> None:
@@ -101,8 +103,14 @@ class ALECoordinate:
                 return val
         clip = self.regrid_rule != "sigma"
         H, act = np.nan_to_num(np.asarray(self.H, float)), self.active
-        x = face_transport_thickness(h, H, act, clip)
-        y = face_transport_thickness(h.swapaxes(1, 2), H.T, act.T, clip)
+        if self.per:                                                   # periodic: pad–crop, halo 1 (two cells)
+            p, sw = self.per, (lambda a: a.swapaxes(1, 2))             # noqa: E731
+            hp, Hp, ap = p.pad(h, "c", 1), p.pad(H, "c", 1), p.pad(act, "c", 1)
+            x = tuple(p.crop(q, "u", 1) for q in face_transport_thickness(hp, Hp, ap, clip))
+            y = tuple(sw(p.crop(sw(q), "v", 1)) for q in face_transport_thickness(sw(hp), Hp.T, ap.T, clip))
+        else:
+            x = face_transport_thickness(h, H, act, clip)
+            y = face_transport_thickness(h.swapaxes(1, 2), H.T, act.T, clip)
         val = (x, y)
         self._tt_cache = ((h, val),) + tuple(self._tt_cache)[:1]
         return val
@@ -133,8 +141,14 @@ class ALECoordinate:
         """
         g = self.vi_geom                                                    # CFL truncation backstop (MOM6 vertvisc_limit_vel)
         u_before, v_before = u_new, v_new
-        u_new, nu_, fu = vi.truncate_cfl(u_new, dt, g["dx_t"], hu1, self.h_thin_bed)
-        v_sw, nv_, fv = vi.truncate_cfl(v_new.swapaxes(1, 2), dt, g["dy_t"].T, hv1.swapaxes(1, 2), self.h_thin_bed)
+        if self.per:                                                   # donor across the wrap face (N3 task 3)
+            u_new, nu_, fu = vi.truncate_cfl(u_new, dt, g["dx_t"], hu1, self.h_thin_bed, periodic=self.per.x)
+            v_sw, nv_, fv = vi.truncate_cfl(v_new.swapaxes(1, 2), dt, g["dy_t"].T, hv1.swapaxes(1, 2),
+                                            self.h_thin_bed, periodic=self.per.y)
+        else:
+            u_new, nu_, fu = vi.truncate_cfl(u_new, dt, g["dx_t"], hu1, self.h_thin_bed)
+            v_sw, nv_, fv = vi.truncate_cfl(v_new.swapaxes(1, 2), dt, g["dy_t"].T, hv1.swapaxes(1, 2),
+                                            self.h_thin_bed)
         v_new = v_sw.swapaxes(1, 2)
         n_trunc = n_trunc_old + nu_ + nv_
         if n_trunc > self.max_truncations:

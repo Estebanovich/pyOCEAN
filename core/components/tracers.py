@@ -15,6 +15,11 @@ on inflow.  The inflow stack (exterior values of each advected field) is an argu
 means no open edge or no exterior, and each stage then uses its own values — so the component holds no state that
 changes from step to step.  The compiled kernels stay in ``core.dynamics.sigma_baroclinic`` (looked up there at
 call time).  Index order (ntr, k, j, i), k = 0 at the bed.
+
+Periodic axes (N3 task 3, ``per``): ``advect``, ``advect_fct`` and their NumPy references run on inputs padded with
+``TRACER_HALO`` wrapped cells (≥ the radius of three WENO5 stages plus the FCT limiter) and are cropped; the
+diffusion pads the ALE kernel by one cell and computes the σ wrap faces natively.  The single-stage helpers
+(``rhs``, ``faces_h``, ``flux_x`` …) are not wrapped: they are called inside the wrapped methods.
 """
 from __future__ import annotations
 
@@ -25,6 +30,7 @@ import numpy as np
 
 from core.model import threads
 from core.model.contract import BuildContext, Issue, Role
+from core.model.periodic import NONE, TRACER_HALO
 from core.vertical.ale import face_thickness
 
 
@@ -45,9 +51,34 @@ class TracerAdvection:
     role = Role.TRACER_ADVECTION
     reads = ("T", "tr", "Qx", "Qy", "Fz")
     writes = ("T", "tr")
+    per = NONE                       # periodic axes (core.model.periodic), set by the model
 
     def __init__(self, *, scheme: str, time: str, dt: float, ob) -> None:
         self.tracer_scheme, self.tracer_time, self.dt, self.ob = scheme, time, dt, ob
+
+    def _periodic(self, method, C, V0, V1, Qx, Qy, Fz, ok, inflow, flux_face_i, **kw):
+        """
+        ``method`` on the stack padded with TRACER_HALO wrapped cells along the periodic axes, cropped back.  The
+        TEF flux of u-face column i (``flux_face_i``) is taken at its padded column and cropped in y.
+        """
+        per, H = self.per, TRACER_HALO
+        pad = lambda a, kind: None if a is None else per.pad(a, kind, H)          # noqa: E731
+        fi = None if flux_face_i is None else flux_face_i + (H if per.x else 0)
+        args = [pad(C, "c"), pad(V0, "c"), pad(V1, "c"), pad(Qx, "u"), pad(Qy, "v")]
+        if Fz is not None:
+            args.append(pad(Fz, "c"))
+        args.append(pad(np.broadcast_to(ok, np.shape(C)[1:]), "c"))
+        self.per = NONE                                                # the inner call runs on the padded arrays
+        try:
+            res = method(*args, inflow=pad(inflow, "c"), flux_face_i=fi, **kw)
+        finally:
+            self.per = per
+        if fi is None:
+            return per.crop(res, "c", H)
+        out, fx = res
+        if per.y:
+            fx = np.ascontiguousarray(fx[..., H:fx.shape[-1] - H])
+        return per.crop(out, "c", H), fx
 
     def check(self, ctx: BuildContext) -> list[Issue]:
         return []
@@ -162,6 +193,9 @@ class TracerAdvection:
         ``flux_face_i`` (TEF, N2a task 7): also return the effective flux of the step through u-face column i,
         F_L + C·A (Zalesak 1979, eq. 14), (ntr, N, ny): (C_new, fx_i).
         """
+        if self.per:
+            return self._periodic(self.advect_fct, C, V0, V1, Qx, Qy, None, ok, inflow, flux_face_i,
+                                  unlimited=unlimited)
         if unlimited:
             return self.advect_fct_numpy(C, V0, V1, Qx, Qy, ok, unlimited=True, inflow=inflow,
                                          flux_face_i=flux_face_i)
@@ -209,6 +243,9 @@ class TracerAdvection:
         fct_coefficients (_fct_coeff_kernel).  ``unlimited``: C = 1 (the RK3 result; test of the identity).
         HYCOM mod_tsadvc.F90:877-905 does the same around its own scheme.
         """
+        if self.per:
+            return self._periodic(self.advect_fct_numpy, C, V0, V1, Qx, Qy, None, ok, inflow, flux_face_i,
+                                  unlimited=unlimited)
         dt = self.dt
         dV = V1 - V0
         div = lambda fx, fy: fx[..., 1:] - fx[..., :-1] + fy[..., 1:, :] - fy[..., :-1, :]   # noqa: E731
@@ -249,6 +286,8 @@ class TracerAdvection:
         ``flux_face_i`` (TEF, N2a task 7): also return the effective flux of the step through u-face column i,
         (ntr, N, ny): SSP-RK3 (F(c0) + F(c1))/6 + 2F(c2)/3; 'pc' the corrector's flux F(c^{n+½}).
         """
+        if self.per:
+            return self._periodic(self.advect_numpy, C, V0, V1, Qx, Qy, Fz, ok, inflow, flux_face_i)
         fi = flux_face_i
         fx = lambda c, centred=False: self.flux_x(c, Qx, Qy, ok, centred, inflow)[..., fi]   # noqa: E731
         dt = self.dt
@@ -286,6 +325,8 @@ class TracerAdvection:
         (C_new, (F(c0) + F(c1))/6 + 2F(c2)/3) — the SSP-RK3 combination that V¹c¹ − V⁰c⁰ differences
         (Shu & Osher 1988), with the x-face fluxes of the same kernel (``flux_x``).
         """
+        if self.per:
+            return self._periodic(self.advect, C, V0, V1, Qx, Qy, Fz, ok, inflow, flux_face_i)
         if self.tracer_time == "pc":
             return self.advect_numpy(C, V0, V1, Qx, Qy, Fz, ok, inflow, flux_face_i)
         dt = self.dt
@@ -320,6 +361,7 @@ class TracerDiffusion:
     role = Role.TRACER_DIFFUSION
     reads = ("T", "tr", "h", "eta")
     writes = ("T", "tr")
+    per = NONE                       # periodic axes (core.model.periodic), set by the model
 
     def __init__(self, *, kh: float, dt: float, ds: np.ndarray, fs, eos, pgf, face_depths: Callable,
                  layer_heights: Callable) -> None:
@@ -348,12 +390,19 @@ class TracerDiffusion:
         oky = np.isfinite(self.fs.H_v) & np.isfinite(Dv) & (Dv > self.fs.d_min)
         act = self.fs.active
         c = np.ascontiguousarray
-        out = np.empty(np.shape(T))
         numba.set_num_threads(threads._THREADS[0])
-        sb._diffuse_ale_kernel(c(T, dtype=float), c(Tw, dtype=float), c(np.where(act[None], np.nan_to_num(h), 0.0)),
-                            c(act), c(self.fs.Lu / self.fs.du), c(self.fs.Lv / self.fs.dv), c(okx), c(oky),
-                            c(V, dtype=float), float(self.kh), float(self.dt), out)
-        return out
+        args = (T, Tw, np.where(act[None], np.nan_to_num(h), 0.0), act, self.fs.Lu / self.fs.du,
+                self.fs.Lv / self.fs.dv, okx, oky, V)
+
+        def run(T, Tw, h, act, cx, cy, okx, oky, V):
+            out = np.empty(np.shape(T))
+            sb._diffuse_ale_kernel(c(T, dtype=float), c(Tw, dtype=float), c(h, dtype=float), c(act), c(cx, dtype=float),
+                                   c(cy, dtype=float), c(okx), c(oky), c(V, dtype=float), float(self.kh), float(self.dt),
+                                   out)
+            return out
+        if self.per:                                                   # periodic: pad–crop, halo 1
+            return self.per.apply(run, args, ("c", "c", "c", "c", "u", "v", "u", "v", "c"), "c", 1)
+        return run(*args)
 
     def diffuse_h_numpy(self, T: np.ndarray, V: np.ndarray, eta: np.ndarray, h: np.ndarray | None = None,
                          anomaly: bool = True) -> np.ndarray:
@@ -387,7 +436,33 @@ class TracerDiffusion:
                 * (Tw[..., 1:] - Tw[..., :-1])
             Fy[:, 1:-1, :] = -self.kh * (self.fs.Lv / self.fs.dv)[None, 1:-1, :] * hv[:, 1:-1, :] \
                 * (Tw[:, 1:, :] - Tw[:, :-1, :])
+        if self.per:                                                   # the wrap faces (cells n−1 and 0), natively
+            self._wrap_fluxes(Fx, Fy, Tw, Du, Dv, h)
         Fx = np.where(okx[None], Fx, 0.0)
         Fy = np.where(oky[None], Fy, 0.0)
         div = Fx[..., 1:] - Fx[..., :-1] + Fy[:, 1:, :] - Fy[:, :-1, :]
         return np.where(V > 0, T - self.dt * div / np.where(V > 0, V, 1.0), T)
+
+    def _wrap_fluxes(self, Fx: np.ndarray, Fy: np.ndarray, Tw: np.ndarray, Du: np.ndarray, Dv: np.ndarray,
+                     h: np.ndarray | None) -> None:
+        """Fluxes of ``diffuse_h_numpy`` through the periodic wrap faces (between cells n−1 and 0), in place, with
+        the arithmetic of its interior faces."""
+        fs, ds, kh = self.fs, self.ds[:, None], self.kh
+        act = fs.active
+        hh = None if h is None else np.where(act[None], np.nan_to_num(h), 0.0)
+        if self.per.x:
+            dT = Tw[..., 0] - Tw[..., -1]
+            if h is None:
+                f = -kh * (fs.Lu[:, 0] * np.nan_to_num(Du[:, 0]) / fs.du[:, 0])[None] * ds * dT
+            else:
+                hu = np.where((act[:, -1] & act[:, 0])[None], np.minimum(hh[..., -1], hh[..., 0]), 0.0)
+                f = -kh * (fs.Lu[:, 0] / fs.du[:, 0])[None] * hu * dT
+            Fx[..., 0] = Fx[..., -1] = f
+        if self.per.y:
+            dT = Tw[:, 0, :] - Tw[:, -1, :]
+            if h is None:
+                f = -kh * (fs.Lv[0, :] * np.nan_to_num(Dv[0, :]) / fs.dv[0, :])[None] * ds * dT
+            else:
+                hv = np.where((act[-1, :] & act[0, :])[None], np.minimum(hh[:, -1, :], hh[:, 0, :]), 0.0)
+                f = -kh * (fs.Lv[0, :] / fs.dv[0, :])[None] * hv * dT
+            Fy[:, 0, :] = Fy[:, -1, :] = f

@@ -78,6 +78,17 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
             modes[e] = mode
     if a["open_boundary_state"] is None and "clamped" in modes.values():
         err("open_boundary", "a 'clamped' open_boundary_mode needs open_boundary_state (the exterior to impose)")
+    # ---- periodic axes (N3 task 3): an axis is periodic or has open/closed edges, not both
+    per = a.get("periodic", ()) or ()
+    per = (per,) if isinstance(per, str) else tuple(per)
+    bad_axes = [ax for ax in per if ax not in ("x", "y")]
+    if bad_axes:
+        err("periodic", f"unknown periodic axes {bad_axes}; use 'x', 'y' or both")
+    for ax, edges in (("x", ("west", "east")), ("y", ("south", "north"))):
+        both = [e for e in edges if e in open_]
+        if ax in per and both:
+            err("periodic", f"periodic={per!r} and open boundary {both} on the same axis {ax!r}: a periodic axis has "
+                            "no edges; drop one of the two")
     # ---- thin layers, tracers, sponge, drag
     tlc = a["thin_layer_coupling"]
     if tlc is not None and tlc not in ("none", "mom6"):

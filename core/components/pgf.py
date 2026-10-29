@@ -19,6 +19,7 @@ from core.components.eos import LinearEOS
 from core.components.geometry import LayerGeometry
 from core.model import threads
 from core.model.contract import BuildContext, Issue, Role
+from core.model.periodic import NONE
 from core.vertical.pgf import fv_pgf, fv_pgf_rho
 
 SCHEMES = ("twoterm", "jacobian", "fv")
@@ -33,6 +34,7 @@ class PressureGradient:
     role = Role.PGF
     reads = ("eta", "T", "S", "h")
     writes = ()
+    per = NONE                       # periodic axes (core.model.periodic), set by the model
 
     def __init__(self, scheme: str, eos: LinearEOS, g: float, rho_ref=None) -> None:
         self.scheme, self.eos, self.g, self.rho_ref = scheme, eos, g, rho_ref
@@ -107,6 +109,8 @@ class PressureGradient:
 
         gx = np.zeros((n,) + geom.H_u.shape)
         gy = np.zeros((n,) + geom.H_v.shape)
+        if self.per:
+            return self._wrapped(along, gx, gy, geom, rp, z, r_s, z_s, P if self.scheme == "twoterm" else None)
         okx = np.isfinite(geom.H_u[:, 1:-1])
         oky = np.isfinite(geom.H_v[1:-1, :])
         if self.scheme == "twoterm":
@@ -121,6 +125,39 @@ class PressureGradient:
         gy[:, 1:-1, :] = np.where(oky, -ay / geom.dv[1:-1, :] / self.eos.rho0, 0.0)
         return gx, gy
 
+    def _wrapped(self, along, gx, gy, geom: LayerGeometry, rp, z, r_s, z_s, P):
+        """
+        The 'jacobian' / 'twoterm' force with periodic axes (N3 task 3): the column pairs along a periodic axis are
+        (n−1, 0), (0, 1), …, (n−2, n−1) — the cell arrays extended by the last cell in front — so faces 0 … n−1 are
+        computed in the usual way and face n is face 0.  Closed axes as without periodicity.
+        """
+        rho0 = self.eos.rho0
+        for axis, g, Hf, d, on in ((-1, gx, geom.H_u, geom.du, self.per.x), (-2, gy, geom.H_v, geom.dv, self.per.y)):
+            ext = (lambda a: np.concatenate([np.take(a, [-1], axis=axis), a], axis=axis)) if on else (lambda a: a)
+            lo = [slice(None)] * 3
+            hi = [slice(None)] * 3
+            lo[axis], hi[axis] = slice(None, -1), slice(1, None)
+            lo, hi = tuple(lo), tuple(hi)
+            a_, z_ = ext(rp), ext(z)
+            if P is not None:
+                a = along(a_[lo], a_[hi], z_[lo], z_[hi], ext(P)[lo], ext(P)[hi])
+            else:
+                rs_, zs_ = ext(r_s), ext(z_s)
+                a = along(a_[lo], a_[hi], z_[lo], z_[hi], s_lo=(rs_[lo], zs_[lo]), s_hi=(rs_[hi], zs_[hi]))
+            n_f = Hf.shape[axis]                                   # faces n + 1
+            fs = slice(0, n_f - 1) if on else slice(1, n_f - 1)  # faces the pairs above give
+            sl2 = [slice(None)] * 2
+            sl2[axis] = fs
+            ok = np.isfinite(Hf[tuple(sl2)])
+            sl3 = [slice(None)] * 3
+            sl3[axis] = fs
+            g[tuple(sl3)] = np.where(ok, -a / d[tuple(sl2)] / rho0, 0.0)
+            if on:
+                last, first = [slice(None)] * 3, [slice(None)] * 3
+                last[axis], first[axis] = n_f - 1, 0
+                g[tuple(last)] = g[tuple(first)]
+        return gx, gy
+
     def _fv(self, geom: LayerGeometry, eta: np.ndarray, T: np.ndarray,
             h: np.ndarray | None, S: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
         """
@@ -133,12 +170,14 @@ class PressureGradient:
             h = D[None] * geom.ds[:, None, None]
         ref = None if isinstance(self.rho_ref, str) else self.rho_ref        # "auto" before initial_state: ρ₀
         numba.set_num_threads(threads._THREADS[0])
+        kinds = ("c", "c", "c", "c", "u", "v")                            # periodic: pad–crop, halo 1 (two columns)
         if S is None and self.eos.t_coef != 0:
-            gx, gy = fv_pgf(h, np.nan_to_num(geom.H), np.nan_to_num(eta), np.nan_to_num(T), geom.du, geom.dv,
-                            self.eos.rho0, self.eos.t_coef, self.eos.t_ref, ref, self.g)
+            args = (h, np.nan_to_num(geom.H), np.nan_to_num(eta), np.nan_to_num(T), geom.du, geom.dv)
+            fn = lambda *a: fv_pgf(*a, self.eos.rho0, self.eos.t_coef, self.eos.t_ref, ref, self.g)   # noqa: E731
         else:
             rho = self.eos.density(np.nan_to_num(T), None if S is None else np.nan_to_num(S))
-            gx, gy = fv_pgf_rho(h, np.nan_to_num(geom.H), np.nan_to_num(eta), rho, geom.du, geom.dv,
-                                self.eos.rho0, ref, self.g)
+            args = (h, np.nan_to_num(geom.H), np.nan_to_num(eta), rho, geom.du, geom.dv)
+            fn = lambda *a: fv_pgf_rho(*a, self.eos.rho0, ref, self.g)                               # noqa: E731
+        gx, gy = self.per.apply(fn, args, kinds, ("u", "v"), 1) if self.per else fn(*args)
         return (np.where(np.isfinite(geom.H_u)[None], gx, 0.0),
                 np.where(np.isfinite(geom.H_v)[None], gy, 0.0))
