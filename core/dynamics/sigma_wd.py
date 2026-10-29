@@ -375,8 +375,8 @@ class SigmaWetDry:
                              self.z0 or 1e-4, cd_max=self.cd_max)
         cdv = first_layer_cd(np.maximum(np.nan_to_num(Dv, nan=self.d_min), self.d_min) * self.dsigma[0],
                              self.z0 or 1e-4, cd_max=self.cd_max)
-        tau_bu = cdu * np.abs(u[0]) * u[0] if self.z0 is not None else 0.0 * u[0]
-        tau_bv = cdv * np.abs(v[0]) * v[0] if self.z0 is not None else 0.0 * v[0]
+        tau_bu = cdu * np.abs(u[0]) * u[0] if self.z0 is not None else np.zeros_like(u[0])
+        tau_bv = cdv * np.abs(v[0]) * v[0] if self.z0 is not None else np.zeros_like(v[0])
         bx = 0.5 * (tau_bu[:, :-1] + tau_bu[:, 1:])
         by = 0.5 * (tau_bv[:-1, :] + tau_bv[1:, :])
         ny, nx = self.H.shape

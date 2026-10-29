@@ -54,6 +54,7 @@ from core.components.variance_budget import VarianceBudget
 from core.components.momentum import sum_terms
 from core.dynamics.sigma_wd import vertical_implicit
 from core.model import threads
+from physics.mixing.gls import KT_MIN
 from core.model.contract import Issue, raise_issues
 from core.vertical.ale import (DZ_FLOOR, blend_thin_layers, face_fractions, viscous_face_thickness,
                                zero_thin_bed_velocity)
@@ -289,6 +290,7 @@ class Driver:
         extra = {}
         if m.core.gls_stratified:                                      # N² from ρ(Tⁿ, Sⁿ) (N2a task 8c)
             extra["rho"] = m._eos.density(st.T, st.S if m.salinity else None)
+            m.core.gls.kt_min = m.kv if m.kv > 0 else KT_MIN           # kv set after construction reaches the floor
         eta_new, u_new, v_new, fluxes, closure = m._free_surface.step(st.eta, st.u, st.v, ctx.gu_ab, ctx.gv_ab, ctx.tu,
                                                                       ctx.tv, st.closure, m._ob.flather_args(ctx.ext),
                                                                       fw=ctx.fw, **extra)

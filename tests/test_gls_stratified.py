@@ -160,6 +160,43 @@ def test_kato_phillips_mixed_layer():
     assert g.akt[-5, 0] > 1e-3 > g.akt[5, 0]                       # mixing in the layer, background below
 
 
+def _column_akt(kind: str, sign: int, steps: int = 30) -> tuple[float, float]:
+    """
+    σ + GLS (gls_stratified) on the 10×6×6 basin, sheared by a 0.5 m seiche with turbulence seeded, stratified by
+    S (salinity=True, t_coef = 0) or by T alone (no S, t_coef > 0): sign +1 stable, 0 uniform, −1 unstable
+    (Δρ ≈ 0.23–0.24 kg m⁻³ over the column).  Returns the median interior κ_t after ``steps`` and the floor.
+    """
+    warnings.simplefilter("ignore")
+    k = np.arange(nc.NZ)[:, None, None] / (nc.NZ - 1) * np.ones((1, nc.NY, nc.NX))
+    if kind == "S":
+        m = nc._sigma(closure="gls", z0=1e-3, gls_stratified=True, salinity=True, t_coef=0.0, s_coef=0.78,
+                      s_ref=30.0)
+        m.core.gls.tke[:], m.core.gls.eps[:] = 1e-4, 1e-7
+        st = m.initial_state(10.0 * nc._eta(), np.full(k.shape, 12.0), S=30.0 - sign * 0.3 * k)
+    else:
+        m = nc._sigma(closure="gls", z0=1e-3, gls_stratified=True, t_coef=0.2)
+        m.core.gls.tke[:], m.core.gls.eps[:] = 1e-4, 1e-7
+        st = m.initial_state(10.0 * nc._eta(), 12.0 + sign * 1.2 * k)
+    for _ in range(steps):
+        st = m.step(st)
+    return float(np.median(m.core.gls.akt[1:-1])), m.core.gls.kt_min
+
+
+@pytest.mark.parametrize("kind", ["S", "T"])
+def test_model_n2_comes_from_its_density(kind):
+    """
+    The σ model hands the closure N² from its own ρ(T, S) (driver phase 4): with the same shear, the median κ_t
+    is stable ≪ uniform < unstable, and the stable column sits near the 1e-6 floor.  (a) salinity-driven,
+    (b) temperature-only.
+    """
+    stable, floor = _column_akt(kind, +1)
+    uniform, _ = _column_akt(kind, 0)
+    unstable, _ = _column_akt(kind, -1)
+    assert stable < 0.01 * uniform, (stable, uniform)
+    assert uniform < unstable, (uniform, unstable)
+    assert stable < 20 * floor, stable
+
+
 def _sal_model(**kw):
     """σ + GLS with S (weak haline stratification, T uniform), turbulence seeded."""
     warnings.simplefilter("ignore")
@@ -228,6 +265,14 @@ def test_kv_is_the_gls_tracer_floor():
     assert m2.core.gls.kt_min == 1e-4
     st = m2.step(st)
     assert m2.core.gls.akt.min() >= 1e-4
+
+
+def test_kv_set_after_construction_reaches_the_floor():
+    """Setting ``model.kv`` after construction changes the κ_t floor at the next step (as ke_scheme / kh, N1)."""
+    m, st = _sal_model()
+    m.kv = 3e-4
+    m.step(st)
+    assert m.core.gls.kt_min == 3e-4 and m.core.gls.akt.min() >= 3e-4
 
 
 def test_gls_stratified_preflight_warns_without_gls():

@@ -325,7 +325,7 @@ class GLSKEpsilon:
         sprod = np.where(pos, prod + buoy, prod)
         dcoef = np.where(pos, diss / k_old, diss / k_old - buoy / k_old)
         tke_new = self.tke.copy()
-        tke_new[0] = np.maximum(self.tke_min, us2s * 0 + ustar2_bot / cm0**2)
+        tke_new[0] = np.maximum(self.tke_min, ustar2_bot / cm0**2)
         tke_new[-1] = np.maximum(self.tke_min, us2s / cm0**2)
         zero = np.zeros(dz.shape[1])
         tke_new[1:-1] = self._solve(self.tke, sprod, dcoef, SIG_K_INV, akv_old, dz, dt, zero, zero, self.tke_min)
