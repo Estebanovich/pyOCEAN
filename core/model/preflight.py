@@ -13,6 +13,7 @@ from __future__ import annotations
 import numpy as np
 
 from core.model.contract import Issue
+from physics.surface.shortwave import JERLOV
 
 EDGES = ("west", "east", "south", "north")
 PGF = ("twoterm", "jacobian", "fv")
@@ -90,6 +91,11 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
     if lim == "fct" and not (ale and a["tracer_time"] == "ssprk3" and a["tracer_scheme"] in ("weno5", "weno5js")):
         err("tracer_advection", "tracer_limiter='fct' needs vertical_coordinate='ale', tracer_time='ssprk3' and a "
                                 "WENO5 tracer_scheme")
+    cp = a.get("cp", 3985.0)
+    if not (cp > 0):
+        err("heat", f"cp={cp!r}: the specific heat must be > 0 [J kg⁻¹ K⁻¹]")
+    if a.get("jerlov", "I") not in JERLOV:
+        err("heat", f"unknown jerlov type {a['jerlov']!r} (valid: {_opts(JERLOV)})")
     ntr = a["n_tracers"]
     if int(ntr) < 0 or (int(ntr) and not ale):
         err("tracer_advection", f"n_tracers={ntr!r}: passive tracers need vertical_coordinate='ale' and n ≥ 0")

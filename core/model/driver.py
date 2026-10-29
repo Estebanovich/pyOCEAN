@@ -51,6 +51,7 @@ import numba
 import numpy as np
 
 from core.components.freshwater import apply_freshwater
+from physics.surface.shortwave import layer_heating
 from core.components.variance_budget import VarianceBudget
 from core.components.momentum import sum_terms
 from core.dynamics.sigma_wd import vertical_implicit
@@ -71,6 +72,8 @@ class StepContext:
     tau_x: Any = None
     tau_y: Any = None
     fw: Any = None                   # surface freshwater flux P − E [m s⁻¹] (N2a), or None
+    heat: Any = None                 # prescribed surface heat flux {"Q_ns", "Q_sw"} [W m⁻²] (N3 task 2), or None
+    bflux: Any = None                # {"Q_ns", "Q_sw", "sw_frac_iface"} of the step for the closure (None without heat)
     vals: dict = field(default_factory=dict)
 
     def __getattr__(self, name: str):
@@ -146,11 +149,15 @@ class Driver:
             raise_issues([Issue("error", "driver", f"N1 supports a single rate: dt_dyn={self.dt_dyn}, "
                                                    f"dt_tracer={self.dt_tracer}, dt_therm={self.dt_therm} must be equal")])
         self.last_terms: dict | None = None
+        self.last_bflux: dict | None = None
 
     # ------------------------------------------------------------------ driver
-    def step(self, st, tau_x=None, tau_y=None, fw=None):
-        """One step; ``fw`` (ny, nx) is the surface freshwater flux P − E [m s⁻¹] (N2a, checked by the facade)."""
-        ctx = StepContext(st, tau_x, tau_y, fw)
+    def step(self, st, tau_x=None, tau_y=None, fw=None, heat=None):
+        """
+        One step; ``fw`` (ny, nx) is the surface freshwater flux P − E [m s⁻¹] (N2a, checked by the facade);
+        ``heat`` the dict {"Q_ns", "Q_sw" (optional)} [W m⁻², into the ocean] of the surface heat flux (N3 task 2).
+        """
+        ctx = StepContext(st, tau_x, tau_y, fw, heat)
         hashes: dict[str, str] = {}
         ale = self.m.ale
         for name in PHASES:
@@ -163,6 +170,7 @@ class Driver:
         if m.tef_region_budget is not None:
             self._tef_region(ctx, st, ctx.new_state)
         m._ext, m._fluxes, m._last_layer_fluxes = ctx.ext, ctx.fluxes, ctx.lf
+        self.last_bflux = ctx.bflux                  # heat-flux record of the closure (N3 task 2), None without heat
         m._T_in = ctx.vals.get("T_in", m._T_in)
         m._tr_in = ctx.vals.get("tr_in", m._tr_in)
         m._S_in = ctx.vals.get("S_in", m._S_in)
@@ -243,6 +251,32 @@ class Driver:
         _, n_lim, var_surf = apply_freshwater(C, lay, V_adv, V_fw, m.dt * np.nan_to_num(m.area) * ctx.fluxes.fw,
                                               dt=m.dt)
         ctx.set(n_limited_fw=n_lim, var_surf=var_surf)
+
+    def _heat(self, ctx: StepContext, C: np.ndarray, V1: np.ndarray, bud) -> None:
+        """
+        Prescribed surface heat flux on T (stack member 0), in place, after the freshwater substep (N3 task 2,
+        ``physics.surface.shortwave``):  ΔT_k = Δt q_k / (ρ₀ c_p h_k),  Σ_k q_k = Q_ns + Q_sw,  h_k = V¹_k / A.
+        Q_ns enters the top layer; Q_sw is shared with the Paulson & Simpson (1977) interface fractions and what
+        reaches the bed stays in the bottom layer.  Ignored on land and dry cells (the mask of the free-surface fw:
+        active and H + ηⁿ > d_min).  Sets ``ctx.bflux`` (for the closure) and the budget term ``T_surf``:
+        V¹ (Tⁿᵉʷ² − Tᵒˡᵈ²)/Δt, a source of Σ V T².
+        """
+        heat = ctx.heat
+        if heat is None:
+            return
+        m = self.m
+        A = np.nan_to_num(m.area)
+        wet = m.fs.active & (m.fs.H + ctx.st.eta > m.fs.d_min) & (A > 0)
+        h = np.where(wet[None] & (V1 > 0), V1 / np.where(A > 0, A, 1.0)[None], 0.0)
+        Q_ns = np.where(wet, heat["Q_ns"], 0.0)
+        Q_sw = None if heat.get("Q_sw") is None else np.where(wet, heat["Q_sw"], 0.0)
+        q, f = layer_heating(h, Q_ns, Q_sw, m.jerlov)
+        T_old = C[0].copy() if bud is not None else None
+        pos = h > 0
+        C[0] += np.where(pos, q * m.dt / (m.rho0 * m.cp * np.where(pos, h, 1.0)), 0.0)
+        if bud is not None:
+            bud.source("T_surf", V1 * (C[0] ** 2 - T_old**2) / m.dt)
+        ctx.bflux = {"Q_ns": Q_ns, "Q_sw": Q_sw, "sw_frac_iface": f}
 
     def _budget_advection(self, ctx: StepContext, C: np.ndarray, lay: dict[str, int], V1: np.ndarray):
         """
@@ -326,6 +360,7 @@ class Driver:
             self._freshwater(ctx, C, lay, lf.V1, lf.V_fw)
             self._budget_surface(ctx, bud, C, lf.V1, lf.V_fw)
             V1 = lf.V_fw                                               # = layer_volumes(ηⁿ⁺¹)
+        self._heat(ctx, C, V1, bud)                                    # prescribed surface heat flux (N3 task 2)
         T_new = C[0]
         S_new = C[lay["S"]] if sal else None
         if m.kh > 0:
@@ -461,6 +496,7 @@ class Driver:
             self._freshwater(ctx, C, lay, V1, lf.V_fw)
             self._budget_surface(ctx, bud, C, V1, lf.V_fw)
             h_lag, V1 = lf.h_fw, lf.V_fw                               # diffusion and sponge on h† + fw Δt
+        self._heat(ctx, C, V1, bud)                                    # prescribed surface heat flux (N3 task 2)
         T_lag = C[0]
         S_lag = C[lay["S"]] if sal else None
         tr_lag = [C[lay["tr"] + i] for i in range(ntr)]

@@ -1056,7 +1056,7 @@ class SigmaBaroclinic:
                  drag_bg_vel: float = 0.0, hbbl: float = 10.0, salinity: bool = False, s_coef: float = 0.0,
                  s_ref: float = 35.0, sponge_S: np.ndarray | None = None, variance_budget: bool = False,
                  tef_face: int | None = None, tef_sign: int = 1, tef_region: np.ndarray | None = None,
-                 gls_stratified: bool = True) -> None:
+                 gls_stratified: bool = True, cp: float = 3985.0, jerlov: str = "I") -> None:
         _args = {k: v for k, v in locals().items() if k != "self"}
         raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
         if ke_scheme == "godunov":                                      # correct spelling; the kernels use 'gudonov'
@@ -1198,6 +1198,7 @@ class SigmaBaroclinic:
             raise ValueError("tracer_limiter='fct' needs vertical_coordinate='ale', tracer_time='ssprk3' and a "
                              "WENO5 tracer_scheme")
         self.tracer_limiter = tracer_limiter
+        self.cp, self.jerlov = float(cp), jerlov                       # heat flux: c_p [J kg⁻¹ K⁻¹], Jerlov type
         self.n_tracers = int(n_tracers)
         if self.n_tracers < 0 or (self.n_tracers and not self.ale):
             raise ValueError(f"n_tracers={n_tracers!r}: passive tracers need vertical_coordinate='ale' and n ≥ 0")
@@ -1696,7 +1697,7 @@ class SigmaBaroclinic:
 
     # ------------------------------------------------------------------ step
     def step(self, st: SigmaState, tau_x: np.ndarray | None = None, tau_y: np.ndarray | None = None,
-             fw: np.ndarray | None = None) -> SigmaState:
+             fw: np.ndarray | None = None, heat: dict | None = None) -> SigmaState:
         """
         Advance one step.  tau_x (ny, nx+1), tau_y (ny+1, nx): surface (wind) stress at the u- and
         v-faces [N m⁻²]; τ/ρ₀ enters as the top boundary flux of the implicit vertical viscosity
@@ -1706,7 +1707,14 @@ class SigmaBaroclinic:
         fw (ny, nx): surface freshwater flux P − E [m s⁻¹, positive into the ocean] (N2a), a real volume source of
         the free surface (Huang 1993; MITgcm useRealFreshWaterFlux), ignored on land and dry cells; it needs
         ``salinity=True`` (checked here, since the constructor pre-flight cannot see a step argument).
+
+        heat : prescribed surface heat flux (N3 task 2), a dict ``{"Q_ns": (ny, nx), "Q_sw": (ny, nx) optional}``
+        [W m⁻², positive into the ocean].  Q_ns heats the top layer; Q_sw penetrates with the Paulson & Simpson
+        (1977) profile of the Jerlov type ``jerlov`` and what reaches the bed stays in the bottom layer; ΔT =
+        Q Δt / (ρ₀ c_p h).  Ignored on land and dry cells.  None (default) changes nothing, bit for bit.
         """
+        if heat is not None:
+            heat = self._check_heat(heat)
         if fw is not None:
             fw = np.asarray(fw, float)
             issues = []
@@ -1716,7 +1724,25 @@ class SigmaBaroclinic:
                 issues.append(Issue("error", "free_surface",
                                     f"fw must have shape {self.H.shape} (ny, nx), got {fw.shape}"))
             raise_issues(issues)
-        return self._driver.step(st, tau_x, tau_y, fw)
+        return self._driver.step(st, tau_x, tau_y, fw, heat)
+
+    def _check_heat(self, heat: dict) -> dict:
+        """Validated copy of the ``heat`` dict of ``step`` (keys, shapes), every error at once."""
+        issues = []
+        if not isinstance(heat, dict) or "Q_ns" not in heat:
+            raise_issues([Issue("error", "heat", "heat must be a dict with the key 'Q_ns' (and optionally 'Q_sw')")])
+        for k in set(heat) - {"Q_ns", "Q_sw"}:
+            issues.append(Issue("error", "heat", f"unknown heat key {k!r} (valid: 'Q_ns', 'Q_sw')"))
+        out = {}
+        for k in ("Q_ns", "Q_sw"):
+            if heat.get(k) is None:
+                continue
+            out[k] = np.asarray(heat[k], float)
+            if out[k].shape != self.H.shape:
+                issues.append(Issue("error", "heat", f"heat['{k}'] must have shape {self.H.shape} (ny, nx), "
+                                                     f"got {out[k].shape}"))
+        raise_issues(issues)
+        return out
 
 
 def _delegate(name: str) -> property:
