@@ -95,11 +95,12 @@ CLASSIFICATION: dict[str, list[tuple[tuple[str, ...], str, str]]] = {
     "D": [
         (SAL, "c", "ALE-σ s_in − s_out 2.7 vs 10.1 and Q_in 44 vs ≈ 7 m³/s (Knudsen with GETM's values): constant low "
                    "ν → strong gravitational circulation [hypothesis]; σ+GLS region nearly fresh (S_region 3–8, "
-                   "head S = 0) with one salt intrusion inside the window"),
+                   "head S = 0); a salt intrusion at cycles 478–494, just before the window"),
         _DV,
-        (STORE, "c", "σ+GLS relaxation oscillation (S_region −0.12 per cycle, then an intrusion near cycle 480 adds "
-                     "4 g/kg): dS = −79 dominates Me; ALE-σ steady (−0.06 %/100 cycles)"),
-        (MIX, "c", "ALE-σ +92 % (strong exchange); σ+GLS −67 % from the storage of the intrusion (its Mp 2288 vs "
+        (STORE, "c", "σ+GLS: the window (cycles 500–600) samples only the drain after a salt intrusion at cycles "
+                     "478–494 (S_region 8.0 → 4.4, ≈ −0.036 per cycle): dS = −79 dominates Me; ALE-σ steady "
+                     "(−0.06 %/100 cycles)"),
+        (MIX, "c", "ALE-σ +92 % (strong exchange); σ+GLS −67 % from the storage of the drain (its Mp 2288 vs "
                    "GETM 2193)"),
         (SPLIT, "c", "ALE-σ M_num 79 = river inflow cell (78 in one cycle, S ≈ 3.5 there); σ+GLS 0.1: fresh head"),
     ],

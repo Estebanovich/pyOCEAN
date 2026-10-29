@@ -100,7 +100,8 @@ INIT_S = S_OCEAN                            # initial S uniform at rest [no dado
 #     under the evaporation jet, ~22 h); with the stratified GLS (task 8c, ν down to 1e-5 under the halocline) the
 #     ebb surface jet reaches 1–1.5 m/s near x = 68 km and at 120 s (|u| Δt/Δx ≈ 0.75–0.9) B, C and D blow up at
 #     cycles 99–134 (grid-scale 3–4 Δx mode of the AB3 WENO5 momentum, A_h = 0, growing ×1.3 per step); 60 s keeps
-#     |u| Δt/Δx ≤ 0.45 (A ran 600 cycles at 120 s; all four use 60 s);
+#     |u| Δt/Δx ≤ 0.36 in A–C and 0.46 at D's salt-intrusion peak (series.npz, ¼-cycle records; README)
+#     (A ran 600 cycles at 120 s; all four use 60 s);
 #   ale_sigma: T_M2/498 ≈ 89.8 s — B stops at 150 s (CFL velocity truncation, |u| dt/dx > 0.5, of the 0.67 m/s ebb at
 #     the mouth face) and is stable at 120 s, where the 0.78 m/s peak already gives |u| dt/dx = 0.47
 DT_DEFAULT = {"sigma_gls": T_M2 / 746, "ale_sigma": T_M2 / 498}
