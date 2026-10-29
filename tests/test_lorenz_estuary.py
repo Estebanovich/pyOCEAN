@@ -10,6 +10,8 @@ pyOCEAN benchmark (validation/lorenz_estuary/).
    region's model mixing.
 3. In ``sigma_gls`` the vertical diffusivity of S is the GLS κ_t (stratified k-ε, N2a task 8c; before 8c it was the
    constant ``kv`` and GLS had no buoyancy term, N2a Review Focus 5, now superseded).
+4. ``compare.py`` (task 8b): the (a)–(d) classification names Table 2 rows, the steadiness check recovers a known
+   drift from ¼-cycle records, and the table prints GETM, both configurations, the class and |Me − M_tot|/M_tot.
 Index order (k, j, i), k = 0 at the bed.
 """
 from __future__ import annotations
@@ -184,3 +186,58 @@ def test_gls_config_uses_gls_tracer_diffusivity(monkeypatch):
         np.testing.assert_array_equal(nu, m.core.gls.akt)
     akt = m.core.gls.akt[1:-1]
     assert akt.min() >= 1e-6 and akt.max() > 1e-4                           # κ_t from the closure, not constant
+
+
+# --- compare.py (N2a task 8b): classification of Table 2 and steadiness of the runs ----------------------------------
+
+def test_compare_classification_names_table_rows():
+    """Every classified key is a Table 2 row of ROWS, every class one of (a)–(d) (CLAUDE.md), '?' = hypothesis."""
+    from validation.lorenz_estuary import compare
+    keys = {k for _, k, _ in compare.ROWS}
+    for exp, entries in compare.CLASSIFICATION.items():
+        assert exp in case.TABLE_1
+        for rows, cls, why in entries:
+            assert set(rows) <= keys, (exp, rows)
+            assert cls.rstrip("?") in {"a", "b", "c", "d"} and why
+    assert compare.row_classes("B")["dV"] == "d?" and compare.row_classes("A").get("dV") is None
+
+
+def _fake_series(path, S_region, cycles=600):
+    """series.npz of a run (records every ¼ M2 cycle) whose S_region follows ``S_region(t_cycles)`` + an M2 signal."""
+    t = np.arange(1, 4 * cycles + 1) * case.T_M2 / 4
+    tc = t / case.T_M2
+    S = S_region(tc) + 0.5 * np.sin(2 * np.pi * (tc - 0.125))      # the tidal part cancels in a cycle mean
+    data = np.zeros((t.size, 9))
+    data[:, 0], data[:, 5], data[:, 6] = t, S, S + 5.0
+    path.mkdir(parents=True)
+    np.savez(path / "series.npz", data=data, columns=np.array(
+        ["t", "eta_ocean", "eta_transect", "eta_river", "V_region", "S_region", "S_max", "umax", "n_limited"]))
+
+
+def test_compare_steadiness_from_cycle_means(tmp_path):
+    """A linear drift of 1 g/kg per 100 cycles is recovered from ¼-cycle records (tide removed by cycle means)."""
+    from validation.lorenz_estuary import compare
+    _fake_series(tmp_path / "B_sigma_gls", lambda c: 30.0 + 0.01 * c)
+    _fake_series(tmp_path / "B_ale_sigma", lambda c: 30.0 + 0.0 * c)
+    s = compare.steadiness(tmp_path, "B", "sigma_gls")
+    assert s["slope"] == pytest.approx(1.0, rel=1e-9) and s["slope_max"] == pytest.approx(1.0, rel=1e-9)
+    # records at ¼, ½, ¾ and 1 of each cycle: the cycle mean sits at cycle + 0.625
+    assert s["S_region"] == pytest.approx(30.0 + 0.01 * 550.125, rel=1e-12) and s["verdict"] == "drifting"
+    s = compare.steadiness(tmp_path, "B", "ale_sigma")
+    assert abs(s["slope"]) < 1e-10 and s["std"] < 1e-10 and s["verdict"] == "steady"
+    assert compare.steadiness(tmp_path, "C", "ale_sigma") is None
+    assert "not run" in compare.steadiness_table(tmp_path)
+
+
+def test_compare_table_from_summary(tmp_path):
+    """compare.table prints GETM, both configurations, the class column and |Me − M_tot|/M_tot from summary.json."""
+    import json
+    from validation.lorenz_estuary import compare
+    keys = [k for _, k, _ in compare.ROWS]
+    summ = {k: 2.0 for k in keys}
+    summ.update(Me=100.0 * (1 + 1e-11), M_model_tot=100.0)
+    (tmp_path / "D_ale_sigma").mkdir()
+    (tmp_path / "D_ale_sigma" / "summary.json").write_text(json.dumps(summ))
+    txt = compare.table(tmp_path, "D")
+    assert "| Class |" in txt and "| s_in [g/kg] | 24.04 | nan | 2 | c |" in txt
+    assert "| 1.0e-11 |" in txt and "Classes:" in txt
