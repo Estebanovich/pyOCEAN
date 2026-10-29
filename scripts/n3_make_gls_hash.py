@@ -2,7 +2,8 @@
 """
 Write (or check) the stratified σ + GLS hashes of ``tests/test_closure_component.py`` (N3 task 1): state and
 closure hashes of two σ + GLS (gls_stratified) cases after 1, 10 and 50 steps.  Generated with the code at 7ee57ad,
-before the closure was extracted from ``SigmaWetDry``; regenerate only for an intended physics change.
+before the closure was extracted from ``SigmaWetDry``; regenerated in N3 task 9b (log-law drag with the full
+bed speed, class-(a) fix: both cases have z0 and v ≠ 0); regenerate only for an intended physics change.
 
     python scripts/n3_make_gls_hash.py           # write tests/data/n3_gls_sigma_hash.json
     python scripts/n3_make_gls_hash.py --check   # recompute and compare

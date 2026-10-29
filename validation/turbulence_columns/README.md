@@ -89,17 +89,18 @@ RMS(pyOCEAN σ − CROCO)/rango(CROCO) a la mitad / al final de la corrida (z* d
 |---|---|---|---|---|---|---|---|---|
 | willis_deardorff | 0.000/0.000 | — | — | 0.000/0.000 | 0.000/0.000 | 0.000/0.000 | 0.000/0.000 | D_m(k) 72 h 12.46 / 12.46 m, SST 20.85 / 20.85 |
 | diurnal_cycle | 0.000/0.000 | — | — | 0.002/0.002 | 0.001/0.001 | 0.004/0.004 | 0.003/0.003 | SST día 8: rango 0.340 / 0.339 K, media 21.947 / 21.947; D_m 06 h 26.68 / 26.67 m |
-| forced_ekbbl | — | 0.007/0.006 | 0.001/0.002 | 0.005/0.003 | 0.009/0.010 | 0.000/0.000 | 0.039/0.040 | ū 16.66 / 16.68 m/s; ángulo en la capa del fondo **75.8° / 62.8°**; k máx 0.131 / 0.122 |
-| forced_dbleek | — | 0.001/0.001 | 0.001/0.002 | 0.001/0.001 | 0.000/0.000 | 0.002/0.008 | 0.001/0.007 | ū 0.84 / 0.84 mm/s, v̄ 5.07 / 5.09 mm/s, ángulo 63.1° / 63.4° |
+| forced_ekbbl | — | 0.000/0.000 | 0.000/0.000 | 0.003/0.005 | 0.000/0.001 | 0.000/0.000 | 0.012/0.022 | ū 16.66 / 16.66 m/s; ángulo en la capa del fondo **75.8° / 76.0°** (antes de la tarea 9b: 62.8°); k máx 0.131 / 0.130 |
+| forced_dbleek | — | 0.000/0.000 | 0.000/0.000 | 0.001/0.001 | 0.000/0.000 | 0.001/0.003 | 0.001/0.003 | ū 0.84 / 0.84 mm/s, v̄ 5.07 / 5.07 mm/s, ángulo 63.1° / 63.2° (antes 63.4°) |
 | forced_nonrotbbl | — | 0.000/0.000 | 0.009/0.009 | 0.000/0.000 | 0.001/0.001 | 0.001/0.001 | 0.001/0.001 | v̄ −0.1341 / −0.1331 m/s (ley log: −0.126); ν máx 4.13e-3 / 4.13e-3 |
 | forced_oscnonrotbbl | — | 0.000/0.000 | 0.007/0.002 | 0.048/0.029 | 0.034/0.009 | 0.010/0.008 | 0.011/0.009 | v̄ último ciclo: amplitud 0.1113 / 0.1109 m/s, fase −125.5° / −125.5° |
 
 Teoría de convección penetrante (Willis–Deardorff, modelo de salto de orden cero, h² = 2(1 + 2A) B₀ t / N²
 [verificar]): 11.3 m sin arrastre (A = 0) y 13.3 m con A = 0.2; CROCO y pyOCEAN dan 12.5 m (k) y 13 m (T).
 
-**Pasa** en cinco de seis casos con errores ≤ 1 % del rango (el ciclo diurno ≤ 0.4 %, la capa oscilante ≤ 5 % en k
-y ε a media corrida, en las fases de k pequeño). **FORCED_EKBBL no pasa en la capa del fondo** (clase a, abajo); lejos
-del fondo (u, v, ν) coincide a < 1 %.
+**Pasa** en los seis casos con errores ≤ 1 % del rango en u, v, T, ν (el ciclo diurno ≤ 0.4 %, la capa oscilante ≤ 5 %
+en k y ε a media corrida, en las fases de k pequeño; FORCED_EKBBL κ_t 1.2/2.2 %). FORCED_EKBBL no pasaba en la capa
+del fondo (62.8° contra 75.8°, clase a): el arrastre log usaba la velocidad de la propia componente. Corregido en la
+tarea 9b (rapidez completa √(u² + v̄²), CROCO get_vbc.F:517-528): 76.0° en σ y z*.
 
 ### 3. σ contra ALE (criterio 3)
 
@@ -110,8 +111,8 @@ max |ALE − σ| / max |σ| en toda la corrida:
 | kato_phillips | z* | 8.5e-13 | 2.9e-12 | 0 | 5.2e-12 | 1.3e-12 | 2.2e-10 | 3.7e-10 |
 | willis_deardorff | z* | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | diurnal_cycle | z* | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| forced_ekbbl | z* | 0 | 9.8e-14 | 2.0e-13 | 4.9e-14 | 7.4e-14 | 0 | 3.4e-13 |
-| forced_dbleek | z* | 3.7e-15 | 2.6e-15 | 4.1e-15 | 2.8e-15 | 2.1e-15 | 8.3e-15 | 6.9e-15 |
+| forced_ekbbl | z* | 0 | 1.1e-13 | 2.2e-13 | 4.8e-14 | 7.2e-14 | 0 | 3.6e-13 |
+| forced_dbleek | z* | 3.4e-15 | 5.2e-12 | 4.0e-12 | 4.2e-12 | 2.2e-13 | 7.0e-11 | 5.9e-11 |
 | forced_nonrotbbl | z* | 1.9e-12 | 0 | 1.1e-12 | 3.0e-12 | 2.2e-12 | 1.8e-10 | 4.0e-10 |
 | forced_oscnonrotbbl | z* | 8.3e-13 | 0 | 5.6e-12 | 1.1e-11 | 5.1e-12 | 1.5e-09 | 3.0e-09 |
 | kato_phillips | híbrido | 1.9e-4 | 1.9e-3 | 0 | 1.6e-2 | 5.7e-3 | 4.5e-2 | 4.0e-2 |
@@ -168,8 +169,8 @@ Lorenz y DOME (capas gruesas, Δt de 600 s), donde Burchard (2002) espera la dif
 | kato_phillips (N = 100) | 3600 | 35 s (9.8 ms/paso) | 54 s (15.0) | 54 s (15.0) | 54 s (15.0) | 69 s (19.1) |
 | willis_deardorff (50) | 8640 | 30 s (3.4) | 53 s (6.1) | 50 s (5.8) | 51 s (5.9) | 68 s (7.9) |
 | diurnal_cycle (150) | 23040 | 250 s (10.9) | 379 s (16.4) | 375 s (16.3) | 377 s (16.4) | 509 s (22.1) |
-| forced_ekbbl (40) | 2880 | 19 s (6.5) | 25 s (8.7) | — | — | — |
-| forced_dbleek (25) | 2880 | 12 s (4.3) | 17 s (6.0) | — | — | — |
+| forced_ekbbl (40) | 2880 | 18 s (6.4) | 23 s (8.1) | — | — | — |
+| forced_dbleek (25) | 2880 | 13 s (4.4) | 16 s (5.4) | — | — | — |
 | forced_nonrotbbl (50) | 3600 | 21 s (5.8) | 31 s (8.5) | — | — | — |
 | forced_oscnonrotbbl (50) | 7200 | 41 s (5.7) | 60 s (8.4) | — | — | — |
 
@@ -180,7 +181,7 @@ celdas de la advección periódica (31 × 31 celdas para una columna 5 × 5).
 
 | diferencia | clase | evidencia |
 |---|---|---|
-| FORCED_EKBBL: ángulo de la capa del fondo 62.8° contra 75.8°, k máx −7 %, κ_t 4 % | **(a) nuestro** | El arrastre log de pyOCEAN usa la velocidad de la propia componente en cada cara (C_d \|u\| u, C_d \|v\| v), CROCO usa \|U\| = √(u² + v²) (nota del ledger, tarea 4). En la capa del fondo CROCO tiene (u, v) = (0.60, 2.36) m/s, pyOCEAN (1.18, 2.31): con \|u\| = 1.18 en vez de \|U\| ≈ 2.4 el esfuerzo sobre u sale a la mitad y u del fondo al doble. En DBLEEK (u ≈ v pequeños) el efecto es 0.3°, en los casos sin rotación (solo v) cero. No se cambia el modelo en esta tarea. |
+| FORCED_EKBBL: ángulo de la capa del fondo 62.8° contra 75.8°, k máx −7 %, κ_t 4 % | **(a) nuestro** | El arrastre log de pyOCEAN usa la velocidad de la propia componente en cada cara (C_d \|u\| u, C_d \|v\| v), CROCO usa \|U\| = √(u² + v²) (nota del ledger, tarea 4). En la capa del fondo CROCO tiene (u, v) = (0.60, 2.36) m/s, pyOCEAN (1.18, 2.31): con \|u\| = 1.18 en vez de \|U\| ≈ 2.4 el esfuerzo sobre u sale a la mitad y u del fondo al doble. En DBLEEK (u ≈ v pequeños) el efecto es 0.3°, en los casos sin rotación (solo v) cero. **Corregido en la tarea 9b**: σ y z* dan 76.0° (CROCO 75.8°), k máx 0.130 (0.131); DBLEEK 63.2° (63.1°). |
 | CROCO-KPP con EOS lineal: B₀ × ρ₀ | **(d) CROCO** | `alfabeta.F:133` vs `:116-118`; corregido localmente (arriba). |
 | KPP de pyOCEAN contra CROCO-KPP: h_bl −20 % (Kato), −13 % (Willis), −27 % (ciclo diurno 06 h) | **(c)** | CVMix (Ri_c = 0.3, sin núcleo Kern) contra el KPP 2005 "if-less" de CROCO (Ric = 0.45, 0.15 diurno, `lmd_skpp2005.F:95-117`) y el preset con Ri interior y convección. pyOCEAN queda más cerca de Price (−3.7 %) y de la teoría de Willis (13.4 contra 11.3–13.3 m). |
 | Híbrido − σ: D_m −5.1 m en una hora del ciclo diurno; ν, κ_t en la base de la capa de mezcla | **(c)**, con un punto abierto | Malla distinta (capas que colapsan en la base). La capa de 1 mm sin fusionar justo en la base es el umbral de 1 mm de la tarea 5. |
@@ -189,8 +190,9 @@ celdas de la advección periódica (31 × 31 celdas para una columna 5 × 5).
 
 ## Qué debe mejorar pyOCEAN
 
-1. **Arrastre log con la rapidez completa** √(u² + v²) en cada cara (como CROCO y MOM6) en σ y ALE: hoy en una capa de
-   Ekman de fondo el ángulo de giro sale 13° menor. Afecta Lorenz/DOME/regional con rotación. (clase a)
+1. ✅ **Arrastre log con la rapidez completa** √(u² + v̄²) en cada cara (como CROCO y MOM6) en σ y ALE: hecho en la
+   tarea 9b (`physics.bottom_friction.cross_velocity_at_faces`); el ángulo de la capa de Ekman de fondo pasó de 62.8° a
+   76.0° (CROCO 75.8°). Cambia Lorenz/DOME/regional con rotación y z0. (clase a)
 2. **Umbral de fusión de capas delgadas de la GLS** (1 mm): en el híbrido las capas de 1 mm–2 cm aparecen la mitad del
    tiempo en la base de la capa de mezcla diurna, y una de 1.0 mm sin fusionar cortó la mezcla 5 m durante una hora.
    Evaluar el umbral relativo/dependiente de Δt de MOM6 (≈ 8 mm) antes de DOME híbrido.

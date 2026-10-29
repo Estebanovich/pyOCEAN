@@ -601,8 +601,8 @@ class Driver:
         """
         Bed u*²_b = |τ_b|/ρ₀ (ny, nx) [m² s⁻²] of the closure in ALE (N3 task 4): τ_b/ρ₀ = Σ_k r_k u_k at the faces,
         averaged to the centres (``bottom_drag.bed_ustar2``).  Law of the wall: r_k recomputed at the new velocities
-        (C_d |u_b| u_b, as σ's ``SigmaWetDry.bed_ustar2``; C_d on the face geometry of hⁿ); quadratic drag: the
-        rates of the step (from uⁿ) times the new velocities; no bed drag: zero.
+        (C_d |U_b| u_b with the full bed speed, N3 task 9b, as σ's ``SigmaWetDry.bed_ustar2``; C_d on the face
+        geometry of hⁿ); quadratic drag: the rates of the step (from uⁿ) times the new velocities; no bed drag: zero.
         """
         m = self.m
         if m.bottom_drag != "quadratic" and m.core.z0 is None:

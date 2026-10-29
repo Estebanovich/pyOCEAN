@@ -60,3 +60,34 @@ def first_layer_cd(dz_bottom: np.ndarray | float, z0: float, kappa: float = KAPP
         cd = (kappa / np.log(0.5 * dz / z0)) ** 2
     cd = np.where(np.isfinite(dz) & (0.5 * dz > z0) & np.isfinite(cd), cd, cd_max)
     return np.clip(cd, cd_min, cd_max)
+
+
+def cross_velocity_at_faces(ub: np.ndarray, vb: np.ndarray, periodic_x: bool = False,
+                            periodic_y: bool = False) -> tuple[np.ndarray, np.ndarray]:
+    """
+    The other velocity component at the faces of an Arakawa C grid, for the full bed speed of a quadratic drag
+    |U| = √(u² + v̄²) at u-faces and √(v² + ū²) at v-faces.
+
+        v̄_{j,i−½} = ¼ (v_{j−½,i−1} + v_{j+½,i−1} + v_{j−½,i} + v_{j+½,i})      (CROCO get_vbc.F:517-518, :525-526)
+
+    computed as the mean of the two cell-centre values ½ (v_{j−½} + v_{j+½}), so the arithmetic is that of the
+    ALE quadratic drag (``core.components.bottom_drag.QuadraticBedDrag``, bit for bit).  MOM6 weights the four
+    faces by their thickness (``set_v_at_u``, MOM_set_viscosity.F90:1887-1929); with the bed-layer velocities of a
+    log-law drag CROCO's plain mean is used.
+
+    ub : (ny, nx+1) u at the u-faces [m s⁻¹];  vb : (ny+1, nx) v at the v-faces [m s⁻¹]
+    periodic_x, periodic_y : periodic axes; the wrap faces (u-faces 0 and nx, v-faces 0 and ny) average the cells
+        n−1 and 0.  On a closed edge the face is a wall (u = 0 there, no stress), the cross component is set to 0.
+    Returns (v_at_u (ny, nx+1), u_at_v (ny+1, nx)) [m s⁻¹].
+    """
+    vc = 0.5 * (vb[:-1] + vb[1:])                       # v at the cell centres (ny, nx)
+    uc = 0.5 * (ub[:, :-1] + ub[:, 1:])                 # u at the cell centres (ny, nx)
+    v_at_u = np.zeros_like(ub)
+    v_at_u[:, 1:-1] = 0.5 * (vc[:, :-1] + vc[:, 1:])
+    u_at_v = np.zeros_like(vb)
+    u_at_v[1:-1, :] = 0.5 * (uc[:-1, :] + uc[1:, :])
+    if periodic_x:                                      # wrap faces: cells nx−1 and 0
+        v_at_u[:, 0] = v_at_u[:, -1] = 0.5 * (vc[:, -1] + vc[:, 0])
+    if periodic_y:
+        u_at_v[0, :] = u_at_v[-1, :] = 0.5 * (uc[-1, :] + uc[0, :])
+    return v_at_u, u_at_v

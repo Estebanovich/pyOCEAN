@@ -26,9 +26,11 @@ vanished layers skipped, as MOM6 averages the velocity of the bottom HBBL for it
   C_d ≤ C_d(hbbl) and the stress is spread over the layers of the bottom hbbl metres (as ``QuadraticBedDrag``);
 * d_b is continuous in h_b (at h_b = hbbl both branches give the bed layer alone).
 
-The stress is linearised as in σ, r = C_d |u_b*| with u_b* the bbl mean of u + Δt G (the velocity the implicit
-solve starts from; σ: ``SigmaWetDry.column_step``), and spread as per-layer Rayleigh rates r_k = r w_k.  Like σ it
-uses the speed of the face's own component only.
+The stress is linearised as in σ, r = C_d |U_b*| with U_b* the bbl mean of u + Δt G (the velocity the implicit
+solve starts from; σ: ``SigmaWetDry.column_step``), and spread as per-layer Rayleigh rates r_k = r w_k.  The speed is
+the full bed speed (N3 task 9b, class-(a) fix): |U_b| = √(u_b² + v̄_b²) at u-faces, v̄_b the 4-point average of the
+v-face bbl means (``physics.bottom_friction.cross_velocity_at_faces``), as CROCO get_vbc.F:517-528 and MOM6
+MOM_set_viscosity.F90:684-688 (``set_v_at_u``, :1887-1929); before 9b each face used its own component, C_d |u| u.
 """
 from __future__ import annotations
 
@@ -36,7 +38,7 @@ import numpy as np
 
 from core.model.contract import BuildContext, Issue, Role
 from core.model.periodic import NONE
-from physics.bottom_friction import first_layer_cd
+from physics.bottom_friction import cross_velocity_at_faces, first_layer_cd
 
 
 class QuadraticBedDrag:
@@ -61,16 +63,7 @@ class QuadraticBedDrag:
         (fu, wet_u), (fv, wet_v) = bbl_weights(hu), bbl_weights(hv)
         ub, vb = (fu * u).sum(axis=0), (fv * v).sum(axis=0)        # 0 where the face has no bbl water
         fu[0], fv[0] = np.where(wet_u, fu[0], 1.0), np.where(wet_v, fv[0], 1.0)   # there the stress acts on k = 0
-        vc = 0.5 * (vb[:-1] + vb[1:])                       # v̄ at cell centres (ny, nx)
-        uc = 0.5 * (ub[:, :-1] + ub[:, 1:])                 # ū at cell centres (ny, nx)
-        v_at_u = np.zeros_like(ub)
-        v_at_u[:, 1:-1] = 0.5 * (vc[:, :-1] + vc[:, 1:])
-        u_at_v = np.zeros_like(vb)
-        u_at_v[1:-1, :] = 0.5 * (uc[:-1, :] + uc[1:, :])
-        if self.per.x:                                      # wrap faces: cells nx−1 and 0
-            v_at_u[:, 0] = v_at_u[:, -1] = 0.5 * (vc[:, -1] + vc[:, 0])
-        if self.per.y:
-            u_at_v[0, :] = u_at_v[-1, :] = 0.5 * (uc[-1, :] + uc[0, :])
+        v_at_u, u_at_v = cross_velocity_at_faces(ub, vb, self.per.x, self.per.y)
         bg2 = self.drag_bg_vel**2
         return self.cd * np.sqrt(ub**2 + v_at_u**2 + bg2), self.cd * np.sqrt(vb**2 + u_at_v**2 + bg2), fu, fv
 
@@ -105,7 +98,7 @@ class LogLawBedDrag:
     role = Role.BOTTOM_DRAG
     reads = ("u", "v", "h")
     writes = ()
-    per = NONE                       # no horizontal stencil: each face uses its own component
+    per = NONE                       # periodic axes of the 4-point cross average (core.model.periodic), set by the model
 
     def __init__(self, z0: float, hbbl: float, cd_max: float = 0.1, h_neglect: float = 1e-6) -> None:
         self.z0, self.hbbl, self.cd_max, self.h_neglect = float(z0), float(hbbl), float(cd_max), float(h_neglect)
@@ -130,17 +123,19 @@ class LogLawBedDrag:
 
     def rates(self, uu: np.ndarray, vv: np.ndarray, hu: np.ndarray, hv: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
-        Per-layer linear bed rates r_k = C_d |u_b| w_k at u- and v-faces (N, ...) [m s⁻¹] for the implicit
-        vertical viscosity (``SigmaWetDry.column_step`` ``r_bed``), with u_b = Σ_k w_k uu_k the bbl mean of the
-        face's own component.  uu, vv : velocities the implicit solve starts from (u + Δt G) [m s⁻¹]; hu, hv : face
-        layer thicknesses (the mean, clipped face column of ``face_fractions``) [m].
+        Per-layer linear bed rates r_k = C_d |U_b| w_k at u- and v-faces (N, ny, nx+1), (N, ny+1, nx) [m s⁻¹] for
+        the implicit vertical viscosity (``SigmaWetDry.column_step`` ``r_bed``), with u_b = Σ_k w_k uu_k the bbl
+        mean of the face's own component and the full bed speed |U_b| = √(u_b² + v̄_b²) (u-faces; v-faces
+        √(v_b² + ū_b²)), the cross component the 4-point average of the other faces' bbl means, wrapped on periodic
+        axes (CROCO get_vbc.F:517-528).  With v ≡ 0, |U_b| = |u_b| exactly (``np.hypot``): the old rates bit for bit.
+        uu, vv : velocities the implicit solve starts from (u + Δt G) [m s⁻¹]; hu, hv : face layer thicknesses (the
+        mean, clipped face column of ``face_fractions``) [m].
         """
-        out = []
-        for c, h in ((uu, hu), (vv, hv)):
-            _, w, cd = self.bed_layer(h)
-            ub = np.nan_to_num((w * c).sum(axis=0))
-            out.append((cd * np.abs(ub))[None] * w)
-        return out[0], out[1]
+        (_, wu, cdu), (_, wv, cdv) = self.bed_layer(hu), self.bed_layer(hv)
+        ub = np.nan_to_num((wu * uu).sum(axis=0))
+        vb = np.nan_to_num((wv * vv).sum(axis=0))
+        v_at_u, u_at_v = cross_velocity_at_faces(ub, vb, self.per.x, self.per.y)
+        return (cdu * np.hypot(ub, v_at_u))[None] * wu, (cdv * np.hypot(vb, u_at_v))[None] * wv
 
     def check(self, ctx: BuildContext) -> list[Issue]:
         return []

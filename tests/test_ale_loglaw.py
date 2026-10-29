@@ -82,8 +82,11 @@ def test_ale_loglaw_vanished_bed_layer_finite():
     assert w[1, 0] == pytest.approx(2.0 / 5.0) and w[0, 2] == pytest.approx(3.0 / 5.0)
     u = np.linspace(0.1, 0.6, 6)[:, None] * np.ones((1, 3))
     u[0, 0] = 50.0                                                    # vanished-layer velocity noise: no effect
-    r, _ = drag.rates(u, u, h, h)
-    assert np.all(np.isfinite(r)) and r[0, 0] == 0.0
+    # rates on a grid (N3 task 9b: the cross component needs the C-grid): the three faces are the u-faces of a
+    # 1 × 2 row, the v-faces (2 × 2) carry the same column
+    hv, v = np.repeat(h[:, None, :2], 2, axis=1), np.repeat(u[:, None, :2], 2, axis=1)
+    r, _ = drag.rates(u[:, None], v, h[:, None], hv)
+    assert np.all(np.isfinite(r)) and r[0, 0, 0] == 0.0
     # a dry face (no water) gets w_0 = 1 and the finite cd_max
     db0, w0, cd0 = drag.bed_layer(np.zeros((4, 1)))
     assert db0[0] == 0.0 and w0[0, 0] == 1.0 and np.isfinite(cd0[0])
@@ -142,10 +145,11 @@ def test_ustar2_bot_in_context(ale):
     got = _capture_ustar2(m)
     st = _run_column(m, nz, steps=20)
     assert len(got) == 20 and got[-1].shape == (2, 2)
-    # the log-law stress of the bed layer at the new velocities: C_d(h_0) |u_0| u_0 averaged to the centres
+    # the log-law stress of the bed layer at the new velocities: C_d(h_0) |U_0| u_0 averaged to the centres, with
+    # the full bed speed |U_0| = √(u_0² + v̄_0²) (N3 task 9b; uniform column: v̄ = v of the face)
     cd = first_layer_cd(2.0, Z0)
-    tu = cd * np.abs(st.u[0]) * st.u[0]
-    tv = cd * np.abs(st.v[0]) * st.v[0]
+    tu = cd * np.hypot(st.u[0], st.v[0, 0, 0]) * st.u[0]
+    tv = cd * np.hypot(st.v[0], st.u[0, 0, 0]) * st.v[0]
     want = np.hypot(0.5 * (tu[:, :-1] + tu[:, 1:]), 0.5 * (tv[:-1] + tv[1:]))
     # (ALE: the boundary relaxation of phase 5 does not touch a periodic column, st.u is u of phase 4)
     assert np.allclose(got[-1], want, rtol=1e-10, atol=0.0) and want.min() > 0

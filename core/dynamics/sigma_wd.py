@@ -10,8 +10,12 @@ layers.  Fractional step (Casulli & Cheng 1992; Casulli 1999):
 1. Explicit tendencies G_k (advection, Coriolis, body force — from the caller)
    and implicit vertical viscosity with the log-law bed stress:
 
-       Δz_k (û_k − u_k) / Δt = ∂/∂z (ν ∂u/∂z)|_k − δ_k1 C_d |u₁| û₁ + Δz_k G_k
+       Δz_k (û_k − u_k) / Δt = ∂/∂z (ν ∂u/∂z)|_k − δ_k1 C_d |U₁| û₁ + Δz_k G_k
        C_d = [κ / ln(Δz₁ / 2 z₀)]²                  (first-layer law of the wall)
+       |U₁| = √(u₁*² + v̄₁*²)                         (full bed speed, u* = u + Δt G)
+
+   with v̄ the 4-point average of the v-faces around the u-face (and ū at v-faces), as CROCO get_vbc.F:517-528
+   and MOM6 MOM_set_viscosity.F90:684-688 (N3 task 9b; before it each face used |u₁|, a class-(a) error).
 
 2. The depth-mean ū̂ = Σ Δσ û_k goes to the wet–dry free-surface solver
    (``WetDryFreeSurface``), which returns η^{n+1} and ū^{n+1} with the
@@ -42,7 +46,7 @@ from numba import njit, prange
 
 from core.components.closure import GLSClosure
 from core.dynamics.wetting_drying import WetDryFreeSurface
-from physics.bottom_friction import first_layer_cd
+from physics.bottom_friction import cross_velocity_at_faces, first_layer_cd
 from physics.mixing.gls import KT_MIN
 from physics.mixing.parabolic import parabolic_viscosity
 
@@ -228,7 +232,8 @@ class SigmaWetDry:
     def column_step(self, u: np.ndarray, G_k: np.ndarray | None, depth: np.ndarray,
                     nu: np.ndarray | None = None, tau: np.ndarray | None = None,
                     dz: np.ndarray | None = None, dz_drag: np.ndarray | None = None,
-                    dz_mean: np.ndarray | None = None, r_bed: np.ndarray | None = None) -> np.ndarray:
+                    dz_mean: np.ndarray | None = None, r_bed: np.ndarray | None = None,
+                    cross: np.ndarray | None = None) -> np.ndarray:
         """
         Step 1 for the columns of one velocity component: û = (vertical viscosity
         + bed stress)⁻¹ (u + Δt G).  u, G_k : (N, ...); depth : (...) total depth [m];
@@ -246,6 +251,9 @@ class SigmaWetDry:
         r_bed : (...) linear bed-stress rate r = C_d |u_b| [m s⁻¹] on layer 0, or (N, ...) per-layer rates r_k of a
             stress spread over the bed layers (ALE quadratic drag over hbbl), given by the caller; overrides the
             log-law of ``z0``.
+        cross : (...) the other velocity component of the bed layer at these faces [m s⁻¹] (v̄ at u-faces, ū at
+            v-faces; ``bed_cross_velocity``), for the full bed speed of the log law r = C_d √(u_b² + cross²)
+            (N3 task 9b; CROCO get_vbc.F:517-528); None: 0, the face's own component only.
         """
         shape = u.shape
         n = shape[0]
@@ -265,8 +273,9 @@ class SigmaWetDry:
         else:
             d0 = dz[0] if dz_drag is None else np.asarray(dz_drag, float).reshape(-1)
             cd = first_layer_cd(d0, self.z0, cd_max=self.cd_max)
-            r = cd * np.abs(uu[0])
-            ustar = np.sqrt(cd) * np.abs(uu[0])
+            speed = np.hypot(uu[0], 0.0 if cross is None else np.asarray(cross, float).reshape(-1))   # |U_b|
+            r = cd * speed
+            ustar = np.sqrt(cd) * speed
         if nu is not None:
             nu = np.asarray(nu, float).reshape(n + 1, -1)
         elif self.closure == "parabolic":
@@ -349,9 +358,14 @@ class SigmaWetDry:
             nu_u, nu_v = own.viscosity(None)
         wu_ = ds if wu is None else wu
         wv_ = ds if wv is None else wv
+        cu = cv = None
+        if self.z0 is not None and (r_u is None or r_v is None):       # log law: full bed speed (N3 task 9b)
+            cu, cv = self.bed_cross_velocity(u[0] if G_u is None else u[0] + self.dt * G_u[0],
+                                             v[0] if G_v is None else v[0] + self.dt * G_v[0])
         u_hat = self.column_step(u, G_u, Du, nu_u, tau=tau_u, dz=hu, dz_drag=hu_drag,
-                                 dz_mean=hu_mean, r_bed=r_u)                   # coupling thickness ≠ the weights'
-        v_hat = self.column_step(v, G_v, Dv, nu_v, tau=tau_v, dz=hv, dz_drag=hv_drag, dz_mean=hv_mean, r_bed=r_v)
+                                 dz_mean=hu_mean, r_bed=r_u, cross=cu)         # coupling thickness ≠ the weights'
+        v_hat = self.column_step(v, G_v, Dv, nu_v, tau=tau_v, dz=hv, dz_drag=hv_drag, dz_mean=hv_mean, r_bed=r_v,
+                                 cross=cv)
         ubar_n, vbar_n = (wu_ * u).sum(0), (wv_ * v).sum(0)
         ubar_hat, vbar_hat = (wu_ * u_hat).sum(0), (wv_ * v_hat).sum(0)
         eta_new, ubar_new, vbar_new = self.fs.step(eta, ubar_n, vbar_n, ubar_hat, vbar_hat, flather_eta=flather_eta,
@@ -373,7 +387,7 @@ class SigmaWetDry:
         Inputs of ``Closure.update`` after the step (N3 task 1; before N3 inside ``_gls_update`` and
         ``_gls_update_stratified``, same arithmetic): the new layer velocities averaged to the cell centres
         u, v (N, ny, nx), the layer thicknesses h = D Δσ_k (N, ny, nx) at η^{n+1}, the bed stress
-        u*²_b = |τ_b|/ρ₀ with τ_b/ρ₀ = C_d |u₁| u₁ of the first-layer log law averaged from the faces (CROCO
+        u*²_b = |τ_b|/ρ₀ with τ_b/ρ₀ = C_d |U₁| u₁ of the first-layer log law averaged from the faces (CROCO
         gls_mixing.F), and — stratified GLS only — the surface stress u*²_s = |τ_s|/ρ₀ averaged from the faces
         to the centres (CROCO gls_mixing.F:556-562); homogeneous GLS: u*²_s None (zero).  [m s⁻¹, m, m² s⁻²]
         ``ustar2_bot``: the bed u*² already computed by the caller (``bed_ustar2``, the driver's ``ctx.ustar2_bot``,
@@ -394,28 +408,39 @@ class SigmaWetDry:
         sy = 0.5 * (tsv[:-1, :] + tsv[1:, :])
         return dict(u=uc, v=vc, h=h, ustar2_sfc=np.hypot(sx, sy), ustar2_bot=ustar2_bot)
 
+    def bed_cross_velocity(self, ub: np.ndarray, vb: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """
+        (v̄ at u-faces (ny, nx+1), ū at v-faces (ny+1, nx)) [m s⁻¹] of the bed-layer velocities ub, vb: the 4-point
+        average of CROCO get_vbc.F:517-518 / :525-526 (MOM6 ``set_v_at_u``, MOM_set_viscosity.F90:1887-1929, weights
+        the four faces by thickness), wrapped on periodic axes, 0 on closed edges (walls: u = 0, no stress).  NaN
+        (no face) counts as 0.  Used for the full bed speed |U_b| = √(u_b² + v̄_b²) of the log law (N3 task 9b).
+        """
+        return cross_velocity_at_faces(np.nan_to_num(ub), np.nan_to_num(vb), self.per.x, self.per.y)
+
     def bed_ustar2(self, eta: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.ndarray:
         """
         Bed stress u*²_b = |τ_b|/ρ₀ (ny, nx) [m² s⁻²] at the cell centres from the layer velocities u, v after the
-        step: τ_b/ρ₀ = C_d |u₁| u₁ of the first-layer log law (``z0``; C_d on the bed layer D Δσ₀ at η), averaged
+        step: τ_b/ρ₀ = C_d |U₁| u₁ of the first-layer log law (``z0``; C_d on the bed layer D Δσ₀ at η), with the full
+        bed speed |U₁| = √(u₁² + v̄₁²) (N3 task 9b, the speed of ``column_step``; CROCO get_vbc.F:517-528), averaged
         from the faces (CROCO gls_mixing.F); zero without ``z0``.  The single source of ``ctx.ustar2_bot`` in σ
-        (N3 task 4), the same arithmetic as ``closure_forcing`` before (homogeneous and stratified branches).
+        (N3 task 4).  With v ≡ 0 the arithmetic is the old own-component one bit for bit (hypot(u, 0) = |u|).
         """
         Du, Dv = self.face_depths(eta)
         cdu = first_layer_cd(np.maximum(np.nan_to_num(Du, nan=self.d_min), self.d_min) * self.dsigma[0],
                              self.z0 or 1e-4, cd_max=self.cd_max)
         cdv = first_layer_cd(np.maximum(np.nan_to_num(Dv, nan=self.d_min), self.d_min) * self.dsigma[0],
                              self.z0 or 1e-4, cd_max=self.cd_max)
+        cu, cv = self.bed_cross_velocity(u[0], v[0])
+        speed_u = np.hypot(u[0], cu)                                   # |U₁| at u- and v-faces
+        speed_v = np.hypot(v[0], cv)
         if not self.gls_stratified:                                    # homogeneous GLS (pre-N2a 8c arithmetic)
-            speed_u = np.hypot(u[0], 0.0)
-            speed_v = np.hypot(v[0], 0.0)
             tbu = cdu * speed_u * u[0] if self.z0 is not None else 0.0 * u[0]
             tbv = cdv * speed_v * v[0] if self.z0 is not None else 0.0 * v[0]
             tx = 0.5 * (tbu[:, :-1] + tbu[:, 1:])
             ty = 0.5 * (tbv[:-1, :] + tbv[1:, :])
             return np.hypot(tx, ty)
-        tau_bu = cdu * np.abs(u[0]) * u[0] if self.z0 is not None else np.zeros_like(u[0])
-        tau_bv = cdv * np.abs(v[0]) * v[0] if self.z0 is not None else np.zeros_like(v[0])
+        tau_bu = cdu * speed_u * u[0] if self.z0 is not None else np.zeros_like(u[0])
+        tau_bv = cdv * speed_v * v[0] if self.z0 is not None else np.zeros_like(v[0])
         bx = 0.5 * (tau_bu[:, :-1] + tau_bu[:, 1:])
         by = 0.5 * (tau_bv[:-1, :] + tau_bv[1:, :])
         return np.hypot(bx, by)
