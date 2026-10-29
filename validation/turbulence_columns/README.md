@@ -49,12 +49,18 @@ CROCO: `~/pyOCEAN_refs/croco_runs/scm/<caso>_<cierre>/`.
   - Dos forzamientos de CROCO no tienen argumento en `step()` y los añade el arnés sin tocar el modelo: la fuerza de
     cuerpo de los FORCED_* (`prsgrd.F:455-462`: ∂v/∂t += f U_G, −g∂ζ/∂y o −g∂ζ/∂y cos ωt) como término explícito con
     nombre `"body_force"` (último de `Momentum.terms`, pasa por AB3 como el gradiente de presión de CROCO), y el
-    pequeño flujo de calor del fondo de los tres casos estratificados (`analytical.F:133-136`).
+    pequeño flujo de calor del fondo de los tres casos estratificados (`analytical.F:133-136`), que entra en la capa
+    más baja con más de 1 mm (`H_MASSLESS`, el piso de capas delgadas de la GLS; en σ y z* la del fondo), para que una
+    capa de fondo casi vacía del híbrido no reciba Δt·btflx/h₀ → ∞. `build` verifica que el gancho de la fuerza de
+    cuerpo funcionó (el último término es `"body_force"` y cambia la tendencia de v en F) y si no, falla.
   - T inicial de los FORCED_* = 20 °C (rama por defecto, `ana_initial.F:1222`; `croco_column_cases.md` §4 decía T₀ = 16,
     sin efecto: T es uniforme).
 
 **Métricas** (`compare.py`): D_m = profundidad de la primera interfaz, desde arriba, con k < 1e-5 m² s⁻²
-(Warner et al. 2005), con log k interpolado; D_m(T) = interfaz con el mayor ∂T/∂z (para KPP, sin k); ley de Price
+(Warner et al. 2005), con log k interpolado; D_m(T) = interfaz con el mayor ∂T/∂z (para KPP, sin k), sin contar las
+capas de menos de 1 mm ni el 10 % inferior de la columna (allí el flujo de calor del fondo de CROCO enfría la celda del
+fondo y da un gradiente mayor que un salto de arrastre débil: sin esa exclusión CROCO-GLS daba 49.5 m en Kato y 149 m en
+el ciclo diurno); ley de Price
 D_m = 1.05 u* N₀^(−1/2) t^(1/2) (Warner et al. 2005, ec. 60; 1.05 = (2 R_v)^{1/4} con el número de Richardson global
 R_v ≈ 0.6 de Price 1979, l. 30, 481 y 599 de la copia local); errores de perfil = RMS(pyOCEAN − CROCO)/rango de CROCO.
 

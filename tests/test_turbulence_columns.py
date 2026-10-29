@@ -65,16 +65,51 @@ def test_cases_match_croco_setup(name):
     np.testing.assert_allclose(frc.tau_x / rho0, us2, rtol=1e-12)
 
 
-def test_body_force_enters_the_explicit_momentum():
-    # the harness's named term "body_force" (∂v/∂t += f U_G in FORCED_EKBBL) is summed with the other terms
+@pytest.mark.parametrize("coord", ["sigma", "zstar"])
+def test_body_force_enters_the_explicit_momentum(coord):
+    # the harness's named term "body_force" (∂v/∂t += f U_G in FORCED_EKBBL) is summed with the other terms, in σ and
+    # in ALE z* (the driver of both reaches the momentum through model._momentum_terms)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        m, st, frc = C.build("forced_ekbbl", "sigma", "gls")
+        m, st, frc = C.build("forced_ekbbl", coord, "gls")
     terms, wu, wv = m._momentum_terms(st)
     assert terms[-1][0] == "body_force"
     np.testing.assert_allclose(terms[-1][2], 1e-4 * 10.0, rtol=1e-12)
     st = frc.step(m, st)                                              # first step from rest: v grows by ≈ Δt f U_G
     assert 0.5 * 30.0 * 1e-3 < st.v[-1, 2, 2] <= 30.0 * 1e-3 * (1 + 1e-9)
+
+
+def test_body_force_hook_fails_loudly(monkeypatch):
+    # if the private hook stops reaching the summed terms (e.g. a refactor binds terms at construction), build raises
+    monkeypatch.setattr(C, "_install_body_force", lambda model, case: None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with pytest.raises(RuntimeError, match="body force"):
+            C.build("forced_nonrotbbl", "zstar", "gls")
+
+
+def test_bottom_heat_flux_skips_vanished_bed_layer():
+    # a vanished (< 1 mm) bed layer does not take Δt btflx / h₀: the flux goes to the lowest layer with mass, and the
+    # column heat content changes by exactly Δt btflx (no other flux in this one-step check of the harness alone)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        m, st, frc = C.build("willis_deardorff", "zstar", "gls")
+
+    class Stub:
+        dt = m.dt
+
+        def step(self, st, *a, **kw):
+            return st
+    st.h = st.h.copy()
+    st.h[1] += st.h[0] - 1e-6                                         # bed layer 1 µm thick, total depth kept
+    st.h[0] = 1e-6
+    T0 = st.T.copy()
+    frc.case = C.CASES["willis_deardorff"]
+    new = C.ColumnForcing.step(frc, Stub(), st)
+    dT = new.T - T0
+    assert np.all(dT[0] == 0.0) and np.all(dT[2:] == 0.0)
+    # ΔT is a difference of T ≈ 20 °C values: round-off 20 ε ≈ 4e-15 °C, i.e. 3e-9 of the 1.5e-6 °C step
+    np.testing.assert_allclose(dT[1] * st.h[1], m.dt * frc.case.btflx, rtol=1e-8)
 
 
 def test_mixed_depth_definition():

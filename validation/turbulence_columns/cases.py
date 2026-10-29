@@ -40,7 +40,10 @@ Two CROCO forcings have no pyOCEAN step argument and are added by the harness, w
   ∂v/∂t += F): appended to the explicit momentum terms as a named term "body_force" (``Momentum.terms`` order: last),
   so it goes through the AB3 extrapolation like CROCO's pressure-gradient term; the wrapper is per model instance;
 * CROCO's small bottom heat flux of the three stratified cases (analytical.F:133-136; ``btflx`` < 0 cools the bed
-  cell, step3d_t.F:567, 617-618): ΔT₀ = Δt btflx / h₀ after each step.
+  cell, step3d_t.F:567, 617-618): ΔT_b = Δt btflx / h_b after each step, into the lowest layer thicker than the GLS
+  thin-layer floor ``H_MASSLESS`` = 1 mm (the bed layer itself in σ and z*).
+
+``build`` checks that the body-force hook took (``_check_body_force``) and raises otherwise.
 
 ``build(name, coord, closure)`` returns (model, state, forcing); ``forcing.step(model, state)`` advances one step.
 ``coord`` is 'sigma' (Eulerian σ), 'zstar' (ALE z*, layers fixed in a periodic flat column) or 'hybrid' (ALE
@@ -58,6 +61,8 @@ from pathlib import Path
 
 import numpy as np
 
+from core.components.closure import H_MASSLESS
+from core.components.momentum import sum_terms
 from core.dynamics.sigma_baroclinic import SigmaBaroclinic
 from core.grid.horizontal import create_cartesian_grid
 from physics.mixing.kpp_cvmix import KPPParams
@@ -200,9 +205,14 @@ class ColumnForcing:
     def step(self, model: SigmaBaroclinic, st):
         new = model.step(st, self.tau_x, self.tau_y, heat=self.heat(st.time))
         if self.case.btflx:
-            h0 = new.h[0] if new.h is not None else model.layer_volumes(new.eta)[0] / model.area
+            # into the lowest layer thicker than the GLS thin-layer floor H_MASSLESS (a vanished hybrid bed layer
+            # would otherwise take Δt btflx / h₀ → ∞); conservative: the whole flux enters one layer per column
+            h = new.h if new.h is not None else model.layer_volumes(new.eta) / model.area[None]
+            kb = np.argmax(h > H_MASSLESS, axis=0)                     # (ny, nx), 0 when the bed layer is thick
+            hb = np.take_along_axis(h, kb[None], axis=0)[0]
             T = new.T.copy()
-            T[0] += model.dt * self.case.btflx / h0
+            np.put_along_axis(T, kb[None], np.take_along_axis(T, kb[None], axis=0) + model.dt * self.case.btflx
+                              / hb[None], axis=0)
             new.T = T
         return new
 
@@ -219,6 +229,20 @@ def _install_body_force(model: SigmaBaroclinic, case: Case) -> None:
         out.append(("body_force", np.zeros(st.u.shape), tv, "+"))
         return out
     mom.terms = terms
+
+
+def _check_body_force(model: SigmaBaroclinic, st, case: Case) -> None:
+    """Fail loudly if the hook of ``_install_body_force`` does not reach the explicit momentum the driver sums
+    (it relies on the private ``model._momentum.terms``, looked up per call by ``model._momentum_terms``): the last
+    term must be "body_force" and adding it must change the v tendency by F(t) on the wet v-faces."""
+    terms, wet_u, wet_v = model._momentum_terms(st)
+    if not terms or terms[-1][0] != "body_force":
+        raise RuntimeError("the FORCED_* body force did not reach Momentum.terms (private hook changed?)")
+    _, gv = sum_terms(terms, wet_u, wet_v)
+    _, gv0 = sum_terms(terms[:-1], wet_u, wet_v)
+    F = body_force(case, st.time)
+    if F == 0.0 or not np.allclose((gv - gv0)[:, wet_v], F, rtol=1e-12, atol=0.0):
+        raise RuntimeError(f"the FORCED_* body force does not change the v tendency by F = {F!r} m s⁻²")
 
 
 def build(name: str, coord: str = "sigma", closure: str = "gls", *, gls_production: str = "croco",
@@ -254,4 +278,6 @@ def build(name: str, coord: str = "sigma", closure: str = "gls", *, gls_producti
         _install_body_force(model, c)
     T = initial_T(c)[:, None, None] * np.ones((c.n, nxy, nxy))
     st = model.initial_state(np.zeros((nxy, nxy)), T)
+    if c.body_v != "none":
+        _check_body_force(model, st, c)
     return model, st, ColumnForcing(c, (nxy, nxy))
