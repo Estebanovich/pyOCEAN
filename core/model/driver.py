@@ -272,7 +272,7 @@ class Driver:
         Q_sw = None if heat.get("Q_sw") is None else np.where(wet, heat["Q_sw"], 0.0)
         q, f = layer_heating(h, Q_ns, Q_sw, m.jerlov)
         T_old = C[0].copy() if bud is not None else None
-        pos = h > 0
+        pos = h > 0                                                    # vanished layers get q = 0 (layer_heating)
         C[0] += np.where(pos, q * m.dt / (m.rho0 * m.cp * np.where(pos, h, 1.0)), 0.0)
         if bud is not None:
             bud.source("T_surf", V1 * (C[0] ** 2 - T_old**2) / m.dt)

@@ -63,17 +63,21 @@ def layer_heating(h: np.ndarray, Q_ns: np.ndarray, Q_sw: np.ndarray | None, jerl
 
     h : (N, ny, nx) layer thicknesses [m], k = 0 at the bed (dry/land columns: zeros).
     Q_ns, Q_sw : (ny, nx) fluxes into the ocean [W m⁻²]; Q_sw None = no shortwave.
-    Returns (q, f): q (N, ny, nx) with Σ_k q = Q_ns + Q_sw (rule in the module docstring) and
-    f (N+1, ny, nx) = swfrac at the interfaces (None without Q_sw).
+    Returns (q, f): q (N, ny, nx) with Σ_k q = Q_ns + Q_sw (rule in the module docstring; vanished layers, h = 0,
+    get nothing: Q_ns goes to the uppermost layer with mass, the bed remainder to the lowest) and
+    f (N+1, ny, nx) = swfrac at the interfaces (always, also without Q_sw).
     """
     N = h.shape[0]
-    q = np.zeros(h.shape)
-    q[-1] += Q_ns
-    if Q_sw is None:
-        return q, None
+    mass = h > 0
+    k_top = N - 1 - np.argmax(mass[::-1], axis=0)               # uppermost / lowest layer with mass (vanished ALE
+    k_bot = np.argmax(mass, axis=0)                             # layers are skipped; no-mass columns: N-1 / 0)
+    k = np.arange(N)[:, None, None]
+    q = np.where(k == k_top[None], Q_ns, 0.0)                   # Q_ns into the uppermost layer with mass
     depth = np.zeros((N + 1,) + h.shape[1:])                    # depth below the surface of interface i
     depth[:-1] = np.cumsum(h[::-1], axis=0)[::-1]
     f = swfrac(-depth, jerlov)
-    q += Q_sw * (f[1:] - f[:-1])
-    q[0] += Q_sw * f[0]                                         # what reaches the bed stays in the bottom layer
+    if Q_sw is None:
+        return q, f
+    q = q + Q_sw * (f[1:] - f[:-1])                             # zero in a vanished layer (equal interface depths)
+    q = q + np.where(k == k_bot[None], Q_sw * f[0], 0.0)        # the bed remainder stays in the lowest layer with mass
     return q, f

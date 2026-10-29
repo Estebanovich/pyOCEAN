@@ -55,6 +55,17 @@ def test_layer_heating_sums_to_the_flux():
     assert np.allclose(q.sum(0), 120.0, rtol=0, atol=1e-12)
     assert f.shape == (6, 2, 3) and (f[-1] == 1.0).all()
     assert (q[:-1] >= 0).all()                                          # shortwave only heats
+    q0, f0 = layer_heating(h, np.full((2, 3), 10.0), None)              # no shortwave: fractions still (N+1, ny, nx)
+    assert f0.shape == (6, 2, 3) and np.allclose(q0.sum(0), 10.0)
+
+
+def test_vanished_layers_get_no_heat_and_nothing_is_lost():
+    h = np.full((6, 1, 2), 3.0)
+    h[4:, 0, 0] = 0.0                                                   # top two layers vanished in column 0
+    h[0, 0, 1] = 0.0                                                    # bed layer vanished in column 1
+    q, f = layer_heating(h, np.full((1, 2), -20.0), np.full((1, 2), 80.0))
+    assert np.allclose(q.sum(0), 60.0, rtol=0, atol=1e-12)
+    assert (q[4:, 0, 0] == 0).all() and q[3, 0, 0] != 0 and q[0, 0, 1] == 0
 
 
 @pytest.mark.parametrize("kind", ["sigma", "zstar"])
@@ -67,6 +78,28 @@ def test_heat_content_change_is_exact(kind):
     area = float(np.sum(m.area[m.fs.active]))
     expected = (-1e5 + 1e6) * area * n * m.dt
     assert abs((_content(m, st) - c0) - expected) <= 1e-12 * abs(expected)
+
+
+def test_heat_content_exact_with_vanished_top_layers():
+    """Hybrid ALE: layers whose target density is absent are (nearly) massless; the flux must still all enter."""
+    m = nc._ale("hybrid", nz=8)
+    st = m.initial_state(nc._eta(), nc._T(8))
+    assert (st.h < 1e-2).any()                                          # the hybrid grid has near-massless layers
+    heat = _heat(-1e5, 1e6)
+    c0 = _content(m, st)
+    for _ in range(6):
+        st = m.step(st, heat=heat)
+        assert m._driver.last_bflux["sw_frac_iface"].shape == (9, nc.NY, nc.NX)
+    area = float(np.sum(m.area[m.fs.active]))
+    expected = 9e5 * area * 6 * m.dt
+    assert abs((_content(m, st) - c0) - expected) <= 1e-12 * expected
+
+
+def test_heat_zero_thickness_top_layer_direct():
+    """Driver level: force h = 0 in the top layer of a wet column through layer_heating (see the unit test above)."""
+    h = np.zeros((4, 1, 1)); h[:2] = 5.0
+    q, _ = layer_heating(h, np.full((1, 1), 100.0), None)
+    assert q[1, 0, 0] == 100.0 and q[2:].sum() == 0
 
 
 def test_nonsolar_only_and_bottom_deposit():
