@@ -11,7 +11,8 @@ SCHISM #140).  For ``SigmaBaroclinic`` that is:
   during the AB start-up also reproduces the continuous run);
 * the layer transports Qx, Qy, Fz and ω of the last step (flux-form momentum
   advection uses them), and the last numerical-mixing field;
-* the GLS turbulence state k, ε, ν held by the model (``core.gls``);
+* the GLS turbulence state k, ε, ν (and κ_t) of the closure component (``core.components.closure``; file
+  variables ``gls_*``);
 * the lagged-LU CG preconditioner of the free surface (the matrix it factorised and the refactor
   flag): CG stops at an iterate that depends on it;
 * ALE (``vertical_coordinate='ale'``, Plan D): the layer thicknesses h, the exterior profile kept in z
@@ -31,6 +32,7 @@ from pathlib import Path
 import numpy as np
 import xarray as xr
 
+from core.components.closure import STATE_PREFIX as CLOSURE_PREFIX
 from core.dynamics.sigma_baroclinic import ReferenceProfile, SigmaBaroclinic, SigmaState
 
 _FIELDS = {          # name: (dims, units, long name)
@@ -132,8 +134,7 @@ def write_restart(path: str | Path, model: SigmaBaroclinic, state: SigmaState) -
                                         {"units": "m s-2", "long_name": "AB history of explicit u tendencies, newest first"})
         data["ab_hist_v"] = xr.Variable(("hist", "layer", "yv", "x"), np.stack([g[1] for g in state.g_hist]),
                                         {"units": "m s-2", "long_name": "AB history of explicit v tendencies, newest first"})
-    closure = state.closure if state.closure is not None else (
-        None if model.core.gls is None else model._free_surface.closure_out())
+    closure = state.closure if state.closure is not None else model._closure.state()
     if closure is not None:
         ny, nx = model.H.shape
         for name, units in (("tke", "m2 s-2"), ("eps", "m2 s-3"), ("akv", "m2 s-1"), ("akt", "m2 s-1")):
@@ -203,14 +204,13 @@ def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
     hist = []
     if "ab_hist_u" in ds:
         hist = [(gu.copy(), gv.copy()) for gu, gv in zip(ds["ab_hist_u"].values, ds["ab_hist_v"].values)]
-    if model.core.gls is not None:
+    cl = model._closure                                              # closure component (N3 task 1)
+    if cl.stateful:
         if "gls_tke" not in ds:
             raise ValueError("restart has no GLS state but the model uses closure='gls'")
-        gls = model.core.gls
-        gls.tke, gls.eps, gls.akv = (ds[f"gls_{n}"].values.reshape(gls.tke.shape).copy() for n in ("tke", "eps", "akv"))
-        if gls.stratified:                                           # κ_t of the last step (N2a task 8c)
-            gls.akt = ds["gls_akt"].values.reshape(gls.tke.shape).copy()
-        closure = model._free_surface.closure_out()
+        # file names keep the gls_ prefix of the files written before N3; the component's fields are closure_*
+        cl.load_state({k: ds["gls_" + k[len(CLOSURE_PREFIX):]].values for k in cl.state_fields()})
+        closure = cl.state()
     else:
         closure = None
     if model.open:

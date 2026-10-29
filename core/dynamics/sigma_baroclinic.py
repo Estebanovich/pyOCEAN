@@ -105,6 +105,7 @@ from core.components.pgf import PressureGradient
 from core.components.momentum import Momentum, sum_terms
 from core.components.open_boundary import CONFIG as _OB_CONFIG, OpenBoundary
 from core.components.bottom_drag import QuadraticBedDrag
+from core.components.closure import make_closure
 from core.components.free_surface import FreeSurfaceVerticalViscosity
 from core.components.layer_transport import ALELayerTransport, SigmaLayerTransport
 from core.components.tracers import TracerAdvection, TracerDiffusion
@@ -1134,8 +1135,12 @@ class SigmaBaroclinic:
                                 nu_const=nu_const, theta=theta, g=g, d_min=d_min, dsigma=dsigma, solver=solver,
                                 flather_u=fl_u if self.open else None, flather_v=fl_v if self.open else None,
                                 clamped_u=cl_u, clamped_v=cl_v, gls_stratified=gls_stratified, rho0=rho0,
-                                gls_kt_min=float(kv) if kv > 0 else KT_MIN)
+                                gls_kt_min=float(kv) if kv > 0 else KT_MIN, external_closure=True)
         self.gls_stratified = self.core.gls_stratified                 # True only with closure='gls' (N2a 8c)
+        # turbulence closure as its own component (N3 task 1), stepped by the driver (phases 4 and 7); the core
+        # keeps a reference only for the ``core.gls`` path
+        self._closure = make_closure(self)
+        self.core.turbulence = self._closure
         sponged = tuple(e for e in self.open if self.obc_mode[e] != "clamped")  # a Dirichlet edge needs no sponge
         self._sp_c, self._sp_u, self._sp_v = _sponge_rates(act.shape, sponged, sponge_cells if sponged else 0,
                                                            *sponge_tau)
@@ -1312,12 +1317,12 @@ class SigmaBaroclinic:
 
     # ------------------------------------------------------------------ helpers
     def _sync_closure_in(self, st: SigmaState) -> None:
-        """Load the closure state carried by ``st`` into the GLS object (by reference, no copies)."""
-        self._free_surface.sync_closure_in(st.closure)
+        """Load the closure state carried by ``st`` into the closure component (by reference, no copies)."""
+        self._closure.load(st.closure)
 
     def _sync_closure_out(self) -> dict | None:
-        """The closure state to carry to the next step (references to the GLS arrays), or None."""
-        return self._free_surface.closure_out()
+        """The closure state to carry to the next step (references to the closure arrays), or None."""
+        return self._closure.state()
 
     def initial_state(self, eta: np.ndarray, T: np.ndarray, h_src: np.ndarray | None = None,
                       tr: np.ndarray | None = None, S: np.ndarray | None = None) -> SigmaState:

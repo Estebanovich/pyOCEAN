@@ -6,7 +6,8 @@ One time step is ten named phases, the same order in σ and ALE (phases 8–9 do
  1 prepare                    exterior state at tⁿ⁺¹ (open boundaries); ALE: face geometry of hⁿ
  2 explicit_momentum          named explicit terms (PGF, Coriolis or vector-invariant, advection, viscosity, …)
  3 time_combine               AB3 (AB1, AB2 at start-up); τ/ρ₀, not extrapolated
- 4 implicit_and_free_surface  implicit vertical viscosity + bed drag + wind, free surface, Flather, closure
+ 4 implicit_and_free_surface  closure ν, implicit vertical viscosity + bed drag + wind, free surface, Flather,
+                              closure update (core.components.closure)
  5 boundary_velocity          sponge on u′, Orlanski; ALE: thin bed layers, optional blending
  6 layer_transport            layer volume transports (σ: Fz from continuity; ALE: Lagrangian h†)
  7 tracers                    advection (SSP-RK3/FCT or 'pc'), mixing diagnostic, K_h, K_v, boundary sponge
@@ -287,14 +288,19 @@ class Driver:
 
     def _sigma_implicit_and_free_surface(self, ctx: StepContext) -> None:
         m, st = self.m, ctx.st
-        extra = {}
+        cl = m._closure                                                # turbulence closure (N3 task 1)
+        rho = None
         if m.core.gls_stratified:                                      # N² from ρ(Tⁿ, Sⁿ) (N2a task 8c)
-            extra["rho"] = m._eos.density(st.T, st.S if m.salinity else None)
-            m.core.gls.kt_min = m.kv if m.kv > 0 else KT_MIN           # kv set after construction reaches the floor
-        eta_new, u_new, v_new, fluxes, closure = m._free_surface.step(st.eta, st.u, st.v, ctx.gu_ab, ctx.gv_ab, ctx.tu,
-                                                                      ctx.tv, st.closure, m._ob.flather_args(ctx.ext),
-                                                                      fw=ctx.fw, **extra)
-        ctx.set(eta_new=eta_new, u_new=u_new, v_new=v_new, fluxes=fluxes, closure=closure)
+            rho = m._eos.density(st.T, st.S if m.salinity else None)
+            cl.gls.kt_min = m.kv if m.kv > 0 else KT_MIN               # kv set after construction reaches the floor
+        nu = cl.viscosity(st)                                          # ν of the current closure state (CROCO order)
+        nu_u, nu_v = (None, None) if nu is None else nu
+        eta_new, u_new, v_new, fluxes = m._free_surface.step(st.eta, st.u, st.v, ctx.gu_ab, ctx.gv_ab, ctx.tu, ctx.tv,
+                                                             m._ob.flather_args(ctx.ext), fw=ctx.fw, nu_u=nu_u,
+                                                             nu_v=nu_v)
+        if cl.stateful:                                                # then the closure with the new u, v
+            cl.update(rho=rho, **m.core.closure_forcing(eta_new, u_new, v_new, ctx.tu, ctx.tv))
+        ctx.set(eta_new=eta_new, u_new=u_new, v_new=v_new, fluxes=fluxes, closure=cl.state())
 
     def _sigma_boundary_velocity(self, ctx: StepContext) -> None:
         self.m._ob.relax_velocity(ctx.st.u, ctx.st.v, ctx.u_new, ctx.v_new, ctx.ext, ctx.fluxes)
@@ -332,14 +338,14 @@ class Driver:
             if bud is not None:
                 bud.operator("T_phy_h", V1, T_a, T_new)
                 bud.operator("S_phy_h", V1, S_a, S_new)
-        gls_kt = m.core.gls_stratified                                 # GLS κ_t on the tracers (N2a task 8c)
-        if m.kv > 0 or gls_kt:
+        kt = m._closure.tracer_diffusivity()                           # closure κ_t on the tracers (N2a task 8c)
+        if m.kv > 0 or kt is not None:
             T_a, S_a = T_new, S_new
             D1 = np.maximum(np.nan_to_num(m.H + ctx.eta_new, nan=m.fs.d_min), m.fs.d_min)
             dz = (D1[None] * m.ds[:, None, None]).reshape(n, -1)
             zero = np.zeros(dz.shape[1])
             # CROCO: one Akt = max(c_μ′ k²/ε, nuws) for T, S (t3dmix_tridiagonal.h:73-75); kv is its floor
-            kvz = m.core.gls.akt if gls_kt else np.full((n + 1, dz.shape[1]), m.kv)
+            kvz = kt.reshape(n + 1, -1) if kt is not None else np.full((n + 1, dz.shape[1]), m.kv)
             T_new = vertical_implicit(T_new.reshape(n, -1), dz, kvz, zero, dt).reshape(T_new.shape)
             if sal:
                 S_new = vertical_implicit(S_new.reshape(n, -1), dz, kvz, zero, dt).reshape(S_new.shape)
@@ -398,9 +404,11 @@ class Driver:
             visc.update(r_u=r_u[None] * f_u, r_v=r_v[None] * f_v)      # stress spread over hbbl
             if "hu_mean" not in visc:                                  # δ needs the depth-mean column with drag
                 visc.update(hu_mean=hu, hv_mean=hv)
-        eta_new, u_new, v_new, fluxes, _ = m._free_surface.step(st.eta, st.u, st.v, ctx.gu_ab, ctx.gv_ab, ctx.tu,
-                                                                ctx.tv, st.closure, m._ob.flather_args(ctx.ext),
-                                                                fw=ctx.fw, wu=ctx.wu, wv=ctx.wv, **visc)
+        nu = m._closure.viscosity(st)                                  # None for the constant closures of ALE
+        nu_u, nu_v = (None, None) if nu is None else nu
+        eta_new, u_new, v_new, fluxes = m._free_surface.step(st.eta, st.u, st.v, ctx.gu_ab, ctx.gv_ab, ctx.tu, ctx.tv,
+                                                             m._ob.flather_args(ctx.ext), fw=ctx.fw, wu=ctx.wu,
+                                                             wv=ctx.wv, nu_u=nu_u, nu_v=nu_v, **visc)
         ctx.set(eta_new=eta_new, u_new=u_new, v_new=v_new, fluxes=fluxes)
 
     def _ale_boundary_velocity(self, ctx: StepContext) -> None:
