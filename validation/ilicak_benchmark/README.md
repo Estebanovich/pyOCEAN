@@ -117,6 +117,31 @@ python validation/ilicak_benchmark/compare.py [caso]              # tablas
 
 En las primeras 3 h los tres modelos z\* coinciden casi exactamente: grosor del agua densa, η y max\|u\| de ~2.3 m/s. En la caída por el talud todos llegan a 3–10 m/s; la caída libre √(2 g′ 1500 m) da ~8 m/s.
 
+#### Overflow con Smagorinsky (Ilicak et al. 2012, Fig. 19b; spec 2026-10-30, criterio 8)
+
+Es el caso `overflow_smag`: el overflow con ν_h = 100 m²/s de fondo más Smagorinsky laplaciana con C = 0.5. Equivale a C_s = 1/√2 del artículo, porque ν = C_s² Δ² |S|. Es reproducir su caso, no calibrar. Corre solo en z\*. El banco de arriba no cambia, porque Smagorinsky está apagado por defecto. Salida: `RUNS/overflow_smag/pyocean_zstar_nu100/`.
+
+```bash
+python validation/ilicak_benchmark/run_pyocean.py overflow_smag zstar 100    # 40 h, Δt 10 s, 5 hilos (~1.5 min)
+python validation/ilicak_benchmark/compare.py overflow_smag                   # contra overflow z* ν = 100
+python validation/ilicak_benchmark/figures.py overflow_smag                   # RUNS/figs/overflow_smag.png
+```
+
+| Corrida (z\*, ν_h = 100) | ΔRPE/RPE₀ | dRPE/dt, 13–37 h [W m⁻²] | Rango de T (exceso) | Centroide frío: x [km], profundidad [m] | ν_Smag máx. [m²/s] |
+|---|---|---|---|---|---|
+| sin Smagorinsky | 1.44e-5 | 1.86 | 10–20 (1.2e-8 °C) | 154, 1450 | — |
+| **+ Smagorinsky C = 0.5** | **8.37e-6** (−42 %) | **1.00** (−46 %) | 10–20 (7e-10 °C) | 158, 1630 | 881 |
+| MITgcm z\*, sin Smagorinsky | 1.34e-5 | 1.44 | 9.59–20.1 | 124, 1370 | — |
+| pyOCEAN z\*, ν_h = 1000 | 5.3e-6 | 0.61 | 10–20 | 150, 1760 | — |
+
+- **Se reproduce la tendencia del artículo ✅: menos mezcla espuria.** La RPE gana 42 % menos y dRPE/dt baja 46 %. El valor queda entre el de ν = 100 y el de ν = 1000 sin Smagorinsky, y por debajo de MITgcm con ν = 100. El agua fría llega más honda (1630 m contra 1450 m) porque se diluye menos. Ilicak et al. (2012, §7) encuentran lo mismo con MITgcm: menos mezcla espuria y una dilución comparable a la de ROMS.
+- **Sin extremos nuevos.** El exceso de T es 7e-10 °C (FCT, punto 6).
+- **El Smagorinsky actúa en la caída.** ν máx. = 881 m²/s, lejos de la cota (5454 m²/s a Δx = 1 km, Δt = 10 s). Con U ≈ 1.57 m/s queda Re_Δ = UΔ/ν ≈ 1.8 donde actúa.
+- **Es 2-D (x–z).** En una sola fila no hay esquinas interiores, así que D_S = 0 y |S| = |∂u/∂x|.
+- **`n_visc_limited` no es un evento de Smagorinsky.** Vale 1 065 600 = 74 puntos en cada uno de los 14 400 pasos. Es el mismo número en cada paso, así que es un conjunto fijo de puntos. **[Hipótesis sin verificar]** que sean celdas z\* junto al talud con una cara recortada en el fondo menos hondo (h_min = 0). Ahí la cota × h_min/h queda por debajo del fondo ah = 100 (menor conocido de Task 1).
+- **La corrida está completa.** Llegó a las 40 h (14 400 pasos, 41 registros). Los 92 s de reloj son lo mismo que tarda la corrida sin Smagorinsky (89 s).
+- **Falta la comparación entre modelos.** MITgcm con `viscC2Smag` en este mismo caso daría el punto magenta de la Fig. 10 del artículo con nuestra malla. No se corrió.
+
 ### Onda interna (200 días)
 
 | ν_h | Modelo | ΔRPE/RPE₀ | dRPE/dt [W m⁻²] (días 10–100) | Rango de T | Oscilación final / inicial |
@@ -274,6 +299,9 @@ Notas:
 6. **Rendimiento:**
    - reducir el trabajo fijo por paso y elegir el número de hilos según el tamaño de la malla (CROCO es 3–5.5 veces más rápido al mismo Δt en 2-D);
    - revisar por qué el Δt máximo del seamount es la mitad que el de MITgcm y MOM6 σ.
+
+7. **Contador `n_visc_limited` (Smagorinsky).** Hoy cuenta también los puntos junto a caras recortadas o evanescentes donde la cota queda por debajo del fondo ah: 74 puntos fijos por paso en el overflow z\*. Debería contar solo los puntos donde C Δ² |S| pasa la cota.
+8. **Overflow con Smagorinsky en MITgcm** (`viscC2Smag`, la configuración del artículo) para comparar entre modelos el punto de la Fig. 19(b).
 
 **Para Esteban, fuera de pyOCEAN:**
 - Correr CROCO también con WENO5, como en `validation/lock_exchange`, para que su RPE sea comparable.

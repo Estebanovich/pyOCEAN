@@ -235,6 +235,74 @@ Legg 2006 (10 km): b_f z −11.7, isopicnal −11.0, isopicnal con ν_v = 0.5 �
 4. **Estudio (c): transporte plano de la pluma** en la híbrida (punto 3). Separar el efecto de la entrada (punto 1) del del cierre en una sola interfaz, p. ej. con la entrada de 5 km (que no pierde la clase densa) y GLS.
 5. **Diagnóstico de truncamientos:** el runner solo guarda el total. Registrar el paso, la cara y la velocidad de cada truncamiento en el `series.npz` (aquí hubo que repetir la corrida en memoria).
 
+## Smagorinsky (spec 2026-10-30, criterios 5 y 6)
+
+`--smag C` agrega la viscosidad horizontal de Smagorinsky laplaciana (`smagorinsky=C`, `core/dynamics/hor_visc.py`; ν = max(ah, C Δ² |S|) con el ah = 50 m²/s de Legg como fondo y la cota de estabilidad de MOM6 reescalada a AB3). Nada más cambia respecto a la corrida de referencia. Las salidas van a `RUNS/10km/pyocean_hybrid_gls_smag<C>/` y `RUNS/10km/pyocean_hybrid_kv_low_smag<C>/`. Las bitácoras están en `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/smag_logs/`.
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 MKL_NUM_THREADS=1 \
+  python validation/dome/run_pyocean.py 10 hybrid --closure gls --smag 0.15   # criterio 5 (C = 0.5: sensibilidad)
+python validation/dome/run_pyocean.py 10 hybrid --kv-low --smag 0.15           # criterio 6: ν_v = 1e-4 constante
+python validation/dome/compare.py 10 --only hybrid                             # tabla (columna trunc / lim / visc)
+python validation/dome/figures.py 10 --runs mitgcm_z_legg,pyocean_hybrid,pyocean_hybrid_gls,pyocean_hybrid_gls_smag0.15,pyocean_hybrid_gls_smag0.5,pyocean_hybrid_kv_low_smag0.15 --sub smag
+```
+
+### Resultados (2026-10-30, 10 km, 50 días, Δt 600 s, 5 hilos; métricas de los días 30–50)
+
+| corrida | Y′(x′ = −200/−300/−500/−800 km) [km] | T(x′) [Sv] | α_E | ρ_f / b_f [1e-3 m s⁻²] | centroide 10/20/30/50 d [m] | \|u\| delgadas/gruesas [m/s] | máx. diario de \|u\| (días 30–50, media) | trunc / lim / visc | s por día |
+|---|---|---|---|---|---|---|---|---|---|
+| MITgcm z legg | −52 / −72 / −107 / −204 | 20.4 / 22.1 / 25.9 / 21.0 | 1.94e-3 | 1031.142 / −10.85 | 883 / 1176 / 1337 / 1433 | — / 2.04 | 2.02 | — | 4.7 |
+| pyOCEAN híbrida + GLS | −70 / −83 / −111 / −156 | 17.8 / 18.4 / 19.9 / 22.0 | 2.29e-3 | 1031.367 / −12.99 | 1129 / 1449 / 1503 / 1527 | 5.66 / 5.52 | 3.16 | 1 / 1072 / — | 20.9 |
+| **+ Smagorinsky C = 0.15** | −66 / −82 / −111 / −156 | 16.3 / 17.3 / 17.4 / 22.6 | 1.77e-3 | 1031.439 / −13.68 | 1139 / 1511 / 1585 / 1482 | 2.75 / 2.99 | 2.55 | **0 / 0** / 27 921 306 | 22.7 |
+| + Smagorinsky C = 0.5 (sensibilidad) | −77 / −98 / −130 / −169 | 17.3 / 20.8 / 21.0 / 19.5 | 1.92e-3 | 1031.427 / −13.56 | 1171 / 1610 / 1703 / 1599 | 2.45 / 3.28 | 2.49 | 0 / 0 / 42 124 990 | 22.2 |
+| híbrida `kv_low` (ν_v = 1e-4) + C = 0.15 | −96 / −119 / −165 / −208 | 9.3 / 10.0 / 9.6 / 10.2 | 1.09e-3 | 1031.880 / −17.87 | 1354 / 1867 / 1935 / 2109 | 4.31 / 7.24 | 5.17 | 1 / 31 900 / 39 191 349 | 16.9 |
+
+"Máx. diario de \|u\|": el máximo de \|u\| y \|v\| en caras con las dos celdas de ≥ 1 m en cada registro diario, promediado en los días 30–50. El máximo de 2.99 m/s de C = 0.15 es del día 6, y el de 3.28 m/s de C = 0.5 del día 3: son el arranque de la pluma. El rango de T es exacto en las tres corridas: mínimo −4.99998 a −4.99974 °C y máximo 4.98611 °C (el de la esponja). El trazador s ∈ [−1.2e-20, 1].
+
+**Figuras** (fuera del repo): `RUNS/figs/smag/dome_10km_path_transport.png` (Y′(x′) con los puntos de Legg, y T(x′)) y `RUNS/figs/smag/dome_10km_bottom_dye.png` (también `.gif` y `.mp4`).
+
+### Lectura y clasificación
+
+1. **Criterio 5: cero truncamientos ✅.** Con C = 0.15 no hay truncamientos (antes 1) ni eventos del limitador de salida (antes 1072). En las caras delgadas, max\|u\| baja de 5.66 a 2.75 m/s. La (b) que dejó N3, falta de viscosidad horizontal adaptativa, queda resuelta para este caso.
+2. **max\|u\| más cerca de MITgcm ✅.** El máximo de 51 registros baja de 5.66 a 2.99 m/s (MITgcm 2.04), y la media del máximo diario de los días 30–50 baja de 3.16 a 2.55 (MITgcm 2.02). Lo que falta (0.5 m/s) es lo mismo que en la híbrida con ν_v = 0.5 constante (2.57): **(c)**, por la coordenada y el cierre, no por la viscosidad horizontal.
+3. **b_f, entrainment y transporte: algo menos de mezcla (c).**
+   - b_f pasa de −12.99 a −13.68 (5 % más densa). Se aleja un poco de Legg (isopicnal con ν_v = 0.5: −12.0; z: −11.7).
+   - α_E baja 23 % (2.29e-3 → 1.77e-3), ahora 9 % por debajo de MITgcm (1.94e-3).
+   - T(x′) baja 1.1–2.5 Sv entre x′ = −200 y −500 km y sube 0.6 Sv en −800.
+   - Lectura: Smagorinsky frena la cizalla lateral y las velocidades de escala de malla de la pluma. Con menos cizalla, el GLS produce menos turbulencia y diluye menos.
+   - Es una elección del cierre de momento (c). No se ajustó nada.
+4. **Trayectoria: sin cambio. Centroide: mixto (c).**
+   - Y′ queda a 0–4 km de la corrida sin Smagorinsky.
+   - El centroide del día 50 sube de 1527 a 1482 m (MITgcm 1433). En los días 20 y 30 está 50–80 m más hondo.
+5. **Cuánto actúa Smagorinsky.** Se reconstruyó C Δ² |S| fuera de línea en los registros de los días 10, 30 y 50. Script no versionado; usa `smagorinsky_numpy` con grosores de cara aproximados (media de las dos celdas, sin el recorte en el fondo). En las capas de ≥ 1 m:
+   - ν_S supera el fondo de 50 m²/s en el 13 % de los puntos el día 10, el 84 % el día 30 y el 99 % el día 50;
+   - la mediana es 50 / 127 / 274 m²/s y el percentil 99 es 640–950 m²/s.
+
+   Al final de la corrida, Smagorinsky fija ν casi en todo el dominio, 2.5–5 veces el fondo de Legg. Eso también separa este caso de la física común (ν_h = 50 constante): (c).
+6. **`n_visc_limited` no mide dónde topa Smagorinsky.**
+   - El contador (27.9 M en 7200 pasos, ≈ 3900 puntos h + q por paso, ≈ 0.7 % de los puntos) cuenta todos los puntos junto a caras evanescentes o recortadas. Ahí la cota × h_min/h queda por debajo del fondo ah = 50, aunque C Δ² |S| sea pequeño (menor conocido de Task 1).
+   - En la reconstrucción, C Δ² |S| llega a la cota en ≤ 10 puntos por registro con C = 0.15, y en 130–560 con C = 0.5, casi todos en capas de ≥ 1 m.
+   - `nu_t_max` = 4545 m²/s con C = 0.15, la mitad de la cota completa (9091 m²/s a Δx = 10 km, Δt = 600 s), es decir un punto con h_min/h = ½. Con C = 0.5 y en `kv_low` llega a la cota completa.
+7. **C = 0.5 (sensibilidad, no arreglo).** También tiene 0 truncamientos.
+   - La pluma baja más: Y′ 7–19 km más al sur, centroide del día 50 a 1599 m.
+   - b_f −13.56, α_E 1.92e-3.
+   - Es la tendencia esperada de más viscosidad lateral, sin mejora clara contra MITgcm o Legg. Se queda C = 0.15, el valor de OM4.
+8. **Criterio 6, `kv_low` (ν_v = 1e-4 constante, híbrida, ah = 50 + C = 0.15): completa 50 días, pero no es robusto.** MOM6 y MITgcm se detienen en los días 3–4 sin Smagorinsky.
+   - Un truncamiento y 31 900 eventos del limitador. El runner guarda solo los totales, así que el día y la cara del truncamiento no se conocen (punto 5 de la lista de N3, abierto).
+   - Hasta el día ~37, el máximo diario de \|u\| se queda en 4.1–4.6 m/s, en la pluma sobre el talud alto (H = 650–950 m).
+   - Después crece en la cuenca profunda (y < 380 km, H = 3000–3600 m), en capas interiores gruesas (20–200 m) y hasta en la de superficie: 5.2 m/s el día 41, 5.9 el día 45, 7.05 el día 49 y 7.77 el día 50. Ese último es el 93 % del umbral de truncamiento (0.5 Δx/Δt = 8.33 m/s), en una cara v de la capa 16 desde la superficie, con H = 3350 m.
+   - No es un modo de malla: la razón entre el residuo laplaciano de u y u es 0.15, como en MITgcm (0.14), y la media vertical ū no pasa de 0.94 m/s. Es una cizalla entre capas que ν_v = 1e-4 no acopla.
+   - La pluma casi no mezcla: b_f −17.87, 9–10 Sv constantes, α_E 1.09e-3.
+   - Clase (b): falta mezcla por cizalla (Jackson et al. 2008, o el GLS) con ν_v bajo. **[Hipótesis sin verificar]** que la aceleración de la cuenca profunda vaya a terminar en truncamientos poco después del día 50.
+9. **Costo:** 22.7 s por día con C = 0.15 contra 20.9 sin Smagorinsky (+8.6 %), y 22.2 con C = 0.5 (+6 %). Son tiempos de las corridas de producción, una a la vez. Quedan dentro del objetivo de ≤ 10 % del criterio 9.
+10. **Nota sobre el spec.** El spec dice "max\|u\| de 5.7 m/s contra 3.2 de MITgcm". Los 3.2 m/s son de la híbrida de pyOCEAN con ν_v = 0.5. El max\|u\| de MITgcm legg es 2.04 m/s (tabla de N3 de arriba).
+
+#### Qué debe mejorar pyOCEAN (Smagorinsky en DOME)
+
+1. **Contador `n_visc_limited` útil.** Contar solo los puntos donde C Δ² |S| > cota, o separar los dos casos. Hoy los puntos evanescentes con ah > 0 lo dominan, y no se puede leer como "Smagorinsky topó la cota".
+2. **Diagnóstico de truncamientos en el `series.npz`** (punto 5 de N3, sigue abierto): paso, cara y velocidad de cada evento. Hace falta para ubicar el truncamiento de `kv_low`.
+3. **Mezcla por cizalla con ν_v bajo (b).** `kv_low` termina, pero la cuenca profunda se acelera sin freno vertical. Una mezcla por Ri (Jackson et al. 2008) es lo que usa el DOME de MOM6 con su ν_v bajo.
+
 ## Referencias
 
 - Legg, S., Hallberg, R. W., Girton, J. B. (2006). Comparison of entrainment in overflows simulated by z-coordinate, isopycnal and non-hydrostatic models. *Ocean Modell.* 11, 69–97. [10.1016/j.ocemod.2004.11.006](https://doi.org/10.1016/j.ocemod.2004.11.006)
