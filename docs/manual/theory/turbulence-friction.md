@@ -407,7 +407,15 @@ of the surface buoyancy flux was fixed in task 6: surface heating is stabilising
 * has **no background diffusivity by default** (`KPPParams.kappa_bg = nu_bg = 0`; the M.Sc. thesis result is that a
     background value damages the internal-wave spectrum), `kv` and `nu_const` are ignored (pre-flight warns), and no
     interior Richardson mixing;
-* in ALE carries only $\nu$ across the regrid, by interface index, as MOM6; the restart holds `akv` only.
+* in ALE carries only $\nu$ across the regrid, by interface index, as MOM6; the restart holds `akv` only;
+* merges layers thinner than the GLS thin-layer threshold (1 mm … 10 cm) into their neighbour before the column call
+    and interpolates $\nu$, $\kappa_s$, $\gamma$ back (final-review fix I1: one 1e-10 m layer of denser advected water
+    cut the OBL depth from 61 to 17.5 m; MOM6 only inflates thin layers to `KPP MIN_THICKNESS`,
+    `MOM_CVMix_KPP.F90:1238-1247`, so it has no guard to copy);
+* leaves dry columns still: the vertical mixing of every closure (also the GLS $\kappa_t$ floor and `kv`) is skipped
+    where $H+\eta\le d_{min}$ (final-review fix M1);
+* has $\nu=\kappa=0$ below the boundary layer and at the bed: with `z0` bed drag the bed stress is not diffused
+    upward, so KPP alone is not suited to tidal or bottom-boundary-layer cases.
 
 Validation (`validation/turbulence_columns/`): against MOM6 with the CVMix `CVmix_SCM_tests` (wind only, cooling only,
 mechanical only) the OBL depth and the 0.03 kg m⁻³ mixed-layer depth agree to ≤ 0.3 % after 5 days, z* and σ, with
@@ -481,6 +489,8 @@ See [Validation: wetting and drying](../validation/wetting-drying.md) for the TI
 * GLS in ALE: layers a little above the threshold still act as thin ones (a 5 cm layer in a column with a 4.2 cm
     threshold gave $\nu$ 4×), regrid-minimum layers are merged only through the 1e-9 tolerance, and the gather of the
     prior $k,\varepsilon$ at a merged interface is not content-conserving (O($h_{massless}/h$)). The remap itself is.
+* GLS in ALE: the numerical mixing of $k$ and $\varepsilon$ by the remap (spec anti-goal 3) is measured only
+    indirectly (hybrid vs σ $D_m$ ≤ 0.1 % in Kato–Phillips); there is no $k$-variance remap term (open, final review I2).
 * The hybrid DOME with GLS: one CFL truncation at day 31.8 (a 1.3 cm face layer, $v$ = 8.96 m/s) and 1072 limiter events
     in 50 days; no Smagorinsky viscosity.
 * KPP: no interior Richardson mixing, MatchTechnique SimpleShapes only; the 1.3 % wind-case velocity difference to MOM6
