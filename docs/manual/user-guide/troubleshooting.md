@@ -236,7 +236,7 @@ validation runners `validation/internal_wave/run_pyocean.py` and `case.build_mod
 
 | Message | Fix |
 |---|---|
-| `vertical_coordinate='ale' needs z0=None for now …` | ALE has no log-law drag yet; use `z0=None` (and `closure="constant"`) or the σ mode |
+| `vertical_coordinate='ale' needs z0=None for now …` | Message removed in N3: ALE accepts `z0` now. If you still see it, your code predates N3 |
 | `regrid='hybrid' needs regrid_params['rho_target']` | give `dz_top` and `rho_target` ([configuration reference](configuration-reference.md#regrid_params)) |
 | UserWarning `hybrid z* floor (Σ dz_top = … m) stops above the deepest bed` | extend `dz_top` to the deepest bed |
 | `h_src must be ≥ 0 and fill every wet column: Σ h_src = H + η` | clip the data levels at the bed (`np.minimum(zf, H)`), flip to bed first, and include η in the top level if η ≠ 0 |
@@ -255,9 +255,8 @@ The complete list of messages is in the [configuration reference](configuration-
 
 - **Salinity, a nonlinear EOS, surface heat/freshwater fluxes** in `SigmaBaroclinic`: one tracer T, linear EOS, wind
     stress only (`core/dynamics/sigma_baroclinic.py:55-58`, `:2084`). Use a density-equivalent T for realistic density.
-- **Stratification-aware turbulence:** GLS has no buoyancy term (`physics/mixing/gls.py:14`); ALE only has constant
-    viscosity and diffusivity. KPP exists only in the phase-1 z-level code.
-- **Log-law drag in ALE** (`z0=None` required).
+- **Stratification-aware turbulence:** the GLS is stratified by default (`gls_stratified=True`) and, with `closure='kpp'` (CVMix/MOM6), works in σ and ALE since N3; interior Ri mixing in KPP is not implemented.
+- **Log-law drag in ALE:** available since N3 (`z0`, over the bottom `hbbl` metres, full bed speed).
 - **ALE-aware output metadata** (see above).
 - **A non-resting initial velocity** through `initial_state` (set `st.u`, `st.v` by hand).
 

@@ -120,7 +120,7 @@ purpose.
 
 | pyOCEAN | Original | Same? Why it differs |
 |---|---|---|
-| GLS k-ε, Canuto-A stability functions, minimum values (`GLSKEpsilon`, `physics/mixing/gls.py:90`) | CROCO `gls_mixing.F` (`GLS_KEPSILON` + `CANUTO_A`) | Column port. **Differs:** no horizontal terms (buoyancy production is on by default with `gls_stratified=True`, since N2a 8c; `False` gives the old neutral closure); the 3-D TIDAL_FLAT matches CROCO to 1.2 cm (`validation/tidal_flat/README.md`) |
+| GLS k-ε, Canuto-A stability functions, minimum values (`GLSKEpsilon`, `physics/mixing/gls.py:177`) | CROCO `gls_mixing.F` (`GLS_KEPSILON` + `CANUTO_A`) | Column port. **Differs:** no horizontal terms (buoyancy production is on by default with `gls_stratified=True`, since N2a 8c; `False` gives the old neutral closure); the 3-D TIDAL_FLAT matches CROCO to 1.2 cm (`validation/tidal_flat/README.md`) |
 | Bed stress for GLS (`SigmaWetDry._gls_update`, `core/dynamics/sigma_wd.py:314`) | CROCO `gls_mixing.F` | Same |
 | WENO5-Z weights (`_weno5_faces`, `core/dynamics/sigma_baroclinic.py:535`), upwinding once in the corrector (`:1938`) | CROCO `step3d_t.F` (Borges et al. 2008) | Same weights; time stepping SSP-RK3 by default instead of CROCO's LF-AM3 predictor–corrector (`tracer_time="pc"` imitates it) |
 | Flux-form momentum advection (`adv="flux"`) | CROCO `GRAV_ADJ` choice (WENO5 momentum) | Same form; lock-exchange fronts equal CROCO within one cell (`validation/lock_exchange/README.md`) |

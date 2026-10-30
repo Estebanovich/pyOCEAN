@@ -592,7 +592,7 @@ $$
 $$
 
 so wind and bed stress enter $\bar u$ as without the coupling and the shear is kept (review fix of
-2026-10-14; $r$ = 0 in ALE because `z0=None`). With `thin_layer_coupling="none"` the mean thickness is
+2026-10-14; $r$ = 0 in ALE without `z0` or the quadratic drag; since N3 the log-law rates are passed as $r_k$). With `thin_layer_coupling="none"` the mean thickness is
 used directly.
 
 ### HYCOM thin-layer blending (`thin_layer_cutoff`, default 0 = off)
@@ -646,9 +646,7 @@ All are arguments of `SigmaBaroclinic(...)` (`core/dynamics/sigma_baroclinic.py:
 | `mix_diagnostic` | bool | True | advect and remap $T^2$ for `mix_num` |
 | `solver` | `"direct"`, `"cg"`, None | None → `"cg"` in ALE | free-surface solver |
 
-**Restrictions of the ALE mode** (`_setup_ale`, line 1123, raise `ValueError`): `z0=None` (no law-of-the-wall
-drag: the bed layer can vanish under z\*); `closure` `"constant"` or `"none"` (GLS and the parabolic ν
-assume σ-layers); cells with $H \le 0$ need `regrid="sigma"` or the hybrid rule with `d_hybrid > 0`; no open
+**Restrictions of the ALE mode** (`_setup_ale`, line 1123, raise `ValueError`): `closure="parabolic"` (assumes σ-layers; since N3 `z0` is accepted, as `LogLawBedDrag` over the bottom `hbbl` metres, and `"gls"` and `"kpp"` work); `z0` together with `bottom_drag='quadratic'`; cells with $H \le 0$ need `regrid="sigma"` or the hybrid rule with `d_hybrid > 0`; no open
 boundary next to a cell with $H \le 0$. A hybrid floor that stops above the deepest bed gives a warning.
 Restarts check the regrid rule, its parameters and the scheme choices ([Output and
 restarts](../user-guide/output-restart-diagnostics.md)).
@@ -673,7 +671,7 @@ Details and the remaining open cases are on the validation pages: [Idealised ben
 
 ## Known limitations
 
-- **No bottom drag in ALE** (`z0=None`) and only constant or zero vertical viscosity.
+- Since N3 ALE has the law-of-the-wall bed drag and the GLS and KPP closures; the constant closure has no convective adjustment.
 - The hybrid overflow at ν = 1 m² s⁻¹ completes in only 1 of 5 trajectories (vanished-layer slab at the east
     wall), and the hybrid internal wave at ν = 0.01 is still damped (0.50 of the oscillation; CLAUDE.md, open).
 - PPM thickness fluxes need about 20 layers in density currents.

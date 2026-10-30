@@ -127,7 +127,7 @@ This led to `log_law_cd` (`physics/bottom_friction.py:31`, Soulsby 1997) in the 
 `SigmaWetDry`: N equal σ-layers on the total depth, implicit vertical viscosity, bed-layer log-law friction
 $C_d = [\kappa/\ln(\Delta z_1/(2z_0))]^2$ as CROCO, η and ū from the same `WetDryFreeSurface` plus a uniform
 barotropic correction (Casulli & Cheng 1992), and closures `gls` (k-ε Canuto-A, column port of CROCO
-`gls_mixing.F`, `physics/mixing/gls.py:90`), `parabolic` ($\nu = \kappa u_* z(1 - z/D)$), `constant` and
+`gls_mixing.F`, `physics/mixing/gls.py:177`), `parabolic` ($\nu = \kappa u_* z(1 - z/D)$), `constant` and
 `none`.
 
 | Against CROCO 3-D (last period) | η rms (wet cells) | η max | ū rms (stations) | Shoreline max |

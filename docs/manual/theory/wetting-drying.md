@@ -254,7 +254,7 @@ Flather face, and a dry boundary cell closes its Flather face.
     stage B) would remove the sensitivity to intertidal topography.
 * Pressure–friction splitting in `SigmaWetDry` (first order in $\Delta t$; not noticeable at $\Delta t$ = 15 s, to be
     measured with large steps).
-* ALE: no z* over floodable cells, no open boundary next to them, and no log-law drag (`z0=None`).
+* ALE: no z* over floodable cells, no open boundary next to them. (The log-law drag is available in ALE since N3.)
 * A dry cell keeps its last $\eta$ (≥ $-H$); the module docstring's "a dry cell keeps its surface on the bed" holds
     only after the positivity guard or when the cell drained to $D = 0$.
 

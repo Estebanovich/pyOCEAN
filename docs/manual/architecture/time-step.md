@@ -124,7 +124,7 @@ where `model` is a `SigmaBaroclinic` (`core/dynamics/sigma_baroclinic.py:933`) a
 |---|---|---|
 | `model.core` | `SigmaWetDry` (`core/dynamics/sigma_wd.py:143`) | implicit vertical viscosity + bed stress per column, then the free-surface solve, then the uniform barotropic correction |
 | `model.fs` = `model.core.fs` | `WetDryFreeSurface` (`core/dynamics/wetting_drying.py:51`) | θ-implicit free surface with the *upwind total depth* at the faces (Casulli 1990); returns η, ū and the face depths and wet flags used by the layer transports |
-| `model.core.gls` | `GLSKEpsilon` (`physics/mixing/gls.py:90`), only with `closure="gls"` (σ mode) | k–ε turbulence state, advanced after the free surface |
+| `model.core.gls` | `GLSKEpsilon` (`physics/mixing/gls.py:177`), only with `closure="gls"` (σ mode) | k–ε turbulence state, advanced after the free surface |
 
 The step is a **fractional step** (Casulli & Cheng 1992): explicit momentum tendencies (AB3), an implicit
 vertical step, an implicit barotropic step, a uniform barotropic correction, layer transports consistent

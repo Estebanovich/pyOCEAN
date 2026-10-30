@@ -219,7 +219,7 @@ $K_h\Delta t(1/\Delta x^2 + 1/\Delta y^2) \le \tfrac12$ of forward Euler is not 
 With `kv` > 0 [m² s⁻¹], an implicit (backward-Euler) vertical diffusion with the same tridiagonal solver as the
 momentum (`vertical_implicit`, `core/dynamics/sigma_wd.py:88`), no flux at the bed and the surface, constant
 $K_v$ at every interface, on $\Delta z = D\,\Delta\sigma_k$ (σ, `:2142-2146`) or $\max(h^\dagger, 10^{-6}\,\mathrm m)$
-(ALE, `:2047-2050`). There is no turbulence closure for tracers yet: the GLS diffusivity is not applied to $T$.
+(ALE, `:2047-2050`). With `closure='gls'` (stratified) or `'kpp'` the tracer diffusivity is the closure's $\kappa_t$ (floor `kv`) for T, S and passive tracers (N2a 8c, N3); `kv` alone applies with the constant closure.
 
 ## Spurious mixing diagnostics
 
@@ -373,7 +373,7 @@ constant `kv` for $T$ and $S$ (floor $10^{-6}$ m²/s, CROCO `nuws`). Details in
 
 ## Known limitations
 
-- Salinity and the real freshwater flux exist (N2a); there is still no surface heat or shortwave flux in `SigmaBaroclinic` (N2b). The ALE mode has no turbulence closure (constant or none) and the constant closure has no convective adjustment.
+- Salinity and the real freshwater flux exist (N2a); a prescribed surface heat and shortwave flux exists since N3 (bulk formulae are N2b). ALE has GLS and KPP closures since N3; the constant closure still has no convective adjustment.
 - The WENO/UP3 reconstructions assume uniform spacing (in x, y and in layer index).
 - FCT only in ALE with SSP-RK3 and WENO5; σ mode has no limiter (WENO5 can make small new extrema).
 - `kh` is forward Euler (no stability check) and Laplacian only (no isoneutral/GM).

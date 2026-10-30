@@ -381,7 +381,7 @@ hold back a gravity-current nose (harmonic everywhere slowed the overflow plume 
 docstring `:96-98`). The docstring names the case it was built for as "overflow ν = 100: 2 → 24 m/s on faces
 with a side < 1 cm" (`:93-95`); together with the outflow limiter it let the hybrid overflow finish at $\nu$ = 100
 and 1000 (max $|u|$ 17 m s⁻¹, before 47; `validation/ilicak_benchmark/README.md`, item 4). The solver receives $\max(h^{visc}, 10^{-6}\ \mathrm{m})$ (`DZ_FLOOR`, `:63`). The bed drag would
-keep the mean bed-layer thickness (`hu_drag`), but ALE has no bed drag today (`z0=None`).
+keep the mean bed-layer thickness (`hu_drag`), and the ALE log-law drag (N3) uses it.
 
 `_step_ale` (`core/dynamics/sigma_baroclinic.py:1997-2006`) passes `hu=max(h^visc, DZ_FLOOR)`,
 `hu_drag=max(h̄_0, DZ_FLOOR)` and `hu_mean = h̄` to `SigmaWetDry.step`.
@@ -477,7 +477,7 @@ More on the [Idealised benchmarks](../validation/idealised.md) page.
 - No metric (curvature) terms; the WENO/UP3 interpolations of the flux form assume uniform spacing
     (module docstring, `:55-58`).
 - Flux-form momentum is skipped on the first σ step (no transports yet).
-- ALE has no bed drag (`z0` must be `None`); the law-of-the-wall drag uses a bed layer that can vanish under z*.
+- ALE has the law-of-the-wall drag since N3 (`LogLawBedDrag`, over the bottom `hbbl` metres, full bed speed), or the quadratic `hbbl` drag; `z0` with `bottom_drag='quadratic'` is an error.
 - Thin overflow faces still move up to 1.9× faster than thick ones at $\nu$ = 1000 (Ilicak overflow, open).
 - The horizontal viscosity is a plain Laplacian of $u$ (no biharmonic, no Smagorinsky, not thickness-weighted).
 

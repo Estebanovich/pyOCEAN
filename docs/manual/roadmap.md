@@ -137,7 +137,7 @@ Not to take on early: a massive GPU port, two-way nesting and full wave/ice coup
 | Wetting–drying | Casulli (2009) subgrid + Stelling & Duinmeijer (2003) front | ⬜ |
 | Non-hydrostatic | Optional in stage E, only if Δx ≲ H | ⬜ |
 | Elliptic solver | Reuse the LU when the matrix is fixed; PyAMG + warm-started CG when the mask changes; later split-explicit in Numba/JAX | LU reuse ✅; CG preconditioned with a lagged LU instead of PyAMG ✅ (1–3 iterations on the northern Gulf nest); PyAMG not used |
-| Turbulence | GLS k-ε ported from CROCO; add k-ω and Mellor–Yamada with the same interface (GOTM style); KPP without the background diffusivity that suppresses the internal-wave spectrum (Thakur et al. 2022) | GLS k-ε ✅ without buoyancy; k-ω, MY ⬜; KPP in σ ⬜ |
+| Turbulence | GLS k-ε ported from CROCO; add k-ω and Mellor–Yamada with the same interface (GOTM style); KPP without the background diffusivity that suppresses the internal-wave spectrum (Thakur et al. 2022) | GLS k-ε ✅ stratified, σ and ALE; KPP ✅ (N3); k-ω, MY ⬜ |
 
 ## 5. The unified 3-D core (`docs/design/unified_core.md`)
 
@@ -166,7 +166,7 @@ with its tests and is not extended. The agreed order is (1) unify the 3-D core, 
 |---|---|---|---|---|
 | 1 | Generic tracer stack (T, S, passive), variance per tracer | new | Constancy and conservation per tracer; lock exchange with S | ⬜ `SigmaState` holds only T (`core/dynamics/sigma_baroclinic.py:107-122`) |
 | 2 | Linear (T, S) EOS and TEOS-10 with p ≈ −ρ₀ g z | `physics/eos` | Exact rest PGF with ρ_ref(z) of (T, S); seamount with TEOS-10 | ⬜ core EOS linear in T (`:1285`) |
-| 3 | Buoyancy in GLS: B = −K_ρ N², tracer diffusivity K_t with Canuto-A stability functions | CROCO `gls_mixing.F` | Kato–Phillips against the empirical solution and GOTM/CROCO | ⬜ N² = 0 (`physics/mixing/gls.py:14`, `:175-177`) |
+| 3 | Buoyancy in GLS: B = −K_ρ N², tracer diffusivity K_t with Canuto-A stability functions | CROCO `gls_mixing.F` | Kato–Phillips against the empirical solution and GOTM/CROCO | ✅ N2a 8c (`gls_stratified=True`) |
 | 4 | Surface fluxes: Q_net, penetrating shortwave (Paulson & Simpson), E − P on S, stress from `bulk_ncar`/`bulk_kara` | `forcing/bulk.py`, `forcing/surface.py` | Exact column heat budget; convection by cooling | ⬜ the core takes wind stress only (`:2084`) |
 | 5 | KPP in σ columns (alternative to GLS) | `physics/mixing/kpp_cvmix.py`, `KPPClosure` | Kato–Phillips; thesis: KPP + internal-wave spectra | ✅ N3 (2026-10-30; vs MOM6/CVMix ≤ 0.3 %) |
 | 6 | 3-D tides: Flather with TPXO η/ū, potential + SAL as a barotropic force | `forcing/tides.py` | PAC_MEX homogeneous 3-D = 2-D (to the round-off of the drag); then stratified (stage E) | ⬜ |
@@ -226,7 +226,7 @@ Each row was checked in the code. "Class" follows the benchmark classification w
 | One active tracer (T); no salinity, no passive tracers | `SigmaState` (`core/dynamics/sigma_baroclinic.py:107-122`); module docstring `:57` | Unified core piece 1 |
 | EOS linear in T: ρ = ρ₀ − α (T − T₀); no TEOS-10, no thermobaricity | `SigmaBaroclinic.density` (`:1285`) | Piece 2 |
 | Only wind stress at the surface: no heat, freshwater or shortwave fluxes | `SigmaBaroclinic.step(st, tau_x, tau_y)` (`:2084`) | Piece 4 |
-| GLS k-ε has no buoyancy term and acts on momentum only; tracers use a constant `kv` | `physics/mixing/gls.py:14`, `:175-177`; `:2047`, `:2142` | Piece 3 |
+| ~~GLS has no buoyancy term and acts on momentum only~~ Resolved in N2a 8c: buoyancy production and κ_t for tracers | `physics/mixing/gls.py` | Piece 3 (done) |
 | ~~KPP is not available in the core~~ Resolved in N3: `closure='kpp'` in σ and ALE (`core/components/closure.py`); no interior Ri mixing | `physics/mixing/kpp_cvmix.py` | Piece 5 (done) |
 | No tides in the 3-D core (no body force, SAL or tidal boundary) | `step` signature (`:2084`) | Piece 6 |
 | ~~ALE mode: closure `constant` or `none` only, and no bottom drag~~ Resolved in N3: GLS and KPP in ALE, law-of-the-wall drag with `z0` (`hbbl`) | `core/components/closure.py`, `core/components/bottom_drag.py` | done |

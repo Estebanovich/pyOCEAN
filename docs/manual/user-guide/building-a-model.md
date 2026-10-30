@@ -342,7 +342,7 @@ Why each branch (numbers with their source):
 | `pgf="jacobian"` + `rho_ref="auto"` (σ) | σ over slopes | seamount 0.41 cm s⁻¹ at day 10; 42 cm s⁻¹ without the reference profile (`validation/seamount/README.md`) |
 | `pgf="fv"` + `rho_ref="auto"` (ALE) | ALE, any rule | exact for linear ρ on any layers (CLAUDE.md, `pgf.py` row); z* seamount 0.10 cm s⁻¹ |
 | `tracer_scheme="weno5"` + `"ssprk3"` (default) | always | `upwind3` overshoots ~50 % at a lock-exchange nose (module docstring, `:18-19`); with FCT (ALE default) T stays inside the initial range (excursion ≤ 1.5e-8 °C, Ilicak README item 6) |
-| closure | σ: `"gls"` (CROCO k-ε, Canuto A), `"parabolic"`, `"constant"`; ALE: `"constant"` or `"none"` | GLS has no buoyancy term (`physics/mixing/gls.py:14`); see [Turbulence and friction](../theory/turbulence-friction.md) |
+| closure | σ: `"gls"` (CROCO k-ε, Canuto A), `"kpp"`, `"parabolic"`, `"constant"`; ALE (since N3): `"constant"`, `"none"`, `"gls"` or `"kpp"` | GLS is stratified by default (`gls_stratified=True`); see [Turbulence and friction](../theory/turbulence-friction.md) |
 
 ## Worked example A — σ-Eulerian closed basin (lock exchange and seamount)
 

@@ -177,7 +177,7 @@ $$
 
 ### GLS k-ε: the discrete scheme
 
-`GLSKEpsilon` (`physics/mixing/gls.py:90`) is a column-by-column port of CROCO `gls_mixing.F` (default
+`GLSKEpsilon` (`physics/mixing/gls.py:177`) is a column-by-column port of CROCO `gls_mixing.F` (default
 `GLS_KEPSILON` + `CANUTO_A`), without horizontal or vertical advection of $k$, $\psi$. State at the $N+1$ interfaces
 of every cell column (index 0 = bed, $N$ = surface): `tke` $k$, `eps` $\psi=\varepsilon$, `akv` $\nu$, shape
 $(N+1, M)$.
@@ -446,7 +446,7 @@ The first four items below concern only `physics/mixing/kpp.py` (the legacy phas
 | `log_law_cd(D, z0, kappa, cd_min, cd_max)` | | 0.41, 1e-4, 0.1 | 2-D depth-dependent $C_d$ | `physics/bottom_friction.py:31` |
 | `first_layer_cd(dz, z0, ...)` | | same | 3-D first-layer $C_d$ | `physics/bottom_friction.py:48` |
 | `parabolic_viscosity(ustar, depth, sigma_w, nu_min, kappa)` | | 1e-5, 0.41 | parabolic $\nu$ at interfaces | `physics/mixing/parabolic.py:27` |
-| `GLSKEpsilon(n_layers, n_columns, z0_bed)` | | `z0_bed` = 1e-4 (floored at 1e-4) | k-ε column solver | `physics/mixing/gls.py:90` |
+| `GLSKEpsilon(n_layers, n_columns, z0_bed)` | | `z0_bed` = 1e-4 (floored at 1e-4) | k-ε column solver | `physics/mixing/gls.py:177` |
 
 ## Validation
 

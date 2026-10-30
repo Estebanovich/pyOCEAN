@@ -185,7 +185,7 @@ Since N1 `SigmaBaroclinic` is a facade with the same constructor: it builds one 
 | Module | Purpose | Main API | Line | Status |
 |---|---|---|---|---|
 | `bottom_friction.py` | log-law drag: depth-mean C_d(D, z₀) (Soulsby 1997) and first-layer law of the wall | `log_law_cd`, `first_layer_cd` | σ (`z0`), 2-D | active |
-| `mixing/gls.py` | GLS k–ε closure with Canuto A stability functions, column port of CROCO `gls_mixing.F` (shear only, no buoyancy yet) | `GLSKEpsilon` | σ (`closure="gls"`) | active |
+| `mixing/gls.py` | GLS k–ε closure with Canuto A stability functions, column port of CROCO `gls_mixing.F` (stratified by default; ALE thin-layer merge in `gls_merged.py`) | `GLSKEpsilon` | σ and ALE (`closure="gls"`) | active |
 | `mixing/parabolic.py` | parabolic eddy viscosity ν = κ u\* z (1 − z/D) | `parabolic_viscosity` | σ (`closure="parabolic"`) | active |
 | `mixing/kpp.py` | KPP (Large et al. 1994) on z-levels | `obl_depth`, `interior_diffusivity`, `kpp_tendency` | phase 1 | legacy (to be ported to σ columns, `unified_core.md`) |
 | `eos/__init__.py` | TEOS-10 (via `gsw`, optional import) and linear EOS on `ModelState` | `density_teos10`, `density_linear`, `compute_density` | phase 1 | legacy (`SigmaBaroclinic` has its own linear EOS in T) |

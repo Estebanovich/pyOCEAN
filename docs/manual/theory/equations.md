@@ -17,8 +17,7 @@ solve exactly the same equations:
 
 !!! note "Salinity"
     The stratified core advects one active tracer, the temperature T, and its density depends on T only
-    (module docstring, "salinity not included", `core/dynamics/sigma_baroclinic.py:55-58`). Salinity
-    exists only in the legacy z-level model.
+    (module docstring, "salinity not included", `core/dynamics/sigma_baroclinic.py:55-58`) in the pre-N2a text; since N2a salinity is a second active tracer (`salinity=True`, linear or TEOS-10 density).
 
 ## Coordinates and notation
 
@@ -335,10 +334,9 @@ Coriolis term ([Momentum](momentum.md)).
     $$
 
     applied implicitly per velocity component (`column_step`, `core/dynamics/sigma_wd.py:187`: $r = C_d\lvert u_0\rvert$ of the component itself).
-- **ALE mode:** `vertical_coordinate="ale"` requires `z0=None` (`_setup_ale`, `core/dynamics/sigma_baroclinic.py:1123`):
-    the bed layer can vanish under z\*, so the law of the wall is not used, and **there is no bottom drag**
-    in ALE at present (free slip at the bed; momentum is still coupled through the constant vertical
-    viscosity). See [Turbulence closures and bottom friction](turbulence-friction.md).
+- **ALE mode (since N3):** `z0` is accepted. Because the bed layer can vanish under z\*, the law acts on
+    $d_b=\max(h_b,\min(h_{bbl},D_f))$ with the full bed speed (`LogLawBedDrag`, `core/components/bottom_drag.py:88`),
+    or the quadratic `hbbl` drag (`QuadraticBedDrag`, `:44`). See [Turbulence closures and bottom friction](turbulence-friction.md).
 
 ### Lateral
 
@@ -419,7 +417,7 @@ MITgcm (CLAUDE.md, Build Status Phase 2).
 - One active tracer (T), linear EOS in the stratified core; no salinity, no nonlinear EOS there.
 - No surface heat or freshwater flux in the stratified core; volume is closed except through open
     boundaries.
-- No bottom drag in ALE mode (`z0=None` required).
+- Bed drag in ALE only over the bottom `hbbl` metres (N3); open-edge faces take a zero cross component.
 - Curvature terms neglected in the advective momentum forms on spherical grids.
 - Hydrostatic only (a non-hydrostatic option is roadmap stage E).
 
