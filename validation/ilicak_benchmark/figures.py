@@ -275,9 +275,11 @@ def fig_overflow_smag(nu: float = 100.0) -> None:
     fig = plt.figure(figsize=(9.0, 2.2 * (len(rows) + 1)), constrained_layout=True)
     gs = fig.add_gridspec(len(rows) + 1, 2)
     ax = fig.add_subplot(gs[0, :])
-    for (lab, s), key in zip(rows, ("pyocean_zstar", "pyocean_sigma")):
+    # same configuration (z*), so one colour; Smagorinsky as the highlight, the run without it muted and dashed
+    styles = (dict(color=ps.MUTED, linestyle="--"), dict(color=ps.ACCENT, linestyle="-"))
+    for (lab, s), st in zip(rows, styles):
         r = metrics.rpe(s)
-        ax.plot(s["t"] / 3600.0, (r - r[0]) / r[0], **ps.model(key, markers=False, lw=1.2, label=lab))
+        ax.plot(s["t"] / 3600.0, (r - r[0]) / r[0], lw=1.2, label=lab, **st)
     ax.set(xlabel="time [h]", ylabel="(RPE − RPE₀) / RPE₀")
     ax.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2))
     ax.legend(fontsize=7, loc="upper left")

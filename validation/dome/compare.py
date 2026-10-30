@@ -2,7 +2,7 @@
 """
 Tables of the DOME benchmark (spec 2026-10-14-dome-overflow §7): every series.npz under cases.RUNS/<res>km/*/ with the
 metrics of validation/dome/metrics.py; x' = x − 1050 km (inlet centre), y' = y − 600 km (slope top) as Legg et al. 2006.
-Writes the Markdown to RUNS/compare_<res>km.txt and prints it.  'visc' is the Smagorinsky counter
+Prints the Markdown and, without ``--only``, writes it to RUNS/compare_<res>km.txt.  'visc' is the Smagorinsky counter
 ``n_visc_limited`` (h and q points × steps where the stability bound cut ν; empty without Smagorinsky): with a
 background ah > 0 every point next to a vanished or clipped face counts, so it is not the number of points where
 C Δ² |S| itself reached the bound.  Runs with Smagorinsky end in '_smag<C>' (run_pyocean.py --smag C).
@@ -83,8 +83,8 @@ def main() -> None:
            f"{', '.join(f'{v:g}' for v in leg['y_z_km'])}; iso {', '.join(f'{v:g}' for v in leg['y_iso_km'])}; "
            f"iso ν_v 0.5 {', '.join(f'{v:g}' for v in leg['y_iso_visc_km'])}; b_f z {leg['bf_z'] * 1e3:g}, "
            f"iso {leg['bf_iso'] * 1e3:g}, iso ν_v 0.5 {leg['bf_iso_visc'] * 1e3:g} (1e-3 m s⁻²)\n")
-    out = cases.RUNS / f"compare_{a.res_km:g}km.txt"
-    out.write_text(txt)
+    if not a.only:                                   # a filtered table must not replace the full one on disk
+        (cases.RUNS / f"compare_{a.res_km:g}km.txt").write_text(txt)
     print(txt)
 
 

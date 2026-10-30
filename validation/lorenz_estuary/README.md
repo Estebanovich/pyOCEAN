@@ -98,36 +98,38 @@ Diagnóstico (repetición desde el checkpoint): el GLS estratificado deja ν ≈
 
 Es el mismo chorro de 1–1.5 m/s de `sigma_gls` (el GLS deja ν ≈ 1e-5 bajo la haloclina); en ALE lo detiene `truncate_cfl` en vez de reventar. Se usa T_M2/746, como en `sigma_gls` (c).
 
-**`sigma_gls` + Smagorinsky (spec 2026-10-30, criterio 7):** D, Δt = T_M2/498 ≈ 89.8 s, C = 0.15, 150 ciclos, promedio de los últimos 50. Se comparó con los primeros 150 ciclos de la corrida de producción de T_M2/746 (`D_sigma_gls`, serie de ¼ de ciclo).
+**`sigma_gls` + Smagorinsky (spec 2026-10-30, criterio 7):** D, Δt = T_M2/498 ≈ 89.8 s, C = 0.15, 150 ciclos, promedio de los últimos 50. Se compara con dos corridas:
+- el control con el mismo Δt sin Smagorinsky (`control_498_nosmag/D_sigma_gls/`, 150 ciclos);
+- los primeros 150 ciclos de la corrida de producción de T_M2/746 (`D_sigma_gls`).
+
+Las tres usan la serie de ¼ de ciclo. La parada "en el ciclo 131 a T_M2/498" que cita el spec era de `ale_sigma_gls` (tabla de arriba), no de `sigma_gls`.
 
 ```bash
 python validation/lorenz_estuary/run_pyocean.py D sigma_gls --smag 0.15 --dt 89.78747855421688 --cycles 150 --avg 50
+python validation/lorenz_estuary/run_pyocean.py D sigma_gls --dt 89.78747855421688 --cycles 150 --avg 50 \
+    --out /Volumes/ESTEBAN_MIT/pyOCEAN_runs/lorenz_estuary/control_498_nosmag      # control (lo corrió el controlador)
 ```
 
-Salida: `D_sigma_gls_smag0.15/`. Bitácora: `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/smag_logs/lorenz_D_smag0.15.log`.
+Salidas: `D_sigma_gls_smag0.15/` y `control_498_nosmag/D_sigma_gls/`. Bitácoras: `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/smag_logs/lorenz_D_smag0.15.log` y `control_498_nosmag/run.log`.
 
-| | T_M2/746, sin Smagorinsky | T_M2/498, C = 0.15 |
-|---|---|---|
-| completa 150 ciclos | sí | sí |
-| \|u\|max (registros de ¼ de ciclo), ciclos 0–50 / 50–100 / 100–150 | 0.89 / 1.04 / 1.11 m/s | 0.81 / 1.14 / **2.06** m/s |
-| \|u\| Δt/Δx máximo | 0.33 | **0.92** (ciclo 120.8) |
-| media de \|u\|max, ciclos 100–150 | 0.761 m/s | 0.782 m/s |
-| S_max, ciclos 100–150 | 38.79 | 38.96 |
-| S_reg medio, ciclos 100–150 / en el ciclo 150 | 20.57 / 16.96 | 20.55 / 16.73 |
-| n_limited / truncamientos | 0 / — (σ) | 0 / — (σ) |
-| \|Me − M\|/M (ventana de los ciclos 100–150) | — | 8.5e-12 ✅ (≤ 5e-10) |
-| Me (ciclos 100–150) | no disponible | 3782.65 |
-| s por paso / s por ciclo M2 | 0.0137 / 10.2 | 0.0145 / 7.2 |
+| | T_M2/746, sin Smagorinsky | T_M2/498, sin Smagorinsky (control) | T_M2/498, C = 0.15 |
+|---|---|---|---|
+| completa 150 ciclos | sí | sí | sí |
+| \|u\|max, ciclos 0–50 / 50–100 / 100–150 [m/s] | 0.89 / 1.04 / 1.11 | 0.85 / 1.11 / 1.46 | 0.81 / 1.14 / 2.06 |
+| máximo de \|u\|: ciclo, \|u\| Δt/Δx | 121.7, 0.33 | 124.75, 0.66 | 120.8, 0.92 |
+| registros con \|u\| > 1.2 m/s | 0 | 10 | 7 |
+| media de \|u\|max, ciclos 100–150 [m/s] | 0.761 | 0.777 | 0.782 |
+| S_max, media de los ciclos 100–150 | 38.29 | 38.44 | 38.40 |
+| S_reg: media de los ciclos 100–150 / en el ciclo 150 | 20.57 / 16.96 | 20.55 / 16.67 | 20.55 / 16.73 |
+| Me (ciclos 100–150) / \|Me − M\|/M | no disponible (TEF solo en los ciclos 500–600) | 3707.7 / 8.6e-12 | 3782.65 / 8.5e-12 ✅ |
+| n_limited | 0 | 0 | 0 |
+| s por paso / s por ciclo M2 | 0.0137 / 10.2 | 0.0139 / 6.9 | 0.0145 / 7.2 |
 
-- **Sí completa, pero sin margen.** Hay tres ráfagas, en los ciclos 86–94, 118–122 y 144–148. En ellas \|u\|max llega a 1.14, 2.06 y 1.54 m/s (\|u\| Δt/Δx = 0.51, 0.92 y 0.69). El ν de Smagorinsky llega a su cota de estabilidad (`nu_t_max` = 24.3 m²/s = 0.8 · (6/11) / (4 Δt (2/Δx²))). `n_visc_limited` (acumulado) salta solo en esas ráfagas: 0 → 11 417 → 17 047 → 28 554.
-  - Como esta es una malla σ sin capas evanescentes, cada punto limitado es un punto donde C Δ² |S| pasó de la cota.
-  - La corrida de T_M2/746 nunca pasa de 1.11 m/s.
-  - Los registros son cada ¼ de ciclo, así que entre ellos las ráfagas pudieron ser mayores.
-- **El mismo chorro de vaciante.** Las ráfagas caen en la misma época que el chorro de vaciante que detuvo `ale_sigma_gls` a T_M2/498 en el ciclo 131, y que hizo reventar `sigma_gls` a T_M2/373 en el ciclo 99 (arriba). Smagorinsky lo frena lo bastante para terminar 150 ciclos, pero no lo quita.
-- **Falta el control sin Smagorinsky a T_M2/498 en σ + GLS** (no se corrió: 150 ciclos ≈ 18 min). Por eso no está probado que Smagorinsky sea lo que deja terminar la corrida. Lo que sí está probado es que con Smagorinsky termina.
-- **Me no se puede comparar en la misma ventana.** La corrida de T_M2/746 solo tiene los acumuladores de TEF de los ciclos 500–600 (Me 800.7). S_max queda a 0.4 % y S_reg a 0.1 % (media de los ciclos 100–150) y 1.4 % (ciclo 150) de la corrida de T_M2/746.
+- **T_M2/498 es estable 150 ciclos en σ + GLS, con o sin Smagorinsky.** El criterio 7 se cumple ("se prueba si T_M2/498 es estable con Smagorinsky": sí), pero el control muestra que **no es Smagorinsky lo que la mantiene viva**.
+- **Ráfagas del mismo orden en las dos corridas de T_M2/498.** Son el chorro de vaciante de la búsqueda de Δt de arriba: 1.46 m/s sin Smagorinsky y 2.06 m/s con él, contra 1.11 a T_M2/746. Los máximos son de un solo registro y dependen de la trayectoria. Con Smagorinsky, ν llega a su cota de estabilidad en las ráfagas (`nu_t_max` = 24.3 m²/s = 0.8 · (6/11) / (4 Δt (2/Δx²))), y `n_visc_limited` (acumulado) salta solo ahí: 0 → 11 417 → 17 047 → 28 554. En esta malla σ sin capas evanescentes, cada punto limitado es uno donde C Δ² |S| pasó la cota. Los registros son cada ¼ de ciclo, así que entre ellos las ráfagas pudieron ser mayores.
+- **La sal y la mezcla casi no cambian.** S_max y S_reg quedan a ≤ 0.4 % entre las dos corridas de T_M2/498 (≤ 1.7 % contra T_M2/746 en el ciclo 150). Me difiere 2 % entre control y Smagorinsky.
 - **La relación exacta de Lorenz sigue cerrando** (8.5e-12): la viscosidad solo toca el momento. ✅
-- **Decisión:** se sigue usando **T_M2/746** en producción para `sigma_gls`. Pasar a T_M2/498 (30 % más barato por ciclo) pediría el control sin Smagorinsky y una corrida de 600 ciclos sin ráfagas que pasen de \|u\| Δt/Δx ≈ 0.5. Clase (c), elección numérica.
+- **Decisión:** se sigue usando **T_M2/746** en producción para `sigma_gls`. Que T_M2/498 sea estable 600 ciclos no está probado, y en el régimen de D las ráfagas llegan a \|u\| Δt/Δx = 0.66–0.92. Pasar a T_M2/498 (≈ 30 % más barato por ciclo) pediría una corrida de 600 ciclos. Clase (c), elección numérica.
 
 Se usa **Δt = T_M2/746 ≈ 59.9 s en `sigma_gls` y `ale_sigma_gls`** y **T_M2/498 ≈ 89.8 s en `ale_sigma`**: 120 s ya deja \|u\| Δt/Δx = 0.47 junto al umbral de truncamiento de 0.5. El runner revisa que los campos sean finitos cada ¼ de ciclo y antes de cada checkpoint, y guarda uno cada 25 ciclos.
 
@@ -395,7 +397,7 @@ Sin flotabilidad, el k-ε ve N² = 0 y da ν ≈ 1e-3–1e-2 m²/s aun con Ri �
 
 1. ~~**Cierre turbulento en ALE (b).**~~ **Hecho en N3** (GLS estratificado en ALE, Task 5; KPP, Task 7). Las cuatro corridas `ale_sigma_gls` quedan a 0–4 % de σ + GLS (arriba): las diferencias de ALE-σ con GETM eran del cierre constante. Lo que queda contra GETM es lo de σ + GLS (puntos 5 y 6).
 2. **Ajuste convectivo para el cierre constante (b).** Sin él, una columna estáticamente inestable sobrevive (el frente de evaporación de B, arriba). Una opción mínima: κ grande donde N² < 0, como `convect` de MITgcm o el `Kv_conv` de MOM6 [verificar].
-3. **Límite de estabilidad del momento horizontal con A_h = 0 (c, robustez).** (i) Smagorinsky ya existe (spec 2026-10-30): con C = 0.15, D a T_M2/498 termina 150 ciclos, pero con ráfagas de hasta \|u\| Δt/Δx = 0.92 (sección de la búsqueda de Δt). Faltan (ii) y (iii). σ + GLS revienta a \|u\| Δt/Δx ≈ 0.75–0.9 (AB3 + WENO5 en forma de flujo, modo de 3–4 Δx, ×1.3 por paso), y el aviso llega solo como la matriz singular del solver y el BLOW-UP del runner, sin diagnóstico del Courant ni del modo de malla. Hacen falta: (i) una opción de viscosidad biarmónica o Smagorinsky pequeña (MOM6, ROMS), (ii) un respaldo tipo `truncate_cfl` o al menos un aviso de Courant advectivo en σ, como el de ALE, y (iii) que el post-mortem atrape el modo de malla antes del fallo del solver.
+3. **Límite de estabilidad del momento horizontal con A_h = 0 (c, robustez).** σ + GLS revienta a \|u\| Δt/Δx ≈ 0.75–0.9 (AB3 + WENO5 en forma de flujo, modo de 3–4 Δx, ×1.3 por paso), y el aviso llega solo como la matriz singular del solver y el BLOW-UP del runner, sin diagnóstico del Courant ni del modo de malla. Hacen falta: (i) ~~una opción de viscosidad Smagorinsky~~ hecha (spec 2026-10-30). D σ + GLS completa 150 ciclos a T_M2/498 con o sin ella, así que no está mostrado que amplíe el Δt estable (ver la búsqueda de Δt). La biarmónica sigue pendiente; (ii) un respaldo tipo `truncate_cfl` o al menos un aviso de Courant advectivo en σ, como el de ALE, y (iii) que el post-mortem atrape el modo de malla antes del fallo del solver.
 4. **Separar la mezcla de entrada del río en el balance de varianza (c, diagnóstico).** En ALE-σ, ≈ 98 % de M_num de B y D es la mezcla del agua del río (S = 0) con la celda de entrada (≈ Q_r s_cabeza²). Conviene un término propio (p. ej. `S_bdy_in`) para que M_num mida solo el error de los esquemas de advección y remapeo, y comparar así con el M_num de GETM.
 5. **Verificar el k-ε estratificado contra GOTM (c, hipótesis).** σ + GLS hace el tapón 3–4 g/kg más salado que GETM y casi no deja entrar sal en D. Un caso de columna con marea y estratificación, comparado con GOTM (Canuto A, mismos parámetros), separaría el efecto del cierre del de la advección (WENO5 contra Superbee).
 6. **Arranque de los benchmarks lentos (c, configuración).** B y C no llegan a estado cuasi periódico en 500 ciclos (relajación de ≈ 255–570 ciclos). `compare.py` ahora reporta la estacionariedad. Para una comparación final conviene seguir B y C desde su checkpoint hasta que la tendencia sea < 0.5 % por 100 ciclos, o arrancar de un estado más cercano. El artículo fija 500 ciclos, pero no el estado inicial. D σ + GLS necesita además una ventana que cubra varias intrusiones (recurrencia de ≈ 93 ciclos en los eventos menores, uno solo grande en 600 ciclos), es decir una corrida mucho más larga, antes de que su columna de la Tabla 2 signifique algo.

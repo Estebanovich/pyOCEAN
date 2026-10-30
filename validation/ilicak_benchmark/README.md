@@ -119,7 +119,7 @@ En las primeras 3 h los tres modelos z\* coinciden casi exactamente: grosor del 
 
 #### Overflow con Smagorinsky (Ilicak et al. 2012, Fig. 19b; spec 2026-10-30, criterio 8)
 
-Es el caso `overflow_smag`: el overflow con ν_h = 100 m²/s de fondo más Smagorinsky laplaciana con C = 0.5. Equivale a C_s = 1/√2 del artículo, porque ν = C_s² Δ² |S|. Es reproducir su caso, no calibrar. Corre solo en z\*. El banco de arriba no cambia, porque Smagorinsky está apagado por defecto. Salida: `RUNS/overflow_smag/pyocean_zstar_nu100/`.
+Es el caso `overflow_smag`: el overflow con ν_h = 100 m²/s de fondo más Smagorinsky laplaciana con C = 0.5. Equivale a C_s = 1/√2 del artículo, porque ν_SM = (C_s Δ)² |S| (Ilicak et al. 2012, ec. 11, §7.1; copia local `Ilicak_2012 - Spurious Dianeutral Mixing and the Role of Momentum Closure.md`, l. 1815-1819 y 2032-2035). Es reproducir su caso, no calibrar. Corre solo en z\*. El banco de arriba no cambia, porque Smagorinsky está apagado por defecto. Salida: `RUNS/overflow_smag/pyocean_zstar_nu100/`.
 
 ```bash
 python validation/ilicak_benchmark/run_pyocean.py overflow_smag zstar 100    # 40 h, Δt 10 s, 5 hilos (~1.5 min)
@@ -134,13 +134,13 @@ python validation/ilicak_benchmark/figures.py overflow_smag                   # 
 | MITgcm z\*, sin Smagorinsky | 1.34e-5 | 1.44 | 9.59–20.1 | 124, 1370 | — |
 | pyOCEAN z\*, ν_h = 1000 | 5.3e-6 | 0.61 | 10–20 | 150, 1760 | — |
 
-- **Se reproduce la tendencia del artículo ✅: menos mezcla espuria.** La RPE gana 42 % menos y dRPE/dt baja 46 %. El valor queda entre el de ν = 100 y el de ν = 1000 sin Smagorinsky, y por debajo de MITgcm con ν = 100. El agua fría llega más honda (1630 m contra 1450 m) porque se diluye menos. Ilicak et al. (2012, §7) encuentran lo mismo con MITgcm: menos mezcla espuria y una dilución comparable a la de ROMS.
+- **Se reproduce la tendencia del artículo ✅: menos mezcla espuria.** La RPE baja 42 % y dRPE/dt baja 46 %. El valor queda entre el de ν = 100 y el de ν = 1000 sin Smagorinsky, y por debajo de MITgcm con ν = 100. El agua fría llega más honda (1630 m contra 1450 m) porque se diluye menos. Ilicak et al. (2012, §7.1, Fig. 19b y punto magenta de la Fig. 10; l. 2042-2050 de la copia local) encuentran lo mismo con MITgcm: "the spurious mixing is reduced with use of the Smagorinsky scheme (magenta point in Fig. 10), and the dense water dilution is comparable to ROMS".
 - **Sin extremos nuevos.** El exceso de T es 7e-10 °C (FCT, punto 6).
 - **El Smagorinsky actúa en la caída.** ν máx. = 881 m²/s, lejos de la cota (5454 m²/s a Δx = 1 km, Δt = 10 s). Con U ≈ 1.57 m/s queda Re_Δ = UΔ/ν ≈ 1.8 donde actúa.
 - **Es 2-D (x–z).** En una sola fila no hay esquinas interiores, así que D_S = 0 y |S| = |∂u/∂x|.
-- **`n_visc_limited` no es un evento de Smagorinsky.** Vale 1 065 600 = 74 puntos en cada uno de los 14 400 pasos. Es el mismo número en cada paso, así que es un conjunto fijo de puntos. **[Hipótesis sin verificar]** que sean celdas z\* junto al talud con una cara recortada en el fondo menos hondo (h_min = 0). Ahí la cota × h_min/h queda por debajo del fondo ah = 100 (menor conocido de Task 1).
+- **`n_visc_limited` no es un evento de Smagorinsky.** Vale 1 065 600 = 74 puntos en cada uno de los 14 400 pasos. Es el mismo número en cada paso, así que es un conjunto fijo de puntos. **[Hipótesis sin verificar]** que sean celdas z\* junto al talud con una cara recortada en el fondo menos hondo (h_min = 0). Ahí h_min/h ≈ 0, así que la cota × h_min/h queda por debajo del fondo ah = 100 y el punto cuenta como limitado aunque C Δ² |S| sea pequeño (contador de `core/dynamics/hor_visc.py`, spec 2026-10-30).
 - **La corrida está completa.** Llegó a las 40 h (14 400 pasos, 41 registros). Los 92 s de reloj son lo mismo que tarda la corrida sin Smagorinsky (89 s).
-- **Falta la comparación entre modelos.** MITgcm con `viscC2Smag` en este mismo caso daría el punto magenta de la Fig. 10 del artículo con nuestra malla. No se corrió.
+- **Falta la comparación entre modelos.** MITgcm con `viscC2Smag` en este mismo caso daría, en nuestra malla, el equivalente del punto magenta de la Fig. 10 del artículo (l. 2049-2050 de la copia local). No se corrió.
 
 ### Onda interna (200 días)
 
