@@ -466,7 +466,10 @@ $$
 (the point value when $b - a \le 10^{-14}$). The **Hallberg trick** (MOM6 `MOM_remapping.F90:942-961`): in
 every source cell the thickest sub-cell takes the residual $\bar u\,h - \sum(\text{other sub-cells})$, so
 the column content $\sum h u$ is conserved to round-off. The last target absorbs a source that is longer by
-round-off, and a target longer by round-off is extended with the top value of the last source cell. A
+round-off; a target longer by round-off gets no content for the extra thickness, so $\sum h u$ is exact in
+both directions. MOM6 extends the last source cell with its top value there (`MOM_remapping.F90:939-940`),
+which only ever adds content: +1.4 ε $\sum h u$ per ALE step, enough to leave the Lorenz A mixing budget at
+1.5e-9 (pyOCEAN followed MOM6 until 2026-10-30; now 2.9e-11). A
 **vanished target** cell ($h = 0$) gets the point value of the reconstruction at its position. A **dry
 column** (no source thickness) keeps its values (or their mean if the layer counts differ).
 

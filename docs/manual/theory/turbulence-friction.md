@@ -476,7 +476,8 @@ The first four items below concern only `physics/mixing/kpp.py` (the legacy phas
 * **GLS in ALE** — `tests/test_gls_ale.py` (σ ≡ z* column, remap conserves $\sum w\,k$, vanished layers, hybrid, restart),
     `tests/test_ale_loglaw.py`, `tests/test_loglaw_full_speed.py`.
 * **Lorenz et al. (2021) estuary and DOME** with GLS in ALE: the exact mixing relation holds to 1e-10 in ALE-σ + GLS
-    (A: 1.5e-9, a one-signed round-off gain of the ALE remap, class c, also in MOM6's remapping); DOME hybrid +
+    (A was 1.5e-9 from a one-signed round-off gain of the ALE remap, also in MOM6's remapping; 2.9e-11 since the
+    content-exact remap of 2026-10-30); DOME hybrid +
     GLS buoyancy at the end −12.99e-3 against −16.18e-3 with constant viscosity (Legg iso-ν0.5 −12.0e-3), with one CFL
     truncation (`validation/lorenz_estuary/README.md`, `validation/dome/README.md`).
 
