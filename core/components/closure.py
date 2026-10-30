@@ -642,6 +642,11 @@ class KPPClosure(Closure):
     with h reaching the bed CVMix writes the enhanced K and γ at the bed interface (Task 6), which must not become
     a flux through the bed (the implicit solver ignores them; γ would break the conservation of the column).
 
+    Thin layers (final-review fix I1, ``_merged``): in columns with layers thinner than the GLS threshold
+    (``thin_layer_threshold``, 1 mm … 10 cm) those layers are merged into their neighbour before the column call
+    and ν, κ_s, γ are interpolated back, so a vanished ALE layer cannot set the boundary-layer depth.  σ columns
+    (uniform D/N) and ALE columns without thin layers go through ``kpp_column`` unchanged.
+
     ALE: ν is kept by interface index through the regrid, as MOM6 keeps visc%Kv_shear (only halo-updated in
     ALE_regridding_and_remapping, MOM.F90:1964-1965); the KPP state is not remapped.
     Interior Richardson-number mixing (L94 §4) is not part of 'kpp' (MOM6 adds it from its own interior schemes;
@@ -666,6 +671,7 @@ class KPPClosure(Closure):
         self.F_T = np.zeros(m)                                        # non-solar F_T [K m s⁻¹]
         self.F_S = np.zeros(m)                                        # F_S [g kg⁻¹ m s⁻¹]
         self.f = None                                                 # Coriolis at the centres (Ekman limit)
+        self.h_massless, self.thin_fraction, self.h_thin_max = H_MASSLESS, THIN_FRACTION, H_THIN_MAX
 
     def viscosity(self, st) -> tuple[np.ndarray, np.ndarray]:
         """ν of the last update averaged to the u- and v-faces (``centre_to_faces``)."""
@@ -721,14 +727,96 @@ class KPPClosure(Closure):
                 bsw = None if bflux.get("Q_sw") is None else bsw_a[wet]
                 frac = None if bsw is None else np.asarray(bflux["sw_frac_iface"], float).reshape(n + 1, m)[:, wet]
             f = None if self.f is None else np.asarray(self.f, float).ravel()[wet]
-            r = kpp_column(hw, zw, np.asarray(u, float).reshape(n, m)[:, wet],
-                           np.asarray(v, float).reshape(n, m)[:, wet], b, bns, us, frac, f, self.params,
-                           bflux_sw=bsw)
-            akv[:, wet], akt[:, wet], gam[:, wet], obl[wet] = r.kappa_m, r.kappa_s, r.nonlocal_, r.obl_depth
+            uw, vw = np.asarray(u, float).reshape(n, m)[:, wet], np.asarray(v, float).reshape(n, m)[:, wet]
+            act = active_layers(hw, thin_layer_threshold(hw, self.h_massless, self.thin_fraction, self.h_thin_max),
+                                self.h_massless)
+            plain = act.all(axis=0) | ~act.any(axis=0)                 # no thin layer (or every layer thin, D/N ≤
+                                                                       # 1 mm): the column as it is
+            ka, ks, gm, ob = (np.zeros((n + 1, wet.size)), np.zeros((n + 1, wet.size)),
+                              np.zeros((n + 1, wet.size)), np.zeros(wet.size))
+            if plain.any():
+                c = np.flatnonzero(plain)
+                r = kpp_column(hw[:, c], zw[:, c], uw[:, c], vw[:, c], b[:, c], bns[c], us[c],
+                               None if frac is None else frac[:, c], None if f is None else f[c], self.params,
+                               bflux_sw=None if bsw is None else bsw[c])
+                ka[:, c], ks[:, c], gm[:, c], ob[c] = r.kappa_m, r.kappa_s, r.nonlocal_, r.obl_depth
+            if not plain.all():
+                c = np.flatnonzero(~plain)
+                ka[:, c], ks[:, c], gm[:, c], ob[c] = self._merged(
+                    hw[:, c], act[:, c], uw[:, c], vw[:, c], b[:, c], bns[c], us[c],
+                    None if frac is None else frac[:, c], None if f is None else f[c],
+                    None if bsw is None else bsw[c])
+            akv[:, wet], akt[:, wet], gam[:, wet], obl[wet] = ka, ks, gm, ob
         for x in (akv, akt, gam):                                      # no flux through the bed or the surface
             x[0] = 0.0
             x[n] = 0.0
         self.akv, self.akt, self.gamma, self.obl_depth, self.F_T, self.F_S = akv, akt, gam, obl, F_T, F_S
+
+    def _merged(self, h, act, u, v, b, bns, us, frac, f, bsw):
+        """
+        KPP on columns with thin layers (final-review fix I1), (N, M) inputs of those columns only, ``act`` from
+        ``active_layers``.  Returns ν, κ_s, γ (N+1, M) and the boundary-layer depth (M,).
+
+        Why: CVMix takes every layer centre as a trial depth and every layer's T, S, u, v as its own value
+        (``kpp_cvmix.kpp_column``), so one 1e-10 m layer of slightly denser advected water inside the mixed layer
+        sets the boundary-layer depth (61 → 17.5 m and κ_s ÷ 4 in the review probe).  MOM6 does the same: it only
+        inflates thin layers to ``KPP MIN_THICKNESS`` with the error carried down (``MOM_CVMix_KPP.F90:1238-1247``,
+        git 0e9a561) and still uses each of them as a trial depth with its own density (1423-1437), so MOM6 does not
+        give a guard to copy.  pyOCEAN reuses its own GLS rule instead (N3 task 9c, ``thin_layer_threshold`` and
+        ``active_layers``, after MOM6 ``MOM_kappa_shear.F90:254-268`` clustering): every layer with h < h_thin
+        joins the nearest layer with mass above it (thin top layers holding ≥ h_massless form their own), with
+        thickness-weighted u, v and b (Σ h·x / Σ h, the layer-mean that conserves momentum and buoyancy content),
+        the shortwave fraction at the bottom interface of each merged layer, and KPP is computed on that merged
+        column.  ν, κ_s and γ on the model interfaces are interpolated in the fractional height inside their
+        merged layer, as the GLS merge does (MOM_kappa_shear.F90:355-363): the interfaces between merged layers
+        take the merged value exactly, an interface inside a merged layer a value between its two bounding
+        interfaces.  γ_0 = γ_N = 0 still, so the non-local term keeps conserving the column content, and its share
+        in a thin layer, Δt F (γ_{k+1} − γ_k)/h_k, stays bounded (γ is linear inside the merged layer).  The bed and
+        surface values of the merged column are set to zero before the interpolation (class docstring).
+        """
+        n, mc = h.shape
+        cnt = act.sum(axis=0)
+        k_idx = np.arange(n)[:, None]
+        above = np.minimum.accumulate(np.where(act, k_idx, n)[::-1], axis=0)[::-1]
+        below = np.maximum.accumulate(np.where(act, k_idx, -1), axis=0)
+        owner = np.where(above < n, above, below)                     # the open layer each layer joins
+        rank = np.cumsum(act, axis=0) - 1
+        ka, ks, gm, ob = np.zeros((n + 1, mc)), np.zeros((n + 1, mc)), np.zeros((n + 1, mc)), np.zeros(mc)
+        for c in np.unique(cnt):
+            cols = np.flatnonzero(cnt == c)
+            mg = cols.size
+            lay = np.take_along_axis(rank[:, cols], np.clip(owner[:, cols], 0, n - 1), axis=0)
+            colix = np.broadcast_to(np.arange(mg), (n, mg))
+            h_s = h[:, cols]
+
+            def merge(x: np.ndarray) -> np.ndarray:
+                out = np.zeros((c, mg))
+                np.add.at(out, (lay, colix), x)
+                return out
+            hc = merge(h_s)
+            zf = np.concatenate([np.zeros((1, mg)), np.cumsum(h_s, axis=0)])
+            zc = np.concatenate([np.zeros((1, mg)), np.cumsum(hc, axis=0)])
+            kc = np.concatenate([lay, lay[-1:]])                       # merged layer of each model interface
+            kf = np.clip((zf - np.take_along_axis(zc, kc, axis=0)) / np.take_along_axis(hc, kc, axis=0), 0.0, 1.0)
+            kf[0], kf[-1] = 0.0, 1.0
+            first = np.zeros((c + 1, mg), int)                         # model interface of each merged interface
+            first[1:c] = np.cumsum(merge(np.ones((n, mg))), axis=0)[:-1].astype(int)
+            first[c] = n
+
+            def scatter(xc: np.ndarray) -> np.ndarray:
+                xc = xc.copy()
+                xc[0] = 0.0
+                xc[c] = 0.0
+                lo = np.take_along_axis(xc, kc, axis=0)
+                hi = np.take_along_axis(xc, np.minimum(kc + 1, c), axis=0)
+                return np.where(kf == 0.0, lo, np.where(kf == 1.0, hi, (1.0 - kf) * lo + kf * hi))
+            r = kpp_column(hc, zc, merge(h_s * u[:, cols]) / hc, merge(h_s * v[:, cols]) / hc,
+                           merge(h_s * b[:, cols]) / hc, bns[cols], us[cols],
+                           None if frac is None else np.take_along_axis(frac[:, cols], first, axis=0),
+                           None if f is None else f[cols], self.params, bflux_sw=None if bsw is None else bsw[cols])
+            ka[:, cols], ks[:, cols], gm[:, cols] = scatter(r.kappa_m), scatter(r.kappa_s), scatter(r.nonlocal_)
+            ob[cols] = r.obl_depth
+        return ka, ks, gm, ob
 
     def tracer_diffusivity(self) -> np.ndarray:
         """κ_s (N+1, ny, nx) of the last update [m² s⁻¹] (heat, salt and passive tracers; SimpleShapes: κ_T = κ_S)."""

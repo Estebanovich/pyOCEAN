@@ -277,3 +277,51 @@ def test_kpp_preflight():
     assert isinstance(_column("hybrid", regrid_params=dict(dz_top=np.full(NZ, H / NZ),
                                                           rho_target=np.linspace(996.0, 1000.0, NZ + 1)))._closure,
                       KPPClosure)
+
+
+# ---------------------------------------------------------------- final-review fix I1 (thin layers)
+def _probe8_column(thin: bool, stale_b: float = -1e-4):
+    """Final review I1 / probe8: 100 m, 20 × 5 m layers, a 60 m mixed layer over a thermocline, u* = 0.01 m s⁻¹,
+    B_f = −1e-8 m² s⁻³; with ``thin`` two 1e-10 m layers of buoyancy ``stale_b`` (Δρ ≈ 0.01 kg m⁻³) at ~20 m."""
+    nt, dz, k = 20, 5.0, 16
+    zc = (np.arange(nt) + 0.5) * dz
+    b = np.where(zc < 40.0, -1e-3 * (40.0 - zc) / 40.0, 0.0)
+    h = np.full(nt, dz)
+    if thin:
+        h = np.concatenate([h[:k], [1e-10, 1e-10], h[k:]])
+        b = np.concatenate([b[:k], [stale_b, stale_b], b[k:]])
+    n = h.size
+    cl = KPPClosure(n, (1, 1), rho0=RHO0, g=G, t_coef=ALPHA, cp=CP)
+    rho = (RHO0 - RHO0 * b / G)[:, None, None]
+    Q_ns = np.full((1, 1), 1e-8 * RHO0 * RHO0 * CP / (G * ALPHA))   # B_ns = g α Q_ns/(ρ₀² c_p) = +1e-8 (destab.: −)
+    bflux = {"Q_ns": -Q_ns, "Q_sw": None, "sw_frac_iface": None, "fw": None, "S_sfc": None}
+    z = np.zeros((n, 1, 1))
+    cl.update(z, z, h[:, None, None], rho, np.full((1, 1), 1e-4), np.zeros((1, 1)), bflux)
+    return cl
+
+
+@pytest.mark.parametrize("stale_b", [-1e-4, -3e-4, -1e-3])
+def test_kpp_vanished_layer_does_not_set_the_boundary_layer(stale_b):
+    """Two 1e-10 m layers of slightly denser water inside the mixed layer must not cut the boundary-layer depth
+    (61 → 17.5 m before the fix) or κ_s (4×): thin layers are merged before the column call, as for GLS."""
+    ref = _probe8_column(False)
+    cl = _probe8_column(True, stale_b)
+    assert ref.obl_depth[0] > 55.0
+    assert abs(cl.obl_depth[0] - ref.obl_depth[0]) <= 0.03 * ref.obl_depth[0], (cl.obl_depth, ref.obl_depth)
+    assert abs(cl.akt.max() - ref.akt.max()) <= 0.03 * ref.akt.max()
+    k_thin = np.r_[0:16, 18:23]                                       # interfaces 16 and 18 bound the thin pair
+    np.testing.assert_allclose(cl.akt[k_thin, 0], ref.akt[:, 0], rtol=0.03, atol=1e-12)
+    assert np.isfinite(cl.akt).all() and np.isfinite(cl.gamma).all() and np.isfinite(cl.akv).all()
+
+
+def test_kpp_merge_all_thin_or_single_merged_layer_is_finite():
+    """A shallow column whose layers are all at the 1 mm threshold goes through unmerged; a column of one thick and
+    several thin layers merges to one layer: finite, zero at the bed and the surface (final-review fix I1)."""
+    for h in (np.full(20, 1e-3), np.r_[np.full(5, 1e-10), 2.0, np.full(4, 1e-10)]):
+        n = h.size
+        cl = KPPClosure(n, (1, 1), rho0=RHO0, g=G, t_coef=ALPHA, cp=CP)
+        z = np.zeros((n, 1, 1))
+        bflux = {"Q_ns": np.full((1, 1), -200.0), "Q_sw": None, "sw_frac_iface": None, "fw": None, "S_sfc": None}
+        cl.update(z, z, h[:, None, None], np.full((n, 1, 1), RHO0), np.full((1, 1), 1e-4), np.zeros((1, 1)), bflux)
+        for x in (cl.akv, cl.akt, cl.gamma):
+            assert np.isfinite(x).all() and x[0, 0] == 0.0 and x[-1, 0] == 0.0
