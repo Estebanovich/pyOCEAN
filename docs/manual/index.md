@@ -51,7 +51,7 @@ result documented; **experimental** = implemented and unit-tested, validation pa
 | Spurious-mixing diagnostics (RPE, online variance decay `mix_num`) | `diagnostics/mixing.py`, `SigmaState.mix_num` | validated | exact variance budget; Ilicak et al. (2012) behaviour |
 | Open boundaries: Flather + Orlanski + sponge, time-varying exterior (nesting) | `open_boundaries`, `open_boundary_state` | validated | mode-1 channel error 0.015; analytic wave ±5 %; BayIW nested |
 | Wetting and drying, 2-D and 3-D σ | `WetDryFreeSurface`, `SigmaWetDry` | validated (Thacker front: strict `xfail`) | CROCO TIDAL_FLAT 2-D 1.1 cm, 3-D 1.2 cm |
-| GLS k–ε turbulence closure (CROCO port), parabolic viscosity, log-law bed drag | `physics/mixing/gls.py`, `parabolic.py`, `physics/bottom_friction.py` | validated (σ mode; not available in ALE) | CROCO TIDAL_FLAT 3-D |
+| GLS k–ε turbulence closure (CROCO port, stratified), KPP (CVMix/MOM6 port), parabolic viscosity, log-law bed drag (full bed speed) | `physics/mixing/gls.py`, `physics/mixing/kpp_cvmix.py`, `parabolic.py`, `physics/bottom_friction.py`, `core/components/closure.py` | validated (σ and ALE) | CROCO TIDAL_FLAT 3-D; single columns vs CROCO and MOM6 (`validation/turbulence_columns/`); Lorenz ALE-σ + GLS ≈ σ + GLS |
 | 2-D barotropic tides (TPXO boundaries, body tide, SAL, JSL drag) | `forcing/tides.py`, `ImplicitFreeSurface`, `validation/pacmex_tides/` | validated | 31 gauges: median RSS 1.44 cm vs TPXO10 1.79 cm |
 | Tide prediction (OTPS/TPXO conventions), TPXO and HYCOM SAL readers | `forcing/tides.py`, `forcing/sources/tpxo.py` | validated | = pyTMD to round-off |
 | Tide-gauge comparison and raw sea-level QC | `diagnostics/tide_gauges.py`, `sealevel_qc.py` | validated | TICON-3, IOC/SMN network |
