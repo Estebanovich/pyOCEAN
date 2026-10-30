@@ -20,7 +20,7 @@ pyOCEAN has three model lines. They do not share a time step:
 - **the legacy phase-1 z-level model** (`core/state.py:60`, `core/timestepping/ab2.py`), kept as a reference
     and not extended (`docs/design/unified_core.md`).
 
-Several capabilities exist only in one line (for example TEOS-10 and KPP only in the legacy z model, tides
+Several capabilities exist only in one line (for example TEOS-10 only in the legacy z model, tides
 only in the 2-D model). The matrix says where. The plan to bring them into the core is in
 [Limitations and roadmap](roadmap.md).
 
@@ -37,7 +37,7 @@ only in the 2-D model). The matrix says where. The plan to bring them into the c
 | Topic | pyOCEAN | MITgcm | MOM6 | CROCO / ROMS | HYCOM |
 |---|---|---|---|---|---|
 | Vertical coordinate | σ with fixed fractions Δσ_k (uniform, Song & Haidvogel stretching, or MITgcm `delR`; `core/grid/sigma_levels.py:33`, `:47`); or ALE with the rules `zstar`, `sigma`, `hybrid` (HYCOM1-type with a z\* floor, optional shallow σ window, `keep_isopycnal`) (`core/vertical/regrid.py:45`, `:64`, `:204`, `:263`) | z or p levels with partial cells (`hFacMin`), optional r\*/z\* (`select_rStar`) | General ALE: z\*, σ, ρ, HYCOM1, adaptive and others (`REGRIDDING_COORDINATE_MODE`, `ALE/MOM_ALE.F90:1736`), or pure Lagrangian layers | Terrain-following s-coordinate (θ_s, θ_b, h_c; Vtransform 1 or 2) | Hybrid isopycnal–σ–z, regridded by `hybgen` (`hybgen.F90`) |
-| Horizontal grid | Arakawa C; uniform or stretched Cartesian, or spherical lat–lon (`core/grid/horizontal.py:48`, `:163`, `:246`); no curvilinear grids, no periodic boundaries | C; Cartesian, spherical, curvilinear, cubed sphere | C; general orthogonal curvilinear (incl. tripolar) | C; orthogonal curvilinear | C; orthogonal curvilinear **[verify]** |
+| Horizontal grid | Arakawa C; uniform or stretched Cartesian, or spherical lat–lon (`core/grid/horizontal.py:48`, `:163`, `:246`); no curvilinear grids; periodic boundaries in x and/or y in `SigmaBaroclinic` since N3 (`periodic=`, `core/model/periodic.py:43`) | C; Cartesian, spherical, curvilinear, cubed sphere | C; general orthogonal curvilinear (incl. tripolar) | C; orthogonal curvilinear | C; orthogonal curvilinear **[verify]** |
 | Free surface / barotropic mode | θ-implicit free surface, one solve per step (θ = 0.6 default in the σ core); sparse direct LU (`solver="direct"`, σ default) or CG preconditioned with the LU of a lagged matrix (`"cg"`, ALE default) (`core/dynamics/wetting_drying.py:51`; `core/dynamics/sigma_baroclinic.py:1076`); **no split-explicit mode** | Implicit free surface solved with CG (`implicitFreeSurface`, `implicSurfPress` = θ, default 1) | Split-explicit barotropic subcycling (`DTBT`, `core/MOM_barotropic.F90:5917`) | Split-explicit with a filtered fast mode (Shchepetkin & McWilliams 2005) | Split-explicit barotropic mode (`batrop`, `blkdat.F90:633`) |
 | Momentum time stepping | AB3 on the explicit tendencies (`AB3`, `core/dynamics/sigma_baroclinic.py:102`; `ab3_combine`, `:870`) + implicit vertical viscosity and bed stress (`SigmaWetDry.column_step`, `core/dynamics/sigma_wd.py:187`) | AB2 (AB3 optional) **[verify]** | Split RK2 predictor–corrector (`core/MOM_dynamics_split_RK2.F90`) | LF-AM3 predictor–corrector | Leapfrog with Asselin filter (`mod_asselin.F90`) |
 | Tracer time stepping | SSP-RK3 (default) or predictor (centred 6th order) / corrector (WENO) `tracer_time="pc"`, on frozen transports (`SigmaBaroclinic._advect`, `:1951`) | AB2 or direct space–time schemes (e.g. OS7MP) | Forward, PPM/PLM swept fluxes (`TRACER_ADVECTION_SCHEME`, `tracer/MOM_tracer_advect.F90:1293`) | LF-AM3 predictor–corrector | Leapfrog **[verify]** |
@@ -61,8 +61,8 @@ only in the 2-D model). The matrix says where. The plan to bring them into the c
 
 | Topic | pyOCEAN | MITgcm | MOM6 | CROCO / ROMS | HYCOM |
 |---|---|---|---|---|---|
-| Vertical mixing | σ: constant ν, parabolic ν = κu\*z(1 − z/D), or GLS k-ε Canuto-A port of CROCO `gls_mixing.F` **without buoyancy** (N² = 0) (`physics/mixing/gls.py:90`); tracers: constant `kv`. ALE: constant or none only (`:1151`). KPP only in the legacy z model (`physics/mixing/kpp.py:555`) | KPP, GGL90, MY82, PP81 (`useKPP`, `useGGL90`, …) | ePBL, KPP via CVMix (`ENERGETICS_SFC_PBL`, `USE_KPP`) | KPP (`LMD_MIXING`), GLS (`GLS_MIXING`) | KPP, GISS, MY-2.5, KT/PWP |
-| Bottom drag | σ: first-layer law of the wall C_d = [κ / ln(Δz₁/2z₀)]² (`first_layer_cd`, `physics/bottom_friction.py:48`; used at `core/dynamics/sigma_wd.py:219`). **ALE: none** (`z0` must be `None`, `:1148`). 2-D: constant quadratic C_d or depth-dependent log law `log_law_cd` (`physics/bottom_friction.py:31`) | Linear / quadratic (`bottomDragQuadratic`) | Quadratic `CDRAG` with a bottom boundary layer (`BOTTOMDRAGLAW`) | Linear, quadratic or log-law (z₀) | Quadratic `cb` (+ tidal drag) |
+| Vertical mixing | σ: constant ν, parabolic ν = κu\*z(1 − z/D), or GLS k-ε Canuto-A port of CROCO `gls_mixing.F`, stratified by default (buoyancy production, N² from ρ(T, S), κ_t for T and S; N2a 8c) (`GLSKEpsilon`, `physics/mixing/gls.py:177`; `GLSClosure`, `core/components/closure.py:204`). ALE (since N3): constant, none, GLS (k/ε remap on the dual grid, thin-layer merge with `thin_layer_threshold`, `closure.py:52`) or KPP (CVMix/MOM6 port, `KPPClosure`, `closure.py:597`; `kpp_column`, `physics/mixing/kpp_cvmix.py:746`; no background diffusivity by default, no interior Ri mixing). The legacy z model keeps `physics/mixing/kpp.py` | KPP, GGL90, MY82, PP81 (`useKPP`, `useGGL90`, …) | ePBL, KPP via CVMix (`ENERGETICS_SFC_PBL`, `USE_KPP`) | KPP (`LMD_MIXING`), GLS (`GLS_MIXING`) | KPP, GISS, MY-2.5, KT/PWP |
+| Bottom drag | σ: first-layer law of the wall C_d = [κ / ln(Δz₁/2z₀)]² (`first_layer_cd`, `physics/bottom_friction.py:48`; used at `core/dynamics/sigma_wd.py:219`). **ALE (since N3):** law of the wall over the bottom `hbbl` metres with the full bed speed √(u² + v̄²) (`LogLawBedDrag`, `core/components/bottom_drag.py:88`; cross component `cross_velocity_at_faces`, `physics/bottom_friction.py:65`) or the quadratic `hbbl` drag (`QuadraticBedDrag`, `bottom_drag.py:44`). 2-D: constant quadratic C_d or depth-dependent log law `log_law_cd` (`physics/bottom_friction.py:31`) | Linear / quadratic (`bottomDragQuadratic`) | Quadratic `CDRAG` with a bottom boundary layer (`BOTTOMDRAGLAW`) | Linear, quadratic or log-law (z₀) | Quadratic `cb` (+ tidal drag) |
 | Open boundaries | Flather on the depth mean (to (η, ū)ₑₓₜ); Orlanski on the baroclinic u′ with CROCO-style nudging (τ_in 1 d, τ_out 10 d); flow-relaxation sponge with the MITgcm OBCS profile; `'clamped'` Dirichlet edges; time-varying exterior remapped from its own z grid (`open_boundary_state`, `core/dynamics/open_boundary.py`) | OBCS: prescribe, Orlanski, sponge, Stevens, balance, tides (`pkg/obcs/OBCS_PARAMS.h`) | Segments: Flather, Orlanski, oblique, nudged, specified (`OBC_NUMBER_OF_SEGMENTS`, `core/MOM_open_boundary.F90:565`) | Characteristic/Flather 2-D, Orlanski/specified 3-D with nudging (`u3dbc.F`), sponge | `lbflag` (Browning–Kreiss, Flather, clamped) + relaxation zone |
 | Nesting | One-way, offline, through `open_boundary_state` (BayIW cut phase 2); no two-way | One-way via OBCS files | One-way via OBC files | AGRIF two-way online, or offline | One-way offline (`nestfq`, `bnstfq`) |
 | Wetting and drying | Casulli semi-implicit, mass conserving, in 2-D and 3-D σ (`WetDryFreeSurface`; `SigmaWetDry`); ALE σ or hybrid with a shallow σ zone over floodable cells (`:1169`) | No **[verify]** | No (ALE without W/D, `docs/design/vision_roadmap.md` §3a) | `WET_DRY` (`OCEAN/wetdry.F`) | No |
@@ -120,7 +120,7 @@ purpose.
 
 | pyOCEAN | Original | Same? Why it differs |
 |---|---|---|
-| GLS k-ε, Canuto-A stability functions, minimum values (`GLSKEpsilon`, `physics/mixing/gls.py:90`) | CROCO `gls_mixing.F` (`GLS_KEPSILON` + `CANUTO_A`) | Column port. **Differs:** no buoyancy production (N² = 0) and no horizontal terms; the 3-D TIDAL_FLAT matches CROCO to 1.2 cm (`validation/tidal_flat/README.md`) |
+| GLS k-ε, Canuto-A stability functions, minimum values (`GLSKEpsilon`, `physics/mixing/gls.py:90`) | CROCO `gls_mixing.F` (`GLS_KEPSILON` + `CANUTO_A`) | Column port. **Differs:** no horizontal terms (buoyancy production is on by default with `gls_stratified=True`, since N2a 8c; `False` gives the old neutral closure); the 3-D TIDAL_FLAT matches CROCO to 1.2 cm (`validation/tidal_flat/README.md`) |
 | Bed stress for GLS (`SigmaWetDry._gls_update`, `core/dynamics/sigma_wd.py:314`) | CROCO `gls_mixing.F` | Same |
 | WENO5-Z weights (`_weno5_faces`, `core/dynamics/sigma_baroclinic.py:535`), upwinding once in the corrector (`:1938`) | CROCO `step3d_t.F` (Borges et al. 2008) | Same weights; time stepping SSP-RK3 by default instead of CROCO's LF-AM3 predictor–corrector (`tracer_time="pc"` imitates it) |
 | Flux-form momentum advection (`adv="flux"`) | CROCO `GRAV_ADJ` choice (WENO5 momentum) | Same form; lock-exchange fronts equal CROCO within one cell (`validation/lock_exchange/README.md`) |
@@ -154,7 +154,7 @@ purpose.
 | Partial z\* layer at a face (mean thickness), min thickness for along-layer diffusion (`face_thickness`, `core/vertical/ale.py:66`) | `hFacW`, `model/src/ini_masks_etc.F:250-252` | Same idea |
 | `bulk_ncar` (`forcing/bulk.py:236`) | `pkg/exf/exf_bulkformulae.F` (`ALLOW_BULK_LARGEYEAGER04`), `exf_radiation.F` | Median difference 0.2–0.3 % for U ≥ 0.5 m/s (`docs/design/validation_suite.md` §4); `n_iter = 2` kept on purpose |
 | Exact volume conservation with CG (`solver="cg"`) | `exactConserv` | Same idea: η recomputed from the divergence of the final transports |
-| Legacy z model: KPP (`physics/mixing/kpp.py`), Orlanski OBCS (`boundaries/obcs/__init__.py:306`) | `pkg/kpp/kpp_routines.F`; `pkg/obcs/obcs_calc.F` | Legacy line only |
+| Legacy z model: KPP (`physics/mixing/kpp.py`; the core's KPP is `closure='kpp'`, `closure.py:597`), Orlanski OBCS (`boundaries/obcs/__init__.py:306`) | `pkg/kpp/kpp_routines.F`; `pkg/obcs/obcs_calc.F` | Legacy line only |
 | AB3 of the momentum tendencies | MITgcm AB3 (Adcroft et al. 2004 **[verify]**) | Same coefficients (23, −16, 5)/12 |
 
 ## 3. Head-to-head results
@@ -269,8 +269,8 @@ the [Configuration reference](user-guide/configuration-reference.md).
 | `useOBCSprescribe` | `open_boundary_state=f(t)` + `open_boundary_mode={"west": "clamped"}` | Flather kept on the depth mean |
 | `useOBCSsponge`, `spongeThickness`, `Urelaxobcsinner`, `Urelaxobcsbound` | `sponge_cells`, `sponge_tau=(tau_inner, tau_bound)` (default (1200, 60) s) | Same profile (`obcs_sponge.F`) |
 | `useOBCSbalance` | none (Flather closes the budget) | It reflected the barotropic pulse in BayIW (class d, `validation/bayiw_2d/README.md`) |
-| `useEXF` | `forcing/bulk.bulk_ncar` → wind stress only into the core | Heat fluxes pending |
-| `useKPP`, `useGGL90` | none in the core (KPP in the legacy z model) | GLS without buoyancy |
+| `useEXF` | `forcing/bulk.bulk_ncar` → wind stress only into the core; prescribed heat flux `heat=` with Paulson & Simpson shortwave (`layer_heating`, `physics/surface/shortwave.py:60`; `Driver._heat_fluxes`, `core/model/driver.py:278`) | Bulk heat fluxes pending (N2b) |
+| `useKPP`, `useGGL90` | `closure='kpp'` (`KPPClosure`, `core/components/closure.py:597`), `closure='gls'` (`GLSClosure`, `closure.py:204`) | KPP without interior Ri mixing and without background diffusivity; no GGL90 |
 | `nonHydrostatic` | none | Stage E option |
 
 ### 4.2 From CROCO / ROMS
@@ -283,7 +283,7 @@ the [Configuration reference](user-guide/configuration-reference.md).
 | `UV_HADV_UP3` / `UV_HADV_WENO5` | `adv="upwind3"` / `adv="flux"` (WENO5 flux form) in σ | |
 | `TS_HADV_WENO5`, `TS_HADV_RSUP3`, `TS_HADV_UP3` | `tracer_scheme="weno5"`, — , `"upwind3"` | RSUP3 not available |
 | `UV_VIS2`, `VISC2` | `ah` | |
-| `GLS_MIXING`, `GLS_KEPSILON`, `CANUTO_A` | `closure="gls"` | σ mode only; no buoyancy |
+| `GLS_MIXING`, `GLS_KEPSILON`, `CANUTO_A` | `closure="gls"` | σ and ALE (since N3); stratified by default |
 | `LMD_MIXING` | none in the core | |
 | `RDRG2` / `Zob` | 2-D: `--cd`; σ: `z0` | Log law on the first layer, as CROCO 3-D |
 | `OBC_M2FLATHER` / `OBC_M2CHARACT` | Flather on every open edge | For `OBC_REDUCED_PHYSICS` see `validation/tidal_flat/README.md` |
@@ -318,7 +318,8 @@ the [Configuration reference](user-guide/configuration-reference.md).
 | `SPLIT`, `DTBT` | none (implicit free surface) | |
 | `OBC_SEGMENT_00x` | `open_boundaries`, `open_boundary_mode`, `open_boundary_state` | |
 | `TIDES`, `SAL_SCALAR_VALUE` | 2-D model: `sal_beta` | |
-| `USE_KPP`, `ENERGETICS_SFC_PBL` | none in the core | |
+| `USE_KPP` | `closure='kpp'` (`core/components/closure.py:597`), column-compared with MOM6/CVMix to ≤ 0.3 % in OBL depth | No interior Ri mixing |
+| `ENERGETICS_SFC_PBL` | none in the core | |
 
 ### 4.4 From HYCOM
 
@@ -337,7 +338,7 @@ the [Configuration reference](user-guide/configuration-reference.md).
 | `nestfq`, `bnstfq` | `open_boundary_state` with sponge time scales `sponge_tau` | |
 | `flxflg = 6` | `forcing.bulk.bulk_kara` | Wind stress only into the core |
 | `tidflg`, `tidcon`, `tidsal`, `tiddrg`, `drgscl`, `thkdrg` | 2-D model: `forcing.tides`, `sal_beta`, `physics.tides.drag` (`drgscl` argument of `tidal_drag_rate`) | |
-| `mlflag` (KPP, GISS, …) | none in the core | |
+| `mlflag` (KPP, GISS, …) | KPP and GLS in the core (`closure=`); no GISS | |
 
 ## References
 
