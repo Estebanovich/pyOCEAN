@@ -10,7 +10,7 @@ Source: `/Users/estebancruz/pyOCEAN_refs/croco/` (read only). All `file:line` be
 | Options in the block | `UV_ADV`, `NEW_S_COORD`, `UV_COR`, `SOLVE3D`, `#undef LMD_MIXING`, `#define GLS_MIXING`, `ANA_GRID/INITIAL/SMFLUX/SRFLUX/STFLUX/BTFLUX`, `EW_PERIODIC`, `NS_PERIODIC`, `#undef MPI/OPENMP` | cppdefs.h:779-792 |
 | GLS variant | not written in the SINGLE_COLUMN block; defaults to `GLS_KEPSILON` + `CANUTO_A` (also `GLS_MIXING_3D` not set) | cppdefs_dev.h:541-561 |
 | Tracers | `TEMPERATURE` only (no `SALINITY` in the block), linear EOS (no `NONLIN_EOS`): `rho = R0 - Tcoef (T - T0)` (+ rho0 in the dynamics) | cppdefs_dev.h:127; rho_eos.F:360-362 |
-| EOS constants (all .in files) | rho0 = 1024 (EKBBL: 1.22), R0 = 24, T0 = 16 degC, Tcoef = 0.2 kg m-3 K-1 (alpha = Tcoef/rho0 = 1.95e-4 K-1), Scoef = 0 | TC/croco.in.* lines 43-47 (EKBBL rho0 line 44 `1.22d0`) |
+| EOS constants (all .in files) | rho0 = 1024 (EKBBL: 1.22), R0 = 24, T0 = 16 degC (EOS reference only; the initial T of the FORCED_* cases is 20 degC, see section 4), Tcoef = 0.2 kg m-3 K-1 (alpha = Tcoef/rho0 = 1.95e-4 K-1), Scoef = 0 | TC/croco.in.* lines 43-47 (EKBBL rho0 line 44 `1.22d0`) |
 | Horizontal grid | 5 x 5 interior (LLm0=MMm0=5), Length_XI = Length_ETA = 10 km (dx = dy = 2 km), doubly periodic, flat bottom `h = depth`; so a true 1-D column (all columns identical) | param.h:78-93; ana_grid.F:297-300, 536-545 |
 | Vertical grid | uniform sigma: `THETA_S = 0, THETA_B = 0, Hc = 1e16` (so z_w uniformly spaced, dz = depth/N) | TC/croco.in.* line 5-6 |
 | Time stepping | `NTIMES dt NDTFAST NINFO`; dt = 30 s in every case (NDTFAST = 60 is irrelevant, no barotropic dynamics in a periodic flat box) | TC/croco.in.* line 3-4 |
@@ -74,9 +74,9 @@ Source: `/Users/estebancruz/pyOCEAN_refs/croco/` (read only). All `file:line` be
 | Outputs | as common, plus `Akv Akt Aks` in the history file | .in:31-32 |
 | Comparison | no reference in source. Natural check: diurnal-cycle mixed layer from GOTM/KPP intercomparisons (Large et al. 1994 OWS Papa, McWilliams et al. 2009 on the need of Ric = 0.15 with diurnal shortwave) **[verificar]**; internal consistency: conservation of heat content, nocturnal convective mixing depth | n/a |
 
-## 4. Forced bottom-boundary-layer cases (no stratification, T = T0 = 16 uniform)
+## 4. Forced bottom-boundary-layer cases (no stratification, T = 20 degC uniform)
 
-For all four: initial T = T0 uniform (default branch), u = v = 0, no surface heat flux, `stflx = srflx = 0`, bottom flux 0, GLS k-epsilon Canuto A, linear EOS (irrelevant: no stratification), dt = 30 s. The forcing is a body force added to the pressure-gradient term in `prsgrd.F`: `rv += ... on_v ( f*UG | -gdzetady [cos(omega t)] ) + ...`. All act on the **v** component (alongshore), u is driven only by rotation. Surface boundary is free slip (no stress) unless noted.
+For all four: initial T = 20 degC uniform (default branch of `ana_initial.F:1221-1224`: `t(i,j,k,1,itemp)=20.`; corrected 2026-10-30, this file said T0 = 16, which is only the EOS reference temperature in `lin_EOS_cff` and is not used for the initial state of these cases; no effect on the dynamics since T is uniform and Scoef = 0), u = v = 0, no surface heat flux, `stflx = srflx = 0`, bottom flux 0, GLS k-epsilon Canuto A, linear EOS (irrelevant: no stratification), dt = 30 s. The forcing is a body force added to the pressure-gradient term in `prsgrd.F`: `rv += ... on_v ( f*UG | -gdzetady [cos(omega t)] ) + ...`. All act on the **v** component (alongshore), u is driven only by rotation. Surface boundary is free slip (no stress) unless noted.
 
 | Item | FORCED_EKBBL | FORCED_DBLEEK | FORCED_NONROTBBL | FORCED_OSCNONROTBBL |
 |---|---|---|---|---|

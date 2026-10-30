@@ -236,6 +236,27 @@ stress $\tau = \rho_a C_D\lvert\mathbf U_{10}\rvert\mathbf U_{10}$ for idealised
 *Fraction of the surface shortwave left at depth z. The red band (58 %) is absorbed in the top metre; the
 blue-green part still carries ~5 % of the surface flux at 60 m.*
 
+## Prescribed heat flux in the σ/ALE model (N3)
+
+`SigmaBaroclinic.step(st, tau_x, tau_y, fw=None, heat=None)` accepts `heat={"Q_ns": ..., "Q_sw": ...}` [W m⁻², positive
+into the ocean, per cell] (`core/model/driver.py`, `physics/surface/shortwave.py`; constructor arguments `cp` = 3985
+J kg⁻¹ K⁻¹ and `jerlov` = "I"). It is a prescribed flux, not a bulk formula, and it is applied in phase 7 after the
+freshwater substep:
+
+- The non-solar part $Q_{ns}$ (sensible, latent, net longwave) goes into the uppermost layer with mass.
+- The shortwave $Q_{sw}$ is distributed by the Paulson & Simpson (1977) two-band profile
+    $F(z)=R\,e^{z/\mu_1}+(1-R)\,e^{z/\mu_2}$ (types I, IA, IB, II, III; coefficients as CROCO `lmd_swfrac.F:47-51`, formula
+    `:76-88`; no $e^{-20}$ cutoff). Layer $k$ gets $Q_{sw}(F_{k+1}-F_k)$ with $F$ at the layer interfaces.
+- The part reaching the bed stays in the **bottom layer with mass**, the rule of MOM6 (`MOM_opacity.F90:824-842, 994-1011`);
+    CROCO has no shortwave term at the bed (`step3d_t.F:567, 578-586`). The old `surface_tendency` of the legacy
+    z-level model instead lets that part leave the column.
+- Vanished ALE layers get nothing; land and dry columns are ignored. The heat content changes by exactly
+    $\sum Q A\,\Delta t/(\rho_0 c_p)$ (relative error < 1e-13), and the variance budget of T gains a surface term, so
+    it still closes to 5e-10.
+- `driver.last_bflux` and `ctx.bflux` (`Q_ns`, `Q_sw`, `sw_frac_iface`) feed the KPP closure's buoyancy flux
+    ([Turbulence closures](turbulence-friction.md#gls-in-ale-and-kpp-as-model-closures-n3)). Without `heat` the step is
+    bit for bit as before.
+
 ## Which model line consumes each flux
 
 | Flux | Computed by | Consumed by | Notes |
@@ -300,8 +321,9 @@ See also [Forcing and column checks](../validation/components.md).
 
 ## Known limitations
 
-- **Heat and freshwater fluxes are not coupled to the σ/ALE model** (`SigmaBaroclinic` has T only, with a
-    linear EOS, and no surface tracer flux); only the wind stress is used there.
+- **The bulk formulae are not coupled to the σ/ALE model.** `SigmaBaroclinic` takes a *prescribed* freshwater flux
+    (N2a) and, since N3, a prescribed heat flux (below); computing them from ERA5/WRF with `bulk_ncar`/`bulk_kara` is
+    the N2b work.
 - No COARE 3.0 scheme yet: `bulk_ncar` is unreliable in weak wind with strongly stable air and has no fixed
     point for warm dry air (see the note above).
 - No gustiness, no wave-dependent roughness, no stress cap (MITgcm caps at ±2 N m⁻²; HYCOM caps $C_D$ at

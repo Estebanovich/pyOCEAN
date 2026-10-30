@@ -229,7 +229,7 @@ Legg 2006 (10 km): b_f z −11.7, isopicnal −11.0, isopicnal con ν_v = 0.5 �
 
 #### Qué debe mejorar pyOCEAN (DOME + GLS)
 
-1. **(a) Entrada de la híbrida a 10 km** (punto 2 de la lista de arriba): sigue igual con el GLS y es la mayor parte de la diferencia restante de b_f con Legg.
+1. **(a) Entrada de la híbrida a 10 km** (punto 2 de la lista de arriba): sigue igual con el GLS. **[Hipótesis]** que sea la mayor parte de la diferencia restante de b_f con Legg: el efecto de la entrada y el del cierre no se separaron (ver el punto 4).
 2. **(b) Viscosidad horizontal de Smagorinsky** (punto 4 de arriba): con el GLS, ν_v baja a su piso fuera de la pluma; las velocidades suben a 5.7 m/s, el limitador actúa 1072 veces y aparece un truncamiento. Con ν_v = 1e-5 constante el caso revienta.
 3. **Mezcla por Ri (Jackson et al. 2008) como opción frente al GLS** en la híbrida, para comparar con el cierre del isopicnal de Legg y del DOME de MOM6.
 4. **Estudio (c): transporte plano de la pluma** en la híbrida (punto 3). Separar el efecto de la entrada (punto 1) del del cierre en una sola interfaz, p. ej. con la entrada de 5 km (que no pierde la clase densa) y GLS.

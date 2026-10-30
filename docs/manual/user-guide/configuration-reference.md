@@ -30,7 +30,7 @@ columns, v-faces ny + 1 rows; "σ" means `vertical_coordinate="sigma_eulerian"`,
 | Name | Type | Default | Units | Meaning | Valid values | Notes |
 |---|---|---|---|---|---|---|
 | `z0` | float or None | None | m | bed roughness of the first-layer law of the wall, C_d = [κ/ln(Δz₁/2z₀)]² | None (no bed stress) or > 0 | ALE requires None (`:1148-1150`); C_d clipped to [1e-4, 0.1] (``first_layer_cd`` (`physics/bottom_friction.py:48`)) |
-| `closure` | str | `"constant"` | — | vertical viscosity | `"gls"`, `"parabolic"`, `"constant"`, `"none"` (`core/dynamics/sigma_wd.py:49`) | ALE: only `"constant"`/`"none"` (`:1151-1153`). GLS = CROCO k-ε Canuto A, **no buoyancy term** (`physics/mixing/gls.py:14`); parabolic ν = κu*z(1 − z/D) needs `z0` |
+| `closure` | str | `"constant"` | — | vertical viscosity | `"gls"`, `"parabolic"`, `"constant"`, `"none"` (`core/dynamics/sigma_wd.py:49`) | `"kpp"` (CVMix/MOM6, since N3) is also accepted. ALE: `"constant"`, `"none"`, `"gls"` and `"kpp"` since N3 (not `"parabolic"`). GLS = CROCO k-ε Canuto A, with buoyancy by default (`gls_stratified=True`; `False` = neutral, `physics/mixing/gls.py:14`); parabolic ν = κu*z(1 − z/D) needs `z0` |
 | `nu_const` | float | 1e-4 | m² s⁻¹ | viscosity of `"constant"` | ≥ 0 | |
 | `kv` | float | 0.0 | m² s⁻¹ | vertical tracer diffusivity, implicit, constant | ≥ 0 | independent of the closure |
 | `kh` | float | 0.0 | m² s⁻¹ | horizontal tracer diffusivity along layers, explicit flux form | ≥ 0 | diffuses T − T_ref(z) when a reference profile is set (`_diffuse_h_numpy`, `:1600`); ALE uses min(h_L, h_R) at faces |
@@ -268,7 +268,7 @@ Grouped by where they are raised. The message text is the code's.
 | `momentum='vector_invariant' needs vertical_coordinate='ale' (the σ model keeps the flux form, which matches CROCO)` | | `:1134` |
 | `unknown ke_scheme …` / `unknown thickness_flux …` | | `:1137`, `:1140` |
 | `unknown regrid rule …` / `unknown remap_scheme …` | ALE only | `:1145`, `:1147` |
-| `vertical_coordinate='ale' needs z0=None for now: the law-of-the-wall drag uses the bed layer, which can vanish under z*` | | `:1149` |
+| *(removed in N3)* `vertical_coordinate='ale' needs z0=None ...` — ALE accepts `z0` now; `z0` together with `bottom_drag='quadratic'` is an error (two bed drags) | | `core/model/preflight.py` |
 | `vertical_coordinate='ale' needs closure 'constant' or 'none' for now (GLS and the parabolic ν assume σ-layers)` | | `:1152` |
 | `regrid='zstar' needs regrid_params['dz_top']` (and `'rho_target'` for hybrid) | | `:1158` |
 | `cells with H ≤ 0 can dry: use regrid='sigma', or 'hybrid' with a shallow σ zone (regrid_params d_sigma, d_hybrid > 0) covering them` | floodable cells with z*, or hybrid without a window — also the symptom of 0-for-land bathymetry | `:1171` |

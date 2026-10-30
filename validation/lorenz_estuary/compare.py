@@ -56,11 +56,12 @@ CONFIGS = case.CONFIGS                       # sigma_gls, ale_sigma, ale_sigma_g
 # class, reason).  Rows not listed agree with GETM or are exact (M_model^tot = Me).  Evidence: README "Resultados"
 # (task 8b; one-cycle replays from the cycle-575 checkpoints locate M_num cell by cell; N3 task 10b adds ALE-σ+GLS:
 # within 0–4 % of σ+GLS in every Me-type row, so the closure, not the coordinate, set the ALE-σ differences).
+BUDGET_LIMIT = 5e-10  # N3 spec criterion 4: |Me − M_tot|/M_tot
 SAL = ("s_in", "s_out", "s2_in", "s2_out")
 STORE = ("dS", "dS2")
 MIX = ("Fs2_surf", "Me", "Mc", "Mp", "Mcp", "M_model_tot")
 SPLIT = ("M_model_phy", "M_model_num")
-_DV = (("dV",), "d?", "GETM 0.30–0.36 m³/s = +10–12 cm of mean level in the region per 100 cycles; pyOCEAN ≤ 0.015; "
+_DV = (("dV",), "d?", "GETM 0.30–0.36 m³/s = +10–12 cm of mean level in the region per 100 cycles; pyOCEAN ≤ 0.026; "
                       "open")
 CLASSIFICATION: dict[str, list[tuple[tuple[str, ...], str, str]]] = {
     "A": [
@@ -150,11 +151,16 @@ def table(runs: Path, exp: str) -> str:
     for r, (label, key, _) in enumerate(ROWS):
         lines.append(f"| {label} | {GETM[exp][r]:g} | " + " | ".join(f"{cols[c][r]:.4g}" for c in CONFIGS)
                      + f" | {cls.get(key, '—')} |")
-    ident = []
+    ident, rel = [], []
     for c in CONFIGS:
         s = load(runs, exp, c)
-        ident.append("—" if s is None else f"{abs(s['Me'] - s['M_model_tot']) / abs(s['M_model_tot']):.1e}")
-    lines.append("| \\|Me − M_tot\\|/M_tot | machine accuracy | " + " | ".join(ident) + " | — |")
+        r = np.nan if s is None else abs(s['Me'] - s['M_model_tot']) / abs(s['M_model_tot'])
+        rel.append(r)
+        ident.append("—" if s is None else f"{r:.1e}")
+    # N3 spec criterion 4: ≤ 5e-10.  A run above it is flagged (class c: ALE remap round-off bias, README
+    # "Cierre del balance") instead of being labelled as agreeing with GETM's machine accuracy.
+    flag = "c (> 5e-10, remap round-off)" if any(np.isfinite(r) and r > BUDGET_LIMIT for r in rel) else "—"
+    lines.append("| \\|Me − M_tot\\|/M_tot | machine accuracy | " + " | ".join(ident) + f" | {flag} |")
     lines += ["", "Classes:"] + [f"- {', '.join(keys)}: ({c}) {why}" for keys, c, why in CLASSIFICATION.get(exp, [])]
     return "\n".join(lines)
 

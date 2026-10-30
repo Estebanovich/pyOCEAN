@@ -168,7 +168,7 @@ with its tests and is not extended. The agreed order is (1) unify the 3-D core, 
 | 2 | Linear (T, S) EOS and TEOS-10 with p ≈ −ρ₀ g z | `physics/eos` | Exact rest PGF with ρ_ref(z) of (T, S); seamount with TEOS-10 | ⬜ core EOS linear in T (`:1285`) |
 | 3 | Buoyancy in GLS: B = −K_ρ N², tracer diffusivity K_t with Canuto-A stability functions | CROCO `gls_mixing.F` | Kato–Phillips against the empirical solution and GOTM/CROCO | ⬜ N² = 0 (`physics/mixing/gls.py:14`, `:175-177`) |
 | 4 | Surface fluxes: Q_net, penetrating shortwave (Paulson & Simpson), E − P on S, stress from `bulk_ncar`/`bulk_kara` | `forcing/bulk.py`, `forcing/surface.py` | Exact column heat budget; convection by cooling | ⬜ the core takes wind stress only (`:2084`) |
-| 5 | KPP in σ columns (alternative to GLS) | `physics/mixing/kpp.py` | Kato–Phillips; thesis: KPP + internal-wave spectra | ⬜ |
+| 5 | KPP in σ columns (alternative to GLS) | `physics/mixing/kpp_cvmix.py`, `KPPClosure` | Kato–Phillips; thesis: KPP + internal-wave spectra | ✅ N3 (2026-10-30; vs MOM6/CVMix ≤ 0.3 %) |
 | 6 | 3-D tides: Flather with TPXO η/ū, potential + SAL as a barotropic force | `forcing/tides.py` | PAC_MEX homogeneous 3-D = 2-D (to the round-off of the drag); then stratified (stage E) | ⬜ |
 | 7 | Parent-model boundary: time-dependent T/S/ū/u′ from HYCOM/ESPC as `T_ext` and sponge target; tide + low frequency in Flather | `forcing/ocean_init.boundary_data` | Gulf of California nest vs HYCOM-IOA | 🔶 the time-varying exterior (`open_boundary_state`) exists and was validated nested in MITgcm runs (BayIW cut phase 2); the HYCOM feed and a 3-D exterior across the sponge band are missing |
 | 8 | Internal-wave reflection metric λ = F_r/F_in (Siyanbola et al. 2023) and a "pretty good sponge" variant (Lavelle & Thacker 2008) | new | Mode-1 channel | ⬜ |
@@ -227,9 +227,9 @@ Each row was checked in the code. "Class" follows the benchmark classification w
 | EOS linear in T: ρ = ρ₀ − α (T − T₀); no TEOS-10, no thermobaricity | `SigmaBaroclinic.density` (`:1285`) | Piece 2 |
 | Only wind stress at the surface: no heat, freshwater or shortwave fluxes | `SigmaBaroclinic.step(st, tau_x, tau_y)` (`:2084`) | Piece 4 |
 | GLS k-ε has no buoyancy term and acts on momentum only; tracers use a constant `kv` | `physics/mixing/gls.py:14`, `:175-177`; `:2047`, `:2142` | Piece 3 |
-| KPP is not available in the core (legacy z model only) | `physics/mixing/kpp.py:555`; no import in `sigma_baroclinic.py` | Piece 5 |
+| ~~KPP is not available in the core~~ Resolved in N3: `closure='kpp'` in σ and ALE (`core/components/closure.py`); no interior Ri mixing | `physics/mixing/kpp_cvmix.py` | Piece 5 (done) |
 | No tides in the 3-D core (no body force, SAL or tidal boundary) | `step` signature (`:2084`) | Piece 6 |
-| ALE mode: closure `constant` or `none` only, and **no bottom drag** (`z0` must be `None`) | `_setup_ale` (`:1148-1153`) | Not scheduled; needed for coastal ALE runs |
+| ~~ALE mode: closure `constant` or `none` only, and no bottom drag~~ Resolved in N3: GLS and KPP in ALE, law-of-the-wall drag with `z0` (`hbbl`) | `core/components/closure.py`, `core/components/bottom_drag.py` | done |
 | No horizontal tracer diffusion of the GM / thickness-diffusion type | — | Not planned |
 | Hydrostatic only | — | Stage E option |
 

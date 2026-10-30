@@ -61,6 +61,53 @@ buoyancy frequency $N^2$ comes from $\rho(T, S)$ of the current state. Optional 
 the total exchange flow of a transect from the step's effective face fluxes. See
 [Tracer transport](../theory/tracers.md#salinity-freshwater-and-the-variance-budget).
 
+## Since N3 (2026-10-30): closures in ALE, heat flux, periodic boundaries
+
+N3 (branch `n3-closures`; spec `docs/superpowers/specs/2026-10-29-n3-turbulence-closures-design.md`) changes the
+phases of the table above as follows. Without the new arguments (`heat`, `periodic`, `closure='gls'|'kpp'` in ALE) every
+configuration of the N1 golden matrix is bit for bit as before.
+
+| Phase | What N3 adds |
+|---|---|
+| 3 | none |
+| 4 `implicit_and_free_surface` | The closure is its own component (`core/components/closure.py`: `ConstantClosure`, `GLSClosure`, `KPPClosure`). `Closure.viscosity(st)` gives ν at the faces; for GLS `Closure.update(u, v, h, rho, ustar2_sfc, ustar2_bot, bflux)` follows the implicit step, with the bed u*² computed once (`ctx.ustar2_bot`) and shared by σ and ALE. In ALE with `z0`, `LogLawBedDrag.rates` gives per-layer implicit rates $r_k = C_d\,\lvert\mathbf U_b\rvert\,w_k$ over the bottom `hbbl` metres, with the **full bed speed** $\lvert\mathbf U_b\rvert=\sqrt{u_b^2+\bar v_b^2}$ (cross component by the 4-point mean of CROCO `get_vbc.F:517-526`; Task 9b, before it each face used its own component only) |
+| 7 `tracers` | After the freshwater substep: `_heat_fluxes` sets `ctx.bflux` and `_heat_apply` adds the prescribed heat (non-solar $Q_{ns}$ in the top layer with mass, shortwave $Q_{sw}$ by the Paulson & Simpson 1977 profile, the part reaching the bed in the bottom layer). With `closure='kpp'` `_kpp_update` runs before the heat is applied (MOM6 diabatic order) and `_kpp_nonlocal` adds the explicit non-local term after $K_h$. Tracer diffusivity $\kappa_t$ is the closure's (floor `kv`) for T, S and passive tracers |
+| 8 `vertical_coordinate` | After the regrid, `Closure.remap(h_src, h_dst)`: GLS remaps $k$ and $\varepsilon$ (below). KPP carries only $\nu$ (`akv`) by interface index, as MOM6 does (`MOM.F90:1964-1965`) |
+
+**Surface heat flux** (`step(..., heat={"Q_ns": ..., "Q_sw": ...})`, `physics/surface/shortwave.py`). A prescribed flux
+(positive into the ocean, W m⁻²), not a bulk formula. Exact heat content to round-off (relative error < 1e-13 of the
+change, σ and z*); vanished layers receive nothing; land and dry columns are ignored. See
+[Air–sea fluxes](../theory/air-sea-fluxes.md).
+
+**Periodic boundaries** (`SigmaBaroclinic(..., periodic=("x",), ("y",) or ("x", "y"))`, `core/model/periodic.py`). With
+`"x"`, u-face columns 0 and nx are one physical face stored twice; stencil kernels get wrapped halos (pad–crop) and pair
+operators use cells n−1 and 0 natively. `periodic` with an open edge on the same axis is a configuration error. Used for
+the single-column cases (5×5 doubly periodic) and for Lorenz-type channels.
+
+**GLS in ALE** (`closure='gls'`, `gls_stratified=True`). The $k$–$\varepsilon$ state lives at the interfaces. Two ALE-specific
+pieces:
+
+1. **Thin-layer merge.** Layers thinner than $h_{thin} = \min(10\ \mathrm{cm},\ \max(1\ \mathrm{mm},\ 1\,\%\,D/N))$
+   per column (`thin_layer_threshold`) are merged with the nearest layer with mass above them (a top cluster forms its
+   own surface layer when it holds at least 1 mm) as MOM6 `eliminate_massless` (`MOM_kappa_shear.F90:254-307`, top cluster
+   `:256-265`); the k-ε step runs on the merged column and the result is interpolated back onto every interface. Columns
+   with no thin layer take the same arithmetic as σ (σ ≡ ALE to 4e-13 with fixed layers); columns with thin layers go
+   to the Numba kernel `physics/mixing/gls_merged.py` (NumPy path kept as oracle, equal bit for bit). The relative
+   threshold keeps uniform σ columns unmerged and caps at HYCOM's 10 cm; a Δt form like MOM6's was too small (0.77–2.4 mm).
+2. **Remap of $k$ and $\varepsilon$.** Each interface owns the dual cell $w_i=\tfrac12(h_{i-1}+h_i)$; after the regrid the
+   interface values are remapped as cell means of the dual grid with the model's conservative remap (PPM_H4 by
+   default), so $\sum w\,k$ is conserved to round-off, then floored ($k\ge 10^{-10}$, $\varepsilon\ge 10^{-12}$) and
+   limited by Galperin et al. (1988) with the $N^2$ of the last update.
+
+`gls_production='energy'` (option) uses the Burchard (2002) energy-conserving shear production; the default `'croco'`
+keeps the CROCO arithmetic.
+
+**KPP** (`closure='kpp'`, `physics/mixing/kpp_cvmix.py`, `KPPClosure`). The CVMix/MOM6 K-profile parameterization
+(bulk-Richardson boundary-layer search per column, shape functions, enhanced diffusion, non-local term), constants of
+CVMix (no tuning), no background diffusivity by default (`KPPParams.kappa_bg = nu_bg = 0`). The surface buoyancy flux
+includes the shortwave absorbed above the trial depth, $B_f(d)=B_{ns}+B_{sw}(1-F_{sw}(z_{bot}(d)))$, as MOM6
+(`MOM_forcing_type.F90:1113, 1143-1147`). Interior Richardson mixing is not part of `'kpp'`.
+
 ## The model object and the state
 
 A run is a loop over
@@ -301,9 +348,10 @@ Step by step:
     (`core/dynamics/sigma_wd.py:237–243`). With `"none"`, the mean thickness. All floored at
     `DZ_FLOOR` = 1e-6 m.
 4. **Vertical + barotropic step**, `self.core.step(...)` with the ALE weights (`:2005`): the same
-    `SigmaWetDry.step` as in σ mode, with $\bar u = \sum_k w_k u_k$. ALE requires `z0=None` and
-    `closure ∈ {"constant", "none"}` (`_setup_ale`, `:1148–1153`), so there is no bed stress and no GLS in
-    ALE. The default solver in ALE is CG with the lagged-LU preconditioner.
+    `SigmaWetDry.step` as in σ mode, with $\bar u = \sum_k w_k u_k$. Since N3 ALE accepts `z0` (law-of-the-wall bed
+    drag on the bottom `hbbl` metres, `LogLawBedDrag`) and `closure ∈ {"constant", "none", "gls", "kpp"}`; the
+    older sentence "ALE has no bed stress and no GLS" no longer holds (see the N3 section above). The default
+    solver in ALE is CG with the lagged-LU preconditioner.
 5. **Open boundaries** on u′ with the face fractions (`_open_velocity`, `:2007`).
 6. **Thin bed layers carry no velocity** (`zero_thin_bed_velocity`, `core/vertical/ale.py:950`, HYCOM
     `hybgen.F90:1757-1764`): the run of face layers thinner than `h_thin_bed` (0.01 m) that starts at the bed
@@ -376,8 +424,9 @@ Step by step:
     the CFL truncation count, CG non-convergence in `WetDryFreeSurface.step`. For a post-mortem with the
     location of NaNs and limits, wrap the loop with `diagnostics.postmortem.BlowupGuard` (see
     [Output, restarts and diagnostics](../user-guide/output-restart-diagnostics.md)).
-- **What the step does not do (yet).** Salinity, nonlinear EOS, surface heat and freshwater fluxes,
-    tidal forcing inside `SigmaBaroclinic`, KPP, bed stress or GLS in ALE. See
+- **What the step does not do (yet).** Bulk (formula-based) air–sea fluxes (the heat flux is prescribed), tidal
+    forcing inside `SigmaBaroclinic`, a horizontal-viscosity safeguard for AB3 + WENO5 flux-form momentum, and the
+    remap of the AB3 history after the ALE regrid. See
     [Limitations and roadmap](../roadmap.md).
 
 ## The 2-D tidal free-surface model

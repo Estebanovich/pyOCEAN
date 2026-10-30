@@ -23,12 +23,13 @@ are in [Vertical coordinates and ALE](../theory/vertical-ale.md), [Momentum](../
         (``SigmaBaroclinic.density`` (`core/dynamics/sigma_baroclinic.py:1285`)). There is no salinity in the
         stratified model. Realistic cases use a *density-equivalent* temperature, T = T₀ + (ρ₀ − ρ)/α, as the
         BayIW "real" case does (CLAUDE.md, Phase 2 table).
-    - **No surface heat or freshwater flux.** The only surface forcing of `step` is the momentum stress
-        (`tau_x`, `tau_y`).
-    - **No KPP** in this model (KPP exists only in the phase-1 z-level code, `physics/mixing/kpp.py`). The
-        GLS closure (σ mode only) has no buoyancy term: B = 0, "homogeneous water" (`physics/mixing/gls.py:14`).
-    - **ALE** needs `z0=None` (no log-law drag) and `closure` `"constant"` or `"none"`
-        (`SigmaBaroclinic._setup_ale` (`core/dynamics/sigma_baroclinic.py:1148-1153`)).
+    - **Surface forcing of `step`:** momentum stress (`tau_x`, `tau_y`), a prescribed freshwater flux `fw` (N2a) and a
+        prescribed heat flux `heat` (N3); no bulk formulae inside the model yet (N2b).
+    - **Closures (since N3, 2026-10-30):** `closure='kpp'` (CVMix/MOM6, no background diffusivity by default) and
+        the stratified GLS (`gls_stratified=True`) work in σ and ALE; a prescribed `heat` flux and `periodic` boundaries
+        exist (see [Turbulence closures](../theory/turbulence-friction.md)).
+    - **ALE** accepts `z0` (law-of-the-wall drag over `hbbl`) and `closure` `"constant"`, `"none"`, `"gls"` or `"kpp"`
+        (`core/model/preflight.py`).
 
 ## Step 0 — environment and threads
 

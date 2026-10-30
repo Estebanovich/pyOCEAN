@@ -3,24 +3,24 @@
 This page describes how pyOCEAN represents the unresolved vertical momentum exchange: the vertical eddy viscosity
 $\nu$ (closures `'constant'`, `'parabolic'`, `'gls'`, `'none'`), the stress at the bed (quadratic drag with a
 constant, depth-dependent or first-layer log-law coefficient), and the wind stress at the surface. It also documents
-the KPP module, which exists and is tested but is **not wired into any model time step yet**. You need this page
+the KPP closure (coupled to `SigmaBaroclinic` in σ and ALE since N3, 2026-10-30; the older z-level module
+`physics/mixing/kpp.py` stays as a legacy). You need this page
 when you choose `closure`, `nu_const`, `z0` or `kv` for `SigmaWetDry` / `SigmaBaroclinic`, or a drag coefficient for
 a 2-D tidal run.
 
-!!! warning "What is and is not coupled today (code state 2026-10-14)"
-    | Feature | `SigmaWetDry` (σ, homogeneous) | `SigmaBaroclinic`, `vertical_coordinate='sigma_eulerian'` | `SigmaBaroclinic`, `vertical_coordinate='ale'` | 2-D tidal runs |
+!!! note "What is coupled (code state 2026-10-30, after N3)"
+    | Feature | `SigmaWetDry` (σ, homogeneous) | `SigmaBaroclinic`, `'sigma_eulerian'` | `SigmaBaroclinic`, `'ale'` | 2-D tidal runs |
     |---|---|---|---|---|
-    | `closure='constant'` / `'none'` | yes | yes (default `'constant'`, $\nu$ = 1e-4) | yes (only these two) | — |
+    | `closure='constant'` / `'none'` | yes | yes (default `'constant'`, $\nu$ = 1e-4) | yes | — |
     | `closure='parabolic'` | yes (default) | yes | **no** (raises) | — |
-    | `closure='gls'` (k-ε, Canuto A) | yes | yes, momentum only, **no buoyancy** | **no** (raises) | — |
-    | First-layer log-law bed drag (`z0`) | yes (default `z0` = 1e-4 m) | yes (default `z0=None`) | **no**: `z0` must be `None` | — |
-    | Tracer vertical diffusion | — | constant `kv` only | constant `kv` only | — |
+    | `closure='gls'` (k-ε, Canuto A) | yes | yes, stratified (`gls_stratified`, default True) with $\kappa_t$ for T and S | **yes** (N3): remap of $k$, $\varepsilon$, thin-layer merge | — |
+    | `closure='kpp'` (CVMix/MOM6) | no | yes (N3) | yes (N3) | — |
+    | Law-of-the-wall bed drag (`z0`) | yes (default `z0` = 1e-4 m) | yes (default `z0=None`) | **yes** (N3): over the bottom `hbbl` metres, full bed speed | — |
     | 2-D quadratic drag, constant or `log_law_cd(D, z0)` | — | — | — | in the run scripts |
-    | KPP (`physics/mixing/kpp.py`) | no | no | no | no (legacy z-model module, tests only) |
+    | Legacy z-level KPP (`physics/mixing/kpp.py`) | no | no | no | no (tests only) |
 
-    Sources: `SigmaBaroclinic._setup_ale` (`core/dynamics/sigma_baroclinic.py:1148-1153`) raises for `z0` and for
-    `closure` other than `'constant'`/`'none'` in ALE; a repository-wide search finds `kpp_tendency` only in
-    `tests/test_kpp.py`.
+    Sources: `core/model/preflight.py` (closure and drag checks), `core/components/closure.py`,
+    `core/components/bottom_drag.py`. `z0` together with `bottom_drag='quadratic'` is an error (two bed drags).
 
 ## Physics
 
@@ -114,13 +114,13 @@ $$
 
 The stability functions are those of Canuto et al. (2001), version A.
 
-!!! warning "No buoyancy in the pyOCEAN GLS"
-    pyOCEAN's port sets $B = 0$ and $\alpha_N = 0$: the closure sees shear only, as for homogeneous water
-    (`physics/mixing/gls.py:14`, `:175-183`). The Galperin limit uses $N^2 = 10^{-14}$ s⁻² (`:177`), and the
-    tracer diffusivity $\nu'$ is not computed: tracers use the constant `kv`. Adding $B = -K_\rho N^2$ and the
-    tracer stability function is step 3 of the unified-core plan (`docs/design/unified_core.md`, row 3, with a
-    Kato–Phillips benchmark). In a stratified `SigmaBaroclinic` run, `closure='gls'` therefore over-mixes
-    momentum across pycnoclines.
+!!! note "Buoyancy in the pyOCEAN GLS (since N2a task 8c)"
+    With `gls_stratified=True` (default of `SigmaBaroclinic`) the closure includes buoyancy production
+    $B=-\kappa_t N^2$, $\alpha_N$, the Galperin et al. (1988) limit with the model's $N^2$ from $\rho(T,S)$, and the
+    tracer diffusivity $\kappa_t$ (floor 1e-6 m² s⁻¹, as CROCO `nuws`) for T and S in place of the constant `kv`.
+    With `gls_stratified=False` the older neutral closure is kept: $B=0$, $\alpha_N=0$, Galperin limit with
+    $N^2=10^{-14}$ s⁻² (`physics/mixing/gls.py:14`, `:175-183`), constant `kv` for tracers; in stratified runs it
+    over-mixes momentum across pycnoclines.
 
 ## Discretisation
 
@@ -292,7 +292,7 @@ centres) is averaged to the faces for the next step (`SigmaWetDry._gls_at_faces`
 ![GLS stability functions](../img/turbulence/gls_stability.png)
 
 *Canuto A stability functions from the constants of `physics/mixing/gls.py` with the code's $\alpha_M$ limiter. The
-black line ($\alpha_N = 0$) is the only one pyOCEAN uses; the coloured curves show what buoyancy would add. The tracer
+black line ($\alpha_N = 0$) is the one used with `gls_stratified=False`; the coloured curves show what buoyancy adds in the stratified default. The tracer
 function $c_\mu'$ (right) uses CROCO's $n_{b2}$, which `gls.py` does not define.*
 
 **Call order inside `SigmaWetDry.step`** (`core/dynamics/sigma_wd.py:258-299`): $\nu^n$ from the previous GLS update
@@ -311,9 +311,23 @@ bed-layer thickness at each face, $\Delta z_1 = D_f\Delta\sigma_0$ by default, o
 (`core/dynamics/sigma_wd.py:218-219`). `cd_max` is a `SigmaWetDry` argument (default 0.1).
 
 `hu_drag`, `hv_drag` exist for the ALE thin-layer coupling: the viscous solve then sees the upwind-biased coupling
-thickness, while the drag should see the mean bed-layer thickness (`SigmaBaroclinic._step_ale`,
-`core/dynamics/sigma_baroclinic.py:1997-2002`). Because ALE currently requires `z0=None`, the drag is zero in ALE runs
-and these arguments have no effect yet.
+thickness, while the drag should see the mean bed-layer thickness (`SigmaBaroclinic._step_ale`).
+
+**Full bed speed (N3 task 9b).** The linearised drag rate is $r=C_d\,\lvert\mathbf U_b\rvert$ with
+$\lvert\mathbf U_b\rvert=\sqrt{u_b^2+\bar v_b^2}$, where $\bar v_b$ is the cross component at a u-face (the 4-point mean of
+CROCO `get_vbc.F:517-518, 525-526`; `physics.bottom_friction.cross_velocity_at_faces`). Before 2026-10-29 each face
+used only its own component, which halved the stress in a rotating bottom Ekman layer: the FORCED_EKBBL bed-layer
+veering was 62.8° against CROCO's 75.77°; now it is 75.99° (DBLEEK 63.23° against 63.06°;
+`validation/turbulence_columns/README.md`). pyOCEAN takes the velocities at $u^n+\Delta t\,G$ (CROCO uses $u^n$),
+a numerical choice (class c); faces on open edges and walls take a zero cross component, as the quadratic drag does.
+Runs with $v\equiv0$ (channels, $f=0$) are unchanged bit for bit.
+
+**In ALE (`LogLawBedDrag`, N3 task 4).** The bed layer can vanish under z*, so the law acts on
+$d_b=\max(h_b,\min(h_{bbl},D_f))$, with $h_b$ the lowest layer with mass; $C_d=$ `first_layer_cd(d_b, z0)` (never
+above $C_d(h_{bbl})$). The thickness-weighted mean velocity of the bottom $d_b$ metres feeds the stress, spread over
+the layers as implicit Rayleigh rates (MOM6 `MOM_set_viscosity.F90:651-685`). When $h_b\ge h_{bbl}$ it is exactly the σ
+first-layer law, so σ and ALE agree to 1e-12 in a fixed-layer column. The closure receives the same bed $u_*^2$
+(`ctx.ustar2_bot`) in σ and ALE.
 
 ### 2-D models: depth-dependent log-law or constant drag coefficient
 
@@ -338,7 +352,7 @@ $$
 
 | `z0` | Meaning |
 |---|---|
-| `None` | no bed stress (free-slip bed; only the viscosity acts). Default of `SigmaBaroclinic`; required by ALE. |
+| `None` | no bed stress (free-slip bed; only the viscosity acts, or the quadratic drag). Default of `SigmaBaroclinic`. |
 | `1e-4` m | default of `SigmaWetDry` and CROCO TIDAL_FLAT; smooth mud/sand (Soulsby 1997 **[verify]** table values) |
 | larger | rougher beds; $C_d$ rises fast in shallow water (figure above) |
 
@@ -354,96 +368,75 @@ enters the right-hand side of the top layer of the implicit solve ($\delta_{k,N-
 (module docstring, `core/dynamics/sigma_baroclinic.py:36-37`; CLAUDE.md). On dry faces the velocity is reset to 0
 after the free-surface step, so wind over dry land has no effect.
 
-## KPP (legacy z-level model only, not coupled)
+## GLS in ALE and KPP as model closures (N3)
 
-`physics/mixing/kpp.py` implements the K-Profile Parameterization of Large, McWilliams & Doney (1994) on the
-phase-1 z-level `ModelState` (k = 0 at the surface). It returns an explicit tendency (`kpp_tendency`, `:555`) for
-u, v, T, S. **No time stepper calls it**; it is exercised only by `tests/test_kpp.py` (32 tests). Making KPP an
-alternative to GLS on σ columns is step 5 of `docs/design/unified_core.md`, and the roadmap wants it without the
-background diffusivity that suppresses the internal-wave spectrum (`docs/design/vision_roadmap.md`, turbulence row).
+### GLS k-ε in the ALE modes
 
-### Equations as implemented
+The same stratified closure as in σ (buoyancy production $-\kappa_t N^2$, $\alpha_N$, Galperin limit, $\kappa_t$ for T and S
+with floor `kv`) runs in z*, σ and hybrid ALE. See [Time step](../architecture/time-step.md#since-n3-2026-10-30-closures-in-ale-heat-flux-periodic-boundaries)
+for the order. Two pieces are specific to moving layers:
 
-**Constants** (`physics/mixing/kpp.py:99-118`): $\kappa$ = 0.4, $Ri_{cr}$ = 0.3, $Ri_0$ = 0.7, $C_v$ = 1.8,
-$C_G$ = 0.416, $\epsilon$ = 0.1, $\nu_0$ = 1e-3 m² s⁻¹, $\kappa_0$ = 1e-4 m² s⁻¹, $K_{bg}$ = 1e-5 m² s⁻¹ (momentum and
-scalars), $K_{conv}$ = 1e-2 m² s⁻¹, $\rho_0$ = 1025 kg m⁻³, $c_p$ = 3996 J kg⁻¹ K⁻¹.
+* **Thin-layer merge.** $k$, $\varepsilon$, $\nu$ and $\kappa_t$ live at the interfaces. Layers thinner than
+    $h_{thin}=\min(10\ \mathrm{cm},\max(1\ \mathrm{mm},0.01\,D/N))$ of their column are merged with the layer with mass
+    above (MOM6 `eliminate_massless`, `MOM_kappa_shear.F90:254-307`), the step runs on the merged column and is
+    interpolated back. Without it a 1 mm–2 cm layer gave $\nu$ up to 27× and $k$ up to 128× the value of the same column
+    without the layer; with the rule the ratio is 1.00. HYCOM's `onemm`/`tencm` (`mod_cb_arrays.F90:847-849`) are the
+    floor and cap of the rule; the relative form is pyOCEAN's own.
+* **Remap of $k$ and $\varepsilon$.** Conservative on the dual grid $w_i=\frac12(h_{i-1}+h_i)$ (PPM_H4 as the tracers),
+    $\sum w\,k$ exact to 1e-12, then floors and the Galperin limit.
 
-**Surface forcing** (`:657-672`): $u_* = \sqrt{\lvert\boldsymbol\tau\rvert/\rho_0}$,
-$\langle w'T'\rangle_0 = Q_{net}/(\rho_0 c_p)$ ($Q_{net}$ positive into the ocean),
-$\langle w'S'\rangle_0 = S_0(E - P)$, and $B_f = g(\alpha_T\langle w'T'\rangle_0 - \beta_S\langle w'S'\rangle_0)$ with
-fixed $\alpha_T$ = 2e-4 K⁻¹, $\beta_S$ = 7.4e-4 PSU⁻¹.
+Validated against CROCO in single columns (`validation/turbulence_columns/`): Kato–Phillips mixed-layer depth equal to
+CROCO (σ, z*, hybrid within 0.1 %) and +4.4 % above Price (1979), as CROCO itself; Willis–Deardorff profiles to
+< 1e-3 of the range; diurnal cycle, DBLEEK, NONROTBBL, OSCNONROTBBL within 1 %; FORCED_EKBBL bed-layer veering 75.99°
+(CROCO 75.77°) after the full-speed drag. z* with fixed layers equals σ to 3e-9 (κ_t) or better.
 
-**Turbulent velocity scales** (`_velocity_scales`, `:145-207`), with $\zeta = -\kappa d B_f/u_*^3$:
+### KPP (`closure='kpp'`)
 
-$$
-\zeta \ge 0:\ w_m = w_s = \frac{\kappa u_*}{1 + 5\zeta};\qquad
-\zeta < 0:\ w_m = \kappa u_*(1 - 16\zeta)^{1/4},\ w_s = \kappa u_*(1 - 16\zeta)^{1/2},
-$$
+`physics/mixing/kpp_cvmix.py` is a column port of the CVMix/MOM6 KPP (Large et al. 1994 with the CVMix choices:
+$Ri_c=0.3$, $\kappa=0.4$, $\epsilon=0.1$, $C_s=6.327$, $C_v$ of Danabasoglu et al. 2006, quadratic interpolation of the
+OBL search, MXL_SW shortwave method), with constants cited to `cvmix_kpp.F90` and `MOM_CVMix_KPP.F90` and no tuning.
+It replaces the legacy z-level `physics/mixing/kpp.py` as the model closure (that module keeps its tests; its sign
+of the surface buoyancy flux was fixed in task 6: surface heating is stabilising, as in L94). The model closure
+`KPPClosure`:
 
-both clipped to $[10^{-10}, 0.5]$ m s⁻¹ (no strongly convective branch).
+* evaluates the OBL depth, $\nu$, $\kappa_s$ and the non-local profile $\gamma$ from the state after advection and
+    freshwater and **before** the heat is applied (MOM6 diabatic order), with $u_*^2=\lvert\tau\rvert/\rho_0$, the
+    non-solar buoyancy flux $B_{ns}$ and the shortwave $B_{sw}$ absorbed above each trial depth;
+* applies the non-local term explicitly, $\Delta c_k=\Delta t\,F(\gamma_{k+1}-\gamma_k)/h_k$, which conserves the content
+    exactly; the implicit step then uses $\kappa_s$ for T, S and passive tracers;
+* has **no background diffusivity by default** (`KPPParams.kappa_bg = nu_bg = 0`; the M.Sc. thesis result is that a
+    background value damages the internal-wave spectrum), `kv` and `nu_const` are ignored (pre-flight warns), and no
+    interior Richardson mixing;
+* in ALE carries only $\nu$ across the regrid, by interface index, as MOM6; the restart holds `akv` only.
 
-**Boundary-layer depth** (`obl_depth`, `:214-333`): at every level centre $d_k$,
+Validation (`validation/turbulence_columns/`): against MOM6 with the CVMix `CVmix_SCM_tests` (wind only, cooling only,
+mechanical only) the OBL depth and the 0.03 kg m⁻³ mixed-layer depth agree to ≤ 0.3 % after 5 days, z* and σ, with
+temperature identical to the float32 precision of the MOM6 output in the cooling and mechanical cases (4.8e-7 °C);
+the wind cases differ by 0.6–1.3 % in the inertial oscillation (class c, time stepping, not isolated). Against
+CROCO's own KPP the boundary-layer depth is 13–27 % shallower (class c: CVMix $Ri_c$, CROCO's preset constants; CROCO's
+linear-EOS $\alpha$ lacks the $1/\rho_0$, `alfabeta.F:133, 138`, class d, so those comparisons use a patched copy).
 
-$$
-Ri_b(d_k) = \frac{(g/\rho_0)(\rho_k - \rho_0^{\rm sfc})\,d_k}{\lvert\mathbf u_k - \mathbf u_0\rvert^2 + V_t^2(d_k)},\qquad
-V_t^2 = \frac{C_v\,d\,N\,w_s(d)}{Ri_{cr}},
-$$
+### Departures of the legacy z-level module from Large et al. (1994)
 
-with the reference taken at the top layer, $N$ from the density difference with the level below, and $h_{bl}$ the
-first depth where $Ri_b = Ri_{cr}$ (linear interpolation between level centres, clipped to $[d_0, d_{N-1}]$).
-
-**Interior mixing** (`interior_diffusivity`, `:336-425`): at each interior interface
-$Ri_g = N^2/S^2$ and
-
-$$
-f(Ri_g) = \left[1 - \min\left(\max(Ri_g/Ri_0, 0), 1\right)^2\right]^3,\quad
-K_m = \nu_0 f + K_{bg} + K_{conv}\,[N^2<0],\quad
-K_s = \kappa_0 f + K_{bg} + K_{conv}\,[N^2<0].
-$$
-
-There is no double-diffusion term.
-
-**Boundary-layer profile** (`_blmix`, `:428-552`): one velocity scale per column, evaluated at
-$d = \epsilon h_{bl}$; with $G_1 = K^{\rm int}(h_{bl})/(h_{bl}w_x)$ taken at the deepest interface inside the layer,
-
-$$
-G(\sigma) = G_1\,(3\sigma^2 - 2\sigma^3),\qquad K_x = \max\left(h_{bl}\,w_x\,G(\sigma),\ K_x^{\rm int}\right),\quad \sigma = d/h_{bl}\le 1 .
-$$
-
-**Non-local transport**: $\gamma_x = C_G\,\langle w'x'\rangle_0/(w_s h_{bl})$ inside the layer when $B_f > 0$, and the
-explicit flux at interface $k_f$ is $F = K_s\,(\phi_{k-1} - \phi_k)/\Delta z_f + K_s\,\gamma\,\langle w'\phi'\rangle_0$
-(`:549-550`, `:713`). Momentum mixing is applied to cell-centred velocities and averaged back to the faces
-(`:727-749`).
-
-![KPP shape function](../img/turbulence/kpp_profile.png)
-
-*Left: pyOCEAN's shape function against the Large et al. (1994) cubic with the same $G(1)$ and $G'(1) = 0$. Right: a
-sample column (mixed layer to 30 m, wind 0.1 N m⁻², no buoyancy flux) through `obl_depth`, `interior_diffusivity` and
-`_blmix`: the boundary-layer profile never exceeds the interior shear-mixing values.*
-
-### Departures from Large et al. (1994)
-
-These are documented here because KPP is a planned option; none affects current runs.
+The first four items below concern only `physics/mixing/kpp.py` (the legacy phase-1 module, not used by
+`closure='kpp'`); item 2 (the sign) was corrected in N3.
 
 1. **Shape function.** L94 eq. (11) has $G(\sigma) = a_0 + a_1\sigma + a_2\sigma^2 + a_3\sigma^3$ with $a_0 = 0$,
     $a_1 = 1$ (from the surface-layer similarity). The code drops the linear term and scales the cubic by $G_1$, so
-    $K$ in the boundary layer is bounded by the interior value at its base (figure, right) instead of
-    $\sim h_{bl}w_x$. The docstring calls this the "Phase 1 simplification" ($G'(1) = 0$), but the missing $a_1$ is a
-    larger change than the slope matching.
-2. **Sign of the surface buoyancy flux.** L94 defines $B_f$ so that surface heating is stabilising. The code treats
-    $B_f > 0$ (heating, $Q_{net} > 0$) as unstable: $\zeta < 0$ and the non-local term is switched on
-    (`:174`, `:518`, `:668-672`; `tests/test_kpp.py` checks "non-local warming of surface layer when Q_net > 0").
-3. **Non-local flux.** $\gamma$ already contains $\langle w'x'\rangle_0$, and the flux multiplies it again by the surface
-    flux (`:549-550` and `:713`), giving a term quadratic in the surface flux; L94 has $K_s\gamma_s$ with
-    $\gamma_s = C_s\langle w'x'\rangle_0/(w_s h)$, $C_s \approx 6.3$ **[verify]** (the code's $C_G$ = 0.416).
-4. **Unresolved shear.** $V_t^2$ omits the factor $(-\beta_T)^{1/2}/(\kappa^2)(c_s\epsilon)^{-1/2}$ of L94 eq. (23).
-5. Explicit time stepping (stable only for $\Delta t \le \Delta z^2/(2K)$), cell-centred momentum mixing.
+    $K$ in the boundary layer is bounded by the interior value at its base instead of $\sim h_{bl}w_x$.
+2. **Sign of the surface buoyancy flux** (fixed in N3 task 6). It treated $B_f>0$ (heating) as unstable; heating is
+    now stabilising (`tests/test_kpp.py::test_old_kpp_heating_is_stabilising`).
+3. **Non-local flux.** $\gamma$ already contains $\langle w'x'\rangle_0$ and the flux multiplies it again by the surface
+    flux, giving a term quadratic in the surface flux; L94 has $K_s\gamma_s$ with
+    $\gamma_s=C_s\langle w'x'\rangle_0/(w_sh)$, $C_s\approx6.3$ (the code's $C_G$ = 0.416).
+4. **Unresolved shear.** $V_t^2$ omits the factor of L94 eq. (23). Explicit time stepping (stable only for
+    $\Delta t\le\Delta z^2/(2K)$).
 
 ## Options and defaults
 
 | Option | Values | Default | Meaning | Where |
 |---|---|---|---|---|
-| `closure` | `'constant'`, `'parabolic'`, `'gls'`, `'none'` | `SigmaWetDry`: `'parabolic'`; `SigmaBaroclinic`: `'constant'` | vertical viscosity | `core/dynamics/sigma_wd.py:161`, `core/dynamics/sigma_baroclinic.py:1007` |
+| `closure` | `'constant'`, `'parabolic'`, `'gls'`, `'kpp'`, `'none'` | `SigmaWetDry`: `'parabolic'`; `SigmaBaroclinic`: `'constant'` | vertical viscosity | `core/dynamics/sigma_wd.py:161`, `core/dynamics/sigma_baroclinic.py:1007` |
 | `nu_const` | m² s⁻¹ | 1e-2 (`SigmaWetDry`), 1e-4 (`SigmaBaroclinic`) | $\nu$ of `'constant'` | same |
 | `nu_min` | m² s⁻¹ | 1e-5 | floor of `'parabolic'` (`SigmaWetDry` only; GLS has its own 1e-5) | `sigma_wd.py:163` |
 | `z0` | m or `None` | 1e-4 (`SigmaWetDry`), `None` (`SigmaBaroclinic`) | bed roughness of the first-layer law; `None` = no bed stress | same |
@@ -469,21 +462,32 @@ These are documented here because KPP is a planned option; none affects current 
     $\nu \approx$ 0.024 m² s⁻¹ at the surface.
 * **Bottom friction** (`tests/test_bottom_friction.py`, 4 tests): clipping in very shallow and dry water, the formula.
 * **Wind** — Ekman transport to 0.05 % (`tests/test_sigma_baroclinic.py`).
-* **KPP** — 32 unit tests of the module on the legacy state (`tests/test_kpp.py`), no model-level validation.
+* **KPP** — 32 unit tests of the legacy module (`tests/test_kpp.py`); the model closure: `tests/test_kpp_cvmix.py`
+    (CVMix regression to 1e-10), `tests/test_kpp_model.py` (model equals `kpp_column`, heat and salt conservation,
+    restart), and the MOM6 and CROCO columns above (`tests/test_turbulence_columns.py`).
+* **GLS in ALE** — `tests/test_gls_ale.py` (σ ≡ z* column, remap conserves $\sum w\,k$, vanished layers, hybrid, restart),
+    `tests/test_ale_loglaw.py`, `tests/test_loglaw_full_speed.py`.
+* **Lorenz et al. (2021) estuary and DOME** with GLS in ALE: the exact mixing relation holds to 1e-10 in ALE-σ + GLS
+    (A: 1.5e-9, a one-signed round-off gain of the ALE remap, class c, also in MOM6's remapping); DOME hybrid +
+    GLS buoyancy at the end −12.99e-3 against −16.18e-3 with constant viscosity (Legg iso-ν0.5 −12.0e-3), with one CFL
+    truncation (`validation/lorenz_estuary/README.md`, `validation/dome/README.md`).
 
 See [Validation: wetting and drying](../validation/wetting-drying.md) for the TIDAL_FLAT figures.
 
 ## Known limitations
 
-* GLS has no buoyancy production and no tracer diffusivity; tracers use a constant `kv` (planned: unified-core
-    step 3, Kato–Phillips benchmark).
-* GLS ignores the wind ($u_{*s} = 0$) and has no advection of $k$, $\varepsilon$.
-* ALE runs allow only `'constant'`/`'none'` and no bed drag (`z0=None`): the law-of-the-wall drag needs a bed layer
-    that can vanish under z*, and GLS/parabolic assume σ-layers (`core/dynamics/sigma_baroclinic.py:1148-1153`).
-* The bed-stress speed is the face-normal component only (above).
+* The bed-stress speed is the full speed $\sqrt{u^2+\bar v^2}$ in the log-law drag; at open edges the cross component
+    is zero (as at walls), where CROCO averages with ghost cells (one face row).
+* GLS in ALE: layers a little above the threshold still act as thin ones (a 5 cm layer in a column with a 4.2 cm
+    threshold gave $\nu$ 4×), regrid-minimum layers are merged only through the 1e-9 tolerance, and the gather of the
+    prior $k,\varepsilon$ at a merged interface is not content-conserving (O($h_{massless}/h$)). The remap itself is.
+* The hybrid DOME with GLS: one CFL truncation at day 31.8 (a 1.3 cm face layer, $v$ = 8.96 m/s) and 1072 limiter events
+    in 50 days; no Smagorinsky viscosity.
+* KPP: no interior Richardson mixing, MatchTechnique SimpleShapes only; the 1.3 % wind-case velocity difference to MOM6
+    is not isolated; ALE does not remap its state; no diagnostics of OBL depth in the variable registry.
 * The pressure gradient and the implicit friction are split (fractional step): the friction does not see the
     pressure increment of the same step (first order in $\Delta t$; `validation/tidal_flat/README.md`, item 7).
-* KPP is not coupled and deviates from L94 as listed above.
+* GLS has no advection of $k$, $\varepsilon$.
 
 ## References
 
