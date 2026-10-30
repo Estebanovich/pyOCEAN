@@ -13,7 +13,7 @@ condition of the GLS (``core.model.driver._ale_bed_ustar2``); ``kv`` = 0, so κ_
 (``--tag`` replaces it), next to the baseline.
 
 Usage: NUMBA_NUM_THREADS=5 python validation/dome/run_pyocean.py 10 zstar [--dt 600 (default)] [--days 50] [--tag x]
-           [--closure {constant,gls}]
+           [--closure {constant,gls}] [--smag C] [--kv-low]
 """
 from __future__ import annotations
 
@@ -59,9 +59,10 @@ def closure_kwargs(case: cases.Case, closure: str, nu_v: float | None = None) ->
 
 
 def build(case: cases.Case, coord: str, dt: float | None = None, nu_v: float | None = None,
-          closure: str = "constant"):
+          closure: str = "constant", smag: float = 0.0):
     """The ALE model of ``case`` in ``coord`` ∈ {'zstar', 'sigma', 'hybrid'} with the vertical ``closure``
-    ∈ {'constant', 'gls'} and its resting initial state."""
+    ∈ {'constant', 'gls'} and its resting initial state.
+    ``smag`` is the Smagorinsky coefficient C (0 = off; the background ν_h = ``case.nu_h`` is its floor)."""
     hg = create_cartesian_grid(nx=case.nx, ny=case.ny, dx=case.dx, dy=case.dx, f0=case.f0)
     nz = case.nz
     dz = np.full(nz, cases.HMAX / nz)                                  # 25 × 144 m (Legg's MITgcm levels)
@@ -86,7 +87,7 @@ def build(case: cases.Case, coord: str, dt: float | None = None, nu_v: float | N
                         open_boundary_state=state, sponge_rate=cases.sponge_rate(case),
                         sponge_T=cases.T_ambient(0.5 * (zs[1:] + zs[:-1])), sponge_zw=zs,
                         bottom_drag="quadratic", cd=case.cd, hbbl=case.hbbl,
-                        **closure_kwargs(case, closure, nu_v))
+                        smagorinsky=float(smag), **closure_kwargs(case, closure, nu_v))
     eta = np.zeros((case.ny, case.nx))
     if coord == "hybrid":                                             # T on 10-m levels as the source (MOM6 Z_INIT)
         zf = np.arange(0.0, cases.HMAX + 10.0, 10.0)[:, None, None]
@@ -106,23 +107,33 @@ def record(m, st) -> dict:
 
 
 def run(res_km: float, coord: str, dt: float | None = None, days: float | None = None, tag: str | None = None,
-        threads: int = 5, nu_v: float | None = None, closure: str = "constant", write: bool = True) -> Path | dict:
+        threads: int = 5, nu_v: float | None = None, closure: str = "constant", write: bool = True,
+        smag: float = 0.0, kv_low: bool = False) -> Path | dict:
     """Run and write cases.run_dir(res_km, 'pyocean', coord, tag)/series.npz; returns its path.  ``tag`` None:
     '' for the constant closure, 'gls' for the GLS.  ``write`` False (cost measurement): nothing is written and the
-    run metadata are returned."""
+    run metadata are returned.  ``smag`` > 0 (Smagorinsky C) appends '_smag<C>' to the default tag
+    ('smag0.15', 'gls_smag0.15'); ``kv_low`` is the variant ν_v = cases.NU_V_LOW (constant closure only; default tag
+    'kv_low', so the baseline is not overwritten).  With smag > 0 the meta also hold ``smag``, ``n_visc_limited``
+    and ``nu_t_max`` (max ν at the output times)."""
     set_threads(threads)
     c = cases.get(res_km)
+    if kv_low:
+        if closure != "constant" or nu_v is not None:
+            raise ValueError("kv_low sets ν_v = 1e-4 of the constant closure; do not combine with --closure gls / --nu-v")
+        nu_v = cases.NU_V_LOW
     if tag is None:
-        tag = "" if closure == "constant" else closure
+        tag = ("kv_low" if kv_low else "" if closure == "constant" else closure)
+        if smag > 0.0:
+            tag = f"{tag}_smag{smag:g}" if tag else f"smag{smag:g}"
     out = cases.run_dir(res_km, "pyocean", coord, tag) / "series.npz"
     if write:
         out.unlink(missing_ok=True)
     dt = default_dt(c) if dt is None else dt
     days = c.days if days is None else days
-    m, st = build(c, coord, dt, nu_v, closure)
+    m, st = build(c, coord, dt, nu_v, closure, smag)
     n_steps = int(round(days * 86400.0 / dt))
     every = max(1, int(round(c.out_s / dt)))
-    recs, times, tic = [record(m, st)], [0.0], None
+    recs, times, tic, nu_max = [record(m, st)], [0.0], None, float("nan")
     for n in range(1, n_steps + 1):
         if n == N_WARM + 1:
             tic = time.perf_counter()
@@ -130,6 +141,8 @@ def run(res_km: float, coord: str, dt: float | None = None, days: float | None =
         if n % every == 0 or n == n_steps:
             recs.append(record(m, st))
             times.append(n * dt)
+            if smag > 0.0:
+                nu_max = np.fmax(nu_max, np.nanmax(m._momentum.last_nu_t))
     wall = (time.perf_counter() - tic) * n_steps / max(1, n_steps - N_WARM) if tic else float("nan")
     s = {k: np.array([r[k] for r in recs]) for k in ("h", "T", "s", "u", "v", "eta")}
     s.update(t=np.array(times), x=c.x, y=c.y, dx=np.full(c.nx, c.dx), dy=np.full(c.ny, c.dx), H=c.H)
@@ -137,6 +150,8 @@ def run(res_km: float, coord: str, dt: float | None = None, days: float | None =
                 n_trunc=int(st.n_trunc), n_limited=int(st.n_limited),
                 nu_v=(c.nu_v if nu_v is None else nu_v) if closure == "constant" else None, closure=closure, T_min=float(np.nanmin(s["T"])),
                 T_max=float(np.nanmax(s["T"])))
+    if smag > 0.0:
+        meta.update(smag=smag, n_visc_limited=int(st.n_visc_limited or 0), nu_t_max=float(nu_max))
     if not write:
         return meta
     return series.save(out, s, meta)
@@ -152,9 +167,11 @@ def main() -> None:
     ap.add_argument("--threads", type=int, default=5)
     ap.add_argument("--nu-v", type=float)
     ap.add_argument("--closure", choices=CLOSURES, default="constant")
+    ap.add_argument("--smag", type=float, default=0.0, help="Smagorinsky C (default 0 = off)")
+    ap.add_argument("--kv-low", action="store_true", help="variant kv_low: constant ν_v = 1e-4 (tag 'kv_low')")
     ap.add_argument("--cost", action="store_true", help="cost measurement: write nothing, print the metadata")
     a = ap.parse_args()
-    print(run(a.res_km, a.coord, a.dt, a.days, a.tag, a.threads, a.nu_v, a.closure, write=not a.cost))
+    print(run(a.res_km, a.coord, a.dt, a.days, a.tag, a.threads, a.nu_v, a.closure, write=not a.cost, smag=a.smag, kv_low=a.kv_low))
 
 
 if __name__ == "__main__":

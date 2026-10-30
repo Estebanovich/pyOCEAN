@@ -58,6 +58,9 @@ def T_ambient(z):
     return T_of_rho(RHO_TOP + DRHO * np.clip(-np.asarray(z, float), 0.0, HMAX) / HMAX)
 
 
+NU_V_LOW = 1e-4      # [m² s⁻¹] variant 'kv_low' (spec §5): the vertical viscosity of MOM6/MITgcm kv_low, here for the hybrid + Smagorinsky
+
+
 def get(res_km: float) -> Case:
     """The case at dx = dy = res_km (10 or 5): MOM6 DOME_initialize_topography (DOME_initialization.F90:97-110)."""
     dx = float(res_km) * 1e3

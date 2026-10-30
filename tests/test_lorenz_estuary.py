@@ -269,3 +269,17 @@ def test_ale_sigma_gls_short_run_closes_budget():
     assert bulk["Q_in"] > 0 > bulk["Q_out"] and bulk["s_out"] > bulk["s_in"]   # inverse exchange, as in A
     st_akt = m._closure.tracer_diffusivity()
     assert np.isfinite(st_akt).all() and st_akt.max() > 1e-5                      # the GLS mixes (front)
+
+
+def test_lorenz_smag_option_reaches_model(tmp_path):
+    """--smag C reaches the sigma_gls model (build and the runner's run, a few steps)."""
+    from validation.lorenz_estuary import run_pyocean
+    m, st, forcing = case.build("A", "sigma_gls", smagorinsky=0.15)
+    assert m.smagorinsky == 0.15
+    st = m.step(st, **forcing(0))
+    assert st.n_visc_limited is not None
+    res = run_pyocean.run("A", "sigma_gls", cycles=0.05, avg=0.02, out=tmp_path, dt=None, checkpoint=25.0,
+                          resume=False, hours=None, smag=0.15)
+    assert res["smag"] == 0.15 and res["n_visc_limited"] >= 0 and (tmp_path / "A_sigma_gls_smag0.15").is_dir()
+    cols = np.load(tmp_path / "A_sigma_gls_smag0.15" / "series.npz")["columns"]
+    assert list(cols[-2:]) == ["n_visc_limited", "nu_t_max"]

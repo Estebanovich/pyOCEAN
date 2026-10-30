@@ -600,3 +600,18 @@ def test_hycom_timer_parser_reads_the_last_block():
            "   total    calls =        1   time =    6.25000   time/call =    6.25000000\n")
     t = timers.parse(out)
     assert t["total"] == 6.25 and t["cnuity"] == 1.5 and t["cnuity_calls"] == 4320
+
+
+def test_ilicak_overflow_smag_case(tmp_path, monkeypatch):
+    """overflow_smag = the overflow with ν_h = 100 and C = 0.5 (Ilicak 2012 Fig. 19b), z* (build + a few steps)."""
+    from validation.ilicak_benchmark import cases, run_pyocean, series
+    c = cases.get("overflow_smag")
+    o = cases.get("overflow")
+    assert c.nu_h == (100.0,) and c.smag == 0.5 and o.smag == 0.0 and c.H.shape == o.H.shape
+    m, st = run_pyocean.build(c, "zstar", c.nu_h[0])
+    assert m.smagorinsky == 0.5 and m.ah == 100.0
+    assert run_pyocean.build(o, "zstar", 100.0)[0].smagorinsky == 0.0
+    monkeypatch.setattr(cases, "RUNS", tmp_path)
+    p = run_pyocean.run("overflow_smag", "zstar", 100.0, hours=100.0 / 3600.0, threads=1)
+    _, meta = series.load(p)
+    assert meta["smag"] == 0.5 and meta["n_visc_limited"] >= 0 and meta["nu_t_max"] >= 100.0

@@ -190,3 +190,22 @@ def test_dome_gls_short_run():
     assert st.n_trunc == 0
     with pytest.raises(ValueError, match="nu-v"):
         run_pyocean.closure_kwargs(c, "gls", nu_v=0.5)
+
+
+def test_dome_smag_option_reaches_model():
+    """--smag C reaches SigmaBaroclinic(smagorinsky=C); the tag gets '_smag<C>'; one step records n_visc_limited and ν."""
+    from validation.dome import run_pyocean
+    c = cases.get(50.0)
+    m, st = run_pyocean.build(c, "hybrid", closure="gls", smag=0.15)
+    assert m.smagorinsky == 0.15
+    st = m.step(st)
+    assert st.n_visc_limited is not None and np.nanmax(m._momentum.last_nu_t) >= c.nu_h
+    m0, st0 = run_pyocean.build(c, "zstar")
+    assert m0.smagorinsky == 0.0 and m0.step(st0).n_visc_limited is None
+    meta = run_pyocean.run(50.0, "hybrid", dt=600.0, days=600.0 * 2 / 86400.0, threads=1, closure="gls", write=False,
+                           smag=0.15)
+    assert meta["smag"] == 0.15 and meta["n_visc_limited"] >= 0 and meta["nu_t_max"] >= c.nu_h
+    assert "smag" not in run_pyocean.run(50.0, "zstar", dt=600.0, days=600.0 * 2 / 86400.0, threads=1, write=False)
+    kv = run_pyocean.run(50.0, "hybrid", dt=600.0, days=600.0 * 2 / 86400.0, threads=1, write=False, kv_low=True,
+                         smag=0.15)
+    assert kv["nu_v"] == 1e-4

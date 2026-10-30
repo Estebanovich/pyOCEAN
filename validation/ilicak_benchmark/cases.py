@@ -14,6 +14,7 @@ Coordinates: x, y [m] from the west/south edge of the domain; z [m] ≤ 0, up fr
 """
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -44,6 +45,7 @@ class Case:
     hours: float                   # run length [h]
     out_s: float                   # output interval [s]
     f0: float = 0.0                # Coriolis [s⁻¹]
+    smag: float = 0.0              # Smagorinsky C of the case (0 = none; 'overflow_smag' 0.5, Ilicak 2012 Fig. 19b)
 
     @property
     def nx(self) -> int:
@@ -89,6 +91,12 @@ def _overflow() -> Case:
                 (1.0, 100.0, 1000.0), 10.0, 40.0, 3600.0)
 
 
+def _overflow_smag() -> Case:
+    """Ilicak et al. (2012) Fig. 19(b): the overflow with the background ν_h = 100 m² s⁻¹ plus the Laplacian
+    Smagorinsky viscosity ν = max(ν_h, C Δ² |S|) with C = 0.5 (the value of the paper); one viscosity of the sweep."""
+    return dataclasses.replace(_overflow(), name="overflow_smag", nu_h=(100.0,), smag=0.5)
+
+
 def _iw() -> Case:
     t_bot, t_top, z_bot, A, L, x0, dz = 10.1, 20.1, -487.5, 2.0, 50e3, 125e3, 25.0
 
@@ -115,7 +123,7 @@ def _seamount() -> Case:
                 (0.0,), 600.0, 240.0, 86400.0, f0=_sm.F0)
 
 
-_BUILDERS = {"lock": _lock, "overflow": _overflow, "iw": _iw, "seamount": _seamount}
+_BUILDERS = {"lock": _lock, "overflow": _overflow, "overflow_smag": _overflow_smag, "iw": _iw, "seamount": _seamount}
 
 
 def get(name: str) -> Case:

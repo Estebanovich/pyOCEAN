@@ -16,7 +16,9 @@ Progress lines go to stdout (flushed), so a background run can be followed with 
 
 Usage:
     python validation/lorenz_estuary/run_pyocean.py {A,B,C,D} {sigma_gls,ale_sigma,ale_sigma_gls} [--cycles 600] [--avg 100]
-        [--out DIR] [--dt S] [--threads 5] [--checkpoint 25] [--resume] [--hours H]
+        [--out DIR] [--dt S] [--threads 5] [--checkpoint 25] [--resume] [--hours H] [--smag C]
+``--smag C`` (Smagorinsky coefficient, default 0 = off) writes to <exp>_<config>_smag<C>/ and adds n_visc_limited and
+nu_t_max to series.npz and summary.json.
 ``--hours H`` runs H simulated hours only and prints the cost per step (README, cost table); nothing is written.
 """
 from __future__ import annotations
@@ -44,31 +46,39 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
-def record(m, st) -> list[float]:
+def record(m, st, smag: bool = False) -> list[float]:
     """One series record: t [s], η at i = 0, the transect and the river end [m], region volume [m³] and mean S,
-    domain max S [g kg⁻¹], max |u| [m s⁻¹], n_limited."""
+    domain max S [g kg⁻¹], max |u| [m s⁻¹], n_limited; with ``smag`` also n_visc_limited and the max ν of the
+    Smagorinsky viscosity [m² s⁻¹] (NaN before the first step)."""
     reg = m.tef_region_budget.mask
     V = m.layer_volumes(st.eta, st.h)
     Vr = V[:, reg].sum()
-    return [st.time, st.eta[0, 0], st.eta[0, m.tef_face], st.eta[0, -1], Vr, (V * st.S)[:, reg].sum() / Vr,
-            float(np.nanmax(st.S)), float(np.abs(st.u).max()), float(st.n_limited)]
+    rec = [st.time, st.eta[0, 0], st.eta[0, m.tef_face], st.eta[0, -1], Vr, (V * st.S)[:, reg].sum() / Vr,
+           float(np.nanmax(st.S)), float(np.abs(st.u).max()), float(st.n_limited)]
+    if smag:
+        nu = getattr(m._momentum, "last_nu_t", None)
+        rec += [float(st.n_visc_limited or 0), float("nan") if nu is None else float(np.nanmax(nu))]
+    return rec
 
 
 SERIES_COLS = ["t", "eta_ocean", "eta_transect", "eta_river", "V_region", "S_region", "S_max", "umax", "n_limited"]
+SERIES_COLS_SMAG = SERIES_COLS + ["n_visc_limited", "nu_t_max"]
 
 
 def run(exp: str, config: str, cycles: float, avg: float, out: Path | None, dt: float | None, checkpoint: float,
-        resume: bool, hours: float | None) -> dict:
+        resume: bool, hours: float | None, smag: float = 0.0) -> dict:
     """Integrate, average and write (module docstring); returns the summary."""
-    m, st, forcing = case.build(exp, config, dt=dt)
+    m, st, forcing = case.build(exp, config, dt=dt, **(dict(smagorinsky=smag) if smag > 0.0 else {}))
     dt = m.dt
     steps_cycle = case.T_M2 / dt
     n_total = int(round(hours * 3600.0 / dt)) if hours else int(round(cycles * steps_cycle))
     n_avg_start = n_total - int(round(avg * steps_cycle)) if not hours else 0
     every = max(1, int(round(steps_cycle / 4)))
     n_ckpt = max(1, int(round(checkpoint * steps_cycle)))
-    rdir = None if hours else out / f"{exp}_{config}"
+    rdir = None if hours else out / (f"{exp}_{config}" + (f"_smag{smag:g}" if smag > 0.0 else ""))
     run_id = dict(cycles=float(cycles), avg=float(avg), dt=float(dt))
+    if smag > 0.0:
+        run_id["smag"] = float(smag)
     extra = dict(n=0, series=[], VS=None, Vu=None, V=None, tef=None, region=None, run_id=run_id)
     if resume and rdir is not None and (rdir / "restart.nc").exists():
         with open(rdir / "restart_extra.pkl", "rb") as fh:
@@ -101,17 +111,18 @@ def run(exp: str, config: str, cycles: float, avg: float, out: Path | None, dt: 
                 extra["VS"] += V * st.S
                 extra["Vu"] += V * uc
         if (n + 1) % every == 0:
-            extra["series"].append(record(m, st))
+            extra["series"].append(record(m, st, smag > 0.0))
             if not np.isfinite(st.S).all() or not np.isfinite(st.u).all():
                 log(f"BLOW-UP at step {n + 1}, t = {st.time / 3600:.2f} h")
                 raise SystemExit(2)
         if (n + 1) % int(round(steps_cycle)) == 0 or n + 1 == n_total:
             el = time.perf_counter() - t_wall0
             per = el / (n + 1 - n0)
-            r = extra["series"][-1] if extra["series"] else [np.nan] * len(SERIES_COLS)
+            r = extra["series"][-1] if extra["series"] else [np.nan] * 11
             log(f"step {n + 1}/{n_total} t = {st.time / 3600:8.2f} h ({st.time / case.T_M2:6.1f} cycles)  "
                 f"wall {el / 3600:6.2f} h  {per:.3f} s/step  ETA {(n_total - n - 1) * per / 3600:6.2f} h  "
-                f"S_reg {r[5]:.3f} S_max {r[6]:.3f} |u|max {r[7]:.3f} n_lim {r[8]:.0f}")
+                f"S_reg {r[5]:.3f} S_max {r[6]:.3f} |u|max {r[7]:.3f} n_lim {r[8]:.0f}"
+                + (f" n_visc_lim {r[9]:.0f} nu_max {r[10]:.3g}" if smag > 0.0 else ""))
         if rdir is not None and (n + 1) % n_ckpt == 0 and n + 1 < n_total:
             if not (np.isfinite(st.S).all() and np.isfinite(st.u).all()):     # never overwrite a good checkpoint
                 log(f"BLOW-UP at step {n + 1}, t = {st.time / 3600:.2f} h (checkpoint not written)")
@@ -136,12 +147,16 @@ def run(exp: str, config: str, cycles: float, avg: float, out: Path | None, dt: 
     res = case.summary(m)
     res.update(exp=exp, config=config, cycles=cycles, avg=avg, cost=cost, table_1=case.TABLE_1[exp],
                transect_face=m.tef_face, n_limited=int(st.n_limited))
+    if smag > 0.0:
+        nus = [r[10] for r in extra["series"]]
+        res.update(smag=smag, n_visc_limited=int(st.n_visc_limited or 0),
+                   nu_t_max=float(np.nanmax(nus)) if np.isfinite(nus).any() else float("nan"))
     with open(rdir / "summary.json", "w") as fh:
         json.dump(res, fh, indent=1, default=float)
     np.savez(rdir / "section.npz", S=st.S, u=st.u, eta=st.eta, z=m.layer_heights(st.eta, st.h), H=m.H,
              S_mean=extra["VS"] / extra["V"], u_mean=extra["Vu"] / extra["V"], V_mean=extra["V"],
              x=(np.arange(case.NX) + 0.5) * case.DX)
-    np.savez(rdir / "series.npz", data=np.array(extra["series"]), columns=np.array(SERIES_COLS))
+    np.savez(rdir / "series.npz", data=np.array(extra["series"]), columns=np.array(SERIES_COLS_SMAG if smag > 0.0 else SERIES_COLS))
     log(f"DONE {exp} {config}: Me {res['Me']:.6g}  M_model_tot {res['M_model_tot']:.6g}  "
         f"|Me − M|/M {abs(res['Me'] - res['M_model_tot']) / abs(res['M_model_tot']):.2e}  wall {wall / 3600:.2f} h")
     return res
@@ -158,12 +173,13 @@ def main() -> None:
     p.add_argument("--threads", type=int, default=5)
     p.add_argument("--checkpoint", type=float, default=25.0, help="checkpoint interval [M2 cycles]")
     p.add_argument("--resume", action="store_true")
+    p.add_argument("--smag", type=float, default=0.0, help="Smagorinsky C (default 0 = off)")
     p.add_argument("--hours", type=float, default=None, help="cost measurement: run H simulated hours only")
     a = p.parse_args()
     if a.avg > a.cycles:
         p.error("--avg must not exceed --cycles")
     set_threads(a.threads)
-    run(a.exp, a.config, a.cycles, a.avg, a.out, a.dt, a.checkpoint, a.resume, a.hours)
+    run(a.exp, a.config, a.cycles, a.avg, a.out, a.dt, a.checkpoint, a.resume, a.hours, a.smag)
 
 
 if __name__ == "__main__":
