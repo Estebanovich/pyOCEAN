@@ -268,6 +268,21 @@ class Driver:
         """
         self._heat_apply(ctx, C, V1, bud, self._heat_fluxes(ctx, V1))
 
+    def _dry_still(self, ctx: StepContext, *pairs):
+        """
+        Final-review fix M1 (N3, Review Focus 2): the vertical mixing (closure κ, the ``kv`` floor and the KPP
+        non-local term) leaves a dry or land column still.  Each pair (before, after) of an (N, ny, nx) field
+        returns ``after`` in the columns of the surface-flux mask (``_wet_thickness``: active and H + ηⁿ > d_min,
+        the mask of the heat and freshwater fluxes) and ``before`` bit for bit elsewhere; None stays None.
+        Without it the GLS κ_t floor (1e-6 m² s⁻¹) homogenised the d_min/N layers of a dry column (≈ 2 °C in 10 steps,
+        σ since N2a and ALE), and a solve with κ = 0 still changed T by round-off.  In a dry column nothing else
+        mixes vertically (its layers are thinner than d_min/N), so this is the closure skipped there; ν needs no
+        mask (the wetting–drying momentum of a dry face is set by the free-surface step).
+        """
+        m = self.m
+        wet = (m.fs.active & (m.fs.H + ctx.st.eta > m.fs.d_min) & (np.nan_to_num(m.area) > 0))[None]
+        return [None if b is None else (a if a is None else np.where(wet, a, b)) for b, a in pairs]
+
     def _wet_thickness(self, ctx: StepContext, V1: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """The surface-flux mask (active, H + ηⁿ > d_min, area > 0; as the free-surface fw) and the layer
         thicknesses h = V¹/A there, zero elsewhere (N, ny, nx) [m]."""
@@ -470,6 +485,7 @@ class Driver:
             T_new = vertical_implicit(T_new.reshape(n, -1), dz, kvz, zero, dt).reshape(T_new.shape)
             if sal:
                 S_new = vertical_implicit(S_new.reshape(n, -1), dz, kvz, zero, dt).reshape(S_new.shape)
+            T_new, S_new = self._dry_still(ctx, (T_a, T_new), (S_a, S_new))
             if bud is not None:
                 bud.operator("T_phy_v", V1, T_a, T_new)
                 bud.operator("S_phy_v", V1, S_a, S_new)
@@ -695,7 +711,8 @@ class Driver:
             T_lag = vertical_implicit(T_lag.reshape(n, -1), dz, kvz, zero, dt).reshape(T_lag.shape)
             if sal:
                 S_lag = vertical_implicit(S_lag.reshape(n, -1), dz, kvz, zero, dt).reshape(S_lag.shape)
-            tr_lag = [vertical_implicit(c.reshape(n, -1), dz, kvz, zero, dt).reshape(c.shape) for c in tr_lag]
+            tr_new_v = [vertical_implicit(c.reshape(n, -1), dz, kvz, zero, dt).reshape(c.shape) for c in tr_lag]
+            T_lag, S_lag, *tr_lag = self._dry_still(ctx, (T_a, T_lag), (S_a, S_lag), *zip(tr_lag, tr_new_v))
             if bud is not None:
                 bud.operator("T_phy_v", V1, T_a, T_lag)
                 bud.operator("S_phy_v", V1, S_a, S_lag)
