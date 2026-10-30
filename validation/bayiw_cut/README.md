@@ -259,3 +259,20 @@ Bajar de ahí exige que los propios núcleos hagan menos pasadas por memoria (fu
 **Sobrecosto restante del anidado:** 25–33 ms por paso. Según el tiempo acumulado de cProfile, `_evaluate_exterior` (sobre todo `exterior_velocity`, el u′ exterior remapeado en la banda de esponja de 30 celdas para la esponja sobre u′) suma ~17 ms, `_exterior_T` ~3 ms y `_open_velocity` ~3 ms.
 
 **Por hora simulada, z\*:** 9.1 s (0.304 × 30), frente a 11.6 s antes (0.385 × 30, mismo método) y 4.4 s de MITgcm con 5 procesos. **Híbrida:** 4.8 s.
+
+## Costo de la viscosidad de Smagorinsky (2026-10-30)
+
+Smoke contra `main` (`scripts/n1_smoke.py`, worktree temporal de `main`, 5 hilos): **9/9 hashes idénticos** con
+`smagorinsky = 0` (por defecto), en dos repeticiones. Costo por paso de la rama sobre `main` (primera / segunda
+medición): `bayiw_cut_zstar` 1.040 / 0.982, `bayiw_cut_hybrid` 1.078 / 0.941, `ilicak_overflow_zstar` 1.085 / 1.077.
+Los dos primeros son ruido de la medición (cambian de signo entre repeticiones); el overflow (pasos de 7-9 ms) sale
+1.08 en las dos, por encima del 1.01 del spec, y no se aisló la causa (con `smagorinsky = 0` el término ni se llama).
+
+Costo con el término activo (`scripts/smag_cost.py`, mediana de 50 pasos después de 10 de calentamiento, 5 hilos):
+
+| caso | C = 0 [s/paso] | C = 0.15 [s/paso] | razón |
+|------|---------------:|------------------:|------:|
+| BayIW cut z* (Δt 120 s) | 0.3517 | 0.3695 | 1.050 |
+| DOME 10 km híbrido + GLS (Δt 600 s) | 0.1629 | 0.1557 | 0.956 (ruido) |
+
+Ambas razones quedan dentro del objetivo del spec (≤ 1.10×), así que no se perfiló el kernel.
