@@ -820,7 +820,9 @@ def test_ale_results_unchanged_by_the_performance_kernels(name):
         st = m.step(st)
     for k, r in ref.items():
         a = np.asarray(getattr(st, k), float).ravel()
-        scale = max(r["maxabs"], 1e-30)
+        # fields at round-off level (u, η of the resting 'step' case, ~1e-13) are compared to 1e-13 absolute: the
+        # content-exact remap (2026-10-30) moved that noise by 6e-15 m/s
+        scale = max(r["maxabs"], 1e-3)
         tol = 1e-10 * scale
         assert abs(np.abs(a).max() - r["maxabs"]) <= tol, (k, "max")
         np.testing.assert_allclose(a[r["idx"]], r["vals"], rtol=0, atol=tol, err_msg=k)

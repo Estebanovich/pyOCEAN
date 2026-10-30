@@ -69,6 +69,17 @@ def test_source_thicker_than_target_last_target_absorbs():
     assert abs((h1 * u1).sum() - (h0 * u0).sum()) < 1e-12
 
 
+@pytest.mark.parametrize("scheme", [rm.PCM, rm.PPM_H4])
+def test_target_thicker_than_source_adds_no_content(scheme):
+    # target 1e-9 m thicker than the source: the content must stay exact (no extension of the
+    # last source cell, which would add ~6e-9 here and gives a one-signed ALE drift; N3 Lorenz A)
+    h0 = np.array([1.0, 2.0, 3.0])
+    u0 = np.array([4.0, 5.0, 6.0])
+    h1 = np.array([3.0, 3.0 + 1e-9])
+    u1 = _remap(h0, u0, h1, scheme)
+    assert abs((h1 * u1).sum() - (h0 * u0).sum()) < 1e-12
+
+
 def test_plm_exact_for_linear_profile_interior():
     # u = 2 + 3 z sampled as cell means on a nonuniform grid: interior PLM reproduces the line
     h = np.array([1.0, 0.5, 2.0, 1.0, 1.5])

@@ -366,10 +366,10 @@ def remap_column(h_src, u_src, h_tgt, scheme, u_tgt, h_neglect=H_NEGLECT,
                 content[piece_j[p]] += piece[p]
         a = b
 
-    # target thicker than source (round-off): extend with the top value of the last source cell
-    if last >= 0 and t_edge[n1] > a:
-        top = coef[last, 0] + coef[last, 1] + coef[last, 2]
-        content[n1 - 1] += (t_edge[n1] - a) * top
+    # Target thicker than source (round-off, ±1–2 ε D): the extra thickness gets no content, so
+    # the column content Σ h u is exact in both directions. MOM6 extends the last source cell with
+    # its top edge value here (MOM_remapping.F90:939-940), which only ever adds content: a
+    # one-signed +1.4 ε Σ h u per ALE step (N3 Lorenz A budget 1.5e-9; decision of 2026-10-30).
 
     if last < 0:                 # dry column (no source thickness): nothing to remap, keep the values
         mean = 0.0
