@@ -355,8 +355,10 @@ $C_s = 1/\sqrt2$ is $C = 0.5$). The grid has no corner spacings: $\Delta x_q$ is
 the corner, $\Delta y_q$ the mean of the two $\Delta y_u$ (`smag_geometry`, `:74`).
 
 **Stability bound, rescaled for AB3.** The viscous term is explicit in the AB3 momentum step. MOM6's `BOUND_KH`
-(`:3507-3529, 1121-1133, 1500-1512`) is $\nu \le 0.8\cdot 0.25/(\Delta t(1/\Delta x^2 + 1/\Delta y^2))$, that is $0.1\,\Delta x^2/\Delta t$ on a
-uniform grid, 0.8 of the forward-Euler limit. AB3 has a smaller stability interval on the negative real axis,
+(`:3507-3529, 1121-1133, 1500-1512`) divides $0.8\cdot 0.25/\Delta t$ by the **maximum** of the two per-direction metric
+terms ($\approx 2/\Delta x^2$ and $2/\Delta y^2$, `:3509-3513`), not by their sum; on a uniform square grid that is
+$0.1\,\Delta x^2/\Delta t$, 0.8 of the forward-Euler limit. pyOCEAN's sum form below agrees with it on a square grid and is
+more conservative on anisotropic cells. AB3 has a smaller stability interval on the negative real axis,
 $\lambda\Delta t \le 6/11$ (Durran 2010), so with MOM6's bound the limited $\nu$ would be unstable by about 1.5 times.
 pyOCEAN applies the bound to the final $\nu$ at $h$ and $q$ points,
 
@@ -369,7 +371,14 @@ about $0.055\,\Delta x^2/\Delta t$ on a uniform grid (`BOUND_COEF`, `AB3_STABILI
 $h_{\min}$ is the thinnest of the four faces around the point (`:1033-1037, 1368-1371`), the **thin-layer factor**: a
 layer that is thin next to a thick neighbour gets a proportionally smaller $\nu$. At $h$ points only wet faces enter
 $h_{\min}$ (MOM6 uses the land-masked half thickness; a land face receives no tendency, so it does not constrain the
-step). The bound is always on when Smagorinsky is on. Points where it strictly reduced $\nu$ are counted in
+step). In ALE (z\*, σ, hybrid) the face thickness of the operator is MOM6's unclipped land-masked mean
+$h_u = \tfrac12(h_L + h_R)$ at wet faces, 0 at land and dry faces (`MOM_hor_visc.F90:769-782`;
+`Momentum._unclipped_face_thickness`), used for $h_{\min}$, the $h_q$ harmonic form and the division by $h_u$. It is
+not the bed-clipped `mean_face_thickness` of the transport: in z\*/hybrid that face is ~0 for a layer below the
+shallower bed of a step, which drove $\nu$ (the background `ah` too) to ~0 in the deep cell next to every bathymetric
+step (final review I1; `test_background_viscosity_kept_at_zstar_step`). A layer below the shallower bed is a wall for
+that layer, as a land face. With the unclipped mean, $h_{rat,\min} \ge \tfrac12$ next to a vanished neighbour; it goes
+to 0 only where the layer vanishes on both sides of a face. The bound is always on when Smagorinsky is on. Points where it strictly reduced $\nu$ are counted in
 `SigmaState.n_visc_limited` (see the caveat below).
 
 **Thickness-weighted stresses and their divergence** (`:1362-1367, 1727-1737, 1757-1781`):
@@ -422,6 +431,8 @@ oracle for any thread count; σ and ALE with fixed layers agree; restart is bit 
 | Ilicak overflow, z\*, $A_h$ = 100 + $C$ = 0.5 (their Fig. 19b) | RPE gain 1.44e-5 | 8.37e-6 (−42 %), dRPE/dt −46 %, no new extrema: the paper's trend | `validation/ilicak_benchmark/README.md` |
 | Lorenz D, σ + GLS, $\Delta t = T_{M2}/498$, $C$ = 0.15 | also completes 150 cycles (control), max\|u\| 1.46 m s⁻¹ | completes, max\|u\| 2.06 m s⁻¹; exact mixing relation 8.5e-12 | `validation/lorenz_estuary/README.md` |
 
+The DOME and Ilicak rows (z\*/hybrid ALE) were run before the I1 fix of the face thickness and are [pendiente de recorrida]; the Lorenz row is σ and does not change.
+
 Smagorinsky is therefore **not shown to extend the stable time step** in the Lorenz case (the control without it is also
 stable), and production stays at $T_{M2}/746$. DOME with a low vertical viscosity (`kv_low`, $\nu_v$ = 1e-4, $A_h$ = 50,
 $C$ = 0.15) completes 50 days, where MOM6 and MITgcm stop on day 3–4 without Smagorinsky, but it is not robust (1
@@ -429,9 +440,11 @@ truncation, 31 900 limiter events, deep layer velocities still growing to 7.77 m
 shear-driven vertical mixing). Cost with the term active (`scripts/smag_cost.py`): BayIW cut z\* 1.050, DOME 0.956 (noise)
 (`validation/bayiw_cut/README.md`).
 
-**Caveat on `n_visc_limited`.** It also counts points next to clipped or vanished faces where the bound falls below the
-background `ah`, even if $C\Delta^2|S|$ is small (74 fixed points per step in the z\* overflow). Read it as "the bound
-acted", not as "Smagorinsky reached the bound"; the fix is listed in the READMEs.
+**Caveat on `n_visc_limited`.** It counts every point where the bound strictly reduced $\nu$, including points where the
+bound falls below the background `ah` (thin-layer factor, or a large `ah`), even if $C\Delta^2|S|$ is small. Read it as
+"the bound acted", not as "Smagorinsky reached the bound". Before the I1 fix the bed-clipped faces at every z\* step
+dominated it (74 fixed points per step in the z\* overflow, ≈ 3900 per step in DOME); the counts with the unclipped
+face mean are [pendiente de recorrida].
 
 ### Vertical viscosity: implicit, one tridiagonal per column
 

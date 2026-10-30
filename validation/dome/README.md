@@ -237,7 +237,7 @@ Legg 2006 (10 km): b_f z −11.7, isopicnal −11.0, isopicnal con ν_v = 0.5 �
 
 ## Smagorinsky (spec 2026-10-30, criterios 5 y 6)
 
-`--smag C` agrega la viscosidad horizontal de Smagorinsky laplaciana (`smagorinsky=C`, `core/dynamics/hor_visc.py`; ν = max(ah, C Δ² |S|) con el ah = 50 m²/s de Legg como fondo y la cota de estabilidad de MOM6 reescalada a AB3). Nada más cambia respecto a la corrida de referencia. Las salidas van a `RUNS/10km/pyocean_hybrid_gls_smag<C>/` y `RUNS/10km/pyocean_hybrid_kv_low_smag<C>/`. Las bitácoras están en `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/smag_logs/`.
+`--smag C` agrega la viscosidad horizontal de Smagorinsky laplaciana (`smagorinsky=C`, `core/dynamics/hor_visc.py`; ν = max(ah, C Δ² |S|) con el ah = 50 m²/s de Legg como fondo y la cota de estabilidad de MOM6 reescalada a AB3). Con C > 0 cambian **dos** cosas respecto a la corrida de referencia: se agrega C Δ² |S|, y el fondo ah también pasa del laplaciano simple (sin peso por grosor) al operador de tensor pesado por grosor de capa. Las diferencias con y sin Smagorinsky mezclan los dos cambios (revisión final M2); una corrida de control con C ≈ 0 (p. ej. 1e-9) los separaría. Las salidas van a `RUNS/10km/pyocean_hybrid_gls_smag<C>/` y `RUNS/10km/pyocean_hybrid_kv_low_smag<C>/`. Las bitácoras están en `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/smag_logs/`.
 
 ```bash
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 MKL_NUM_THREADS=1 \
@@ -280,7 +280,7 @@ python validation/dome/figures.py 10 --runs mitgcm_z_legg,pyocean_hybrid,pyocean
 
    Al final de la corrida, Smagorinsky fija ν casi en todo el dominio, 2.5–5 veces el fondo de Legg. Eso también separa este caso de la física común (ν_h = 50 constante): (c).
 6. **`n_visc_limited` no mide dónde topa Smagorinsky.**
-   - El contador (27.9 M en 7200 pasos, ≈ 3900 puntos h + q por paso, ≈ 0.7 % de los puntos) cuenta todos los puntos junto a caras evanescentes o recortadas en el fondo. Ahí h_min/h ≈ 0, así que la cota × h_min/h queda por debajo del fondo ah = 50 y el punto cuenta como limitado aunque C Δ² |S| sea pequeño (contador de `core/dynamics/hor_visc.py`, spec 2026-10-30).
+   - El contador (27.9 M en 7200 pasos, ≈ 3900 puntos h + q por paso, ≈ 0.7 % de los puntos) contaba todos los puntos junto a caras evanescentes o recortadas en el fondo. Ahí h_min/h ≈ 0, así que la cota × h_min/h quedaba por debajo del fondo ah = 50: ν (incluido el fondo) caía a ≈ 0 en esas celdas, no era solo un artefacto del contador (revisión final I1). Corregido: en ALE el operador usa la media sin recortar ½(h_L + h_R) de MOM6 (`MOM_hor_visc.F90:769-782`), con la que h_min/h ≥ ½ junto a una capa evanescente. Los números de este punto y de los resultados de Smagorinsky de arriba son de antes de la corrección: [pendiente de recorrida].
    - En la reconstrucción [aproximado], C Δ² |S| no llega a la cota en ningún punto h de las capas de ≥ 1 m con C = 0.15, y llega en 83–355 por registro con C = 0.5.
    - `nu_t_max` = 4545 m²/s con C = 0.15, la mitad de la cota completa (9091 m²/s a Δx = 10 km, Δt = 600 s), es decir un punto con h_min/h = ½. Con C = 0.5 y en `kv_low` llega a la cota completa.
 7. **C = 0.5 (sensibilidad, no arreglo).** También tiene 0 truncamientos.
@@ -299,7 +299,7 @@ python validation/dome/figures.py 10 --runs mitgcm_z_legg,pyocean_hybrid,pyocean
 
 #### Qué debe mejorar pyOCEAN (Smagorinsky en DOME)
 
-1. **Contador `n_visc_limited` útil.** Contar solo los puntos donde C Δ² |S| > cota, o separar los dos casos. Hoy los puntos evanescentes con ah > 0 lo dominan, y no se puede leer como "Smagorinsky topó la cota".
+1. **Contador `n_visc_limited` útil.** Contar solo los puntos donde C Δ² |S| > cota, o separar los dos casos. Antes de la corrección I1 lo dominaban las caras recortadas en el fondo con ah > 0; cuánto queda con la media sin recortar: [pendiente de recorrida].
 2. **Diagnóstico de truncamientos en el `series.npz`** (punto 5 de N3, sigue abierto): paso, cara y velocidad de cada evento. Hace falta para ubicar el truncamiento de `kv_low`.
 3. **Mezcla por cizalla con ν_v bajo (b).** `kv_low` termina, pero la cuenca profunda se acelera sin freno vertical. Una mezcla por Ri (Jackson et al. 2008) es lo que usa el DOME de MOM6 con su ν_v bajo.
 

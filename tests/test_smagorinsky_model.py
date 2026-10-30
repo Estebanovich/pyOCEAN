@@ -189,9 +189,10 @@ def test_restart_bit_for_bit_with_smagorinsky(tmp_path):
 
 
 def test_counter_accumulates_limited_points():
-    # hybrid layers with vanished thickness: hrat_min → 0 makes the bound 0 there, so ν is limited
+    # a background ah above the AB3 bound, so the bound acts at every active point (with the unclipped face
+    # mean ½(h_L + h_R) the thin-layer ratio is ≥ ½ next to a vanished layer, so ah = 5 is no longer limited)
     sb.set_threads(1)
-    m, st, wind = nc._start(nc._ale("hybrid", nz=8, smagorinsky=0.15), True)
+    m, st, wind = nc._start(nc._ale("hybrid", nz=8, smagorinsky=0.15, ah=1e7), True)
     counts = []
     for n in range(3):
         st = m.step(st, *wind(n))
@@ -232,3 +233,33 @@ def test_open_box_runs_and_edge_faces_zero():
         seen = max(seen, np.abs(fu).max())
     assert seen > 0
     assert all(np.all(np.isfinite(a)) for a in (st.u, st.v, st.eta, st.h, st.T))
+
+
+# ------------------------------------------------------------------ z* bathymetric step (final review I1)
+def test_background_viscosity_kept_at_zstar_step():
+    # z* layers below the shallower bed of a 40 → 20 m step: the face thickness clipped at the shallower bed
+    # (~5e-4 m, the transport thickness) must not enter the thin-layer ratio, or ν (and the background ah) drops
+    # to ~0 in the deep cell next to the step.  MOM6 uses the unclipped mean ½(h_L + h_R)
+    # (MOM_hor_visc.F90:769-782), so ν = ah there in a weakly sheared flow.
+    nx, ny, nz, ah = 8, 6, 4, 50.0
+    hg = create_cartesian_grid(nx=nx, ny=ny, dx=1000.0, dy=1000.0, f0=0.0)
+    H = np.full((ny, nx), 40.0)
+    H[:, :4] = 20.0                                                  # the step at u-face 4
+    m = SigmaBaroclinic(hg, H, dt=60.0, n_layers=nz, rho0=RHO0, t_coef=TCOEF, z0=None, closure="constant",
+                        nu_const=1e-4, vertical_coordinate="ale", regrid="zstar", pgf="fv", smagorinsky=0.15,
+                        ah=ah, regrid_params=dict(dz_top=np.full(nz, 10.0)))
+    st = m.initial_state(np.zeros((ny, nx)), np.full((nz, ny, nx), 10.0))
+    rng = np.random.default_rng(1)
+    st.u = 1e-4 * rng.standard_normal(st.u.shape)
+    st.v = 1e-4 * rng.standard_normal(st.v.shape)
+    st.u[..., 0] = st.u[..., -1] = 0.0
+    st.v[:, 0] = st.v[:, -1] = 0.0
+    hu, _ = m._mean_face_thickness(st.h)
+    assert hu[0, 2, 4] < 1e-2                                        # the transport face really is clipped
+    m._momentum_terms(st)
+    nu = m._momentum.last_nu_t
+    deep = st.h[:, 2, 4] > 1.0                                       # layers with water in the deep cell
+    assert deep.sum() >= 2
+    np.testing.assert_allclose(nu[deep, 2, 4], ah, rtol=1e-12)       # the deep cell next to the step
+    np.testing.assert_allclose(nu[:, 2, 6][st.h[:, 2, 6] > 1.0], ah, rtol=1e-12)
+    assert m._momentum.last_n_limited == 0

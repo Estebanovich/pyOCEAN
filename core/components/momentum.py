@@ -35,6 +35,7 @@ from core.dynamics.nonlinear import _spacings_u, _spacings_v, advection_u, advec
 from core.model import threads
 from core.model.contract import BuildContext, Issue, Role
 from core.model.periodic import MOMENTUM_HALO, NONE
+from core.vertical.ale import face_transport_thickness
 
 Term = tuple[str, np.ndarray, np.ndarray, str]
 
@@ -174,15 +175,37 @@ class Momentum:
         out[1:] += omega_f[1:-1] * du
         return out / (2.0 * np.maximum(h_f, 1e-6))
 
-    def _smag_thickness(self, st, Du: np.ndarray, Dv: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    def _unclipped_face_thickness(self, h: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Unclipped land-masked mean layer thickness ½(h_L + h_R) at u- and v-faces [m] (MOM6 use_land_mask,
+        MOM_hor_visc.F90:769-782): not cut at the shallower bed as the transport thickness of z*/hybrid is, so a
+        layer below the shallower bed of a step is a wall for that layer, not a vanished layer (final review I1).
+        Faces next to land are 0, domain-edge faces take the inner cell; periodic axes wrap (halo 1).
+        """
+        act, sw = self.fs.active, (lambda a: a.swapaxes(1, 2))         # noqa: E731
+        H0 = np.zeros(act.shape)                                       # depth enters only the clipping
+        if self.per:
+            p = self.per
+            hp, ap, Hp = p.pad(h, "c", 1), p.pad(act, "c", 1), p.pad(H0, "c", 1)
+            hu = 0.5 * sum(face_transport_thickness(hp, Hp, ap, False))
+            hv = 0.5 * sum(face_transport_thickness(sw(hp), Hp.T, ap.T, False))
+            return p.crop(hu, "u", 1), p.crop(sw(hv), "v", 1)
+        hu = 0.5 * sum(face_transport_thickness(h, H0, act, False))
+        hv = 0.5 * sum(face_transport_thickness(sw(h), H0.T, act.T, False))
+        return hu, sw(hv)
+
+    def _smag_thickness(self, st, Du: np.ndarray, Dv: np.ndarray, wet_u: np.ndarray,
+                        wet_v: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Layer thickness at h points and u-, v-faces [m] for the Smagorinsky operator: σ h = D Δσ_k with the cell
-        total depth D = max(H + η, 0) and the face depths Du, Dv of the step; ALE h_t = h and the faces from
-        ``mean_face_thickness`` (the clipped mean of the two cells, as the vertical viscosity).
+        total depth D = max(H + η, 0) and the face depths Du, Dv of the step; ALE h_t = h and the faces the
+        unclipped mean ½(h_L + h_R) of the two cells at wet faces, 0 at land/dry faces (MOM6
+        MOM_hor_visc.F90:769-782; not the bed-clipped ``mean_face_thickness``, whose ~0 faces below the shallower
+        bed of a z* step zeroed ν and the background ah in the deep cell, final review I1).
         """
         if self.ale:
-            hu, hv = self.mean_face_thickness(st.h)
-            return st.h, hu, hv
+            hu, hv = self._unclipped_face_thickness(st.h)
+            return st.h, np.where(wet_u[None], hu, 0.0), np.where(wet_v[None], hv, 0.0)
         ds = self.ds[:, None, None]
         D = np.maximum(np.nan_to_num(self.fs.H + st.eta, nan=0.0), 0.0)
         return (D[None] * ds, np.maximum(np.nan_to_num(Du, nan=0.0), 0.0)[None] * ds,
@@ -210,7 +233,7 @@ class Momentum:
         pad–crop with halos of 2 (the stencil reaches the tension of the neighbour cell through the corner shear),
         geometry padded once.  Sets ``last_nu_t`` and ``last_n_limited``.
         """
-        h_t, h_u, h_v = self._smag_thickness(st, Du, Dv)
+        h_t, h_u, h_v = self._smag_thickness(st, Du, Dv, wet_u, wet_v)
         per = self.per
         if per:
             H = 2
