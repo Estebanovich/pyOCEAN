@@ -243,14 +243,23 @@ into the ocean, per cell] (`core/model/driver.py`, `physics/surface/shortwave.py
 J kg⁻¹ K⁻¹ and `jerlov` = "I"). It is a prescribed flux, not a bulk formula, and it is applied in phase 7 after the
 freshwater substep:
 
-- The non-solar part $Q_{ns}$ (sensible, latent, net longwave) goes into the uppermost layer with mass.
+- The non-solar part $Q_{ns}$ (sensible, latent, net longwave) enters from the top. A layer thinner than the forcing
+    depth $D_f$ = 1 mm takes the fraction $\min(1, h_k/D_f)$ of what is left and passes the rest down, as MOM6
+    `applyBoundaryFluxesInOut` (`MOM_diabatic_aux.F90:1101-1118`, `MINIMUM_FORCING_DEPTH`); for a top layer thicker
+    than 1 mm this is "all of $Q_{ns}$ in the top layer".
 - The shortwave $Q_{sw}$ is distributed by the Paulson & Simpson (1977) two-band profile
     $F(z)=R\,e^{z/\mu_1}+(1-R)\,e^{z/\mu_2}$ (types I, IA, IB, II, III; coefficients as CROCO `lmd_swfrac.F:47-51`, formula
     `:76-88`; no $e^{-20}$ cutoff). Layer $k$ gets $Q_{sw}(F_{k+1}-F_k)$ with $F$ at the layer interfaces.
-- The part reaching the bed stays in the **bottom layer with mass**, the rule of MOM6 (`MOM_opacity.F90:824-842, 994-1011`);
-    CROCO has no shortwave term at the bed (`step3d_t.F:567, 578-586`). The old `surface_tendency` of the legacy
-    z-level model instead lets that part leave the column.
-- Vanished ALE layers get nothing; land and dry columns are ignored. The heat content changes by exactly
+- The part reaching the bed, $Q_{sw}F(-D)$, is **spread over the column in proportion to the layer thickness**, as
+    MOM6 `absorbRemainingSW` with `absorbAllSW` (`MOM_opacity.F90:813-816, 824-860`): weight $h_k$, reduced to
+    $2h_k-2h_{min}$ for $h_{min}<h_k<2h_{min}$ and zero below. CROCO keeps it in the bottom layer
+    (`step3d_t.F:567, 578-586`); that rule heated a 1 mm z\* bed layer to 206 °C in 4 h (final-review fix C1), so
+    pyOCEAN uses MOM6's in every coordinate. In a σ column this differs from CROCO only by $Q_{sw}F(-D)$ (5 % of
+    $Q_{sw}$ at 50 m in type I water). The old `surface_tendency` of the legacy z-level model instead lets that part
+    leave the column.
+- Layers thinner than $h_{min}$ = 1e-6 m (the floor of the vertical solvers, `DZ_FLOOR`; MOM6 uses 2 Å) get no heat;
+    their shortwave joins the bed remainder.
+- Land and dry columns are ignored. The heat content changes by exactly
     $\sum Q A\,\Delta t/(\rho_0 c_p)$ (relative error < 1e-13), and the variance budget of T gains a surface term, so
     it still closes to 5e-10.
 - `driver.last_bflux` and `ctx.bflux` (`Q_ns`, `Q_sw`, `sw_frac_iface`) feed the KPP closure's buoyancy flux

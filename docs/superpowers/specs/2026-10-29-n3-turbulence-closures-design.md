@@ -54,7 +54,7 @@ Para probar los cierres con convección y calentamiento, el modelo necesita un f
    - `step(st, tau_x, tau_y, fw=None, heat=None)`, donde `heat` es un dict con:
      - `Q_ns`: flujo no solar [W m⁻², positivo hacia el océano] por celda;
      - opcionalmente `Q_sw`: onda corta [W m⁻²], que penetra con un perfil de Jerlov (Paulson & Simpson 1977, dos bandas; tipo I por defecto; CROCO `lmd_swfrac`, ver `croco_column_cases.md`).
-   - Entra como flujo de T por la interfaz superior, y la onda corta como fuente en las capas según la fracción que llega a cada interfaz. La parte que llega al fondo se deposita en la capa del fondo, como hacen MOM6 y CROCO (el constructor confirma cuál regla usa cada uno y cita `archivo:línea`).
+   - Entra como flujo de T por la interfaz superior, y la onda corta como fuente en las capas según la fracción que llega a cada interfaz. La parte que llega al fondo se deposita en la capa del fondo, como hacen MOM6 y CROCO (el constructor confirma cuál regla usa cada uno y cita `archivo:línea`). **Corrección (revisión final, C1, 2026-10-30):** solo CROCO la deja en la capa del fondo; MOM6 (`MOM_opacity.F90:813-816, 824-860`, `absorbRemainingSW`) la reparte en la columna en proporción a h, y pyOCEAN usa ahora esa regla en todas las coordenadas.
    - En σ y en ALE. El balance de varianza (N2a) gana un término de superficie para T, análogo al de E−P.
    - Restart: no hay estado nuevo; el flujo es un argumento de `step()`.
    - Sin `heat` (valor por defecto) todo queda bit a bit.

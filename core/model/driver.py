@@ -260,8 +260,9 @@ class Driver:
         """
         Prescribed surface heat flux on T (stack member 0), in place, after the freshwater substep (N3 task 2,
         ``physics.surface.shortwave``):  ΔT_k = Δt q_k / (ρ₀ c_p h_k),  Σ_k q_k = Q_ns + Q_sw,  h_k = V¹_k / A.
-        Q_ns enters the top layer; Q_sw is shared with the Paulson & Simpson (1977) interface fractions and what
-        reaches the bed stays in the bottom layer.  Ignored on land and dry cells (the mask of the free-surface fw:
+        Q_ns enters the top layer (spread over 1 mm when the top layers are thinner, MOM6); Q_sw is shared with the
+        Paulson & Simpson (1977) interface fractions and what reaches the bed is spread over the column in
+        proportion to h (MOM6 absorbRemainingSW); layers <= 1e-6 m get no heat (``physics.surface.shortwave``).  Ignored on land and dry cells (the mask of the free-surface fw:
         active and H + ηⁿ > d_min).  Sets ``ctx.bflux`` (for the closure) and the budget term ``T_surf``:
         V¹ (Tⁿᵉʷ² − Tᵒˡᵈ²)/Δt, a source of Σ V T².
         """
@@ -295,7 +296,7 @@ class Driver:
         m = self.m
         h, q = fl
         T_old = C[0].copy() if bud is not None else None
-        pos = h > 0                                                    # vanished layers get q = 0 (layer_heating)
+        pos = h > 0                                                    # layers <= H_MIN_HEAT get q = 0 (layer_heating)
         C[0] += np.where(pos, q * m.dt / (m.rho0 * m.cp * np.where(pos, h, 1.0)), 0.0)
         if bud is not None:
             bud.source("T_surf", V1 * (C[0] ** 2 - T_old**2) / m.dt)

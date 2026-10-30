@@ -269,7 +269,7 @@ the [Configuration reference](user-guide/configuration-reference.md).
 | `useOBCSprescribe` | `open_boundary_state=f(t)` + `open_boundary_mode={"west": "clamped"}` | Flather kept on the depth mean |
 | `useOBCSsponge`, `spongeThickness`, `Urelaxobcsinner`, `Urelaxobcsbound` | `sponge_cells`, `sponge_tau=(tau_inner, tau_bound)` (default (1200, 60) s) | Same profile (`obcs_sponge.F`) |
 | `useOBCSbalance` | none (Flather closes the budget) | It reflected the barotropic pulse in BayIW (class d, `validation/bayiw_2d/README.md`) |
-| `useEXF` | `forcing/bulk.bulk_ncar` → wind stress only into the core; prescribed heat flux `heat=` with Paulson & Simpson shortwave (`layer_heating`, `physics/surface/shortwave.py:60`; `Driver._heat_fluxes`, `core/model/driver.py:278`) | Bulk heat fluxes pending (N2b) |
+| `useEXF` | `forcing/bulk.bulk_ncar` → wind stress only into the core; prescribed heat flux `heat=` with Paulson & Simpson shortwave (`layer_heating`, `physics/surface/shortwave.py:113`; `Driver._heat_fluxes`, `core/model/driver.py:279`) | Bulk heat fluxes pending (N2b) |
 | `useKPP`, `useGGL90` | `closure='kpp'` (`KPPClosure`, `core/components/closure.py:597`), `closure='gls'` (`GLSClosure`, `closure.py:204`) | KPP without interior Ri mixing and without background diffusivity; no GGL90 |
 | `nonHydrostatic` | none | Stage E option |
 

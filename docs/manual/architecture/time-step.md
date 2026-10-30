@@ -71,12 +71,12 @@ configuration of the N1 golden matrix is bit for bit as before.
 |---|---|
 | 3 | none |
 | 4 `implicit_and_free_surface` | The closure is its own component (`core/components/closure.py`: `ConstantClosure`, `GLSClosure`, `KPPClosure`). `Closure.viscosity(st)` gives ν at the faces; for GLS `Closure.update(u, v, h, rho, ustar2_sfc, ustar2_bot, bflux)` follows the implicit step, with the bed u*² computed once (`ctx.ustar2_bot`) and shared by σ and ALE. In ALE with `z0`, `LogLawBedDrag.rates` gives per-layer implicit rates $r_k = C_d\,\lvert\mathbf U_b\rvert\,w_k$ over the bottom `hbbl` metres, with the **full bed speed** $\lvert\mathbf U_b\rvert=\sqrt{u_b^2+\bar v_b^2}$ (cross component by the 4-point mean of CROCO `get_vbc.F:517-526`; Task 9b, before it each face used its own component only) |
-| 7 `tracers` | After the freshwater substep: `_heat_fluxes` sets `ctx.bflux` and `_heat_apply` adds the prescribed heat (non-solar $Q_{ns}$ in the top layer with mass, shortwave $Q_{sw}$ by the Paulson & Simpson 1977 profile, the part reaching the bed in the bottom layer). With `closure='kpp'` `_kpp_update` runs before the heat is applied (MOM6 diabatic order) and `_kpp_nonlocal` adds the explicit non-local term after $K_h$. Tracer diffusivity $\kappa_t$ is the closure's (floor `kv`) for T, S and passive tracers |
+| 7 `tracers` | After the freshwater substep: `_heat_fluxes` sets `ctx.bflux` and `_heat_apply` adds the prescribed heat (non-solar $Q_{ns}$ in the top layer, spread over 1 mm when the top layers are thinner, shortwave $Q_{sw}$ by the Paulson & Simpson 1977 profile, the part reaching the bed spread over the column in proportion to $h$ as MOM6 `absorbRemainingSW`). With `closure='kpp'` `_kpp_update` runs before the heat is applied (MOM6 diabatic order) and `_kpp_nonlocal` adds the explicit non-local term after $K_h$. Tracer diffusivity $\kappa_t$ is the closure's (floor `kv`) for T, S and passive tracers |
 | 8 `vertical_coordinate` | After the regrid, `Closure.remap(h_src, h_dst)`: GLS remaps $k$ and $\varepsilon$ (below). KPP carries only $\nu$ (`akv`) by interface index, as MOM6 does (`MOM.F90:1964-1965`) |
 
 **Surface heat flux** (`step(..., heat={"Q_ns": ..., "Q_sw": ...})`, `physics/surface/shortwave.py`). A prescribed flux
 (positive into the ocean, W m⁻²), not a bulk formula. Exact heat content to round-off (relative error < 1e-13 of the
-change, σ and z*); vanished layers receive nothing; land and dry columns are ignored. See
+change, σ and z*); layers thinner than 1e-6 m receive nothing; land and dry columns are ignored. See
 [Air–sea fluxes](../theory/air-sea-fluxes.md).
 
 **Periodic boundaries** (`SigmaBaroclinic(..., periodic=("x",), ("y",) or ("x", "y"))`, `core/model/periodic.py`). With
