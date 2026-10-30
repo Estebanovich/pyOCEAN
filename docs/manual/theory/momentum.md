@@ -316,6 +316,123 @@ Guide: the grid Reynolds number $Re_\Delta = U\Delta x/A_h$ controls both the no
 (Ilicak et al. 2012). In the lock exchange the RPE gain fell from 3.22e-5 ($A_h = 0$) to 1.26e-5
 ($A_h = 100$, $Re_\Delta = 2.5$) (`validation/lock_exchange/README.md`).
 
+### Smagorinsky horizontal viscosity `smagorinsky`
+
+`smagorinsky = C` (dimensionless, MOM6 `SMAG_LAP_CONST`; 0.15 is the OM4p5 value) replaces the constant Laplacian above
+by the Laplacian Smagorinsky viscosity in thickness-weighted stress-tensor form, one layer at a time and along the
+layer (σ, z\* and hybrid alike), as MOM6 (`MOM_hor_visc.F90`). It is off by default and then bit for bit as before
+(`tests/test_smagorinsky_model.py::test_zero_smagorinsky_is_bitwise`). Kernels and equations: `core/dynamics/hor_visc.py`
+(module docstring `:1-67`, NumPy oracle `smagorinsky_numpy` `:116`, Numba kernel `:219`, driver `smagorinsky` `:341`);
+the model calls it from `Momentum.smagorinsky_terms` (`core/components/momentum.py:204`), which replaces the `hviscosity`
+term (`:272-274`). Smagorinsky (1963, 1993); Griffies & Hallberg (2000).
+
+**Strain rates** on the C grid (tension at cell centres, shearing strain at the corners; `MOM_hor_visc.F90:707-722`):
+
+$$
+D_T = \frac{\partial u}{\partial x} - \frac{\partial v}{\partial y}, \qquad
+D_S = \frac{\partial v}{\partial x} + \frac{\partial u}{\partial y},
+$$
+
+with the metric forms of MOM6, e.g. $\partial u/\partial x|_h = (\Delta y_T/\Delta x_T)\,(u_{i+1/2}/\Delta y_{u,i+1/2} - u_{i-1/2}/\Delta y_{u,i-1/2})$.
+
+**Shear magnitude** without the divergence (MOM6 and MITgcm; `MOM_hor_visc.F90:1018-1022, 1355-1359`), with the squares of
+the four surrounding values of the other strain averaged:
+
+$$
+|S|_h = \sqrt{D_T^2 + \tfrac14\textstyle\sum_4 D_S^2}, \qquad |S|_q = \sqrt{D_S^2 + \tfrac14\textstyle\sum_4 D_T^2}.
+$$
+
+**Viscosity**, evaluated separately at cell centres ($\nu_h$) and at corners ($\nu_q$), with the harmonic-mean grid scale
+(`:3382-3389, 3403-3414, 1060-1070`):
+
+$$
+\Delta^2 = \frac{2\,\Delta x^2\Delta y^2}{\Delta x^2 + \Delta y^2}, \qquad \nu = \max\!\big(A_h,\; C\,\Delta^2\,|S|\big).
+$$
+
+`ah` is the background (the maximum, not a sum: MOM6 `ADD_LES_VISCOSITY = False`). $C$ plays the role of the usual
+$C_s^2$, since the constant multiplies the area directly (Ilicak et al. 2012 write $\nu = (C_s\Delta)^2|S|$, eq. 11: their
+$C_s = 1/\sqrt2$ is $C = 0.5$). The grid has no corner spacings: $\Delta x_q$ is the mean of the two $\Delta x_v$ next to
+the corner, $\Delta y_q$ the mean of the two $\Delta y_u$ (`smag_geometry`, `:74`).
+
+**Stability bound, rescaled for AB3.** The viscous term is explicit in the AB3 momentum step. MOM6's `BOUND_KH`
+(`:3507-3529, 1121-1133, 1500-1512`) is $\nu \le 0.8\cdot 0.25/(\Delta t(1/\Delta x^2 + 1/\Delta y^2))$, that is $0.1\,\Delta x^2/\Delta t$ on a
+uniform grid, 0.8 of the forward-Euler limit. AB3 has a smaller stability interval on the negative real axis,
+$\lambda\Delta t \le 6/11$ (Durran 2010), so with MOM6's bound the limited $\nu$ would be unstable by about 1.5 times.
+pyOCEAN applies the bound to the final $\nu$ at $h$ and $q$ points,
+
+$$
+\nu \le \frac{0.8\cdot(6/11)}{4\,\Delta t\,(1/\Delta x^2 + 1/\Delta y^2)}\;h_{rat,\min}, \qquad
+h_{rat,\min} = \min\!\Big(1,\ \frac{h_{\min}}{h_{point} + h_{neglect}}\Big),
+$$
+
+about $0.055\,\Delta x^2/\Delta t$ on a uniform grid (`BOUND_COEF`, `AB3_STABILITY` `:70-71`, `_bound_factor` `:110`).
+$h_{\min}$ is the thinnest of the four faces around the point (`:1033-1037, 1368-1371`), the **thin-layer factor**: a
+layer that is thin next to a thick neighbour gets a proportionally smaller $\nu$. At $h$ points only wet faces enter
+$h_{\min}$ (MOM6 uses the land-masked half thickness; a land face receives no tendency, so it does not constrain the
+step). The bound is always on when Smagorinsky is on. Points where it strictly reduced $\nu$ are counted in
+`SigmaState.n_visc_limited` (see the caveat below).
+
+**Thickness-weighted stresses and their divergence** (`:1362-1367, 1727-1737, 1757-1781`):
+
+$$
+\sigma_{xx} = \nu_h\,h\,D_T, \qquad \sigma_{xy} = \nu_q\,h_q\,D_S,
+$$
+
+$$
+h_q = \frac{2\,h_{2uq}\,h_{2vq}}{h_{neglect}^3 + (h_{2uq} + h_{2vq})(h_{u,s} + h_{u,n} + h_{v,w} + h_{v,e})},\quad
+h_{2uq} = 4h_{u,s}h_{u,n},\ h_{2vq} = 4h_{v,w}h_{v,e},
+$$
+
+so $h_q \to 0$ when any of the four faces vanishes (a vanished layer shuts the shear stress). The tendency at a face is the
+divergence of the stress divided by the **face** thickness plus a negligible thickness,
+
+$$
+F_u = \frac{1}{A_u\,(h_u + h_{neglect})}\left[\frac{\Delta y_{T,e}^2\sigma_{xx,e} - \Delta y_{T,w}^2\sigma_{xx,w}}{\Delta y_u}
++ \frac{\Delta x_{q,n}^2\sigma_{xy,n} - \Delta x_{q,s}^2\sigma_{xy,s}}{\Delta x_u}\right],
+$$
+
+and the same for $F_v$ with the signs of MOM6 (`:1757-1793`). `h_neglect` is `core.vertical.remap.H_NEGLECT`. The face
+thickness is the same one used elsewhere in the step (`_smag_thickness`, `momentum.py:177`). By summation by parts
+$\sum h_u u F_u A_u + \sum h_v v F_v A_v = -\sum \nu h D_T^2 A_T - \sum \nu_q h_q D_S^2 A_q \le 0$: the operator only removes
+kinetic energy (`test_energy_dissipation_nonnegative`).
+
+**Boundaries.**
+
+- *Free slip.* $D_S = 0$ at corners that are not surrounded by four wet faces (land, and dry faces of wetting and drying);
+  a dry or land face has $u = 0$ in the strains and receives no tendency (`test_drying_face_gets_no_viscous_tendency`).
+- *Open edges.* The faces of an open boundary get no viscous tendency, and $D_S = 0$ at their corners (MOM6
+  `OBC_STRAIN_ZERO`; `:1761-1771, 1783-1793`). The domain-edge faces are zero too
+  (`test_open_edge_faces_get_no_tendency`).
+- *Vanished layers.* $\nu$ is 0 where the cell has no wet face and at corners that are not active; layers with $h = 0$
+  stay finite (`test_vanished_layers_finite_and_zero_nu`).
+- *Periodic axes.* Pad–crop with halos of 2 cells (the stencil reaches the tension of the neighbour cell through the corner
+  shear), geometry padded once (`smagorinsky_terms`). A doubly periodic box conserves momentum
+  (`test_doubly_periodic_conserves_momentum`).
+
+**Checks.** $\nu$ equals the MOM6 formula on a stretched grid (`test_nu_matches_mom6_formula_on_stretched_grid`); a shear
+wave decays at the analytical rate with constant $\nu$; a quiet flow returns the background `ah`; Numba equals the NumPy
+oracle for any thread count; σ and ALE with fixed layers agree; restart is bit for bit (`tests/test_hor_visc.py`,
+`tests/test_smagorinsky_model.py`).
+
+**Results** (details and classes of difference in the three README files):
+
+| Case | Without | With Smagorinsky | Source |
+|---|---|---|---|
+| DOME hybrid + GLS, 10 km, 50 days, $C$ = 0.15 | 1 CFL truncation, 1072 limiter events, max\|u\| 5.66 m s⁻¹ (MITgcm 2.04), $b_f$ −12.99e-3 | 0 truncations, 0 limiter events, max\|u\| 2.99 m s⁻¹, $b_f$ −13.68e-3, path unchanged; cost +8.6 % | `validation/dome/README.md` |
+| Ilicak overflow, z\*, $A_h$ = 100 + $C$ = 0.5 (their Fig. 19b) | RPE gain 1.44e-5 | 8.37e-6 (−42 %), dRPE/dt −46 %, no new extrema: the paper's trend | `validation/ilicak_benchmark/README.md` |
+| Lorenz D, σ + GLS, $\Delta t = T_{M2}/498$, $C$ = 0.15 | also completes 150 cycles (control), max\|u\| 1.46 m s⁻¹ | completes, max\|u\| 2.06 m s⁻¹; exact mixing relation 8.5e-12 | `validation/lorenz_estuary/README.md` |
+
+Smagorinsky is therefore **not shown to extend the stable time step** in the Lorenz case (the control without it is also
+stable), and production stays at $T_{M2}/746$. DOME with a low vertical viscosity (`kv_low`, $\nu_v$ = 1e-4, $A_h$ = 50,
+$C$ = 0.15) completes 50 days, where MOM6 and MITgcm stop on day 3–4 without Smagorinsky, but it is not robust (1
+truncation, 31 900 limiter events, deep layer velocities still growing to 7.77 m s⁻¹ at day 50; class b, missing
+shear-driven vertical mixing). Cost with the term active (`scripts/smag_cost.py`): BayIW cut z\* 1.050, DOME 0.956 (noise)
+(`validation/bayiw_cut/README.md`).
+
+**Caveat on `n_visc_limited`.** It also counts points next to clipped or vanished faces where the bound falls below the
+background `ah`, even if $C\Delta^2|S|$ is small (74 fixed points per step in the z\* overflow). Read it as "the bound
+acted", not as "Smagorinsky reached the bound"; the fix is listed in the READMEs.
+
 ### Vertical viscosity: implicit, one tridiagonal per column
 
 `SigmaWetDry.column_step` (`core/dynamics/sigma_wd.py:187`) solves, for each face column, the backward-Euler
@@ -451,7 +568,8 @@ new work uses `SigmaBaroclinic`.
 | `adv` | `"flux"`, `"upwind3"`, `"centred"` | `"flux"` | advection of the flux-form branch | `_tendencies`, `:1521-1532` |
 | `ke_scheme` | `"arakawa"`, `"gudonov"` | `"arakawa"` | kinetic energy of the vector-invariant form | `vi.kinetic_energy` |
 | `max_truncations` | int | 1000 | ALE: stop after this many counted CFL truncations | `_step_ale`, `:2069` |
-| `ah` | ≥ 0 [m² s⁻¹] | 0 | horizontal Laplacian viscosity, free slip | `:1533` |
+| `ah` | ≥ 0 [m² s⁻¹] | 0 | horizontal Laplacian viscosity, free slip; background (maximum) when `smagorinsky` > 0 | `:1533` |
+| `smagorinsky` | ≥ 0 [-] | 0 (off) | Smagorinsky coefficient $C$; ν = max(`ah`, C Δ² \|S\|), AB3-bounded | `core/dynamics/hor_visc.py` |
 | `closure` | `"constant"`, `"none"`, `"gls"`, `"parabolic"` | `"constant"` | vertical viscosity (ALE: constant/none) | `SigmaWetDry` |
 | `nu_const` | [m² s⁻¹] | 1e-4 | constant vertical viscosity | `SigmaWetDry` |
 | `z0` | [m] or `None` | `None` | bed roughness of the log-law drag (σ only) | `column_step` |
@@ -479,10 +597,13 @@ More on the [Idealised benchmarks](../validation/idealised.md) page.
 - Flux-form momentum is skipped on the first σ step (no transports yet).
 - ALE has the law-of-the-wall drag since N3 (`LogLawBedDrag`, over the bottom `hbbl` metres, full bed speed), or the quadratic `hbbl` drag; `z0` with `bottom_drag='quadratic'` is an error.
 - Thin overflow faces still move up to 1.9× faster than thick ones at $\nu$ = 1000 (Ilicak overflow, open).
-- The horizontal viscosity is a plain Laplacian of $u$ (no biharmonic, no Smagorinsky, not thickness-weighted).
+- The constant horizontal viscosity `ah` is a plain Laplacian of $u$, not thickness-weighted. The optional Smagorinsky viscosity is a thickness-weighted Laplacian; there is no biharmonic (out of scope), Leith or backscatter. Its `n_visc_limited` counter does not separate Smagorinsky hits from thin-face limits.
 
 ## References
 
+- Smagorinsky, J. (1963). General circulation experiments with the primitive equations. I. The basic experiment. *Mon. Wea. Rev.* 91, 99–164. [verify]
+- Griffies, S.M. & Hallberg, R.W. (2000). Biharmonic friction with a Smagorinsky-like viscosity for use in large-scale eddy-permitting ocean models. *Mon. Wea. Rev.* 128, 2935–2946. [verify]
+- Durran, D.R. (2010). *Numerical Methods for Fluid Dynamics*, 2nd ed., Springer (AB3 stability interval).
 - Arakawa, A. & Lamb, V.R. (1981). A potential enstrophy and energy conserving scheme for the shallow water
     equations. *Mon. Wea. Rev.* 109, 18–36. [verify] (the σ-mode docstring cites "Arakawa & Lamb 1977").
 - Bleck, R. & Smith, L.T. (1990). A wind-driven isopycnic coordinate model of the north and equatorial Atlantic

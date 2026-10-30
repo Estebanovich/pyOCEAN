@@ -228,3 +228,12 @@ Ya en la biblioteca y usados: Warner et al. 2005 (GLS en ROMS; Kato–Phillips, 
 | ★ | Danabasoglu, Large, Tribbia, Gent, Briegleb & McWilliams 2006, Diurnal coupling in the tropical oceans of CCSM3, J. Climate 19 (C_v de KPP en CVMix, `kpp_cvmix.py`) | [10.1175/JCLI3739.1](https://doi.org/10.1175/JCLI3739.1) [verificar] | `Danabasoglu_2006 - Diurnal Coupling in the Tropical Oceans of CCSM3.pdf` | ⬜ |
 | ★ | Kato & Phillips 1969, On the penetration of a turbulent layer into stratified fluid, J. Fluid Mech. 37 (caso Kato–Phillips de `validation/turbulence_columns`) | [10.1017/S0022112069000784](https://doi.org/10.1017/S0022112069000784) [verificar] | `Kato_Phillips_1969 - On the Penetration of a Turbulent Layer into Stratified Fluid.pdf` | ⬜ |
 | | Willis & Deardorff 1974, A laboratory model of the unstable planetary boundary layer, J. Atmos. Sci. 31 (caso Willis–Deardorff de las columnas) | [10.1175/1520-0469(1974)031<1297:ALMOTU>2.0.CO;2](https://doi.org/10.1175/1520-0469(1974)031%3C1297:ALMOTU%3E2.0.CO;2) [verificar] | `Willis_Deardorff_1974 - A Laboratory Model of the Unstable Planetary Boundary Layer.pdf` | ⬜ |
+
+## N-Smagorinsky. Viscosidad horizontal de Smagorinsky (`core/dynamics/hor_visc.py`; spec `docs/superpowers/specs/2026-10-30-smagorinsky-viscosity-design.md`, notas `docs/design/smag_refs/`)
+
+La búsqueda local (`litsearch.py "Smagorinsky" "Griffies Hallberg"`, 2026-10-30) solo encuentra las dos referencias citadas dentro de otros artículos (Adcroft 2019, Bleck 2002, Banerjee 2024, Chang 2026), no el texto de estos dos. Ilicak 2012 (ec. 11, §7.1, Fig. 19b) y Adcroft 2019 (§2.2.5, C = 0.15) ya están en la sección 1 y en la 2 y se leyeron en la copia local; no se repiten.
+
+| | Referencia | DOI | Archivo sugerido | Estado |
+|---|---|---|---|---|
+| ★ | Smagorinsky 1963, General circulation experiments with the primitive equations. I. The basic experiment, Mon. Wea. Rev. 91 | [10.1175/1520-0493(1963)091<0099:GCEWTP>2.3.CO;2](https://doi.org/10.1175/1520-0493(1963)091%3C0099:GCEWTP%3E2.3.CO;2) [verificar] | `Smagorinsky_1963 - General Circulation Experiments with the Primitive Equations.pdf` | ⬜ |
+| ★ | Griffies & Hallberg 2000, Biharmonic friction with a Smagorinsky-like viscosity for use in large-scale eddy-permitting ocean models, Mon. Wea. Rev. 128 | [10.1175/1520-0493(2000)128<2935:BFWASL>2.0.CO;2](https://doi.org/10.1175/1520-0493(2000)128%3C2935:BFWASL%3E2.0.CO;2) [verificar] | `Griffies_Hallberg_2000 - Biharmonic Friction with a Smagorinsky-Like Viscosity.pdf` | ⬜ |

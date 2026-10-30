@@ -406,5 +406,7 @@ Sin flotabilidad, el k-ε ve N² = 0 y da ν ≈ 1e-3–1e-2 m²/s aun con Ri �
 9. **FCT y mezcla numérica (c, hipótesis).** Con el mismo cierre y la misma M total, ALE-σ + GLS tiene 1.5 × la M_num de σ + GLS en B y C. Una corrida corta de B con `tracer_limiter` apagado en ALE (o FCT en σ) separaría el efecto del limitador del de la coordenada.
 10. **Costo del GLS en ALE.** 0.020–0.022 s/paso contra 0.0134 de σ + GLS y 0.016 de ALE-σ (ventana de producción). El Δt lo fija el chorro superficial de σ + GLS (T_M2/746, la búsqueda de 10a); el resto es el GLS en ALE (fusión de capas delgadas, remapeo de k y ε).
 
+11. **Δt de producción de `sigma_gls` (c, Smagorinsky).** Smagorinsky (C = 0.15) no extendió el Δt estable: T_M2/498 completa 150 ciclos con y sin él (|u|max 2.06 y 1.46 m/s). Para pasar a T_M2/498 (≈ 30 % más barato por ciclo) hace falta una corrida de 600 ciclos con control.
+
 Pendiente fuera de N2a: figura de las secciones medias de S y u, como la Fig. 2 del artículo; los datos están en `section.npz`.
 

@@ -35,6 +35,7 @@ columns, v-faces ny + 1 rows; "σ" means `vertical_coordinate="sigma_eulerian"`,
 | `kv` | float | 0.0 | m² s⁻¹ | vertical tracer diffusivity, implicit, constant | ≥ 0 | independent of the closure |
 | `kh` | float | 0.0 | m² s⁻¹ | horizontal tracer diffusivity along layers, explicit flux form | ≥ 0 | diffuses T − T_ref(z) when a reference profile is set (`_diffuse_h_numpy`, `:1600`); ALE uses min(h_L, h_R) at faces |
 | `ah` | float | 0.0 | m² s⁻¹ | horizontal Laplacian viscosity, free slip | ≥ 0 | Re_Δ = UΔx/A_h controls spurious mixing (Ilicak et al. 2012) |
+| `smagorinsky` | float | 0.0 (off, bit for bit as before) | — | Smagorinsky coefficient C (MOM6 `SMAG_LAP_CONST`): thickness-weighted Laplacian stress-tensor viscosity ν = max(`ah`, C Δ² \|S\|), Δ² = 2Δx²Δy²/(Δx²+Δy²), per layer, free slip | finite, ≥ 0 (pre-flight error otherwise); assignable after construction like `ah` | recommended 0.15 (OM4p5, Adcroft et al. 2019); 0.5 reproduces Ilicak et al. 2012 Fig. 19b (C_s = 1/√2). `ah` is then the background (the maximum, not a sum). ν is bounded every step for AB3 (≈ 0.055 Δx²/Δt, times the thin-face ratio); points where the bound acted are counted in `SigmaState.n_visc_limited` (summed over steps; `None` when off; kept in the restart) and also include thin or clipped faces where the bound is below `ah`. The last step's ν at h points is the registry variable `nu_smag` (`self._momentum.last_nu_t`; output on request). Free slip at land and dry faces, no tendency on open-boundary faces, periodic axes supported. Not shown to extend the stable Δt (Lorenz D). Theory: [Momentum](../theory/momentum.md) |
 
 ### Free surface
 
@@ -238,7 +239,7 @@ factorised once. Used by the 2-D tidal runs (PAC_MEX) and the phase-1 z-level mo
 
 Restart configuration keys compared on reading (`core/restart.py:60-86`): `dt, n_layers, theta, d_min, sigma_w, pgf,
 rho_ref` (none / auto / callable), `open_boundaries, sponge_cells, sponge_tau, orlanski_cmax, sponge_tracer, kh, kv,
-closure, z0, nu_const, adv, tracer_scheme, tracer_time, rho0, t_coef, t_ref, ah, theta_bc, ny, nx`; in ALE also
+closure, z0, nu_const, adv, tracer_scheme, tracer_time, rho0, t_coef, t_ref, ah, smagorinsky, theta_bc, ny, nx`; in ALE also
 `regrid, remap, thickness_flux, momentum, ke_scheme, h_thin_bed, max_truncations, thin_layer_coupling,
 thin_layer_cutoff, tracer_limiter, mix_diagnostic, obc_tau_in, obc_tau_out, obc_mode, obc_state` (function or none)
 and every `regrid_params` entry. **Not compared:** `solver`, `g`, `init_iterations`, the content of
@@ -267,6 +268,7 @@ Grouped by where they are raised. The message text is the code's.
 | `unknown momentum …` | | `:1132` |
 | `momentum='vector_invariant' needs vertical_coordinate='ale' (the σ model keeps the flux form, which matches CROCO)` | | `:1134` |
 | `unknown ke_scheme …` / `unknown thickness_flux …` | | `:1137`, `:1140` |
+| `smagorinsky=…: the Smagorinsky coefficient must be a finite number ≥ 0` | negative or non-finite `smagorinsky` | `core/model/preflight.py:64-67` |
 | `unknown regrid rule …` / `unknown remap_scheme …` | ALE only | `:1145`, `:1147` |
 | *(removed in N3)* `vertical_coordinate='ale' needs z0=None ...` — ALE accepts `z0` now; `z0` together with `bottom_drag='quadratic'` is an error (two bed drags) | | `core/model/preflight.py` |
 | `vertical_coordinate='ale' needs closure 'constant' or 'none' for now (GLS and the parabolic ν assume σ-layers)` | | `:1152` |
