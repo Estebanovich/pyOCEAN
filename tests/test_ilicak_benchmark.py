@@ -460,6 +460,33 @@ def test_compare_summary_on_a_synthetic_lock_run(tmp_path, monkeypatch):
     assert any("MOM6 z*" in row and "10" in row for row in rows)
 
 
+def test_compare_table_of_the_overflow_smag_case_adds_the_base_run(tmp_path, monkeypatch):
+    """'overflow_smag' uses the overflow metrics and window, lists pyOCEAN z* and, as reference, the overflow run at
+    the same ν_h; its Smagorinsky counters come from the meta."""
+    import warnings
+    from validation.ilicak_benchmark import cases, compare, series
+    monkeypatch.setattr(cases, "RUNS", tmp_path)
+    c = cases.get("overflow_smag")
+    t = np.arange(0, 41) * 3600.0
+    nz, nx = c.nz, c.nx
+    h = np.broadcast_to(c.H[None, None] / nz, (t.size, nz, 1, nx)).copy()
+    T = np.broadcast_to(np.where(c.x < 20e3, 10.0, 20.0), (t.size, nz, 1, nx)).copy()
+    s = dict(t=t, x=c.x, y=c.y, dx=c.dx, dy=c.dy, H=c.H, h=h, T=T, u=np.zeros((t.size, nz, 1, nx + 1)),
+             v=np.zeros((t.size, nz, 2, nx)), eta=np.zeros((t.size, 1, nx)))
+    series.save(cases.run_dir("overflow_smag", "pyocean", "zstar", 100.0) / "series.npz", s,
+                dict(model="pyOCEAN", wall_s=1.0, smag=0.5, n_visc_limited=74, nu_t_max=881.0))
+    series.save(cases.run_dir("overflow", "pyocean", "zstar", 100.0) / "series.npz", s, dict(model="pyOCEAN", wall_s=1.0))
+    assert compare.base("overflow_smag") == "overflow" and compare.base("lock") == "lock"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)                 # centroid of an empty plume: nan
+        r = compare.summary("overflow_smag", "pyocean", "zstar", 100.0)
+        rows = compare.table("overflow_smag")
+    assert r["rpe_rel_end"] == 0.0 and r["n_visc_limited"] == 74 and "x_cold_end" in r
+    body = [row for row in rows if row.startswith("| 100 |")]
+    assert len(body) == 2 and "pyOCEAN z* (overflow)" in body[1]
+    assert body[0].split("|")[-3].strip() == "74" and body[1].split("|")[-3].strip() == "—"
+
+
 def test_overflow_cold_centroid_survives_mixing_above_the_threshold():
     from validation.ilicak_benchmark import metrics
     s = _flat_series([10.0, 10.0], [20.0, 16.0], nx=3)       # dense water mixed to 16 °C: none below 15 °C

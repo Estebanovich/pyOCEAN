@@ -13,8 +13,10 @@ RUNS/figs/ (never to the repo), from the common series of every run (series.py):
 - seamount.png: max speed against time (metrics.max_speed) and the column-max speed at day 10 (log scale), per
   model.
 - section_<case>_nu<ν>.mp4/.gif: the sections in time, one row per model (iw: daily).
+- overflow_smag.png (case 'overflow_smag', Ilicak et al. 2012 Fig. 19b): pyOCEAN z* with ν_h = 100 plus the
+  Smagorinsky viscosity (C = 0.5) against the same run without it: RPE against time and T at 3 h and at the end.
 
-Usage: python validation/ilicak_benchmark/figures.py [lock overflow iw seamount] [--no-anim]
+Usage: python validation/ilicak_benchmark/figures.py [lock overflow iw seamount overflow_smag] [--no-anim]
 """
 from __future__ import annotations
 
@@ -262,6 +264,36 @@ def anim_sections(case: str, runs: dict, nu: float) -> None:
                       gif_width=960 if case != "iw" else 640)
 
 
+def fig_overflow_smag(nu: float = 100.0) -> None:
+    """Ilicak et al. (2012) Fig. 19(b): z* overflow with ν_h = ``nu`` with and without the Smagorinsky viscosity."""
+    rows = [(f"z*, $\\nu_h$ = {nu:g}", load("overflow", "pyocean", "zstar", nu)),
+            (f"z*, $\\nu_h$ = {nu:g} + Smagorinsky C = {cases.get('overflow_smag').smag:g}",
+             load("overflow_smag", "pyocean", "zstar", nu))]
+    rows = [(lab, s) for lab, s in rows if s is not None]
+    if not rows:
+        return
+    fig = plt.figure(figsize=(9.0, 2.2 * (len(rows) + 1)), constrained_layout=True)
+    gs = fig.add_gridspec(len(rows) + 1, 2)
+    ax = fig.add_subplot(gs[0, :])
+    for (lab, s), key in zip(rows, ("pyocean_zstar", "pyocean_sigma")):
+        r = metrics.rpe(s)
+        ax.plot(s["t"] / 3600.0, (r - r[0]) / r[0], **ps.model(key, markers=False, lw=1.2, label=lab))
+    ax.set(xlabel="time [h]", ylabel="(RPE − RPE₀) / RPE₀")
+    ax.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2))
+    ax.legend(fontsize=7, loc="upper left")
+    pc = None
+    for i, (lab, s) in enumerate(rows):
+        for j, t_s in enumerate((VIEW["overflow"]["snap"], s["t"][-1])):
+            a = fig.add_subplot(gs[i + 1, j])
+            p = draw(a, "overflow", s, int(np.argmin(np.abs(s["t"] - t_s))), f"{lab}, {when('overflow', t_s)}")
+            pc = pc or p
+            a.set_ylabel("z [m]", fontsize=8)
+    ps.colorbar(fig, pc, fig.axes[1:], cbar_label("overflow"), shrink=0.8)
+    fig.suptitle("Overflow (Ilicak et al. 2012, Fig. 19b): Smagorinsky on top of the background viscosity", x=0.02,
+                 ha="left", fontsize=11)
+    _save(fig, "overflow_smag.png")
+
+
 def _save(fig, name: str) -> None:
     FIGS.mkdir(parents=True, exist_ok=True)
     path = FIGS / name
@@ -277,6 +309,9 @@ def main() -> None:
     a = ap.parse_args()
     ps.use()
     for case in a.cases:
+        if case == "overflow_smag":
+            fig_overflow_smag()
+            continue
         c = cases.get(case)
         models = SEAMOUNT if case == "seamount" else MODELS
         runs = {(m, co, nu): load(case, m, co, nu) for m, co, _, _ in models for nu in c.nu_h}

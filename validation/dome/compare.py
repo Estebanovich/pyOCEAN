@@ -2,7 +2,10 @@
 """
 Tables of the DOME benchmark (spec 2026-10-14-dome-overflow §7): every series.npz under cases.RUNS/<res>km/*/ with the
 metrics of validation/dome/metrics.py; x' = x − 1050 km (inlet centre), y' = y − 600 km (slope top) as Legg et al. 2006.
-Writes the Markdown to RUNS/compare_<res>km.txt and prints it.
+Writes the Markdown to RUNS/compare_<res>km.txt and prints it.  'visc' is the Smagorinsky counter
+``n_visc_limited`` (h and q points × steps where the stability bound cut ν; empty without Smagorinsky): with a
+background ah > 0 every point next to a vanished or clipped face counts, so it is not the number of points where
+C Δ² |S| itself reached the bound.  Runs with Smagorinsky end in '_smag<C>' (run_pyocean.py --smag C).
 
 Usage: python validation/dome/compare.py 10 [--t0 30 --t1 50]
 """
@@ -39,20 +42,23 @@ def row(name: str, s: dict, meta: dict, t0: float, t1: float) -> dict:
                 aE=float(np.nanmean(aE[xa])), rho=rho, bf=-cases.G * (rho - cases.RHO_TOP) / cases.RHO0 * 1e3,
                 cd=[metrics.centroid_depth(s, d * 86400.0) for d in (10, 20, 30, days)],
                 drpe=(rpe[-1] - rpe[0]) / rpe[0], T_rng=r["T"], s_rng=r["s"], thin=thin, thick=thick,
-                trunc=meta.get("n_trunc", ""), lim=meta.get("n_limited", ""), dt=meta.get("dt", np.nan),
+                trunc=meta.get("n_trunc", ""), lim=meta.get("n_limited", ""), vlim=meta.get("n_visc_limited", ""),
+                dt=meta.get("dt", np.nan),
                 cost=meta.get("wall_s", np.nan) / days, days=days)
 
 
 def table(rows: list[dict]) -> str:
     L = ["| run | días | Y'(x' = −200/−300/−500/−800 km) [km] | T(x') [Sv] | α_E (x' 0…−300) | ρ_f / b_f [1e-3 m s⁻²] | "
-         "centroide 10/20/30/fin [m] | ΔRPE/RPE₀ | T rango | s rango | |u| delgadas/gruesas | trunc / lim | Δt [s] | "
+         "centroide 10/20/30/fin [m] | ΔRPE/RPE₀ | T rango | s rango | |u| delgadas/gruesas | trunc / lim / visc | "
+         "Δt [s] | "
          "s por día |", "|" + "---|" * 14]
     for r in rows:
         L.append(f"| {r['name']} | {r['days']:.0f} | {' / '.join(f'{v:.0f}' for v in r['Y'])} | "
                  f"{' / '.join(f'{v:.1f}' for v in r['T'])} | {r['aE']:.2e} | {r['rho']:.3f} / {r['bf']:.2f} | "
                  f"{' / '.join(f'{v:.0f}' for v in r['cd'])} | {r['drpe']:.2e} | "
                  f"{r['T_rng'][0]:.3f}–{r['T_rng'][1]:.3f} | {r['s_rng'][0]:.1e}–{r['s_rng'][1]:.6f} | "
-                 f"{r['thin']:.2f} / {r['thick']:.2f} | {r['trunc']} / {r['lim']} | {r['dt']:.0f} | {r['cost']:.1f} |")
+                 f"{r['thin']:.2f} / {r['thick']:.2f} | {r['trunc']} / {r['lim']} / {r['vlim']} | {r['dt']:.0f} | "
+                 f"{r['cost']:.1f} |")
     return "\n".join(L)
 
 

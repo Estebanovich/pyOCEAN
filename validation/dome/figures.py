@@ -5,7 +5,8 @@ the bottom dye of every 50-day run at days 10, 20, 30 and 50, and the time-mean 
 (days 30–50) against Legg et al. (2006) at 10 km; dome_<res>km_bottom_dye.mp4/.gif, the bottom dye of every 50-day
 run day by day.
 
-Usage: python validation/dome/figures.py 10 [--no-anim]
+Usage: python validation/dome/figures.py 10 [--no-anim] [--runs name1,name2,... --sub dir]
+  --runs keeps only those run directories (e.g. the Smagorinsky set) and --sub writes to RUNS/figs/<dir>/.
 """
 from __future__ import annotations
 
@@ -27,7 +28,10 @@ from validation.dome import cases, metrics, series  # noqa: E402
 DAYS = (10, 20, 30, 50)
 LABELS = {"mitgcm_z_legg": "MITgcm z (Legg physics)", "mitgcm_z_common": "MITgcm z (common physics)",
           "mom6_rho_common": "MOM6 ρ", "pyocean_zstar": "pyOCEAN z*", "pyocean_sigma": "pyOCEAN σ",
-          "pyocean_hybrid": "pyOCEAN hybrid"}
+          "pyocean_hybrid": "pyOCEAN hybrid", "pyocean_hybrid_gls": "pyOCEAN hybrid + GLS",
+          "pyocean_hybrid_gls_smag0.15": "pyOCEAN hybrid + GLS + Smag 0.15",
+          "pyocean_hybrid_gls_smag0.5": "pyOCEAN hybrid + GLS + Smag 0.5",
+          "pyocean_hybrid_kv_low_smag0.15": "pyOCEAN hybrid ν_v 1e-4 + Smag 0.15"}
 
 
 def bottom_dye(s: dict, n: int) -> np.ndarray:
@@ -38,7 +42,7 @@ def bottom_dye(s: dict, n: int) -> np.ndarray:
     return np.where((k >= 0) & np.isfinite(s["H"]), out, np.nan)
 
 
-def anim_bottom_dye(res_km: float, data: list) -> None:
+def anim_bottom_dye(res_km: float, data: list, out: Path | None = None) -> None:
     """Bottom dye of every 50-day run, one frame per daily record, 2 rows × 3 panels."""
     import pyocean_style as ps
 
@@ -74,17 +78,18 @@ def anim_bottom_dye(res_km: float, data: list) -> None:
         for m, (_, s) in zip(meshes, data):
             m.set_array(np.ma.masked_invalid(bottom_dye(s, min(n, s["t"].size - 1))))
 
-    ps.save_animation(fig, update, t.size, cases.RUNS / "figs" / f"dome_{res_km:g}km_bottom_dye", fps=6)
+    ps.save_animation(fig, update, t.size, (out or cases.RUNS / "figs") / f"dome_{res_km:g}km_bottom_dye", fps=6)
 
 
-def main(res_km: float, anim: bool = True) -> None:
-    runs = [p for p in sorted((cases.RUNS / f"{res_km:g}km").glob("*/series.npz"))]
+def main(res_km: float, anim: bool = True, only: list[str] | None = None, sub: str = "") -> None:
+    runs = [p for p in sorted((cases.RUNS / f"{res_km:g}km").glob("*/series.npz"))
+            if not only or p.parent.name in only]
     data = []
     for p in runs:
         s, _ = series.load(p)
         if s["t"][-1] >= 50 * 86400.0:
             data.append((p.parent.name, s))
-    out = cases.RUNS / "figs"
+    out = cases.RUNS / "figs" / sub if sub else cases.RUNS / "figs"
     out.mkdir(parents=True, exist_ok=True)
     fig, ax = plt.subplots(len(data), len(DAYS), figsize=(3.2 * len(DAYS), 1.7 * len(data)), squeeze=False,
                            sharex=True, sharey=True)
@@ -94,7 +99,7 @@ def main(res_km: float, anim: bool = True) -> None:
             im = ax[r, c].pcolormesh(s["x"] / 1e3, s["y"] / 1e3, bottom_dye(s, n), vmin=0, vmax=1, cmap="viridis")
             ax[r, c].contour(s["x"] / 1e3, s["y"] / 1e3, np.nan_to_num(s["H"]), [1000, 2000, 3000], colors="w",
                              linewidths=0.4)
-            ax[r, c].set_title(f"{name}, día {d}", fontsize=7)
+            ax[r, c].set_title(f"{LABELS.get(name, name)}, día {d}", fontsize=7)
     fig.colorbar(im, ax=ax, shrink=0.6, label="s de fondo")
     fig.savefig(out / f"dome_{res_km:g}km_bottom_dye.png", dpi=110)
     plt.close(fig)
@@ -103,8 +108,8 @@ def main(res_km: float, anim: bool = True) -> None:
     for name, s in data:
         x, Y = metrics.path_Y(s, 30 * 86400.0, 50 * 86400.0)
         _, T = metrics.plume_transport(s, 30 * 86400.0, 50 * 86400.0)
-        a1.plot((x - 1050e3) / 1e3, (Y - 600e3) / 1e3, label=name)
-        a2.plot((x - 1050e3) / 1e3, T / 1e6, label=name)
+        a1.plot((x - 1050e3) / 1e3, (Y - 600e3) / 1e3, label=LABELS.get(name, name))
+        a2.plot((x - 1050e3) / 1e3, T / 1e6, label=LABELS.get(name, name))
     if res_km == 10:
         leg = cases.LEGG_10KM
         for key, mk in (("y_z_km", "s"), ("y_iso_km", "o"), ("y_iso_visc_km", "^")):
@@ -118,8 +123,16 @@ def main(res_km: float, anim: bool = True) -> None:
     print(out)
     if anim:
         order = list(LABELS)
-        anim_bottom_dye(res_km, sorted(data, key=lambda d: order.index(d[0]) if d[0] in order else len(order)))
+        anim_bottom_dye(res_km, sorted(data, key=lambda d: order.index(d[0]) if d[0] in order else len(order)), out)
 
 
 if __name__ == "__main__":
-    main(float(sys.argv[1]), "--no-anim" not in sys.argv)
+    import argparse
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("res_km", type=float)
+    ap.add_argument("--no-anim", action="store_true")
+    ap.add_argument("--runs", default="", help="comma-separated run directories to keep (default: every 50-day run)")
+    ap.add_argument("--sub", default="", help="subdirectory of RUNS/figs for the output")
+    a = ap.parse_args()
+    main(a.res_km, not a.no_anim, [r for r in a.runs.split(",") if r] or None, a.sub)

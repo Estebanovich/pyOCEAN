@@ -4,9 +4,11 @@ Tables of the four-model benchmark part A (spec §A4–A5): per case and ν_h, e
 (RPE − RPE₀)/RPE₀ at the end, dRPE/dt [W m⁻²] over the spec window (lock: the 15–17 h mean), the T range and the
 new extrema in cells ≥ 1 m (t_excess [°C], v_excess = volume fraction), and the physics of the case (IW: damping of
 the oscillation, metrics.oscillation_ratio);
-then the cost table (cost.json). Missing runs show '—'.
+then the cost table (cost.json). Missing runs show '—'.  Extra cases (``EXTRA``: 'overflow_smag', Ilicak et al.
+2012 Fig. 19b) use the metrics and window of their base case and add the base-case run at the same ν_h as a
+reference row.
 
-Usage: python validation/ilicak_benchmark/compare.py [lock|overflow|iw|seamount]
+Usage: python validation/ilicak_benchmark/compare.py [lock|overflow|iw|seamount|overflow_smag]
 """
 from __future__ import annotations
 
@@ -26,6 +28,14 @@ NAMES = {("pyocean", "zstar"): "pyOCEAN z*", ("pyocean", "sigma"): "pyOCEAN σ",
          ("croco", "sigma"): "CROCO σ", ("mitgcm", "zstar"): "MITgcm z*"}
 WINDOW = {"lock": (15 * 3600.0, 17 * 3600.0), "overflow": (13 * 3600.0, 37 * 3600.0),
           "iw": (10 * 86400.0, 100 * 86400.0), "seamount": (0.0, 10 * 86400.0)}
+# extra case → (base case, its configurations); not in campaign.CONFIGS, so neither the results nor the cost
+# campaign runs them
+EXTRA = {"overflow_smag": ("overflow", [("pyocean", "zstar")])}
+
+
+def base(case: str) -> str:
+    """The case whose metrics and window ``case`` uses (itself unless an EXTRA case)."""
+    return EXTRA[case][0] if case in EXTRA else case
 
 
 def summary(case: str, model: str, coord: str, nu: float) -> dict:
@@ -34,15 +44,18 @@ def summary(case: str, model: str, coord: str, nu: float) -> dict:
     r = metrics.rpe(s)
     lo, hi = metrics.t_range(s)
     exc, frac = metrics.t_excess(s)
-    out = dict(rpe_rel_end=float((r[-1] - r[0]) / r[0]), drpe_dt=metrics.drpe_dt(s, r, *WINDOW[case]),
+    kind = base(case)
+    out = dict(rpe_rel_end=float((r[-1] - r[0]) / r[0]), drpe_dt=metrics.drpe_dt(s, r, *WINDOW[kind]),
                t_min=lo, t_max=hi, t_excess=exc, v_excess=frac, wall_s=meta.get("wall_s"))
-    if case == "lock":
+    if meta.get("smag"):
+        out.update(n_visc_limited=meta.get("n_visc_limited"), nu_t_max=meta.get("nu_t_max"))
+    if kind == "lock":
         out.update({k: v / metrics.BENJAMIN for k, v in metrics.lock_fronts(s).items()})
-    elif case == "overflow":
+    elif kind == "overflow":
         xc, dep = metrics.overflow_descent(s)
         xa, da = metrics.overflow_cold_centroid(s)
         out.update(x_c_end=xc[-1] / 1e3, depth_c_end=dep[-1], x_cold_end=xa[-1] / 1e3, depth_cold_end=da[-1])
-    elif case == "iw":
+    elif kind == "iw":
         out.update(amp_ratio=metrics.oscillation_ratio(s["t"], metrics.iw_amplitude(s)))
     else:
         out.update(umax_end=float(metrics.max_speed(s)[-1] * 100.0))
@@ -55,16 +68,22 @@ def _fmt(v) -> str:
 
 def table(case: str) -> list[str]:
     extra = {"lock": ["dense_nose", "light_nose", "dense_body", "light_body"], "overflow": ["x_c_end", "depth_c_end", "x_cold_end", "depth_cold_end"],
-             "iw": ["amp_ratio"], "seamount": ["umax_end"]}[case]
+             "iw": ["amp_ratio"], "seamount": ["umax_end"]}[base(case)]
+    if case in EXTRA:
+        extra = extra + ["n_visc_limited", "nu_t_max"]
     cols = ["rpe_rel_end", "drpe_dt", "t_min", "t_max", "t_excess", "v_excess"] + extra
     rows = [f"## {case}", "", "| ν_h | modelo | " + " | ".join(cols) + " |", "|" + "---|" * (len(cols) + 2)]
+    configs = EXTRA[case][1] if case in EXTRA else campaign.CONFIGS[case]
     for nu in cases.get(case).nu_h:
-        for model, coord in campaign.CONFIGS[case]:
+        runs = [(case, model, coord, NAMES[(model, coord)]) for model, coord in configs]
+        if case in EXTRA:                                  # the base-case run at the same ν_h, as reference
+            runs += [(base(case), model, coord, f"{NAMES[(model, coord)]} ({base(case)})") for model, coord in configs]
+        for cs, model, coord, label in runs:
             try:
-                r = summary(case, model, coord, nu)
+                r = summary(cs, model, coord, nu)
             except FileNotFoundError:
                 r = {}
-            rows.append(f"| {nu:g} | {NAMES[(model, coord)]} | " + " | ".join(_fmt(r.get(k)) for k in cols) + " |")
+            rows.append(f"| {nu:g} | {label} | " + " | ".join(_fmt(r.get(k)) for k in cols) + " |")
     cj = cases.RUNS / case / "cost.json"
     if cj.exists():
         rows += ["", "| modelo | Δt máx [s] | s por hora simulada (Δt máx) | s por hora simulada (Δt de resultados) | procesos |",
@@ -79,5 +98,5 @@ def table(case: str) -> list[str]:
 
 
 if __name__ == "__main__":
-    for c in (sys.argv[1:] or list(campaign.CONFIGS)):
+    for c in (sys.argv[1:] or list(campaign.CONFIGS) + list(EXTRA)):
         print("\n".join(table(c)), "\n")
