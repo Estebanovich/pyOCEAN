@@ -122,6 +122,8 @@ Medido con la máquina cargada (promedio de carga 17–20) y antes de fijar los 
 
 Las 8 corridas suman ≈ 12 h.
 
+`ale_sigma_gls` (N3, 2026-10-29/30, Δt = T_M2/746, 447 600 pasos): 0.0198–0.0217 s/paso, 2.47–2.70 h por corrida; las cuatro ≈ 10.3 h. Cuesta 1.5–1.6 × `sigma_gls` y 1.9–2.1 × `ale_sigma` por corrida (el GLS en ALE y el Δt de σ + GLS).
+
 `ale_sigma_gls` (N3 Task 10a, 2 h simuladas, Δt = T_M2/746, 447 600 pasos por corrida): A 0.0186 s/paso → 2.3 h; B 0.0194 → 2.4 h; D en la búsqueda de Δt, 150 ciclos: 0.020 → 2.5 h. Las cuatro ≈ 10 h, una a la vez. Al principio, el pool de hilos de OpenBLAS giraba junto a los 5 hilos de Numba y la corrida iba 4× más lenta (`progress.md`, 2026-10-28).
 
 ## Cómo reproducirlo
@@ -150,7 +152,7 @@ En A, la evaporación hace más salada el agua de superficie, así que la column
 
 ## Resultados
 
-Corridas de producción del 2026-10-28/29: 600 ciclos M2 desde el reposo con S = 30 y promedio de los últimos 100, `sigma_gls` con el GLS estratificado de Task 8c a Δt = T_M2/746 y `ale_sigma` a T_M2/498. Salidas en `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/lorenz_estuary/<exp>_<config>/`. Las tablas salen de `python validation/lorenz_estuary/compare.py`, que también imprime la razón de cada clase. Ninguna corrida tuvo `n_limited` > 0 ni truncamientos.
+Corridas de producción del 2026-10-28/29: 600 ciclos M2 desde el reposo con S = 30 y promedio de los últimos 100, `sigma_gls` con el GLS estratificado de Task 8c a Δt = T_M2/746 y `ale_sigma` a T_M2/498. Salidas en `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/lorenz_estuary/<exp>_<config>/`. Las tablas salen de `python validation/lorenz_estuary/compare.py`, que también imprime la razón de cada clase. Ninguna corrida tuvo `n_limited` > 0 ni truncamientos. `ale_sigma_gls` (N3 Task 10, criterio 4 del spec N3) se corrió el 2026-10-29/30 a T_M2/746, con el mismo arranque; tampoco tuvo `n_limited` ni truncamientos.
 
 ### Tabla 2: GETM contra pyOCEAN
 
@@ -158,91 +160,110 @@ Clase de cada fila (CLAUDE.md, Validation Strategy): (a) error nuestro, (b) fís
 
 **Experimento A** (Q_r, Q_evap, Q_precip, M2 = (0.0, -5.0, 0.0, 0.0))
 
-| Cantidad | GETM | pyOCEAN sigma_gls | pyOCEAN ale_sigma | Clase |
-|---|---|---|---|---|
-| s_in [g/kg] | 30 | 30.01 | 31.19 | c |
-| s_out [g/kg] | 32.67 | 33.1 | 32.59 | c |
-| [(s²)_in]^½ [g/kg] | 30 | 30.01 | 31.19 | c |
-| [(s²)_out]^½ [g/kg] | 32.73 | 33.15 | 32.59 | c |
-| dV [m³/s] | 0 | 0.01015 | -1.904e-09 | — |
-| dS [g/kg m³/s] | 1.18 | 4.482 | -6.104e-08 | c |
-| dS2 [(g/kg)² m³/s] | 65.3 | 316.3 | -1.958e-06 | c |
-| F_surf^{s²} [(g/kg)² m³/s] | 5279 | 5440 | 5714 | c |
-| Me | 212.3 | 270.2 | 631.7 | c |
-| Mc | 403.9 | 428.8 | 632.1 | c |
-| Mp | 203.6 | 309.1 | 631.7 | c |
-| Mcp | 396.7 | 472.3 | 632.1 | c |
-| M_model^tot | 212.3 | 270.2 | 631.7 | c |
-| M_model^phy | 103.5 | 248.2 | 631.5 | c |
-| M_model^num | 108.8 | 22 | 0.1613 | c |
-| \|Me − M_tot\|/M_tot | precisión de máquina | 7.8e-11 | 4.3e-10 | — |
+| Cantidad | GETM | pyOCEAN sigma_gls | pyOCEAN ale_sigma | pyOCEAN ale_sigma_gls | Clase |
+|---|---|---|---|---|---|
+| s_in [g/kg] | 30 | 30.01 | 31.19 | 30.01 | c |
+| s_out [g/kg] | 32.67 | 33.1 | 32.59 | 33.33 | c |
+| [(s²)_in]^½ [g/kg] | 30 | 30.01 | 31.19 | 30.01 | c |
+| [(s²)_out]^½ [g/kg] | 32.73 | 33.15 | 32.59 | 33.39 | c |
+| dV [m³/s] | 0 | 0.01015 | -1.904e-09 | -0.01296 | — |
+| dS [g/kg m³/s] | 1.18 | 4.482 | -6.104e-08 | -10.93 | c |
+| dS2 [(g/kg)² m³/s] | 65.3 | 316.3 | -1.958e-06 | -751.7 | c |
+| F_surf^{s²} [(g/kg)² m³/s] | 5279 | 5440 | 5714 | 5388 | c |
+| Me | 212.3 | 270.2 | 631.7 | 281 | c |
+| Mc | 403.9 | 428.8 | 632.1 | 458.1 | c |
+| Mp | 203.6 | 309.1 | 631.7 | 220 | c |
+| Mcp | 396.7 | 472.3 | 632.1 | 385.5 | c |
+| M_model^tot | 212.3 | 270.2 | 631.7 | 281 | c |
+| M_model^phy | 103.5 | 248.2 | 631.5 | 263.6 | c |
+| M_model^num | 108.8 | 22 | 0.1613 | 17.39 | c |
+| \|Me − M_tot\|/M_tot | precisión de máquina | 7.8e-11 | 4.3e-10 | 1.5e-09 | — |
 
 **Experimento B** (Q_r, Q_evap, Q_precip, M2 = (5.0, -5.0, 0.0, 0.5))
 
-| Cantidad | GETM | pyOCEAN sigma_gls | pyOCEAN ale_sigma | Clase |
-|---|---|---|---|---|
-| s_in [g/kg] | 36.63 | 38.84 | 31.14 | c |
-| s_out [g/kg] | 37.34 | 41.05 | 31.73 | c |
-| [(s²)_in]^½ [g/kg] | 36.63 | 38.85 | 31.14 | c |
-| [(s²)_out]^½ [g/kg] | 37.38 | 41.06 | 31.73 | c |
-| dV [m³/s] | 0.36 | -0.01486 | 0.004265 | d? |
-| dS [g/kg m³/s] | 5.55 | -17.71 | -7.069 | c |
-| dS2 [(g/kg)² m³/s] | 237 | -837.2 | -345.8 | c |
-| F_surf^{s²} [(g/kg)² m³/s] | 3982 | 5058 | 3912 | c |
-| Me | 3646 | 4501 | 3809 | c |
-| Mc | 3678 | 4505 | 3810 | c |
-| Mp | 3982 | 5058 | 3912 | c |
-| Mcp | 3982 | 5058 | 3912 | c |
-| M_model^tot | 3646 | 4501 | 3809 | c |
-| M_model^phy | 3438 | 3893 | 3206 | c |
-| M_model^num | 208 | 607.3 | 603.5 | c |
-| \|Me − M_tot\|/M_tot | precisión de máquina | 1.2e-11 | 9.7e-11 | — |
+| Cantidad | GETM | pyOCEAN sigma_gls | pyOCEAN ale_sigma | pyOCEAN ale_sigma_gls | Clase |
+|---|---|---|---|---|---|
+| s_in [g/kg] | 36.63 | 38.84 | 31.14 | 38.83 | c |
+| s_out [g/kg] | 37.34 | 41.05 | 31.73 | 41.02 | c |
+| [(s²)_in]^½ [g/kg] | 36.63 | 38.85 | 31.14 | 38.83 | c |
+| [(s²)_out]^½ [g/kg] | 37.38 | 41.06 | 31.73 | 41.03 | c |
+| dV [m³/s] | 0.36 | -0.01486 | 0.004265 | 0.01437 | d? |
+| dS [g/kg m³/s] | 5.55 | -17.71 | -7.069 | -16.3 | c |
+| dS2 [(g/kg)² m³/s] | 237 | -837.2 | -345.8 | -753.8 | c |
+| F_surf^{s²} [(g/kg)² m³/s] | 3982 | 5058 | 3912 | 5072 | c |
+| Me | 3646 | 4501 | 3809 | 4498 | c |
+| Mc | 3678 | 4505 | 3810 | 4502 | c |
+| Mp | 3982 | 5058 | 3912 | 5072 | c |
+| Mcp | 3982 | 5058 | 3912 | 5072 | c |
+| M_model^tot | 3646 | 4501 | 3809 | 4498 | c |
+| M_model^phy | 3438 | 3893 | 3206 | 3600 | c |
+| M_model^num | 208 | 607.3 | 603.5 | 897.5 | c |
+| \|Me − M_tot\|/M_tot | precisión de máquina | 1.2e-11 | 9.7e-11 | 1.6e-10 | — |
 
 **Experimento C** (Q_r, Q_evap, Q_precip, M2 = (0.0, -5.0, 5.0, 0.5))
 
-| Cantidad | GETM | pyOCEAN sigma_gls | pyOCEAN ale_sigma | Clase |
-|---|---|---|---|---|
-| s_in [g/kg] | 36.57 | 38.81 | 31.14 | c |
-| s_out [g/kg] | 37.12 | 41 | 31.7 | c |
-| [(s²)_in]^½ [g/kg] | 36.58 | 38.81 | 31.14 | c |
-| [(s²)_out]^½ [g/kg] | 37.18 | 41.01 | 31.7 | c |
-| dV [m³/s] | 0.34 | -0.001281 | 0.004149 | d? |
-| dS [g/kg m³/s] | 6.94 | -16.95 | -6.896 | c |
-| dS2 [(g/kg)² m³/s] | 339.3 | -788.2 | -341 | c |
-| F_surf^{s²} [(g/kg)² m³/s] | 3786 | 4502 | 2300 | c |
-| Me | 3464 | 3936 | 2203 | c |
-| Mc | 3495 | 3940 | 2204 | c |
-| Mp | 3786 | 4502 | 2300 | c |
-| Mcp | 3786 | 4502 | 2300 | c |
-| M_model^tot | 3464 | 3936 | 2203 | c |
-| M_model^phy | 2911 | 3545 | 2203 | c |
-| M_model^num | 553 | 390.7 | 0.2207 | c |
-| \|Me − M_tot\|/M_tot | precisión de máquina | 1.4e-11 | 1.7e-10 | — |
+| Cantidad | GETM | pyOCEAN sigma_gls | pyOCEAN ale_sigma | pyOCEAN ale_sigma_gls | Clase |
+|---|---|---|---|---|---|
+| s_in [g/kg] | 36.57 | 38.81 | 31.14 | 38.78 | c |
+| s_out [g/kg] | 37.12 | 41 | 31.7 | 40.96 | c |
+| [(s²)_in]^½ [g/kg] | 36.58 | 38.81 | 31.14 | 38.79 | c |
+| [(s²)_out]^½ [g/kg] | 37.18 | 41.01 | 31.7 | 40.97 | c |
+| dV [m³/s] | 0.34 | -0.001281 | 0.004149 | 0.02586 | d? |
+| dS [g/kg m³/s] | 6.94 | -16.95 | -6.896 | -15.52 | c |
+| dS2 [(g/kg)² m³/s] | 339.3 | -788.2 | -341 | -709.7 | c |
+| F_surf^{s²} [(g/kg)² m³/s] | 3786 | 4502 | 2300 | 4470 | c |
+| Me | 3464 | 3936 | 2203 | 3897 | c |
+| Mc | 3495 | 3940 | 2204 | 3902 | c |
+| Mp | 3786 | 4502 | 2300 | 4470 | c |
+| Mcp | 3786 | 4502 | 2300 | 4470 | c |
+| M_model^tot | 3464 | 3936 | 2203 | 3897 | c |
+| M_model^phy | 2911 | 3545 | 2203 | 3293 | c |
+| M_model^num | 553 | 390.7 | 0.2207 | 604.4 | c |
+| \|Me − M_tot\|/M_tot | precisión de máquina | 1.4e-11 | 1.7e-10 | 1.9e-10 | — |
 
 **Experimento D** (Q_r, Q_evap, Q_precip, M2 = (5.0, -5.0, 5.0, 0.5))
 
-| Cantidad | GETM | pyOCEAN sigma_gls | pyOCEAN ale_sigma | Clase |
-|---|---|---|---|---|
-| s_in [g/kg] | 24.04 | 21.01 | 26.64 | c |
-| s_out [g/kg] | 13.98 | 17.5 | 23.93 | c |
-| [(s²)_in]^½ [g/kg] | 24.05 | 21.02 | 26.65 | c |
-| [(s²)_out]^½ [g/kg] | 15.24 | 17.68 | 23.94 | c |
-| dV [m³/s] | 0.3 | 0.005945 | 0.0001326 | d? |
-| dS [g/kg m³/s] | 8.48 | -79.36 | -0.2275 | c |
-| dS2 [(g/kg)² m³/s] | -35.16 | -1434 | -6.908 | c |
-| F_surf^{s²} [(g/kg)² m³/s] | 946.8 | 631.5 | 1502 | c |
-| Me | 2445 | 800.7 | 4685 | c |
-| Mc | 2884 | 845.7 | 4686 | c |
-| Mp | 2193 | 2288 | 4689 | c |
-| Mcp | 2628 | 2470 | 4690 | c |
-| M_model^tot | 2445 | 800.7 | 4685 | c |
-| M_model^phy | 2413 | 800.6 | 4606 | c |
-| M_model^num | 32 | 0.1059 | 78.79 | c |
-| \|Me − M_tot\|/M_tot | precisión de máquina | 1.1e-11 | 4.5e-11 | — |
+| Cantidad | GETM | pyOCEAN sigma_gls | pyOCEAN ale_sigma | pyOCEAN ale_sigma_gls | Clase |
+|---|---|---|---|---|---|
+| s_in [g/kg] | 24.04 | 21.01 | 26.64 | 20.94 | c |
+| s_out [g/kg] | 13.98 | 17.5 | 23.93 | 17.6 | c |
+| [(s²)_in]^½ [g/kg] | 24.05 | 21.02 | 26.65 | 20.95 | c |
+| [(s²)_out]^½ [g/kg] | 15.24 | 17.68 | 23.94 | 17.78 | c |
+| dV [m³/s] | 0.3 | 0.005945 | 0.0001326 | 0.007774 | d? |
+| dS [g/kg m³/s] | 8.48 | -79.36 | -0.2275 | -80.12 | c |
+| dS2 [(g/kg)² m³/s] | -35.16 | -1434 | -6.908 | -1443 | c |
+| F_surf^{s²} [(g/kg)² m³/s] | 946.8 | 631.5 | 1502 | 637.8 | c |
+| Me | 2445 | 800.7 | 4685 | 786.6 | c |
+| Mc | 2884 | 845.7 | 4686 | 832.7 | c |
+| Mp | 2193 | 2288 | 4689 | 2286 | c |
+| Mcp | 2628 | 2470 | 4690 | 2480 | c |
+| M_model^tot | 2445 | 800.7 | 4685 | 786.6 | c |
+| M_model^phy | 2413 | 800.6 | 4606 | 786.5 | c |
+| M_model^num | 32 | 0.1059 | 78.79 | 0.153 | c |
+| \|Me − M_tot\|/M_tot | precisión de máquina | 1.1e-11 | 4.5e-11 | 1.1e-10 | — |
 
 ### Cierre del balance
 
 La identidad exacta de Lorenz (ec. 32), M_model^tot = Me, se cumple en las 8 corridas (última fila de cada tabla): \|Me − M\|/M = 1.1e-11 – 7.8e-11 en σ + GLS y 4.5e-11 – 4.3e-10 en ALE-σ. Es el piso de redondeo de sumar Σ V S² durante 4.5e6 s; crece como ε Σ V S²/(M T), por eso A, con la M más chica, tiene el residuo más grande en las dos configuraciones. GETM reporta lo mismo ("machine accuracy"). Esto valida juntos la salinidad, el agua dulce real, el balance de varianza discreto (Task 6) y el TEF dentro del modelo (Task 7).
+
+**ALE-σ + GLS (N3 Task 10b, criterio 4 del spec N3: ≤ 5e-10).** B, C y D cumplen (1.6e-10, 1.9e-10, 1.1e-10). A da **1.5e-9**, 3 veces el límite. No es una fuga del GLS: es un sesgo de redondeo del remapeo ALE que ya tenía `ale_sigma`, y A lo amplifica porque su M es la más chica.
+
+| Corrida | M_tot | \|Me − M\| absoluto [(g/kg)² m³/s] | relativo | sesgo por paso del balance de s², en ε Σ V S² | sesgo / Δt [(g/kg)² m³/s] |
+|---|---|---|---|---|---|
+| A `sigma_gls` | 270.2 | 2.1e-8 | 7.8e-11 | −0.31 (desv. est. 3.4: sin sesgo) | −9.2e-8 |
+| A `ale_sigma` | 631.7 | 2.7e-7 | 4.3e-10 | +1.44 (desv. est. 2.4) | 3.1e-7 |
+| A `ale_sigma_gls` | 281.0 | **4.3e-7** | 1.5e-9 | +1.33 (desv. est. 2.4) | **4.2e-7** |
+| B `ale_sigma_gls` | 4498 | 7.2e-7 | 1.6e-10 | +1.41 | 4.3e-7 |
+| C `ale_sigma_gls` | 3897 | 7.3e-7 | 1.9e-10 | — | — |
+| D `ale_sigma_gls` | 786.6 | 8.5e-8 | 1.1e-10 | +1.34 | 4.1e-8 |
+
+La columna del sesgo viene de 300 pasos desde el checkpoint final de cada corrida, con la cuenta paso a paso de `tests/test_lorenz_estuary.py::_short_run`: ΔΣ_región V S² contra Δt (fuentes − mezcla) + el flujo de s² del TEF (script de diagnóstico no versionado). La evidencia:
+1. **En ALE el balance de s² gana +1.3–1.4 ε Σ V S² en cada paso, siempre con el mismo signo.** En σ el residuo es ruido sin sesgo. El sesgo dividido entre Δt es el error absoluto medio de la ventana (A: 4.2e-7 contra 4.3e-7).
+2. **Es igual con el cierre constante y con el GLS** (1.44 contra 1.33 ε por paso). El error absoluto de A `ale_sigma_gls` es mayor que el de A `ale_sigma` solo porque Δt es menor (59.9 contra 89.8 s): el mismo sesgo por paso, más pasos por segundo.
+3. **La sal (primer momento) también gana +1.5 ε por paso; el volumen no** (0.06 ε). Instrumentando `regrid_remap`: el grosor total se conserva (−0.03 ε por paso) y **cada campo remapeado gana +1.4 ε** de contenido (T, S, S², T²).
+4. **Mecanismo.** `remap_column` (`core/vertical/remap.py:369-372`; MOM6 hace lo mismo: la sub-celda sin fuente de `intersect_src_tgt_grids`, `MOM_remapping.F90:781-795`, queda asignada a la última celda fuente, :708) trata asimétricamente la diferencia de redondeo entre Σ h_fuente y Σ h_destino. Si el destino es más delgado, la última celda absorbe la fuente sobrante y el contenido se conserva exactamente. Si es más grueso, extiende la última celda con el valor de su borde y **agrega** contenido. La diferencia es de ±1–2 ε D con media cero, pero el contenido solo crece. Con columnas sintéticas (60 capas, Σ h_destino = Σ h_fuente (1 + k ε), k ∈ {−2 … 2}): +1.46 ε de contenido cuando el destino es más grueso y +0.03 ε cuando es más delgado, igual con PCM y PPM_H4.
+
+Clase **(c)**, elección numérica heredada de MOM6, al nivel del redondeo: 1.4 ε por paso son ≈ 2e-11 del contenido de la región en los 74 600 pasos de la ventana. **No se corrigió aquí.** Hacer exacto el contenido (que la última celda no agregue contenido cuando el destino es más grueso) cambia los bits de toda corrida ALE: rompe la matriz dorada de N1 (criterio 6 del spec N3) y la igualdad con MOM6 de `tests/test_vertical_vs_mom6.py` a nivel de ε. Es una decisión para Esteban (punto 8 de la lista). El límite de 5e-10 relativo no escala con este piso: el error absoluto es ≈ 1.4 ε Σ V S²/Δt, independiente de M, así que un caso con M chica lo rebasa aunque el balance esté igual de cerrado.
 
 ### Estacionariedad (series.npz, medias por ciclo de los últimos 100 ciclos)
 
@@ -252,17 +273,22 @@ Las medias por ciclo quitan la marea, que un muestreo cada ¼ de ciclo aliasarí
 |---|---|---|---|---|---|---|---|
 | A sigma_gls | 33.344 | -0.083 | -0.25 % | 0.341 | 38.84 | -0.487 | fluctúa |
 | A ale_sigma | 33.912 | -0.000 | -0.00 % | 0.000 | 37.93 | -0.000 | estacionaria |
+| A ale_sigma_gls | 33.212 | -0.069 | -0.21 % | 0.344 | 38.57 | +0.175 | fluctúa |
 | B sigma_gls | 24.214 | -0.730 | -3.01 % | 0.214 | 41.85 | -0.550 | deriva |
 | B ale_sigma | 24.590 | -0.309 | -1.26 % | 0.090 | 31.84 | -0.243 | deriva |
+| B ale_sigma_gls | 24.286 | -0.720 | -2.96 % | 0.211 | 41.79 | -0.531 | deriva |
 | C sigma_gls | 24.361 | -0.724 | -2.97 % | 0.212 | 41.79 | -0.506 | deriva |
 | C ale_sigma | 25.009 | -0.301 | -1.20 % | 0.088 | 31.82 | -0.233 | deriva |
+| C ale_sigma_gls | 24.426 | -0.708 | -2.90 % | 0.207 | 41.70 | -0.515 | deriva |
 | D sigma_gls | 6.071 | -3.609 | -59.44 % | 1.045 | 30.00 | +0.000 | deriva |
 | D ale_sigma | 16.707 | -0.010 | -0.06 % | 0.015 | 30.00 | -0.000 | estacionaria |
+| D ale_sigma_gls | 6.112 | -3.635 | -59.46 % | 1.052 | 30.00 | -0.000 | deriva |
 
 - **A ALE-σ es estacionaria**: S_reg = 33.912 y S_max = 37.926 desde el ciclo ~150, sin cambio en la 4.ª cifra.
 - **A σ + GLS fluctúa sin tendencia** (−0.25 % por 100 ciclos). S_reg oscila ± 0.34 g/kg y S_max entre 37.0 y 40.7. Son episodios convectivos: la evaporación vuelve inestable la columna y el k-ε la mezcla a ráfagas. Una ventana de 100 ciclos guarda almacenamiento (dS = 4.5, dS2 = 316); la corrida a 120 s da Me 295 contra 270 (9 %), del mismo orden.
 - **B y C, en las dos configuraciones, siguen perdiendo sal**: −0.31 g/kg por 100 ciclos en ALE-σ (−1.2 %) y −0.73 en σ + GLS (−3.0 %). Con un ajuste exponencial de los ciclos 200–600, el tiempo de relajación es ≈ 255–265 ciclos en ALE-σ (faltan ≈ 0.7 g/kg para el equilibrio) y ≈ 540–570 ciclos en σ + GLS (faltan ≈ 3.8–3.9 g/kg; estimación, no medida). 500 ciclos de arranque desde S = 30 no bastan para B y C. GETM tampoco estaba estacionario (dS = 5.6 y 6.9), pero ganaba sal; su estado inicial no está en el artículo.
 - **D ALE-σ es estacionaria** (−0.06 %).
+- **ALE-σ + GLS sigue a σ + GLS en todo** (N3): A fluctúa igual (desv. est. 0.344 contra 0.341), B y C derivan igual (−2.96 % y −2.90 % contra −3.01 % y −2.97 %), y D tiene el mismo vaciado tras la misma intrusión (S_reg 6.11 contra 6.07, −59 %). La deriva es del cierre, no de la coordenada.
 - **D σ + GLS no es estacionaria.** La región se vuelve casi dulce: S_reg baja 0.03–0.07 g/kg por ciclo a lo largo de la corrida (29.96 → 28.31 en los ciclos 0–25, ≈ −0.05 por ciclo en los ciclos 100–460) hasta ≈ 4, y la cabeza tiene S = 0. En los ciclos 478–494, antes de la ventana, entra una intrusión salina que sube S_reg de 3.98 a 8.27 en ~16 ciclos, con \|u\|max de hasta 1.54 m/s (ciclo 482). La ventana de promedio (ciclos 500–600) muestrea **solo el vaciado** después de la intrusión: S_reg 8.0 → 4.4, ≈ −0.036 g/kg por ciclo. Por eso dS = −79 < 0 domina Me. Al final de la ventana \|u\|max vuelve a subir (1.18 m/s en el ciclo 599). Hay saltos menores de S_reg (> 0.1 g/kg en un ciclo) en los ciclos 93, 186, 279, 372, 465 y 558, una recurrencia de ≈ 93 ciclos; la intrusión grande sigue al de 465. Que sea una oscilación de relajación periódica es una **hipótesis**: solo hay un evento grande en 600 ciclos.
 
 ### Clasificación de las diferencias
@@ -286,6 +312,22 @@ Las medias por ciclo quitan la marea, que un muestreo cada ¼ de ciclo aliasarí
 - σ + GLS: Me = 801 (−67 %) porque la ventana muestrea solo el vaciado tras la intrusión de los ciclos 478–494 (dS = −79). Su Mp = 2288, que no ve el almacenamiento, queda cerca de GETM (2193); puede ser coincidencia. Es (c). Hipótesis: el k-ε de CROCO deja menos intrusión salina que el de GOTM con este forzamiento, y el sistema queda cerca de un umbral (intrusiones episódicas).
 
 Ninguna diferencia resultó (a). La (b) que asoma es que ALE no tiene cierre turbulento (`core/model/preflight.py:130`: ALE solo admite `closure` 'constant' o 'none'): la mayoría de las diferencias de ALE-σ vienen de ν = κ constantes, una elección (c) de este caso que la física que falta (b) obliga a tomar.
+
+**ALE-σ + GLS (N3 Task 10b, criterio 4 del spec N3).** La (b) de arriba ya está: el GLS estratificado corre en ALE (N3 Task 5) con la ley de pared de σ (Task 4, `hbbl` = 0.05 m). Resultado: **ALE-σ + GLS ≈ σ + GLS en A–D**, así que el cierre, no la coordenada, causaba las diferencias de ALE-σ.
+
+| | A | B | C | D |
+|---|---|---|---|---|
+| Me: ALE-σ + GLS / σ + GLS / GETM | 281 / 270 / 212 | 4498 / 4501 / 3646 | 3897 / 3936 / 3464 | 787 / 801 / 2445 |
+| ALE-σ + GLS contra σ + GLS | +4.0 % | −0.07 % | −1.0 % | −1.8 % |
+| s_in / s_out (ALE-σ + GLS; σ + GLS) | 30.01 / 33.33; 30.01 / 33.10 | 38.83 / 41.02; 38.84 / 41.05 | 38.78 / 40.96; 38.81 / 41.00 | 20.94 / 17.60; 21.01 / 17.50 |
+| Q_in [m³/s] (ALE-σ + GLS; σ + GLS; ALE-σ) | 53.4; 52.2; 116.5 | 7.69; 7.76; 12.2 | 7.62; 7.71; 12.5 | 2.31; 2.28; 44.1 |
+| S_max, media de la ventana (ALE-σ + GLS; σ + GLS) | 38.57; 38.84 | 41.79; 41.85 | 41.70; 41.79 | 30.00; 30.00 |
+| M_num (ALE-σ + GLS; σ + GLS; GETM) | 17; 22; 109 | 898; 607; 208 | 604; 391; 553 | 0.15; 0.11; 32 |
+
+- **S máximo, Me, Q_in y s_in:** ALE-σ + GLS queda a 0–4 % de σ + GLS (criterio 4: "se acerca a GETM y a nuestro σ + GLS"). Contra GETM se acerca mucho respecto a ALE-σ constante (A: Me +32 % contra +198 %; s_in 30.01 contra 31.19 = GETM 30.00; B y C: el tapón salino aparece; D: Q_in 2.3 contra 44 m³/s), pero hereda las diferencias de σ + GLS con GETM: tapón 3–4 g/kg más salado en B y C, y el vaciado de D tras la intrusión (Me −68 %). **(c)**, del k-ε de CROCO contra el de GOTM y de la ventana (abajo, punto 5 de la lista); la misma clase que en σ + GLS.
+- **A: +4 % sobre σ + GLS.** Dentro de la variabilidad de A (episodios convectivos, ± 9 % entre ventanas; dS de signo opuesto, −10.9 contra +4.5). **(c).**
+- **División física/numérica en B y C.** El total es el mismo, pero ALE-σ + GLS pone más en M_num (898 contra 607 en B, 604 contra 391 en C) y menos en M_phy. El remapeo aporta ≈ 15 (checkpoint de la ventana); el resto es la advección. Hipótesis: el FCT de ALE (Zalesak, cotas en x, y, k ± 1) recorta los frentes del tapón y de la capa de lluvia, mientras que σ usa WENO5 sin FCT. **(c)**, no separado (punto 9 de la lista).
+- **Cierre del balance:** ver "Cierre del balance" arriba (A 1.5e-9, sesgo de redondeo del remapeo, (c)).
 
 ### El escalón de u medio en B ALE-σ
 
@@ -311,13 +353,16 @@ Sin flotabilidad, el k-ε ve N² = 0 y da ν ≈ 1e-3–1e-2 m²/s aun con Ri �
 
 ### Qué debe mejorar pyOCEAN
 
-1. **Cierre turbulento en ALE (b).** ALE solo admite ν y κ constantes (`core/model/preflight.py:130`). Casi todas las diferencias de ALE-σ con GETM (mezcla 3 × en A, sin tapón en B y C, intercambio 6 × en D, capa de lluvia borrada en C) son del cierre constante. Hay que llevar el GLS estratificado (o KPP, etapa N) al modo ALE y repetir las cuatro corridas en ALE-σ.
+1. ~~**Cierre turbulento en ALE (b).**~~ **Hecho en N3** (GLS estratificado en ALE, Task 5; KPP, Task 7). Las cuatro corridas `ale_sigma_gls` quedan a 0–4 % de σ + GLS (arriba): las diferencias de ALE-σ con GETM eran del cierre constante. Lo que queda contra GETM es lo de σ + GLS (puntos 5 y 6).
 2. **Ajuste convectivo para el cierre constante (b).** Sin él, una columna estáticamente inestable sobrevive (el frente de evaporación de B, arriba). Una opción mínima: κ grande donde N² < 0, como `convect` de MITgcm o el `Kv_conv` de MOM6 [verificar].
 3. **Límite de estabilidad del momento horizontal con A_h = 0 (c, robustez).** σ + GLS revienta a \|u\| Δt/Δx ≈ 0.75–0.9 (AB3 + WENO5 en forma de flujo, modo de 3–4 Δx, ×1.3 por paso), y el aviso llega solo como la matriz singular del solver y el BLOW-UP del runner, sin diagnóstico del Courant ni del modo de malla. Hacen falta: (i) una opción de viscosidad biarmónica o Smagorinsky pequeña (MOM6, ROMS), (ii) un respaldo tipo `truncate_cfl` o al menos un aviso de Courant advectivo en σ, como el de ALE, y (iii) que el post-mortem atrape el modo de malla antes del fallo del solver.
 4. **Separar la mezcla de entrada del río en el balance de varianza (c, diagnóstico).** En ALE-σ, ≈ 98 % de M_num de B y D es la mezcla del agua del río (S = 0) con la celda de entrada (≈ Q_r s_cabeza²). Conviene un término propio (p. ej. `S_bdy_in`) para que M_num mida solo el error de los esquemas de advección y remapeo, y comparar así con el M_num de GETM.
 5. **Verificar el k-ε estratificado contra GOTM (c, hipótesis).** σ + GLS hace el tapón 3–4 g/kg más salado que GETM y casi no deja entrar sal en D. Un caso de columna con marea y estratificación, comparado con GOTM (Canuto A, mismos parámetros), separaría el efecto del cierre del de la advección (WENO5 contra Superbee).
 6. **Arranque de los benchmarks lentos (c, configuración).** B y C no llegan a estado cuasi periódico en 500 ciclos (relajación de ≈ 255–570 ciclos). `compare.py` ahora reporta la estacionariedad. Para una comparación final conviene seguir B y C desde su checkpoint hasta que la tendencia sea < 0.5 % por 100 ciclos, o arrancar de un estado más cercano. El artículo fija 500 ciclos, pero no el estado inicial. D σ + GLS necesita además una ventana que cubra varias intrusiones (recurrencia de ≈ 93 ciclos en los eventos menores, uno solo grande en 600 ciclos), es decir una corrida mucho más larga, antes de que su columna de la Tabla 2 signifique algo.
 7. **dV de GETM (d?, abierta).** Antes de usar las filas dV/dS de GETM como referencia, preguntar o verificar cómo se promedia dV en GETM (+10–12 cm por 100 ciclos en B–D).
+8. **Remapeo exacto en contenido (c, N3 Task 10b).** `remap_column` agrega contenido cuando Σ h_destino supera a Σ h_fuente por redondeo y lo conserva cuando es menor (como MOM6). En ALE eso da +1.4 ε Σ V S² por paso, siempre del mismo signo, y lleva A `ale_sigma_gls` a 1.5e-9 (arriba). Opción: que la última celda destino absorba la diferencia sin agregar contenido (u = contenido/h), o repartirla proporcionalmente. Cambia los bits de toda corrida ALE (matriz dorada de N1, igualdad con MOM6 a nivel de ε), así que necesita decisión de Esteban y una nueva línea base. Con eso el piso de ALE bajaría al de σ (~1e-10 en A).
+9. **FCT y mezcla numérica (c, hipótesis).** Con el mismo cierre y la misma M total, ALE-σ + GLS tiene 1.5 × la M_num de σ + GLS en B y C. Una corrida corta de B con `tracer_limiter` apagado en ALE (o FCT en σ) separaría el efecto del limitador del de la coordenada.
+10. **Costo del GLS en ALE.** 0.020–0.022 s/paso contra 0.0134 de σ + GLS y 0.016 de ALE-σ (ventana de producción). El Δt lo fija el chorro superficial de σ + GLS (T_M2/746, la búsqueda de 10a); el resto es el GLS en ALE (fusión de capas delgadas, remapeo de k y ε).
 
 Pendiente fuera de N2a: figura de las secciones medias de S y u, como la Fig. 2 del artículo; los datos están en `section.npz`.
 

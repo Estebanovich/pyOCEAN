@@ -298,7 +298,9 @@ class SigmaWetDry:
             stress, r_tot = (r * out[0], r) if r.ndim == 1 else ((r * out).sum(0), r.sum(0))   # Σ_k r_k û_k
             rhs = (w * uu).sum(0) + self.dt * (0.0 if tau is None else tau) / Df - (w * out).sum(0) \
                 - self.dt * stress / Df
-            out = out + rhs / (w.sum(0) + self.dt * r_tot / Df)          # δ with the bed stress at û + δ
+            den = w.sum(0) + self.dt * r_tot / Df                       # δ with the bed stress at û + δ
+            has = den > 0.0                                            # 0 only without a face column (land faces,
+            out = out + np.divide(rhs, den, out=np.zeros_like(rhs), where=has)  # dry for the free surface): δ = 0
         return out.reshape(shape)
 
     def face_depths(self, eta: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

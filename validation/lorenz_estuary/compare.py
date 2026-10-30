@@ -54,7 +54,8 @@ CONFIGS = case.CONFIGS                       # sigma_gls, ale_sigma, ale_sigma_g
 # Classification of each difference (CLAUDE.md, Validation Strategy): (a) our bug, (b) missing physics,
 # (c) numerical / configuration choice, (d) reference-model error; "?" marks a hypothesis.  Per experiment: (row keys,
 # class, reason).  Rows not listed agree with GETM or are exact (M_model^tot = Me).  Evidence: README "Resultados"
-# (task 8b; one-cycle replays from the cycle-575 checkpoints locate M_num cell by cell).
+# (task 8b; one-cycle replays from the cycle-575 checkpoints locate M_num cell by cell; N3 task 10b adds ALE-σ+GLS:
+# within 0–4 % of σ+GLS in every Me-type row, so the closure, not the coordinate, set the ALE-σ differences).
 SAL = ("s_in", "s_out", "s2_in", "s2_out")
 STORE = ("dS", "dS2")
 MIX = ("Fs2_surf", "Me", "Mc", "Mp", "Mcp", "M_model_tot")
@@ -65,44 +66,55 @@ CLASSIFICATION: dict[str, list[tuple[tuple[str, ...], str, str]]] = {
     "A": [
         (("s_in", "s2_in"), "c", "ALE-σ 31.2 vs 30.0: constant κ = 1e-4 without tide spreads the evaporated salt "
                                  "west of the transect (GOTM k-ε gives κ ≪ 1e-4 in the stable outflow) [hypothesis]; "
-                                 "σ+GLS = GETM"),
-        (("s_out", "s2_out"), "c", "both within 1.5 %; closure"),
+                                 "σ+GLS = ALE-σ+GLS = GETM (30.01)"),
+        (("s_out", "s2_out"), "c", "all within 2 % (ALE-σ+GLS 33.33, σ+GLS 33.10); closure"),
         (STORE, "c", "ALE-σ exactly steady; σ+GLS fluctuates (convective episodes: S_region std 0.34 g/kg, S_max "
-                     "37–41), the window keeps storage; GETM's is not zero either"),
+                     "37–41), the window keeps storage (ALE-σ+GLS the same: std 0.34, dS −10.9 vs σ+GLS +4.5); "
+                     "GETM's is not zero either"),
         (MIX, "c", "ALE-σ 3×: constant ν = κ = 1e-4 far above k-ε levels in a tideless stratified channel; σ+GLS "
-                   "+27 %: CROCO Canuto-A k-ε vs GOTM k-ε and the window (Δt 120 s run: Me 295, 9 % apart)"),
-        (SPLIT, "c", "WENO5 (+FCT) vs TVD Superbee; ALE-σ M_num ≈ 0 because constant κ leaves no sharp gradient"),
+                   "+27 % and ALE-σ+GLS +32 % (Me 281, 4 % above σ+GLS, inside the window spread): CROCO "
+                   "Canuto-A k-ε vs GOTM k-ε and the window (Δt 120 s run: Me 295, 9 % apart)"),
+        (SPLIT, "c", "WENO5 (+FCT) vs TVD Superbee; ALE-σ M_num ≈ 0 because constant κ leaves no sharp gradient; "
+                     "ALE-σ+GLS 17 (σ+GLS 22)"),
     ],
     "B": [
         (SAL, "c", "salt plug at x ≈ 34 km in both, σ+GLS saltier (max 40.6 vs ≈ 37), ALE-σ hardly any (31.6): "
-                   "closure (constant low ν → strong exchange flushes the plug) [hypothesis]; neither run steady "
-                   "(S_region −3.0 %/100 cycles σ+GLS, −1.3 % ALE-σ)"),
+                   "closure (constant low ν → strong exchange flushes the plug) [hypothesis]; ALE-σ+GLS = σ+GLS "
+                   "(±0.1 %, Q_in 7.69 vs 7.76): the plug follows the closure; no run steady (S_region −3.0 %/100 "
+                   "cycles σ+GLS and ALE-σ+GLS, −1.3 % ALE-σ)"),
         _DV,
         (STORE, "c", "opposite sign: GETM salting, pyOCEAN still freshening from S = 30 at rest (initial state not "
                      "given in the article)"),
-        (MIX, "c", "Q_r + Q_surf = 0, so Me ≈ F_surf^{s²} ∝ (surface S of the E zone)²: ALE-σ +4 %, σ+GLS +23 %"),
+        (MIX, "c", "Q_r + Q_surf = 0, so Me ≈ F_surf^{s²} ∝ (surface S of the E zone)²: ALE-σ +4 %, σ+GLS and "
+                   "ALE-σ+GLS +23 %"),
         (SPLIT, "c", "M_num ≈ Q_r s_head²: 589 of ALE-σ's 596 (one cycle) and 117 of σ+GLS's 585 in the river inflow "
-                     "cell i = 499, where S = 0 enters water of S ≈ 10 (ALE-σ) / 3–6 (σ+GLS); rest: scheme"),
+                     "cell i = 499, where S = 0 enters water of S ≈ 10 (ALE-σ) / 3–6 (σ+GLS); rest: scheme; "
+                     "ALE-σ+GLS 898 vs σ+GLS 607 with the same Me: FCT of ALE vs plain WENO5 of σ [hypothesis], "
+                     "remap ≈ 15"),
     ],
     "C": [
-        (SAL, "c", "as B: σ+GLS plug saltier (40.6), ALE-σ none (31.6) [hypothesis]; neither steady (−3.0 %, "
-                   "−1.2 %/100 cycles)"),
+        (SAL, "c", "as B: σ+GLS and ALE-σ+GLS plug saltier (40.6), ALE-σ none (31.6) [hypothesis]; none steady "
+                   "(−3.0 %, −2.9 %, −1.2 %/100 cycles)"),
         _DV,
         (STORE, "c", "opposite sign, as B"),
-        (MIX, "c", "ALE-σ −36 % (F −39 %): constant κ mixes away the thin fresh P layer that GETM keeps; σ+GLS +14 %"),
-        (SPLIT, "c", "ALE-σ M_num 0.2 (no river, no sharp gradient under constant κ); σ+GLS 391 vs 553: scheme"),
+        (MIX, "c", "ALE-σ −36 % (F −39 %): constant κ mixes away the thin fresh P layer that GETM keeps; σ+GLS "
+                   "+14 %, ALE-σ+GLS +13 %: the k-ε keeps the P layer"),
+        (SPLIT, "c", "ALE-σ M_num 0.2 (no river, no sharp gradient under constant κ); σ+GLS 391 and ALE-σ+GLS "
+                     "604 vs 553: scheme (FCT in ALE [hypothesis])"),
     ],
     "D": [
         (SAL, "c", "ALE-σ s_in − s_out 2.7 vs 10.1 and Q_in 44 vs ≈ 7 m³/s (Knudsen with GETM's values): constant low "
                    "ν → strong gravitational circulation [hypothesis]; σ+GLS region nearly fresh (S_region 3–8, "
-                   "head S = 0); a salt intrusion at cycles 478–494, just before the window"),
+                   "head S = 0); a salt intrusion at cycles 478–494, just before the window; ALE-σ+GLS the same "
+                   "(s_in 20.94, S_region 6.11)"),
         _DV,
         (STORE, "c", "σ+GLS: the window (cycles 500–600) samples only the drain after a salt intrusion at cycles "
-                     "478–494 (S_region 8.0 → 4.4, ≈ −0.036 per cycle): dS = −79 dominates Me; ALE-σ steady "
-                     "(−0.06 %/100 cycles)"),
-        (MIX, "c", "ALE-σ +92 % (strong exchange); σ+GLS −67 % from the storage of the drain (its Mp 2288 vs "
-                   "GETM 2193)"),
-        (SPLIT, "c", "ALE-σ M_num 79 = river inflow cell (78 in one cycle, S ≈ 3.5 there); σ+GLS 0.1: fresh head"),
+                     "478–494 (S_region 8.0 → 4.4, ≈ −0.036 per cycle): dS = −79 dominates Me (ALE-σ+GLS −80, "
+                     "the same drain); ALE-σ steady (−0.06 %/100 cycles)"),
+        (MIX, "c", "ALE-σ +92 % (strong exchange); σ+GLS −67 % and ALE-σ+GLS −68 % from the storage of the "
+                   "drain (their Mp 2288 / 2286 vs GETM 2193)"),
+        (SPLIT, "c", "ALE-σ M_num 79 = river inflow cell (78 in one cycle, S ≈ 3.5 there); σ+GLS 0.1 and "
+                     "ALE-σ+GLS 0.15: fresh head"),
     ],
 }
 

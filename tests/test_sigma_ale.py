@@ -7,6 +7,7 @@ prognostic layer thickness, Lagrangian step + regrid + remap, finite-volume pres
 from __future__ import annotations
 
 import functools
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -515,6 +516,28 @@ def test_vector_invariant_coriolis_in_a_rotating_ale_basin_keeps_rest_and_stays_
     for _ in range(100):
         st = m.step(st)
     assert np.isfinite(st.u).all() and np.isfinite(st.v).all() and np.abs(st.v).max() > 0
+
+
+@pytest.mark.parametrize("drag", [dict(), dict(bottom_drag="quadratic", cd=3e-3), dict(z0=1e-3)])
+def test_ale_step_next_to_land_emits_no_runtime_warning(drag):
+    # N3 task 10b: the depth-mean correction δ of SigmaWetDry.column_step divided 0/0 on faces with no face column
+    # (Σ dz_mean = 0 and no bed rate: the faces of a land cell), printing "invalid value encountered in divide" in
+    # every DOME run since 2026-10-15.  The NaN was masked by the free surface (u = 0 on dry faces); δ is now 0 there.
+    nx, ny, nz = 10, 6, 4
+    hg = create_cartesian_grid(nx=nx, ny=ny, dx=2000.0, dy=2000.0, f0=1e-4)
+    H = np.full((ny, nx), 20.0)
+    H[2, 4] = np.nan                                                    # an island: its four faces have no column
+    m = SigmaBaroclinic(hg, H, dt=30.0, n_layers=nz, rho0=RHO0, t_coef=TCOEF, closure="constant", nu_const=1e-4,
+                        vertical_coordinate="ale", regrid="zstar", regrid_params=dict(dz_top=np.full(nz, 5.0)),
+                        **{"z0": None, **drag})
+    x = (np.arange(nx) + 0.5) * 2000.0
+    st = m.initial_state(0.2 * np.cos(np.pi * x / (nx * 2000.0))[None, :].repeat(ny, 0), np.full((nz, ny, nx), 7.0))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        for _ in range(5):
+            st = m.step(st)
+    assert np.isfinite(st.u).all() and np.isfinite(st.v).all() and np.abs(st.u).max() > 0
+    assert (st.u[:, 2, 4:6] == 0).all() and (st.v[:, 2:4, 4] == 0).all()   # the island's faces stay closed
 
 
 @pytest.mark.parametrize("rule", ["sigma", "zstar"])
