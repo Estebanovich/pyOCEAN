@@ -232,6 +232,14 @@ class Driver:
             self.last_terms = {name: (tu, tv) for name, tu, tv, _ in terms}
         gu, gv = sum_terms(terms, wet_u, wet_v)
         ctx.set(gu=gu, gv=gv)
+        if self.m._momentum.smagorinsky > 0:          # points where the AB3 bound reduced the Smagorinsky ν
+            ctx.set(n_visc_limited=self.m._momentum.last_n_limited)
+
+    @staticmethod
+    def _n_visc_limited(ctx: StepContext):
+        """Running count of Smagorinsky-limited points; stays None while the viscosity has never been on."""
+        n = ctx.vals.get("n_visc_limited")
+        return ctx.st.n_visc_limited if n is None else (ctx.st.n_visc_limited or 0) + n
 
     def _time_combine(self, ctx: StepContext) -> None:
         m = self.m
@@ -513,6 +521,7 @@ class Driver:
                                    omega=omega, mix_num=ctx.mix, Qx=lf.Qx, Qy=lf.Qy, Fz=lf.Fz, time=st.time + m.dt,
                                    closure=ctx.closure, S=ctx.S_new,
                                    n_limited=st.n_limited + ctx.vals.get("n_limited_fw", 0),
+                                   n_visc_limited=self._n_visc_limited(ctx),
                                    budget=self._budget_terms(ctx)))
 
     # ------------------------------------------------------------------ ALE
@@ -782,5 +791,6 @@ class Driver:
                                    omega=None, mix_num=ctx.mix, Qx=lf.Qx, Qy=lf.Qy, Fz=lf.Fz, time=st.time + dt,
                                    n_trunc=n_trunc,
                                    n_limited=st.n_limited + lf.n_limited + ctx.vals.get("n_limited_fw", 0),
+                                   n_visc_limited=self._n_visc_limited(ctx),
                                    tr=ctx.tr_new, closure=ctx.vals.get("closure"),
                                    S=ctx.S_new, budget=self._budget_terms(ctx)))

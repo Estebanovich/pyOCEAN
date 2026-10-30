@@ -144,6 +144,8 @@ class SigmaState:
     closure: dict | None = None                              # turbulence-closure state (GLS: tke, eps, akv[, akt]), N1
     S: np.ndarray | None = None                              # salinity (N, ny, nx) [g kg⁻¹], ``salinity=True`` (N2a)
     budget: dict | None = None                               # variance budget of the last step (N2a, variance_budget)
+    n_visc_limited: int | None = None                        # active h/q points whose Smagorinsky ν the stability
+                                                             # bound reduced, summed over steps; None while off
 
 
 def _up3_faces(c: np.ndarray, flux: np.ndarray, ok: np.ndarray, axis: int, order: int = 3) -> np.ndarray:
@@ -950,6 +952,14 @@ class SigmaBaroclinic:
           the region every step (needs ``variance_budget=True``); ``diagnostics.tef.lorenz_mixing`` then gives
           Lorenz's M_e, equal to the region's M_tot to round-off
     ah : horizontal Laplacian viscosity [m² s⁻¹] (free slip)
+    smagorinsky : Smagorinsky coefficient C (dimensionless, MOM6 SMAG_LAP_CONST; OM4 uses 0.15, Adcroft et al.
+          2019).  0 (default): off, bit for bit as before.  > 0: the "hviscosity" term becomes the thickness-weighted
+          Laplacian stress-tensor divergence with ν = max(ah, C Δ² |S|), Δ² = 2Δx²Δy²/(Δx²+Δy²), |S| without the
+          divergence, bounded for the explicit AB3 step (Smagorinsky 1963; Griffies & Hallberg 2000;
+          MOM_hor_visc.F90; ``core.dynamics.hor_visc``); ``ah`` is then the background (the maximum).  Free slip at
+          land and dry faces, no tendency on open-boundary faces.  Points where the bound reduced ν are counted in
+          ``SigmaState.n_visc_limited``; ``self._momentum.last_nu_t`` holds the last step's ν at h points.
+          Assignable after construction, as ``ah``
     kv : vertical tracer diffusivity [m² s⁻¹] (implicit; 0 = none).  With closure='gls' and ``gls_stratified``
           it is not a constant but the floor (background) of the GLS diffusivity, κ_t = max(c_μ′ k²/ε, kv), and
           kv = 0 (default) keeps CROCO's floor nuws = 1e-6 (gls_mixing.F:152, 872-880; CROCO does not read Akt_bak
@@ -1088,7 +1098,7 @@ class SigmaBaroclinic:
                  tef_face: int | None = None, tef_sign: int = 1, tef_region: np.ndarray | None = None,
                  gls_stratified: bool = True, cp: float = 3985.0, jerlov: str = "I",
                  periodic: tuple[str, ...] = (), gls_production: str = "croco",
-                 kpp_params: KPPParams | None = None) -> None:
+                 kpp_params: KPPParams | None = None, smagorinsky: float = 0.0) -> None:
         _args = {k: v for k, v in locals().items() if k != "self"}
         raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
         self.periodic = Periodic(periodic)                              # N3 task 3 (class docstring)
@@ -1196,6 +1206,7 @@ class SigmaBaroclinic:
         self.h_ext, self._T_in = None, None
         self.hg, self.dt, self.n, self.g = h_grid, dt, n_layers, g
         self.rho0, self.t_coef, self.t_ref, self.ah, self.adv = rho0, t_coef, t_ref, ah, adv
+        self.smagorinsky = float(smagorinsky)                          # Smagorinsky C (0 = off, the default)
         self.salinity, self.s_coef, self.s_ref = bool(salinity), float(s_coef), float(s_ref)
         self._eos = LinearEOS(rho0=rho0, t_coef=t_coef, t_ref=t_ref, s_coef=self.s_coef, s_ref=self.s_ref)
         self._time_stepper = AB3Momentum()
@@ -1219,7 +1230,8 @@ class SigmaBaroclinic:
         self._momentum = Momentum(form="vector_invariant" if self.ale and self.momentum == "vector_invariant" else "flux",
                                   adv=adv, ah=ah, ke_scheme=self.ke_scheme, ale=self.ale, dt=dt, hg=h_grid, fq=self._fq,
                                   fs=self.fs, ds=self.ds, vi_geom=getattr(self, "_vi", None),
-                                  mean_face_thickness=self._mean_face_thickness, layer_volumes=self.layer_volumes)
+                                  mean_face_thickness=self._mean_face_thickness, layer_volumes=self.layer_volumes,
+                                  smagorinsky=self.smagorinsky, open_u=fl_u.copy(), open_v=fl_v.copy())
         if tracer_limiter is None:
             tracer_limiter = ("fct" if self.ale and self.tracer_time == "ssprk3"
                               and self.tracer_scheme in ("weno5", "weno5js") else "none")
@@ -1851,6 +1863,7 @@ _ke_spelling = lambda v: "gudonov" if v == "godunov" else v                     
 _PARAMS = {
     "ke_scheme": ((("_momentum", "ke_scheme"),), None, _ke_spelling),
     "ah": ((("_momentum", "ah"),), None, None),
+    "smagorinsky": ((("_momentum", "smagorinsky"),), lambda m, v: float(v), None),
     "adv": ((("_momentum", "adv"),), None, None),
     "momentum": ((("_momentum", "form"),),
                  lambda m, v: "vector_invariant" if m.ale and v == "vector_invariant" else "flux", None),

@@ -73,7 +73,7 @@ def _config(model: SigmaBaroclinic) -> dict:
                 orlanski_cmax=model.orlanski_cmax, sponge_tracer=int(model.sponge_tracer), kh=model.kh, kv=model.kv,
                 closure=core.closure, z0=-1.0 if core.z0 is None else core.z0, nu_const=core.nu_const,
                 adv=model.adv, tracer_scheme=model.tracer_scheme, tracer_time=model.tracer_time,
-                rho0=model.rho0, t_coef=model.t_coef, t_ref=model.t_ref, ah=model.ah,
+                rho0=model.rho0, t_coef=model.t_coef, t_ref=model.t_ref, ah=model.ah, smagorinsky=model.smagorinsky,
                 salinity=int(model.salinity), s_coef=model.s_coef, s_ref=model.s_ref,
                 theta_bc=model.theta_bc,
                 ny=int(model.H.shape[0]), nx=int(model.H.shape[1]),
@@ -112,7 +112,8 @@ def _config(model: SigmaBaroclinic) -> dict:
 _CONFIG_DEFAULTS = {"salinity": 0, "s_coef": 0.0, "s_ref": 35.0, "sponge_S": "none",         # N2a: files before salinity
                     "gls_stratified": 0,                                                    # N2a 8c: homogeneous GLS
                     "gls_production": "croco",                                              # N3 task 5: CROCO P
-                    "periodic": "none"}                                                     # N3 task 3: no periodic axis
+                    "periodic": "none",                                                     # N3 task 3: no periodic axis
+                    "smagorinsky": 0.0}                                                     # Smagorinsky off
 
 _SECTIONS = {"ab_hist": "time_stepper", "gls_": "closure", "kpp_": "closure", "T_ext": "open_boundary", "h_ext": "open_boundary",
              "tr_ext": "open_boundary", "S_ext": "open_boundary", "fs_lu_": "free_surface", "rho_ref_": "pgf"}
@@ -183,6 +184,7 @@ def write_restart(path: str | Path, model: SigmaBaroclinic, state: SigmaState) -
                                           {"units": "kg m-3", "long_name": "reference density profile ρ_ref(z)"})
     attrs = {"model": type(model).__name__, "time": float(state.time), "time_units": "s", "n_trunc": int(state.n_trunc),
              "n_limited": int(state.n_limited),
+             **({} if state.n_visc_limited is None else {"n_visc_limited": int(state.n_visc_limited)}),
              "Conventions": "CF-1.8", "title": "pyOCEAN bit-for-bit restart"}
     attrs.update({f"config_{k}": v for k, v in _config(model).items()})
     if pre is not None:
@@ -190,6 +192,17 @@ def write_restart(path: str | Path, model: SigmaBaroclinic, state: SigmaState) -
     for name, var in data.items():                                   # N1: one section per component
         var.attrs["component"] = _component_of(name)
     xr.Dataset(data, attrs=attrs).to_netcdf(path, engine="netcdf4", format="NETCDF4")
+
+
+def _n_visc_limited(ds: xr.Dataset, model: SigmaBaroclinic) -> int | None:
+    """
+    Smagorinsky-limited point count of the file; a file without it (written before the option, or with it off)
+    gives 0 when the model runs Smagorinsky and None (never counted, as a fresh state) otherwise.
+    """
+    n = ds.attrs.get("n_visc_limited")
+    if n is not None:
+        return int(n)
+    return 0 if getattr(model, "smagorinsky", 0.0) > 0 else None
 
 
 def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
@@ -266,4 +279,5 @@ def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
         model.rho_ref = ReferenceProfile(ds["rho_ref_z"].values.copy(), ds["rho_ref_rho"].values.copy())
     return SigmaState(g_hist=hist, time=float(ds.attrs["time"]), n_trunc=int(ds.attrs.get("n_trunc", 0)),
                       n_limited=int(ds.attrs.get("n_limited", 0)),
+                      n_visc_limited=_n_visc_limited(ds, model),
                       tr=ds["tr"].values.copy() if "tr" in ds else None, closure=closure, **kw)

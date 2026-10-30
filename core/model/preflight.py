@@ -61,6 +61,10 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
         err("tracer_advection", f"unknown tracer scheme {a['tracer_scheme']!r} (valid: {_opts(TRACER_SCHEMES)})")
     if a["adv"] not in ADV:
         err("momentum", f"unknown momentum advection adv={a['adv']!r} (valid: {_opts(ADV)})")
+    smag = a.get("smagorinsky", 0.0)
+    if not (np.isfinite(smag) and smag >= 0.0):
+        err("momentum", f"smagorinsky={smag!r}: the Smagorinsky coefficient must be a finite number ≥ 0 "
+                        "(0 = off; OM4 uses 0.15)")
     # ---- open boundaries
     open_ = tuple(a["open_boundaries"])
     bad = set(open_) - set(EDGES)

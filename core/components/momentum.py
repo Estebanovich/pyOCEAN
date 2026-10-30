@@ -10,7 +10,9 @@ Explicit momentum terms of the 3-D core (N1, role MOMENTUM), moved unchanged fro
    "vector_invariant" PV flux q·(vh, −uh) with BOUND_CORIOLIS plus −∇K (Sadourny 1975; MOM6 MOM_CoriolisAdv.F90)
 3. "advection"        flux-form momentum advection on the last step's layer transports (added), or the
                       advective form 'upwind3' / 'centred' (subtracted)
-4. "hviscosity"       Laplacian viscosity A_h ∇²u along layers
+4. "hviscosity"       Laplacian viscosity A_h ∇²u along layers, or (``smagorinsky`` > 0) the thickness-weighted
+                      Laplacian Smagorinsky stress divergence with ν = max(A_h, C Δ² |S|) (``core.dynamics.hor_visc``;
+                      Smagorinsky 1963, Griffies & Hallberg 2000, MOM6 MOM_hor_visc.F90)
 5. "vadvection"       σ vertical advection (ω/h) ∂u/∂k from the last step's ω (subtracted; advective form only)
 
 This is the pattern of MOM6 (the stepper sums ``(CAu + PFu) + diffu`` in a fixed order,
@@ -28,6 +30,7 @@ import numba
 import numpy as np
 
 from core.dynamics import vector_invariant as vi
+from core.dynamics.hor_visc import smag_geometry, smagorinsky
 from core.dynamics.nonlinear import _spacings_u, _spacings_v, advection_u, advection_v, laplacian_3d
 from core.model import threads
 from core.model.contract import BuildContext, Issue, Role
@@ -77,6 +80,10 @@ class Momentum:
     Explicit momentum terms.  ``form`` 'flux' (flux-form or advective-form advection plus energy-conserving
     Coriolis) or 'vector_invariant' (ALE only).  ``adv`` 'flux', 'upwind3' or 'centred' (flux form only),
     ``ah`` [m² s⁻¹] Laplacian viscosity, ``ke_scheme`` 'arakawa' or 'gudonov' (vector-invariant KE).
+    ``smagorinsky`` C [-] (0 = off): Smagorinsky viscosity in place of the constant Laplacian, ``ah`` its
+    background; ``open_u``/``open_v`` (ny, nx+1)/(ny+1, nx) bool, the open-boundary faces (no viscous tendency,
+    free-slip corners).  After each call of ``terms`` with C > 0: ``last_nu_t`` (N, ny, nx) ν at h points
+    [m² s⁻¹] and ``last_n_limited`` (points where the stability bound reduced ν this step).
     """
     name = "momentum"
     role = Role.MOMENTUM
@@ -86,11 +93,19 @@ class Momentum:
 
     def __init__(self, *, form: str, adv: str, ah: float, ke_scheme: str, ale: bool, dt: float, hg, fq: np.ndarray,
                  fs, ds: np.ndarray, vi_geom: dict | None, mean_face_thickness: Callable,
-                 layer_volumes: Callable) -> None:
+                 layer_volumes: Callable, smagorinsky: float = 0.0, open_u: np.ndarray | None = None,
+                 open_v: np.ndarray | None = None) -> None:
         self.form, self.adv, self.ah, self.ke_scheme, self.ale, self.dt = form, adv, ah, ke_scheme, ale, dt
         self.hg, self.fq, self.fs, self.ds, self.vi_geom = hg, fq, fs, ds, vi_geom
         self.mean_face_thickness, self.layer_volumes = mean_face_thickness, layer_volumes
         self._lap = None
+        self.smagorinsky = float(smagorinsky)
+        ny, nx = fs.H.shape
+        self.open_u = np.zeros((ny, nx + 1), bool) if open_u is None else np.asarray(open_u, bool)
+        self.open_v = np.zeros((ny + 1, nx), bool) if open_v is None else np.asarray(open_v, bool)
+        self._smag_geom = None
+        self.last_nu_t: np.ndarray | None = None
+        self.last_n_limited = 0
 
     def check(self, ctx: BuildContext) -> list[Issue]:
         return []
@@ -159,6 +174,59 @@ class Momentum:
         out[1:] += omega_f[1:-1] * du
         return out / (2.0 * np.maximum(h_f, 1e-6))
 
+    def _smag_thickness(self, st, Du: np.ndarray, Dv: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Layer thickness at h points and u-, v-faces [m] for the Smagorinsky operator: σ h = D Δσ_k with the cell
+        total depth D = max(H + η, 0) and the face depths Du, Dv of the step; ALE h_t = h and the faces from
+        ``mean_face_thickness`` (the clipped mean of the two cells, as the vertical viscosity).
+        """
+        if self.ale:
+            hu, hv = self.mean_face_thickness(st.h)
+            return st.h, hu, hv
+        ds = self.ds[:, None, None]
+        D = np.maximum(np.nan_to_num(self.fs.H + st.eta, nan=0.0), 0.0)
+        return (D[None] * ds, np.maximum(np.nan_to_num(Du, nan=0.0), 0.0)[None] * ds,
+                np.maximum(np.nan_to_num(Dv, nan=0.0), 0.0)[None] * ds)
+
+    def _smag_call(self, u, v, h_t, h_u, h_v, wet_u, wet_v, open_u, open_v, geom: dict):
+        """
+        ``hor_visc.smagorinsky`` on the given (possibly padded) arrays.  The corner mask is derived here, the only
+        place: a corner is active when its four faces (u south/north, v west/east) are wet this step, so it follows
+        wetting and drying (free slip, D_S = 0, at every other corner; MOM_hor_visc.F90:927).
+        """
+        mask_q = np.zeros((wet_v.shape[0], wet_u.shape[1]), bool)
+        mask_q[1:-1, 1:-1] = wet_u[:-1, 1:-1] & wet_u[1:, 1:-1] & wet_v[1:-1, :-1] & wet_v[1:-1, 1:]
+        fu, fv, nu_t, _, n_lim = smagorinsky(u, v, h_t, h_u, h_v, wet_u, wet_v, mask_q, open_u, open_v, geom,
+                                             self.smagorinsky, self.ah, self.dt)
+        self.last_n_limited = n_lim
+        return fu, fv, nu_t
+
+    def smagorinsky_terms(self, st, Du: np.ndarray, Dv: np.ndarray, wet_u: np.ndarray,
+                          wet_v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Smagorinsky viscous tendencies at u- and v-faces [m s⁻²] of the state ``st`` (layer velocities at tⁿ,
+        explicit in the AB3 tendency): F = ∇·(ν h D)/h, ν = max(A_h, C Δ² |S|) bounded for AB3
+        (``core.dynamics.hor_visc``; Smagorinsky 1963, Griffies & Hallberg 2000, MOM_hor_visc.F90).  Periodic axes:
+        pad–crop with halos of 2 (the stencil reaches the tension of the neighbour cell through the corner shear),
+        geometry padded once.  Sets ``last_nu_t`` and ``last_n_limited``.
+        """
+        h_t, h_u, h_v = self._smag_thickness(st, Du, Dv)
+        per = self.per
+        if per:
+            H = 2
+            if self._smag_geom is None:
+                self._smag_geom = smag_geometry(per.pad_dataset(self.hg, H))
+            fu, fv, nu_t = per.apply(lambda *a: self._smag_call(*a, self._smag_geom),
+                                     (st.u, st.v, h_t, h_u, h_v, wet_u, wet_v, self.open_u, self.open_v),
+                                     ("u", "v", "c", "u", "v", "u", "v", "u", "v"), ("u", "v", "c"), H)
+        else:
+            if self._smag_geom is None:
+                self._smag_geom = smag_geometry(self.hg)
+            fu, fv, nu_t = self._smag_call(st.u, st.v, h_t, h_u, h_v, wet_u, wet_v, self.open_u, self.open_v,
+                                           self._smag_geom)
+        self.last_nu_t = nu_t
+        return fu, fv
+
     def terms(self, st, pgf_xy: tuple[np.ndarray, np.ndarray], Du: np.ndarray, Dv: np.ndarray,
               wet_u: np.ndarray, wet_v: np.ndarray) -> list[Term]:
         """Named explicit terms in summation order (module docstring); ``pgf_xy`` from the PGF component."""
@@ -201,7 +269,10 @@ class Momentum:
             if per:
                 au, av = per.crop(au, "u", H), per.crop(av, "v", H)
             out.append(("advection", au, av, "-"))
-        if self.ah > 0:                                                 # spacings built once (performance task 5.2)
+        if self.smagorinsky > 0:                                        # Smagorinsky stress divergence (ah = floor)
+            fu, fv = self.smagorinsky_terms(st, Du, Dv, wet_u, wet_v)
+            out.append(("hviscosity", fu, fv, "+"))
+        elif self.ah > 0:                                               # spacings built once (performance task 5.2)
             if self._lap is None:
                 hg = per.pad_dataset(self.hg, 1) if per else self.hg   # periodic: spacings on halos of 1
                 self._lap = (_spacings_u(hg), _spacings_v(hg))
