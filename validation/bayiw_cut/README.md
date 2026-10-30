@@ -274,5 +274,7 @@ Costo con el término activo (`scripts/smag_cost.py`, mediana de 50 pasos despu�
 |------|---------------:|------------------:|------:|
 | BayIW cut z* (Δt 120 s) | 0.3517 | 0.3695 | 1.050 |
 | DOME 10 km híbrido + GLS (Δt 600 s) | 0.1629 | 0.1557 | 0.956 (ruido) |
+| BayIW cut z*, después de la corrección I1 (47f2730) | 0.3854 | 0.4014 | 1.041 |
+| DOME 10 km híbrido + GLS, después de la corrección I1 | 0.1706 | 0.1692 | 0.992 (ruido) |
 
-Ambas razones quedan dentro del objetivo del spec (≤ 1.10×), así que no se perfiló el kernel.
+Las dos primeras filas son de antes de la corrección I1 de la revisión final (el operador usaba en ALE el grosor de cara recortado en el fondo); las dos últimas, del 2026-10-30 con la media sin recortar de MOM6, que agrega el cálculo de ese grosor. Todas las razones quedan dentro del objetivo del spec (≤ 1.10×), así que no se perfiló el kernel.

@@ -14,7 +14,8 @@ RUNS/figs/ (never to the repo), from the common series of every run (series.py):
   model.
 - section_<case>_nu<ν>.mp4/.gif: the sections in time, one row per model (iw: daily).
 - overflow_smag.png (case 'overflow_smag', Ilicak et al. 2012 Fig. 19b): pyOCEAN z* with ν_h = 100 plus the
-  Smagorinsky viscosity (C = 0.5) against the same run without it: RPE against time and T at 3 h and at the end.
+  Smagorinsky viscosity (C = 0.5) against the same run without it: RPE against time and T at 3 h and at the end;
+  the operator control (overflow run with C = 1e-9, tag 'smag1e-09') is added to the RPE panel when it exists.
 
 Usage: python validation/ilicak_benchmark/figures.py [lock overflow iw seamount overflow_smag] [--no-anim]
 """
@@ -54,9 +55,9 @@ VIEW = {"lock": dict(vmin=5.0, vmax=30.0, stride=1, unit="h", zmin=-20.0, snap=1
         "iw": dict(vmin=-2.0, vmax=2.0, stride=4, unit="d", zmin=-500.0, snap=200 * 86400.0)}
 
 
-def load(case: str, model: str, coord: str, nu: float) -> dict | None:
+def load(case: str, model: str, coord: str, nu: float, tag: str = "") -> dict | None:
     """The series of one run, or None when the run does not exist (stopped or not run)."""
-    path = cases.run_dir(case, model, coord, nu) / "series.npz"
+    path = cases.run_dir(case, model, coord, nu, tag) / "series.npz"
     return series.load(path)[0] if path.exists() else None
 
 
@@ -280,6 +281,11 @@ def fig_overflow_smag(nu: float = 100.0) -> None:
     for (lab, s), st in zip(rows, styles):
         r = metrics.rpe(s)
         ax.plot(s["t"] / 3600.0, (r - r[0]) / r[0], lw=1.2, label=lab, **st)
+    ctl = load("overflow", "pyocean", "zstar", nu, "smag1e-09")     # operator control (C ≈ 0), RPE only
+    if ctl is not None:
+        r = metrics.rpe(ctl)
+        ax.plot(ctl["t"] / 3600.0, (r - r[0]) / r[0], lw=1.2, color=ps.MUTED, linestyle=":",
+                label=f"z*, $\\nu_h$ = {nu:g}, operator control C ≈ 0")
     ax.set(xlabel="time [h]", ylabel="(RPE − RPE₀) / RPE₀")
     ax.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2))
     ax.legend(fontsize=7, loc="upper left")

@@ -427,24 +427,34 @@ oracle for any thread count; σ and ALE with fixed layers agree; restart is bit 
 
 | Case | Without | With Smagorinsky | Source |
 |---|---|---|---|
-| DOME hybrid + GLS, 10 km, 50 days, $C$ = 0.15 | 1 CFL truncation, 1072 limiter events, max\|u\| 5.66 m s⁻¹ (MITgcm 2.04), $b_f$ −12.99e-3 | 0 truncations, 0 limiter events, max\|u\| 2.99 m s⁻¹, $b_f$ −13.68e-3, path unchanged; cost +8.6 % | `validation/dome/README.md` |
-| Ilicak overflow, z\*, $A_h$ = 100 + $C$ = 0.5 (their Fig. 19b) | RPE gain 1.44e-5 | 8.37e-6 (−42 %), dRPE/dt −46 %, no new extrema: the paper's trend | `validation/ilicak_benchmark/README.md` |
+| DOME hybrid + GLS, 10 km, 50 days, $C$ = 0.15 | 1 CFL truncation, 1072 limiter events, max\|u\| thick/thin faces 5.52/5.66 m s⁻¹ (MITgcm 2.04), $b_f$ −12.99e-3, $\alpha_E$ 2.29e-3 | 0 truncations, 1 limiter event, max\|u\| 3.54/3.10 m s⁻¹, $b_f$ −13.31e-3, $\alpha_E$ 1.83e-3, path 3–9 km further downslope; cost +2.4 % | `validation/dome/README.md` |
+| Ilicak overflow, z\*, $A_h$ = 100 + $C$ = 0.5 (their Fig. 19b) | RPE gain 1.44e-5 | 7.46e-6 (−48 %), dRPE/dt −52 %, no new extrema: the paper's trend | `validation/ilicak_benchmark/README.md` |
 | Lorenz D, σ + GLS, $\Delta t = T_{M2}/498$, $C$ = 0.15 | also completes 150 cycles (control), max\|u\| 1.46 m s⁻¹ | completes, max\|u\| 2.06 m s⁻¹; exact mixing relation 8.5e-12 | `validation/lorenz_estuary/README.md` |
 
-The DOME and Ilicak rows (z\*/hybrid ALE) were run before the I1 fix of the face thickness and are [pendiente de recorrida]; the Lorenz row is σ and does not change.
+The DOME and Ilicak rows (z\*/hybrid ALE) are the reruns after the I1 fix of the face thickness (commit 47f2730); the runs
+before it lost the background viscosity next to every bathymetric step (class a). With $C > 0$ the background `ah` also
+moves from the plain Laplacian to the thickness-weighted tensor operator, so each case has an **operator control** with
+$C$ = 1e-9 ($C \approx 0$) that separates the two changes:
+
+- *DOME:* the operator change alone lowers max\|u\| on thick faces from 5.52 to 3.56 m s⁻¹ and the limiter events from
+  1072 to 641, but keeps the truncation and leaves $b_f$ at −13.05e-3. The Smagorinsky term removes the truncation and
+  the remaining limiter events, lowers $\alpha_E$ by 26 % and moves $b_f$ to −13.31e-3, slightly further from Legg's −12.0e-3.
+- *Ilicak:* the operator change alone moves the RPE gain by −1.4 %; the reduction is the Smagorinsky term (−47 % against
+  the control).
 
 Smagorinsky is therefore **not shown to extend the stable time step** in the Lorenz case (the control without it is also
 stable), and production stays at $T_{M2}/746$. DOME with a low vertical viscosity (`kv_low`, $\nu_v$ = 1e-4, $A_h$ = 50,
-$C$ = 0.15) completes 50 days, where MOM6 and MITgcm stop on day 3–4 without Smagorinsky, but it is not robust (1
-truncation, 31 900 limiter events, deep layer velocities still growing to 7.77 m s⁻¹ at day 50; class b, missing
-shear-driven vertical mixing). Cost with the term active (`scripts/smag_cost.py`): BayIW cut z\* 1.050, DOME 0.956 (noise)
-(`validation/bayiw_cut/README.md`).
+$C$ = 0.15) completes 50 days, where MOM6 and MITgcm stop on day 3–4 without Smagorinsky. It is not robust: 61
+truncations and 239 337 limiter events, and from day 37 the interior layers of the deep basin speed up to 8.29 m s⁻¹ at
+day 50, which is 99.5 % of the truncation threshold, with a depth mean ≤ 0.93 m s⁻¹ (class b, missing shear-driven
+vertical mixing). Cost per step with the term active (`scripts/smag_cost.py`, after the fix): BayIW cut z\* 1.041,
+DOME 0.992 (noise) (`validation/bayiw_cut/README.md`).
 
 **Caveat on `n_visc_limited`.** It counts every point where the bound strictly reduced $\nu$, including points where the
 bound falls below the background `ah` (thin-layer factor, or a large `ah`), even if $C\Delta^2|S|$ is small. Read it as
 "the bound acted", not as "Smagorinsky reached the bound". Before the I1 fix the bed-clipped faces at every z\* step
-dominated it (74 fixed points per step in the z\* overflow, ≈ 3900 per step in DOME); the counts with the unclipped
-face mean are [pendiente de recorrida].
+dominated it (74 fixed points per step in the z\* overflow, ≈ 3900 per step in DOME). With the unclipped face mean it is
+0 in the z\* overflow and ≈ 14 points per step in DOME hybrid + GLS with $C$ = 0.15 (thin layers).
 
 ### Vertical viscosity: implicit, one tridiagonal per column
 

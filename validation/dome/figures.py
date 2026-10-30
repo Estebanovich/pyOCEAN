@@ -31,6 +31,7 @@ LABELS = {"mitgcm_z_legg": "MITgcm z (Legg physics)", "mitgcm_z_common": "MITgcm
           "pyocean_hybrid": "pyOCEAN hybrid", "pyocean_hybrid_gls": "pyOCEAN hybrid + GLS",
           "pyocean_hybrid_gls_smag0.15": "pyOCEAN hybrid + GLS + Smag 0.15",
           "pyocean_hybrid_gls_smag0.5": "pyOCEAN hybrid + GLS + Smag 0.5",
+          "pyocean_hybrid_gls_smag1e-09": "pyOCEAN hybrid + GLS, operator control C≈0",
           "pyocean_hybrid_kv_low_smag0.15": "pyOCEAN hybrid ν_v 1e-4 + Smag 0.15"}
 
 

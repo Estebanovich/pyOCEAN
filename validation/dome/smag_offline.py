@@ -3,10 +3,11 @@
 Offline reconstruction of the Smagorinsky viscosity on the daily records of a DOME run (spec 2026-10-30, criterion 5).
 
 ν = max(ah, C Δ² |S|) is recomputed with ``core.dynamics.hor_visc.smagorinsky_numpy`` from the recorded u, v, h.
-**Approximate:** the series does not hold the model's face thicknesses, so h_u, h_v are the mean of the two cells
-(no clipping at the shallower bed) and the wet masks are the land masks of every layer.  The counts of points where
-C Δ² |S| exceeds the stability bound therefore differ from the model's ``n_visc_limited``, which also counts points
-next to clipped or vanished faces (there the bound × h_min/h falls below ah).
+**Approximate:** h_u, h_v are the mean of the two cells, unclipped at the shallower bed, which is what the model's
+operator uses in ALE since fix 47f2730 (final review I1; ``MOM_hor_visc.F90:769-782``), but the wet masks are the
+land masks of every layer and the statistics cover only the h points of layers ≥ 1 m.  The counts of points where
+C Δ² |S| exceeds the stability bound therefore differ from the model's ``n_visc_limited``, which counts every h and
+q point per step (thin layers included, where the bound × h_min/h can fall below ν).
 
 For days 10, 30 and 50 it prints, over the h points of layers ≥ 1 m: how many points the bound limits, the fraction
 with C Δ² |S| > ah, and the median, 99th percentile and maximum of C Δ² |S| [m² s⁻¹].

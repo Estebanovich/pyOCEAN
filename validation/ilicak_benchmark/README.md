@@ -121,25 +121,31 @@ En las primeras 3 h los tres modelos z\* coinciden casi exactamente: grosor del 
 
 Es el caso `overflow_smag`: el overflow con ν_h = 100 m²/s de fondo más Smagorinsky laplaciana con C = 0.5. Equivale a C_s = 1/√2 del artículo, porque ν_SM = (C_s Δ)² |S| (Ilicak et al. 2012, ec. 11, §7.1; copia local `Ilicak_2012 - Spurious Dianeutral Mixing and the Role of Momentum Closure.md`, l. 1815-1819 y 2032-2035). Es reproducir su caso, no calibrar. Corre solo en z\*. El banco de arriba no cambia, porque Smagorinsky está apagado por defecto. Salida: `RUNS/overflow_smag/pyocean_zstar_nu100/`.
 
+Con C > 0 cambian dos cosas: se agrega C Δ² |S|, y el fondo ν_h pasa del laplaciano simple al operador de tensor pesado por grosor (revisión final M2). El **control de operador** (el overflow con `--smag 1e-9`, C ≈ 0: ν_h = 100 en el operador de tensor, sin término de Smagorinsky; `RUNS/overflow/pyocean_zstar_nu100_smag1e-09/`) separa los dos; `compare.py` lo agrega como tercera fila y `figures.py` como curva punteada de RPE.
+
+**Corrida anterior a la corrección 47f2730 (2026-10-30).** Hasta esa corrección el operador usaba en z\* el grosor de cara recortado en el fondo menos hondo: en las 74 celdas junto al talud con una cara recortada, h_min/h ≈ 0 y ν (incluido el fondo ν_h = 100) caía a ≈ 0 (clase (a), revisión final I1; verificado en un escalón z\* 40 → 20 m: ν = 0.045 en vez de 50). Ahora usa la media sin recortar ½(h_L + h_R) de MOM6 (`MOM_hor_visc.F90:769-782`). La corrida anterior queda en `RUNS/overflow_smag/pyocean_zstar_nu100_preI1/` (ΔRPE 8.37e-6, −42 %; `n_visc_limited` 1 065 600 = esas 74 celdas en cada paso). Los números de abajo son de la corrida nueva.
+
 ```bash
-python validation/ilicak_benchmark/run_pyocean.py overflow_smag zstar 100    # 40 h, Δt 10 s, 5 hilos (~1.5 min)
-python validation/ilicak_benchmark/compare.py overflow_smag                   # contra overflow z* ν = 100
-python validation/ilicak_benchmark/figures.py overflow_smag                   # RUNS/figs/overflow_smag.png
+python validation/ilicak_benchmark/run_pyocean.py overflow_smag zstar 100            # 40 h, Δt 10 s, 5 hilos (~1.5 min)
+python validation/ilicak_benchmark/run_pyocean.py overflow zstar 100 --smag 1e-9     # control de operador, C ≈ 0
+python validation/ilicak_benchmark/compare.py overflow_smag                           # contra overflow z* ν = 100 y el control
+python validation/ilicak_benchmark/figures.py overflow_smag                           # RUNS/figs/overflow_smag.png
 ```
 
-| Corrida (z\*, ν_h = 100) | ΔRPE/RPE₀ | dRPE/dt, 13–37 h [W m⁻²] | Rango de T (exceso) | Centroide frío: x [km], profundidad [m] | ν_Smag máx. [m²/s] |
+| Corrida (z\*, ν_h = 100) | ΔRPE/RPE₀ | dRPE/dt, 13–37 h [W m⁻²] | Rango de T (exceso) | Centroide frío: x [km], profundidad [m] | ν máx. [m²/s] |
 |---|---|---|---|---|---|
 | sin Smagorinsky | 1.44e-5 | 1.86 | 10–20 (1.2e-8 °C) | 154, 1450 | — |
-| **+ Smagorinsky C = 0.5** | **8.37e-6** (−42 %) | **1.00** (−46 %) | 10–20 (7e-10 °C) | 158, 1630 | 881 |
+| control de operador, C ≈ 0 | 1.42e-5 (−1.4 %) | 1.84 (−1.1 %) | 10–20 (7.0e-10 °C) | 154, 1450 | 100 |
+| **+ Smagorinsky C = 0.5** | **7.46e-6** (−48 %; −47 % contra el control) | **0.888** (−52 %; −52 %) | 10–20 (5.9e-10 °C) | 156, 1660 | 1462 |
 | MITgcm z\*, sin Smagorinsky | 1.34e-5 | 1.44 | 9.59–20.1 | 124, 1370 | — |
 | pyOCEAN z\*, ν_h = 1000 | 5.3e-6 | 0.61 | 10–20 | 150, 1760 | — |
 
-- **Se reproduce la tendencia del artículo ✅: menos mezcla espuria.** La RPE baja 42 % y dRPE/dt baja 46 %. El valor queda entre el de ν = 100 y el de ν = 1000 sin Smagorinsky, y por debajo de MITgcm con ν = 100. El agua fría llega más honda (1630 m contra 1450 m) porque se diluye menos. Ilicak et al. (2012, §7.1, Fig. 19b y punto magenta de la Fig. 10; l. 2042-2050 de la copia local) encuentran lo mismo con MITgcm: "the spurious mixing is reduced with use of the Smagorinsky scheme (magenta point in Fig. 10), and the dense water dilution is comparable to ROMS".
-- **Sin extremos nuevos.** El exceso de T es 7e-10 °C (FCT, punto 6).
-- **El Smagorinsky actúa en la caída.** ν máx. = 881 m²/s, lejos de la cota (5454 m²/s a Δx = 1 km, Δt = 10 s). Con U ≈ 1.57 m/s queda Re_Δ = UΔ/ν ≈ 1.8 donde actúa.
+- **Se reproduce la tendencia del artículo ✅: menos mezcla espuria, por el término de Smagorinsky.** La RPE baja 48 % y dRPE/dt 52 % contra ν = 100; contra el control C ≈ 0, 47 % y 52 %. El cambio de operador solo mueve la RPE 1.4 % (operador): casi todo el efecto es Smagorinsky. El valor queda entre el de ν = 100 y el de ν = 1000 sin Smagorinsky, y por debajo de MITgcm con ν = 100. El agua fría llega más honda (1660 m contra 1450 m) porque se diluye menos. Ilicak et al. (2012, §7.1, Fig. 19b y punto magenta de la Fig. 10; l. 2042-2050 de la copia local) encuentran lo mismo con MITgcm: "the spurious mixing is reduced with use of the Smagorinsky scheme (magenta point in Fig. 10), and the dense water dilution is comparable to ROMS". Con la corrección I1 la reducción es mayor que antes (−42 % → −48 %).
+- **Sin extremos nuevos.** El exceso de T es 5.9e-10 °C (FCT, punto 6). El control también baja el exceso de la corrida base (1.2e-8 → 7.0e-10 °C), así que ese cambio es del operador.
+- **El Smagorinsky actúa en la caída.** ν máx. = 1462 m²/s, lejos de la cota (5454 m²/s a Δx = 1 km, Δt = 10 s). Con U ≈ 1.57 m/s queda Re_Δ = UΔ/ν ≈ 1.1 donde actúa.
 - **Es 2-D (x–z).** En una sola fila no hay esquinas interiores, así que D_S = 0 y |S| = |∂u/∂x|.
-- **`n_visc_limited` no era un evento de Smagorinsky.** Valía 1 065 600 = 74 puntos en cada uno de los 14 400 pasos, un conjunto fijo: las celdas z\* junto al talud con una cara recortada en el fondo menos hondo. El operador usaba ese grosor recortado (≈ 0), así que h_min/h ≈ 0 y ν (incluido el fondo ah = 100) caía a ≈ 0 en esas celdas: no era solo un artefacto del contador (revisión final I1, verificado en un escalón z\* 40 → 20 m: ν = 0.045 en vez de 50). Corregido: el operador usa ahora la media sin recortar ½(h_L + h_R) de MOM6 (`MOM_hor_visc.F90:769-782`). Los números de esta tabla (ΔRPE, dRPE/dt, centroide, ν máx., contador) son de antes de la corrección: [pendiente de recorrida].
-- **La corrida está completa.** Llegó a las 40 h (14 400 pasos, 41 registros). Los 92 s de reloj son lo mismo que tarda la corrida sin Smagorinsky (89 s).
+- **`n_visc_limited` = 0.** La cota no actuó en ningún punto. Antes de la corrección I1 valía 1 065 600 (74 puntos fijos por paso, las celdas junto a caras recortadas en el fondo).
+- **La corrida está completa.** Llegó a las 40 h (14 400 pasos, 41 registros). Tarda 93 s de reloj, contra 89 s sin Smagorinsky y 94 s el control.
 - **Falta la comparación entre modelos.** MITgcm con `viscC2Smag` en este mismo caso daría, en nuestra malla, el equivalente del punto magenta de la Fig. 10 del artículo (l. 2049-2050 de la copia local). No se corrió.
 
 ### Onda interna (200 días)
@@ -300,7 +306,7 @@ Notas:
    - reducir el trabajo fijo por paso y elegir el número de hilos según el tamaño de la malla (CROCO es 3–5.5 veces más rápido al mismo Δt en 2-D);
    - revisar por qué el Δt máximo del seamount es la mitad que el de MITgcm y MOM6 σ.
 
-7. **Contador `n_visc_limited` (Smagorinsky).** Hoy cuenta también los puntos junto a caras recortadas o evanescentes donde la cota queda por debajo del fondo ah: 74 puntos fijos por paso en el overflow z\*. Debería contar solo los puntos donde C Δ² |S| pasa la cota.
+7. **Contador `n_visc_limited` (Smagorinsky).** Cuenta todo punto donde la cota redujo ν, también donde la cota × h_min/h queda por debajo del fondo (capas delgadas). Antes de la corrección I1 eran 74 puntos fijos por paso en el overflow z\* (caras recortadas en el fondo, que además anulaban ν); ahora 0 en el overflow. Debería contar solo los puntos donde C Δ² |S| pasa la cota.
 8. **Overflow con Smagorinsky en MITgcm** (`viscC2Smag`, la configuración del artículo) para comparar entre modelos el punto de la Fig. 19(b).
 
 **Para Esteban, fuera de pyOCEAN:**

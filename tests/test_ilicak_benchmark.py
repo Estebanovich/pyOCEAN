@@ -485,6 +485,13 @@ def test_compare_table_of_the_overflow_smag_case_adds_the_base_run(tmp_path, mon
     body = [row for row in rows if row.startswith("| 100 |")]
     assert len(body) == 2 and "pyOCEAN z* (overflow)" in body[1]
     assert body[0].split("|")[-3].strip() == "74" and body[1].split("|")[-3].strip() == "—"
+    # the operator control (base case, C ≈ 0) is added as a third row once it exists
+    series.save(cases.run_dir("overflow", "pyocean", "zstar", 100.0, compare.CONTROL_TAG) / "series.npz", s,
+                dict(model="pyOCEAN", wall_s=1.0, smag=1e-9, n_visc_limited=0, nu_t_max=100.0))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        body = [row for row in compare.table("overflow_smag") if row.startswith("| 100 |")]
+    assert len(body) == 3 and "control de operador, C≈0" in body[2] and body[2].split("|")[-3].strip() == "0"
 
 
 def test_overflow_cold_centroid_survives_mixing_above_the_threshold():

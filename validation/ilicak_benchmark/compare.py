@@ -6,7 +6,9 @@ new extrema in cells ≥ 1 m (t_excess [°C], v_excess = volume fraction), and t
 the oscillation, metrics.oscillation_ratio);
 then the cost table (cost.json). Missing runs show '—'.  Extra cases (``EXTRA``: 'overflow_smag', Ilicak et al.
 2012 Fig. 19b) use the metrics and window of their base case and add the base-case run at the same ν_h as a
-reference row.
+reference row, and, when it exists, the operator control of the base case (tag ``CONTROL_TAG``, run with
+``--smag 1e-9``: the background ν_h in the thickness-weighted tensor operator, no Smagorinsky term), which separates
+the operator change from the Smagorinsky term (final review M2).
 
 Usage: python validation/ilicak_benchmark/compare.py [lock|overflow|iw|seamount|overflow_smag]
 """
@@ -31,6 +33,7 @@ WINDOW = {"lock": (15 * 3600.0, 17 * 3600.0), "overflow": (13 * 3600.0, 37 * 360
 # extra case → (base case, its configurations); not in campaign.CONFIGS, so neither the results nor the cost
 # campaign runs them
 EXTRA = {"overflow_smag": ("overflow", [("pyocean", "zstar")])}
+CONTROL_TAG = "smag1e-09"          # operator control of an EXTRA case: base case run with C = 1e-9 (C ≈ 0)
 
 
 def base(case: str) -> str:
@@ -38,9 +41,9 @@ def base(case: str) -> str:
     return EXTRA[case][0] if case in EXTRA else case
 
 
-def summary(case: str, model: str, coord: str, nu: float) -> dict:
-    """The metrics of one run (spec §A4)."""
-    s, meta = series.load(cases.run_dir(case, model, coord, nu) / "series.npz")
+def summary(case: str, model: str, coord: str, nu: float, tag: str = "") -> dict:
+    """The metrics of one run (spec §A4); ``tag`` selects a tagged run directory (cases.run_dir)."""
+    s, meta = series.load(cases.run_dir(case, model, coord, nu, tag) / "series.npz")
     r = metrics.rpe(s)
     lo, hi = metrics.t_range(s)
     exc, frac = metrics.t_excess(s)
@@ -75,12 +78,15 @@ def table(case: str) -> list[str]:
     rows = [f"## {case}", "", "| ν_h | modelo | " + " | ".join(cols) + " |", "|" + "---|" * (len(cols) + 2)]
     configs = EXTRA[case][1] if case in EXTRA else campaign.CONFIGS[case]
     for nu in cases.get(case).nu_h:
-        runs = [(case, model, coord, NAMES[(model, coord)]) for model, coord in configs]
+        runs = [(case, model, coord, NAMES[(model, coord)], "") for model, coord in configs]
         if case in EXTRA:                                  # the base-case run at the same ν_h, as reference
-            runs += [(base(case), model, coord, f"{NAMES[(model, coord)]} ({base(case)})") for model, coord in configs]
-        for cs, model, coord, label in runs:
+            runs += [(base(case), model, coord, f"{NAMES[(model, coord)]} ({base(case)})", "") for model, coord in configs]
+            runs += [(base(case), model, coord, f"{NAMES[(model, coord)]} ({base(case)}, control de operador, C≈0)",
+                      CONTROL_TAG) for model, coord in configs
+                     if (cases.run_dir(base(case), model, coord, nu, CONTROL_TAG) / "series.npz").exists()]
+        for cs, model, coord, label, tag in runs:
             try:
-                r = summary(cs, model, coord, nu)
+                r = summary(cs, model, coord, nu, tag)
             except FileNotFoundError:
                 r = {}
             rows.append(f"| {nu:g} | {label} | " + " | ".join(_fmt(r.get(k)) for k in cols) + " |")

@@ -4,8 +4,10 @@ Tables of the DOME benchmark (spec 2026-10-14-dome-overflow §7): every series.n
 metrics of validation/dome/metrics.py; x' = x − 1050 km (inlet centre), y' = y − 600 km (slope top) as Legg et al. 2006.
 Prints the Markdown and, without ``--only``, writes it to RUNS/compare_<res>km.txt.  'visc' is the Smagorinsky counter
 ``n_visc_limited`` (h and q points × steps where the stability bound cut ν; empty without Smagorinsky): with a
-background ah > 0 every point next to a vanished or clipped face counts, so it is not the number of points where
-C Δ² |S| itself reached the bound.  Runs with Smagorinsky end in '_smag<C>' (run_pyocean.py --smag C).
+background ah > 0 every point where the bound × h_min/h falls below ν (thin layers) counts, so it is not the number
+of points where C Δ² |S| itself reached the bound.  Runs with Smagorinsky end in '_smag<C>' (run_pyocean.py --smag C); '_smag1e-09' is
+the operator control (C ≈ 0: the background ah in the thickness-weighted tensor operator, no Smagorinsky term) and
+'_preI1' marks runs kept from before the clipped-face fix 47f2730 (final review I1); both are labelled in the table.
 
 Usage: python validation/dome/compare.py 10 [--t0 30 --t1 50]
 """
@@ -28,6 +30,15 @@ def _at(x, f, xp_km):
     return [f[np.argmin(np.abs(x - (xx * 1e3 + 1050e3)))] for xx in xp_km]
 
 
+def label(name: str) -> str:
+    """Run name for the table, with the operator control and the pre-I1 runs marked."""
+    if name.endswith("_preI1"):
+        return f"{name} (antes de la corrección I1)"
+    if name.endswith("_smag1e-09"):
+        return f"{name} (control de operador, C≈0)"
+    return name
+
+
 def row(name: str, s: dict, meta: dict, t0: float, t1: float) -> dict:
     x, Y = metrics.path_Y(s, t0, t1)
     _, T = metrics.plume_transport(s, t0, t1)
@@ -38,7 +49,7 @@ def row(name: str, s: dict, meta: dict, t0: float, t1: float) -> dict:
     thin, thick = metrics.thin_vs_thick(s)
     r = metrics.ranges(s)
     days = s["t"][-1] / 86400.0
-    return dict(name=name, Y=[(y - 600e3) / 1e3 for y in _at(x, Y, XP)], T=[q / 1e6 for q in _at(x, T, XP)],
+    return dict(name=label(name), Y=[(y - 600e3) / 1e3 for y in _at(x, Y, XP)], T=[q / 1e6 for q in _at(x, T, XP)],
                 aE=float(np.nanmean(aE[xa])), rho=rho, bf=-cases.G * (rho - cases.RHO_TOP) / cases.RHO0 * 1e3,
                 cd=[metrics.centroid_depth(s, d * 86400.0) for d in (10, 20, 30, days)],
                 drpe=(rpe[-1] - rpe[0]) / rpe[0], T_rng=r["T"], s_rng=r["s"], thin=thin, thick=thick,
