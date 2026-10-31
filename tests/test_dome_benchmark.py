@@ -266,10 +266,55 @@ def test_tracer_by_class_conserves():
     s["s"] = rng.uniform(0.0, 1.0, s["s"].shape)
     s["T"] = cases.T_of_rho(rng.uniform(1030.0, 1032.0, s["T"].shape))
     s["h"] = s["h"] * rng.uniform(0.0, 2.0, s["h"].shape)
-    x, edges, S = metrics.tracer_by_class(s, 86400.0, 2 * 86400.0, 20)
-    assert S.shape == (20, x.size) and edges.size == 21
+    x, edges, S = metrics.tracer_by_class(s, 86400.0, 2 * 86400.0)
+    assert S.shape == (19, x.size) and edges.size == 20
+    np.testing.assert_allclose(edges, np.linspace(-0.019, 0.0, 20))
     want = np.mean([(s["s"][n] * metrics._vol(s)[n]).sum() for n in (1, 2)])
     assert (S * s["dx"][None, :]).sum() == pytest.approx(want, rel=1e-12)
+
+
+def test_tracer_by_class_puts_the_inflow_where_legg_does():
+    """The undiluted inflow (ρ = 1032, b = −0.019011) falls in Legg's densest class (−0.019, −0.018) (Fig. 4, JSON),
+    and the lightest water (b = 0) in (−0.001, 0)."""
+    from validation.dome import metrics
+    _, s = _corner_series()
+    s["T"][:] = cases.T_of_rho(1032.0)
+    s["T"][:, 0] = cases.T_of_rho(1030.0)
+    s["s"][:] = 1.0
+    x, edges, S = metrics.tracer_by_class(s, 0.0, 0.0)
+    tot = S.sum(axis=1)
+    assert tot[0] > 0 and tot[-1] > 0 and tot[1:-1].sum() == 0.0
+    assert (edges[0], edges[1]) == pytest.approx((-0.019, -0.018)) and edges[-1] == 0.0
+
+
+def test_corner_entrainment_with_ale_layering():
+    """A hybrid-like corner column: uneven layers and a zero-thickness undyed layer between ambient and plume.  The
+    vanished layer adds no horizontal piece; the raised plume top (1800 m instead of 2700 m) adds a riser of 900 m
+    against each of its four region neighbours; U_rms weights the thicker dyed cell by its volume."""
+    from validation.dome import metrics
+    U0, V0, h = 0.3, 0.2, 900.0
+    c, s = _corner_series(U0=U0, V0=V0, h=h)
+    j = int(np.argmin(np.abs(c.y - 575e3)))
+    i = int(np.argmin(np.abs(c.x - 1035e3)))
+    s["h"][:, :, j, i] = [1200.0, 600.0, 0.0, 1800.0]
+    s["s"][:, :, j, i] = [0.0, 0.0, 0.0, 1.0]
+    dx = c.dx
+    T_out, T_in = U0 * h * dx * 6, V0 * h * dx * 10
+    S = 10 * 5 * dx * dx + 10 * h * dx + 4 * 900.0 * dx
+    U2 = U0 ** 2 + 10 * (0.5 * V0) ** 2 / 61.0                        # 60 dyed cells of h, one of 2h
+    p = metrics.corner_entrainment(s, 0.0, 2 * 86400.0, parts=True)
+    assert p["S"] == pytest.approx(S, rel=1e-12)
+    assert p["U_rms"] == pytest.approx(np.sqrt(U2), rel=1e-12)
+    assert p["E"] == pytest.approx((T_out - T_in) / (np.sqrt(U2) * S), rel=1e-12)
+    with pytest.raises(ValueError, match="urms"):
+        metrics.corner_entrainment(s, 0.0, 0.0, urms="rms")
+
+
+def test_max_class_without_dye_is_nan():
+    from validation.dome import compare
+    x = np.array([1050e3 - 300e3, 1050e3])
+    b = compare.max_class(x, np.linspace(-0.019, 0.0, 20), np.zeros((19, 2)), -300.0)
+    assert np.isnan(b[0]) and compare._cls(b) == "—"
 
 
 def test_jackson_tag():

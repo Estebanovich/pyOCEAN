@@ -14,8 +14,17 @@ Against the truth (Jackson shear-mixing plan, Task 6; spec 2026-10-30 criterion 
 Legg's non-hydrostatic Case 1 and his 10-km z and isopycnal runs (legg2006_nonhydro.json: text and digitized values
 with their sources): E, plume transport T(x' = −200/−300 km), mean α_E over −180 < x' < −50 km, b_f, and the
 buoyancy class holding the most dye at x' = −300 km (Fig. 4, metrics.tracer_by_class).  Legg averages over the
-statistically steady state (the latter half for Fig. 4); here the window [t0, t1].  Geometry differences (MOM6's
-100-km channel, sponge west, quadratic drag vs Legg's 50-km channel, Orlanski, no-slip) are class (c).
+statistically steady state (the latter half for Fig. 4); here E, T, α_E and b_f use the window [t0, t1] (days 30–50
+by default) and the tracer by class the latter half of the run (days 25–50 for 50 days), as Legg's Fig. 4 (this
+supersedes the spec's "13-day window" wording).  Geometry differences (MOM6's 100-km channel, sponge west, quadratic
+drag vs Legg's 50-km channel, Orlanski, no-slip) are class (c).
+
+E is not resolution-independent: S (the area of the s = 0.01 surface) grows as the resolution resolves the plume
+top (Legg's 8.6e-4 with T_out(−50 km) ≈ 18.7 Sv implies U_rms S ≈ 1.2e10 m³ s⁻¹, ~6× MITgcm at 10 km).  The
+like-for-like references of a 10-km run are Legg's 10-km z (2.19e-4) and isopycnal (9.4e-4) values; the
+non-hydrostatic 8.6e-4 is an order of magnitude only.  At 10 km E also moves by ~×2 with the definition (threshold
+0.01/0.05/0.1, U_rms over the plume or all water) and ±20 % with the window (MITgcm legg: 0.55–1.96e-3), so E
+differences below ~×2 are not significant.
 
 Usage: python validation/dome/compare.py 10 [--t0 30 --t1 50] [--only sub1,sub2]
 """
@@ -48,8 +57,10 @@ def _xa_mean(x, f, lo, hi) -> float:
 
 
 def max_class(x, edges, S, xp_km: float) -> tuple[float, float]:
-    """Buoyancy bounds of the class with the most tracer at the column nearest x' [m s⁻²]."""
+    """Buoyancy bounds of the class with the most tracer at the column nearest x' [m s⁻²]; (NaN, NaN) without dye."""
     i = int(np.argmin(np.abs(x - (xp_km * 1e3 + 1050e3))))
+    if not np.nansum(S[:, i]) > 0.0:
+        return float("nan"), float("nan")
     c = int(np.argmax(S[:, i]))
     return float(edges[c]), float(edges[c + 1])
 
@@ -105,6 +116,10 @@ def table(rows: list[dict]) -> str:
     return "\n".join(L)
 
 
+def _cls(b: tuple[float, float]) -> str:
+    return "—" if not np.isfinite(b[0]) else f"{b[0] * 1e3:g}…{b[1] * 1e3:g}"
+
+
 def truth_table(rows: list[dict]) -> str:
     """Each run against Legg's non-hydrostatic Case 1 (text/digitized values of legg2006_nonhydro.json)."""
     v = legg_truth()
@@ -119,19 +134,23 @@ def truth_table(rows: list[dict]) -> str:
     L = ["| run | E esquina (pluma / todo) | T_out, T_in [Sv] | S [1e9 m²] | U_rms [m/s] | T(x' −200/−300) [Sv] | "
          "α_E (−180…−50 km) | b_f [1e-3 m s⁻²] | clase con más trazador x' −300 / −100 km [1e-3 m s⁻²] |",
          "|" + "---|" * 9,
-         f"| Legg no hidrostático 0.5 km (verdad) | {v['corner_E_nonhydro']['value']:.2e} (texto) | — | — | — | "
+         f"| Legg no hidrostático 0.5 km (verdad) | {v['corner_E_nonhydro']['value']:.2e} (texto; solo orden de magnitud) | — | — | — | "
          f"{-tx[-200] / 1e6:.1f} / {-tx[-300] / 1e6:.1f} (dig.) | {a_nh:.2e} (dig.) | "
          f"{v['bf_nonhydro']['value'] * 1e3:.2f} (dig.) | {cls_nh[0] * 1e3:g}…{cls_nh[1] * 1e3:g} (dig.) |",
-         f"| Legg 10 km z (MITgcm, ν_v 0.5) | {v['corner_E_10km_z']['value']:.2e} (dig.) | — | — | — | — | — | "
+         f"| Legg 10 km z (MITgcm, ν_v 0.5) | {v['corner_E_10km_z']['value']:.2e} (dig.; referencia equivalente) | — | — | — | — | — | "
          f"{v['bf_10km_z']['value'] * 1e3:.2f} (dig.) | — |",
-         f"| Legg 10 km isopicnal (HIM, ν_v 1e-4 + Ri) | {v['corner_E_10km_iso']['value']:.2e} (dig.) | — | — | — | — | — | "
+         f"| Legg 10 km isopicnal (HIM, ν_v 1e-4 + Ri) | {v['corner_E_10km_iso']['value']:.2e} (dig.; referencia equivalente) | — | — | — | — | — | "
          f"{v['bf_10km_iso']['value'] * 1e3:.2f} (dig.); ν_v alta {v['bf_10km_iso_visc']['value'] * 1e3:.2f} | — |"]
     for r in rows:
         ec = r["Ec"]
         L.append(f"| {r['name']} | {r['E']:.2e} / {r['E_all']:.2e} | {ec['T_out'] / 1e6:.2f}, {ec['T_in'] / 1e6:.2f} | "
                  f"{ec['S'] / 1e9:.2f} | {ec['U_rms']:.3f} | {r['T'][0]:.1f} / {r['T'][1]:.1f} | {r['aE_truth']:.2e} | "
-                 f"{r['bf']:.2f} | {r['cls300'][0] * 1e3:g}…{r['cls300'][1] * 1e3:g} / "
-                 f"{r['cls100'][0] * 1e3:g}…{r['cls100'][1] * 1e3:g} |")
+                 f"{r['bf']:.2f} | {_cls(r['cls300'])} / {_cls(r['cls100'])} |")
+    L += ["", "E: las referencias equivalentes a 10 km son las de Legg a 10 km (z 2.19e-4, isopicnal 9.4e-4); el 8.6e-4 "
+          "no hidrostático (0.5 km) es solo un orden de magnitud, porque S crece con la resolución (U_rms S ≈ 1.2e10 "
+          "m³/s en Legg, ~6× MITgcm a 10 km). A 10 km E cambia ~×2 con la definición (umbral 0.01–0.1, U_rms en la "
+          "pluma o en toda el agua: las dos columnas) y ±20 % con la ventana: diferencias menores que ~×2 no son "
+          "significativas. Ventanas: E, T, α_E y b_f en [t0, t1]; clases en la segunda mitad de la corrida (Legg Fig. 4)."]
     return "\n".join(L)
 
 

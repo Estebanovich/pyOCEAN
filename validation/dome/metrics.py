@@ -121,8 +121,12 @@ def corner_entrainment(s: dict, t0: float, t1: float, thr: float = 0.01, urms: s
     - U_rms [m s⁻¹]: √(volume mean of u² + v²) at cell centres over the plume cells of the region (``urms='plume'``)
       or over all its water (``urms='all'``); Legg's text says only "the rms horizontal velocity scale within the
       corner region".
-    Legg's non-hydrostatic Case 1 value is 8.6e-4 (p. 79).  ``parts`` True returns the dict of the four means and E.
+    Legg's non-hydrostatic Case 1 value is 8.6e-4 (p. 79), an order of magnitude only for a 10-km run (S grows with
+    resolution; compare.py docstring); like-for-like are his 10-km values.  ``parts`` True returns the dict of the
+    four means and E.
     """
+    if urms not in ("plume", "all"):
+        raise ValueError(f"urms must be 'plume' or 'all', not {urms!r}")
     x0, x1, y0, y1 = CORNER
     xp, yp = s["x"] - X_INLET, s["y"] - Y_TOP
     ii = np.nonzero((xp > x0) & (xp < x1))[0]
@@ -138,11 +142,13 @@ def corner_entrainment(s: dict, t0: float, t1: float, thr: float = 0.01, urms: s
         # T_out through x' = −50 km
         sf = 0.5 * (sn[:, jj, i_f - 1] + sn[:, jj, i_f])
         hf = 0.5 * (h[:, jj, i_f - 1] + h[:, jj, i_f])
-        acc["T_out"].append(float((np.where(sf > thr, -s["u"][n][:, jj, i_f] * hf, 0.0) * dy[None, jj]).sum()))
+        uf = np.nan_to_num(s["u"][n][:, jj, i_f])
+        acc["T_out"].append(float((np.where(sf > thr, -uf * hf, 0.0) * dy[None, jj]).sum()))
         # T_in through y' = 0
         sf = 0.5 * (sn[:, j_f - 1, ii] + sn[:, j_f, ii])
         hf = 0.5 * (h[:, j_f - 1, ii] + h[:, j_f, ii])
-        acc["T_in"].append(float((np.where(sf > thr, -s["v"][n][:, j_f, ii] * hf, 0.0) * dx[None, ii]).sum()))
+        vf = np.nan_to_num(s["v"][n][:, j_f, ii])
+        acc["T_in"].append(float((np.where(sf > thr, -vf * hf, 0.0) * dx[None, ii]).sum()))
         # S: horizontal and vertical pieces inside the region
         col = {(j, i): _plume_depths(h[:, j, i], A[:, j, i]) for j in jj for i in ii}
         area = 0.0
@@ -155,8 +161,9 @@ def corner_entrainment(s: dict, t0: float, t1: float, thr: float = 0.01, urms: s
         acc["S"].append(area)
         # U_rms
         sub = (slice(None), jj[:, None], ii[None, :])
-        uc = 0.5 * (s["u"][n][..., 1:] + s["u"][n][..., :-1])[sub]
-        vc = 0.5 * (s["v"][n][:, 1:, :] + s["v"][n][:, :-1, :])[sub]
+        un, vn = np.nan_to_num(s["u"][n]), np.nan_to_num(s["v"][n])
+        uc = 0.5 * (un[..., 1:] + un[..., :-1])[sub]
+        vc = 0.5 * (vn[:, 1:, :] + vn[:, :-1, :])[sub]
         vol = (h * (dy[:, None] * dx[None, :])[None])[sub]
         w = vol * (A[sub] if urms == "plume" else 1.0)
         acc["U_rms"].append(float(np.sqrt((w * (uc ** 2 + vc ** 2)).sum() / w.sum())) if w.sum() > 0 else np.nan)
@@ -170,12 +177,13 @@ def buoyancy(T: np.ndarray) -> np.ndarray:
     return -cases.G * (_rho(T) - cases.RHO_TOP) / cases.RHO0
 
 
-def tracer_by_class(s: dict, t0: float, t1: float, n_classes: int = 20, b_min: float = -0.02):
+def tracer_by_class(s: dict, t0: float, t1: float, n_classes: int = 19, b_min: float = -0.019):
     """
     Total tracer against along-slope distance and buoyancy class (Legg et al. 2006 Fig. 4), time mean over [t0, t1]:
     S(c, x) = Σ_{cells of column x with b in class c} s h Δy  [m²]  (∫ s dy dz per x and class; Legg's colour scale,
-    ×10⁶, is of this size).  Classes: n_classes equal bins of b in [b_min, 0] (default 20 × 0.001 m s⁻², Legg's
-    bins), b outside folded into the end bins.  Returns (x [m], b_edges (n_classes+1,), S (n_classes, nx)).
+    ×10⁶, is of this size).  Classes: n_classes equal bins of b in [b_min, 0] (default 19 × 0.001 m s⁻², Legg's
+    bins from −0.019), b outside folded into the end bins: the undiluted inflow b = −gΔρ/ρ₀ = −0.019011 lands in
+    (−0.019, −0.018), where Legg's Fig. 4 shows it.  Returns (x [m], b_edges (n_classes+1,), S (n_classes, nx)).
     Σ_c Σ_x S Δx is the time mean of Σ s V (the dye content).
     """
     edges = np.linspace(b_min, 0.0, n_classes + 1)
