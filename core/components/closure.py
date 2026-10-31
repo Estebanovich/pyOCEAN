@@ -898,6 +898,8 @@ class ShearAddedClosure(Closure):
     kv : constant tracer diffusivity of the model [m² s⁻¹] (κ_base of a base without κ; pushed by the model when
         ``kv`` changes after construction)
     nu_const : constant viscosity of the model [m² s⁻¹] ('constant' base; 'none': ν_base = 0)
+    nu_source : object whose ``nu_const`` is read live (the model's ``SigmaWetDry`` core), so a ``nu_const`` changed
+        after construction reaches ν_base as it reaches the column solver; None: the fixed ``nu_const``
     prandtl : turbulent Prandtl number Pr = ν_shear/κ_shear [-] (Jackson et al. 2008: 1; MOM6 PRANDTL_TURB)
     params : ``physics.mixing.kappa_shear.JacksonParams`` (None: MOM6 defaults, JHL set 1)
     rho0, g : ρ₀ [kg m⁻³], g [m s⁻²] of the buoyancy b = −g (ρ − ρ₀)/ρ₀
@@ -919,19 +921,26 @@ class ShearAddedClosure(Closure):
     values are 0 (no flux through the bed or the surface).  Without a layer density (``rho`` None) b = 0 is not
     defined meaningfully, so κ_shear = 0 (the driver always passes ρ in phase 7).
 
+    Attributes not defined here (``obl_depth``, ``akv``, ``gamma`` … of a KPP base) are read from the base, so
+    helpers that inspect ``model._closure`` keep working with shear mixing on.
+
     A κ_shear (ν_shear) that is zero everywhere adds nothing: ``tracer_diffusivity`` (``viscosity``) then returns
-    the base's own value unchanged (None included), so a column without shear runs bit for bit as the base.
+    the base's own value unchanged (None included), so a column without shear runs bit for bit as the base.  With a
+    'none' base (no ν: no implicit solve) or a constant base with kv = 0 (no tracer solve) this shortcut switches
+    the whole domain between no solve and the implicit solve whenever κ_shear becomes zero or non-zero anywhere;
+    the two differ only at round-off level, and the switch is what keeps zero shear = base bit for bit.
     """
     stateful = True
     update_phase = "tracers"
 
     def __init__(self, base: Closure, n_layers: int, shape: tuple[int, int], dt: float, f2: np.ndarray,
                  kv: float = 0.0, nu_const: float = 0.0, prandtl: float = 1.0, params: JacksonParams | None = None,
-                 rho0: float = 1000.0, g: float = 9.81) -> None:
+                 rho0: float = 1000.0, g: float = 9.81, nu_source=None) -> None:
         self.base = base
         self.n, self.shape, self.dt = int(n_layers), tuple(shape), float(dt)
         self.f2 = np.asarray(f2, float).reshape(-1)
-        self.kv, self.nu_const, self.prandtl = float(kv), float(nu_const), float(prandtl)
+        self.kv, self.prandtl = float(kv), float(prandtl)
+        self._nu_const, self._nu_source = float(nu_const), nu_source
         self.params = JacksonParams() if params is None else params
         self.rho0, self.g = float(rho0), float(g)
         m = self.shape[0] * self.shape[1]
@@ -940,6 +949,21 @@ class ShearAddedClosure(Closure):
         self._per = None
 
     # ------------------------------------------------------------------ delegation
+    def __getattr__(self, name: str):
+        # only called for attributes not found normally; ``base`` itself may be missing during unpickling/copy
+        if name == "base" or name.startswith("__"):
+            raise AttributeError(name)
+        try:
+            base = self.__dict__["base"]
+        except KeyError:
+            raise AttributeError(name) from None
+        return getattr(base, name)
+
+    @property
+    def nu_const(self) -> float:
+        """ν_base of a constant base [m² s⁻¹]: the live ``nu_source.nu_const`` when given."""
+        return float(self._nu_source.nu_const) if self._nu_source is not None else self._nu_const
+
     @property
     def restart_prefix(self) -> str:
         """File prefix of the base (``kpp_`` or none); ``shear_kv`` follows it."""
@@ -1088,7 +1112,8 @@ def make_closure(model) -> Closure:
     f2 = 0.25 * (fq[:-1, :-1] ** 2 + fq[:-1, 1:] ** 2 + fq[1:, :-1] ** 2 + fq[1:, 1:] ** 2)
     return ShearAddedClosure(cl, core.n_layers, core.H.shape, core.dt, f2, kv=float(getattr(model, "kv", 0.0)),
                              nu_const=float(core.nu_const), prandtl=float(getattr(model, "shear_prandtl", 1.0)),
-                             params=getattr(model, "jackson_params", None), rho0=core.rho0, g=core.g)
+                             params=getattr(model, "jackson_params", None), rho0=core.rho0, g=core.g,
+                             nu_source=core)
 
 
 def _base_closure(model) -> Closure:

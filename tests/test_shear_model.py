@@ -281,3 +281,42 @@ def test_none_base_gets_shear_viscosity(ale):
     assert np.array_equal(nu_u, 0.0 + su)
     shear = lambda st: np.abs(np.diff(st.u[:, 0, 0])).max()            # noqa: E731
     assert shear(b) < 0.9 * shear(a)
+
+
+# ---------------------------------------------------------------- fix round 1 (review of Task 4)
+@pytest.mark.parametrize("closure", ["kpp", "constant"])
+def test_sigma_restart_bit_for_bit_with_shear(tmp_path, closure):
+    # C1: KPP + shear crashed in write_restart (the KPP config block read the wrapper); M5: σ with a constant base
+    st6 = _run(_model(None, closure=closure, shear_mixing="jackson"), 6)
+    m1 = _model(None, closure=closure, shear_mixing="jackson")
+    write_restart(tmp_path / "rst.nc", m1, _run(m1, 3))
+    m2 = _model(None, closure=closure, shear_mixing="jackson")
+    st6b = _run(m2, 3, read_restart(tmp_path / "rst.nc", m2))
+    _same(st6, st6b)
+    assert np.array_equal(st6.closure["shear_kv"], st6b.closure["shear_kv"])
+    import xarray as xr
+    with xr.open_dataset(tmp_path / "rst.nc") as ds:                  # M2: one fixed file name for the shear field
+        assert "shear_kv" in ds and "kpp_shear_kv" not in ds
+        if closure == "kpp":
+            assert "kpp_akv" in ds and ds.attrs["config_kpp_cp"] == m1.cp
+
+
+def test_nu_const_after_construction_reaches_shear():
+    # M3: ν_base of a constant base is the live nu_const of the core
+    m = _model(None, shear_mixing="jackson")
+    st = _run(m, 3)
+    m.core.nu_const = 3e-3
+    su, _ = centre_to_faces(m._closure.kv_shear, m.periodic)
+    nu_u, _ = m._closure.viscosity(st)
+    assert np.array_equal(nu_u, 3e-3 + su)
+
+
+def test_wrapper_forwards_base_attributes():
+    # M4: helpers read KPP attributes through model._closure (validation/turbulence_columns/mom6_scm.py)
+    m = _model(None, closure="kpp", shear_mixing="jackson")
+    _run(m, 2)
+    cl = m._closure
+    assert cl.obl_depth is cl.base.obl_depth
+    assert cl.akv is cl.base.akv
+    with pytest.raises(AttributeError):
+        cl.no_such_attribute

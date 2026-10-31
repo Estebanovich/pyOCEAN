@@ -14,7 +14,7 @@ SCHISM #140).  For ``SigmaBaroclinic`` that is:
 * the GLS turbulence state k, ε, ν (and κ_t) of the closure component (``core.components.closure``; file
   variables ``gls_*``), or the KPP viscosity ν of the last step (``kpp_akv``, N3 task 7); a restart written with
   another closure is rejected; with ``shear_mixing`` the lagged Jackson shear viscosity after the base's fields
-  (``shear_kv``, or ``kpp_shear_kv`` on KPP), and a restart written with another shear_mixing is rejected;
+  (``shear_kv``, whatever the base), and a restart written with another shear_mixing is rejected;
 * the lagged-LU CG preconditioner of the free surface (the matrix it factorised and the refactor
   flag): CG stops at an iterate that depends on it;
 * ALE (``vertical_coordinate='ale'``, Plan D): the layer thicknesses h, the exterior profile kept in z
@@ -83,7 +83,7 @@ def _config(model: SigmaBaroclinic) -> dict:
         cfg.update(gls_stratified=int(getattr(model, "gls_stratified", False)),
                    gls_production=str(getattr(model, "gls_production", "croco")))   # N3 task 5
     if core.closure == "kpp":                                   # N3 task 7: every KPP parameter
-        cl = model._closure
+        cl = getattr(model._closure, "base", model._closure)   # the KPP base under shear mixing (own keys below)
         cfg.update({f"kpp_{k}": _text("none" if v is None else v) for k, v in sorted(vars(cl.params).items())})
         cfg.update(kpp_cp=cl.cp)
     sm = getattr(model, "shear_mixing", None)                  # shear-mixing Task 4: scheme, Pr and every parameter
@@ -127,6 +127,12 @@ _SECTIONS = {"ab_hist": "time_stepper", "gls_": "closure", "kpp_": "closure", "s
              "tr_ext": "open_boundary", "S_ext": "open_boundary", "fs_lu_": "free_surface", "rho_ref_": "pgf"}
 
 
+def _file_prefix(cl, name: str) -> str:
+    """File prefix of a closure field: the closure's ``restart_prefix``, except the Jackson shear viscosity, which
+    is always ``shear_kv`` whatever the base closure (shear-mixing Task 4, fix round 1)."""
+    return "" if name == "shear_kv" else cl.restart_prefix
+
+
 def _component_of(name: str) -> str:
     """Section of a restart variable: the component that owns it (``core.model.contract.Role`` values), or
     'state' for the variables of ``SigmaState``.  Reading does not depend on it: files written before N1, without
@@ -160,9 +166,9 @@ def write_restart(path: str | Path, model: SigmaBaroclinic, state: SigmaState) -
         # gls_ as the files written before N3, kpp_) that ``read_restart`` reads back
         ny, nx = model.H.shape
         units_of = {"tke": "m2 s-2", "eps": "m2 s-3", "akv": "m2 s-1", "akt": "m2 s-1", "shear_kv": "m2 s-1"}
-        pref = cl.restart_prefix
         for name in (k[len(CLOSURE_PREFIX):] for k in cl.state_fields()):
             units = units_of.get(name, "1")
+            pref = _file_prefix(cl, name)
             data[f"{pref}{name}"] = xr.Variable(("level", "y", "x"), closure[name].reshape(-1, ny, nx),
                                                 {"units": units,
                                                  "long_name": f"{(pref[:-1] or 'closure').upper()} {name} at layer "
@@ -248,7 +254,7 @@ def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
     cl = model._closure                                              # closure component (N3 task 1)
     if cl.stateful:
         pref = cl.restart_prefix
-        names = {k: pref + k[len(CLOSURE_PREFIX):] for k in cl.state_fields()}
+        names = {k: _file_prefix(cl, k[len(CLOSURE_PREFIX):]) + k[len(CLOSURE_PREFIX):] for k in cl.state_fields()}
         missing = [v for v in names.values() if v not in ds]
         if missing:
             raise ValueError(f"restart has no {(pref[:-1] or 'closure').upper()} state ({', '.join(missing)}) but "
