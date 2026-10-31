@@ -1121,8 +1121,9 @@ class BBLAddedClosure(Closure):
     * u* = √(u*²_b), u*²_b = |τ_b|/ρ₀ of the same drag (``ctx.ustar2_bot``, U_bg and the law of the wall included);
       the velocities are those after the implicit viscosity (MOM6: start of step; class (c), spec decision 2);
     * |f| at the centres = ¼ Σ |f| of the four corners, in MOM6's order (SD:1680-1681);
-    * N² from the layer density with ``physics.mixing.gls.buoyancy_frequency2`` (0 at the bed and the surface, and
-      at an interface between two empty layers);
+    * N² from the layer density of the **merged** column (thickness-weighted merged densities over the merged
+      spacing, as the ALE GLS and Jackson; = ``physics.mixing.gls.buoyancy_frequency2`` in a column without thin
+      layers; final review I1), computed inside ``lotw_bbl_columns``;
     * the thin-layer threshold of the ALE closures (``thin_layer_threshold``); the merge is pyOCEAN's choice
       (``physics.mixing.bbl_mixing`` section "Columns with thin-layer merge"; MOM6's LOTW does not merge).
 
@@ -1267,16 +1268,14 @@ class BBLAddedClosure(Closure):
         kd = np.zeros((n + 1, m))
         if wet.size and rho is not None:
             dz = np.ascontiguousarray(hh[:, wet])
-            rw = np.asarray(rho, float).reshape(n, m)[:, wet]
-            n2 = np.zeros((n + 1, wet.size))
-            hi = 0.5 * (dz[:-1] + dz[1:])                              # interface cell height of buoyancy_frequency2
-            with np.errstate(divide="ignore", invalid="ignore"):
-                n2[1:n] = np.where(hi > 0.0, buoyancy_frequency2(rw, dz, self.rho0, self.g), 0.0)
+            rw = np.ascontiguousarray(np.asarray(rho, float).reshape(n, m)[:, wet])
             p = self.bbl_params
             ustar = np.sqrt(np.asarray(ustar2_bot, float).reshape(m)[wet])
             tke = p.bbl_effic * energy[wet]                            # TKE_col = BBL_EFFIC · E (SD:1709)
             numba.set_num_threads(threads._THREADS[0])
-            kd[:, wet] = lotw_bbl_columns(dz, n2, ustar, self.absf[wet], tke, thin_layer_threshold(dz), p)
+            # N² from the merged densities inside (final review I1; = buoyancy_frequency2 without thin layers)
+            kd[:, wet] = lotw_bbl_columns(dz, rw, ustar, self.absf[wet], tke, thin_layer_threshold(dz), p,
+                                          rho0=self.rho0, g=self.g)
         kd[0] = 0.0                                                    # no flux through the bed or the surface
         kd[n] = 0.0
         self.kd = kd

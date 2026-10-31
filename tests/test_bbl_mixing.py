@@ -116,7 +116,7 @@ def test_defaults_are_om4() -> None:
 # ------------------------------------------------------------------ task 3: columns kernel with thin-layer merge
 def _varied_columns(m: int = 40, n: int = 25, seed: int = 3) -> tuple[np.ndarray, ...]:
     """M varied columns (N, M): thick layers, 1 mm–2 cm thin layers at the bed, interior and top, dry columns,
-    N² < 0 interfaces, u* = 0 and f = 0 columns."""
+    density inversions (N² < 0), u* = 0 and f = 0 columns."""
     rng = np.random.default_rng(seed)
     dz = rng.uniform(2.0, 60.0, (n, m))
     thin = rng.random((n, m)) < 0.25
@@ -126,24 +126,26 @@ def _varied_columns(m: int = 40, n: int = 25, seed: int = 3) -> tuple[np.ndarray
     dz[:, 3] = 0.0                           # dry column
     dz[:, 4] = 1.0e-5                        # Σdz = 2.5e-4 m ≤ H_MASSLESS: dry
     dz[:-1, 5] = 1.0e-3                      # one thick layer only
-    n2 = rng.uniform(1.0e-7, 1.0e-4, (n + 1, m))
-    neg = rng.random((n + 1, m)) < 0.15
-    n2[neg] = -rng.uniform(1.0e-6, 1.0e-4, neg.sum())
+    # layer densities: stable steps with 15 % inversions (N² < 0 interfaces, also across merged layers)
+    step = rng.uniform(1.0e-4, 0.5, (n, m))
+    neg = rng.random((n, m)) < 0.15
+    step[neg] = -rng.uniform(1.0e-3, 0.5, neg.sum())
+    rho = 1030.0 - np.cumsum(step, axis=0)    # k = 0 at the bed
     ustar = rng.uniform(1.0e-3, 3.0e-2, m)
     ustar[6] = 0.0
     absf = rng.uniform(0.0, 1.4e-4, m)
     absf[7] = 0.0
     tke = rng.uniform(1.0e-7, 1.0e-4, m)
     tke[8] = 0.0
-    return dz, n2, ustar, absf, tke, thin_layer_threshold(dz)
+    return dz, rho, ustar, absf, tke, thin_layer_threshold(dz)
 
 
 def test_numba_matches_numpy_oracle() -> None:
     """Numba columns kernel = NumPy oracle (merge + ``lotw_bbl_column``) bit for bit, both N² floors."""
-    dz, n2, ustar, absf, tke, h_thin = _varied_columns()
+    dz, rho, ustar, absf, tke, h_thin = _varied_columns()
     for p in (BBLParams(), BBLParams(use_omega=False)):
-        ref = lotw_bbl_columns_numpy(dz, n2, ustar, absf, tke, h_thin, p)
-        out = lotw_bbl_columns(dz, n2, ustar, absf, tke, h_thin, p)
+        ref = lotw_bbl_columns_numpy(dz, rho, ustar, absf, tke, h_thin, p, rho0=1025.0, g=9.8)
+        out = lotw_bbl_columns(dz, rho, ustar, absf, tke, h_thin, p, rho0=1025.0, g=9.8)
         assert out.shape == (dz.shape[0] + 1, dz.shape[1])
         assert np.all(np.isfinite(out))
         assert np.array_equal(out, ref)
@@ -152,49 +154,51 @@ def test_numba_matches_numpy_oracle() -> None:
 
 def test_threads_bit_for_bit() -> None:
     """1 and 5 threads give the same Kd bit for bit (one column per task, no reduction across columns)."""
-    dz, n2, ustar, absf, tke, h_thin = _varied_columns(m=200, seed=11)
+    dz, rho, ustar, absf, tke, h_thin = _varied_columns(m=200, seed=11)
     old = numba.get_num_threads()
     try:
         numba.set_num_threads(1)
-        a = lotw_bbl_columns(dz, n2, ustar, absf, tke, h_thin, BBLParams())
+        a = lotw_bbl_columns(dz, rho, ustar, absf, tke, h_thin, BBLParams())
         numba.set_num_threads(min(5, numba.config.NUMBA_NUM_THREADS))
-        b = lotw_bbl_columns(dz, n2, ustar, absf, tke, h_thin, BBLParams())
+        b = lotw_bbl_columns(dz, rho, ustar, absf, tke, h_thin, BBLParams())
     finally:
         numba.set_num_threads(old)
     assert np.array_equal(a, b)
 
 
 def test_thin_bed_layers_do_not_change_kd() -> None:
-    """1 mm layers split off the bottom of the bed layer and of interior layers are merged into the thick layer
-    above them: Kd at the interfaces of the original column is unchanged (rtol 1e-12), and no interface takes
-    Kd = kd_max because of a vanishing layer (N² < 0 at the new interfaces is not seen, they do not survive)."""
+    """1 mm layers split off the bottom of the bed layer and of interior layers (density of their parent) are
+    merged into the thick layer above them: Kd at the interfaces of the original column is unchanged (rtol 1e-12),
+    and no interface takes Kd = kd_max because of a vanishing layer (the N² = 0 across a 1 mm layer of the parent's
+    density is not seen: N² comes from the merged densities, final review I1)."""
     nz = 20
     dz0 = np.full(nz, 10.0)
-    n20 = np.full(nz + 1, 2.0e-6)
+    rho0 = 1000.0 + 2.0e-3 * np.arange(nz)[::-1]       # N² = 1.962e-6 s⁻²
     split = (0, 5, 11)                       # layers whose bottom 1 mm becomes its own layer
-    dz1, n21, common = [], [], []
+    dz1, rho1, common = [], [], []
     for k in range(nz):
         common.append(len(dz1))              # interface at the bottom of original layer k
         if k in split:
             dz1 += [1.0e-3, dz0[k] - 1.0e-3]
-            n21 += [n20[k], -5.0e-5]         # the new interface: unstable, must not survive
+            rho1 += [rho0[k], rho0[k]]       # the new interface: N² = 0, must not survive
         else:
             dz1.append(dz0[k])
-            n21.append(n20[k])
+            rho1.append(rho0[k])
     common.append(len(dz1))
-    n21.append(n20[nz])
-    dz1, n21 = np.array(dz1), np.array(n21)
+    dz1, rho1 = np.array(dz1), np.array(rho1)
     for p in (BBLParams(), BBLParams(use_omega=False)):
         args = (0.01, 1.0e-4, 2.0e-5)
-        k0 = lotw_bbl_columns(dz0[:, None], n20[:, None], *(np.array([a]) for a in args),
+        k0 = lotw_bbl_columns(dz0[:, None], rho0[:, None], *(np.array([a]) for a in args),
                               thin_layer_threshold(dz0[:, None]), p)[:, 0]
-        k1 = lotw_bbl_columns(dz1[:, None], n21[:, None], *(np.array([a]) for a in args),
+        k1 = lotw_bbl_columns(dz1[:, None], rho1[:, None], *(np.array([a]) for a in args),
                               thin_layer_threshold(dz1[:, None]), p)[:, 0]
         assert np.any(k0 > 0.0)
         np.testing.assert_allclose(k1[common], k0, rtol=1e-12, atol=0.0)
         assert not np.any(k1 == p.kd_max)
-        # without merging, the unstable 1 mm interfaces would take kd_max (use_omega=False)
+        # without merging, the N² = 0 interfaces of the 1 mm layers would take kd_max (use_omega=False)
         if not p.use_omega:
+            n21 = np.zeros(dz1.size + 1)
+            n21[1:-1] = (9.81 / 1000.0) * (rho1[:-1] - rho1[1:]) / (0.5 * (dz1[:-1] + dz1[1:]))
             raw = lotw_bbl_column(dz1, n21, *args, p)
             assert np.any(raw == p.kd_max)
 
@@ -203,10 +207,10 @@ def test_dry_column_zero() -> None:
     """Σdz = 0 → Kd = 0 at every interface (oracle and kernel)."""
     dz = np.zeros((10, 2))
     dz[:, 1] = 5.0
-    n2 = np.full((11, 2), 1.0e-5)
+    rho = 1025.0 - 5.0e-3 * np.arange(10)[:, None] * np.ones(2)   # layer densities (N² ≈ 1e-5 s⁻²)
     one = np.ones(2)
     for fn in (lotw_bbl_columns, lotw_bbl_columns_numpy):
-        kd = fn(dz, n2, 0.01 * one, 1.0e-4 * one, 1.0e-5 * one, thin_layer_threshold(dz), BBLParams())
+        kd = fn(dz, rho, 0.01 * one, 1.0e-4 * one, 1.0e-5 * one, thin_layer_threshold(dz), BBLParams())
         assert np.all(kd[:, 0] == 0.0)
         assert np.any(kd[:, 1] > 0.0)
 
@@ -215,17 +219,75 @@ def test_columns_refuse_non_finite_inputs() -> None:
     """Task 3 review M2: a NaN u* (or any non-finite / negative input) raises instead of giving Kd = 0 silently."""
     import pytest
     dz = np.full((10, 3), 5.0)
-    n2 = np.full((11, 3), 1e-5)
+    rho = 1025.0 - 5.0e-3 * np.arange(10)[:, None] * np.ones(3)   # layer densities
     ok = dict(ustar=np.full(3, 0.01), absf=np.full(3, 1e-4), tke=np.full(3, 1e-6), h_thin=np.full(3, 1e-3))
-    lotw_bbl_columns(dz, n2, **ok)
+    lotw_bbl_columns(dz, rho, **ok)
     for name in ok:
         for bad in (np.nan, np.inf, -1e-3):
             kw = dict(ok)
             kw[name] = np.array(ok[name])
             kw[name][1] = bad
             with pytest.raises(ValueError, match=name):
-                lotw_bbl_columns(dz, n2, **kw)
-    n2b = n2.copy()
-    n2b[4, 2] = np.nan
-    with pytest.raises(ValueError, match="n2"):
-        lotw_bbl_columns(dz, n2b, **ok)
+                lotw_bbl_columns(dz, rho, **kw)
+    rhob = rho.copy()
+    rhob[4, 2] = np.nan
+    with pytest.raises(ValueError, match="rho"):
+        lotw_bbl_columns(dz, rhob, **ok)
+
+
+def test_thin_layers_from_densities_do_not_change_kd() -> None:
+    """Final review I1: starting from layer densities (``BBLAddedClosure.update``), 1 mm layers split off the bottom
+    of layers 2 and 5 of a 20 × 10 m stratified column, with the density of their parent layer, leave Kd_BBL at the
+    interfaces of the original column unchanged (rtol 1e-12).  N² at a merged interface must come from the merged
+    (thickness-weighted) densities over the merged spacing, as GLS and Jackson; the model N² across the 1 mm layer
+    (spacing ½(10 m + 1 mm)) doubled N² at interfaces 2 and 5 before the fix (interface 7: Kd 0.118 → 0)."""
+    from core.components.closure import BBLAddedClosure, ConstantClosure
+    nz, dz_lay, drho = 20, 10.0, 2.0e-3      # N² = (g/ρ₀) Δρ / Δz = 1.962e-6 s⁻²
+    rho0 = 1000.0 + drho * np.arange(nz)[::-1]   # densest at the bed (k = 0)
+    dz0 = np.full(nz, dz_lay)
+    split = (2, 5)
+    dz1, rho1, common = [], [], []
+    for k in range(nz):
+        common.append(len(dz1))             # interface at the bottom of original layer k
+        if k in split:
+            dz1 += [1.0e-3, dz_lay - 1.0e-3]
+            rho1 += [rho0[k], rho0[k]]
+        else:
+            dz1.append(dz_lay)
+            rho1.append(rho0[k])
+    common.append(len(dz1))
+    dz1, rho1 = np.array(dz1), np.array(rho1)
+
+    def kd_of(dz: np.ndarray, rho: np.ndarray) -> np.ndarray:
+        n = dz.size
+        cl = BBLAddedClosure(ConstantClosure(), n, (1, 1), np.array([[1.0e-4]]), rho0=1000.0, g=9.81)
+        z = np.zeros((n, 1, 1))
+        cl.update(z, z, dz[:, None, None], rho[:, None, None], None, np.array([[1.0e-4]]),
+                  bbl_energy=np.array([[1.0e-4]]))
+        return cl.kd[:, 0].copy()
+
+    k0 = kd_of(dz0, rho0)
+    k1 = kd_of(dz1, rho1)
+    assert np.count_nonzero(k0 > 0.0) >= 5
+    np.testing.assert_allclose(k1[common], k0, rtol=1e-12, atol=0.0)
+
+
+def test_no_thin_layers_bit_for_bit_with_column() -> None:
+    """Final review I1: in columns without thin layers, the columns kernel from densities equals the unmerged
+    ``lotw_bbl_column`` with the N² of ``buoyancy_frequency2`` bit for bit (the merged-density N² changes only
+    columns that merge)."""
+    from physics.mixing.gls import buoyancy_frequency2
+    rng = np.random.default_rng(5)
+    n, m = 30, 60
+    dz = rng.uniform(0.5, 60.0, (n, m))
+    rho = 1028.0 - np.cumsum(rng.uniform(-0.05, 0.3, (n, m)), axis=0)
+    n2 = np.zeros((n + 1, m))
+    n2[1:n] = buoyancy_frequency2(rho, dz, 1025.0, 9.81)
+    ustar, absf, tke = rng.uniform(1e-3, 3e-2, m), rng.uniform(0.0, 1.4e-4, m), rng.uniform(1e-7, 1e-4, m)
+    h_thin = thin_layer_threshold(dz)
+    assert np.all(dz >= h_thin)
+    for p in (BBLParams(), BBLParams(use_omega=False)):
+        kd = lotw_bbl_columns(dz, rho, ustar, absf, tke, h_thin, p, rho0=1025.0, g=9.81)
+        ref = np.stack([lotw_bbl_column(dz[:, j], n2[:, j], ustar[j], absf[j], tke[j], p) for j in range(m)], 1)
+        assert np.any(ref > 0.0)
+        assert np.array_equal(kd, ref)

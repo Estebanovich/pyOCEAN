@@ -598,8 +598,9 @@ MOM6 takes the velocities at the start of the step; pyOCEAN those after the impl
   density (the model EOS) and layers and diffuses the same step's tracers. No state of its own (nothing in the
   restart beyond the scheme and parameters, which the restart checks).
 * **Thin layers:** merged before the column call with the threshold of the GLS and Jackson,
-  $\min(10\text{ cm}, \max(1\text{ mm}, 1\%\,D/N))$, and $K_d$ interpolated back; $N^2$ is recomputed at the surviving
-  interfaces. MOM6's LOTW does not merge, but with $\Delta z_{int}$ = 0 an interface would take the `kd_max` branch
+  $\min(10\text{ cm}, \max(1\text{ mm}, 1\%\,D/N))$, and $K_d$ interpolated back; $N^2$ at the merged interfaces
+  comes from the thickness-weighted merged densities over the merged spacing, as in the GLS and Jackson (final review
+  I1: reusing the model $N^2$ across a 1 mm layer had doubled it). MOM6's LOTW does not merge, but with $\Delta z_{int}$ = 0 an interface would take the `kd_max` branch
   (pyOCEAN's choice; a column with nearly empty layers gives the same $K_d$ as without them).
 * **ALE only** (σ, z\* and hybrid ALE), with a bed drag (`bottom_drag='quadratic'` or `z0`). The pre-flight refuses it
   with `closure='gls'` (its $k$ has a bed boundary condition: double counting) and `'parabolic'`, in the legacy σ model
@@ -616,8 +617,8 @@ MOM6 takes the velocities at the start of the step; pyOCEAN those after the impl
 * **Column vs MOM6** (`tests/test_vertical_vs_mom6.py::test_lotw_bbl_matches_mom6`): 15 columns (stratified,
   $N^2\le0$ with and without the $\Omega^2$ floor, $f$ = 0, 1 mm layers, large u\*, ample energy, 8 random) agree to
   ≤ 1.5e-17 relative (tolerance 1e-10); `::test_set_bbl_tke_factor` pins MOM6's √2 and 2.
-* **Column properties** (`tests/test_bbl_mixing.py`, 11 tests): $K_d\ge0$, work ≤ γ $\mathcal E$, $K_d$ = 0 without drag,
-  thin layers, dry column, Numba = oracle, 1 = 5 threads. **Model** (`tests/test_bbl_model.py`, 12 tests): off = bit for
+* **Column properties** (`tests/test_bbl_mixing.py`, 13 tests): $K_d\ge0$, work ≤ γ $\mathcal E$, $K_d$ = 0 without drag,
+  thin layers, dry column, Numba = oracle, 1 = 5 threads. **Model** (`tests/test_bbl_model.py`, 15 tests): off = bit for
   bit, energy = drag work (quadratic and log law), mixes a dense bottom layer, adds to Jackson and KPP, pre-flight,
   restart bit for bit, dry columns, periodic and open edges.
 * **DOME 10 km** (`validation/dome/README.md`, Legg et al. 2006 Case 1), hybrid ν_v = 1e-4 + Smagorinsky 0.15 +
@@ -627,7 +628,8 @@ MOM6 takes the velocities at the start of the step; pyOCEAN those after the impl
   19.0 → 20.8 Sv (truth 20.6, digitized); no CFL truncations but 32 limiter events (control 0). z\*: −9.04 → −8.76;
   σ: −11.39 → −10.18.
 * **Cost** per step (`scripts/bbl_cost.py`): DOME 10 km 1.031×; BayIW cut z\* 1.092× (above the spec's 1.05: with a
-  constant closure and no shear mixing the scheme switches on the density/N² phase).
+  constant closure and no shear mixing the scheme switches on the density/N² phase — hypothesis, the profile supports
+  it).
 
 ## Options and defaults
 
