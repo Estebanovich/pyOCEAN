@@ -349,6 +349,8 @@ def test_legg_json_has_sources():
         if v["method"] == "digitized":
             assert "uncertainty" in v, key
     assert vals["corner_E_nonhydro"]["value"] == 8.6e-4 and vals["corner_E_nonhydro"]["method"] == "text"
+    assert vals["corner_E_nonhydro"]["equation"].startswith("eq. 14")           # α_E check, BBL plan Task 6
+    assert vals["alphaE_nonhydro"]["equation"].startswith("eq. 12")
 
 
 def test_class_profile_and_mean_buoyancy():
@@ -382,3 +384,143 @@ def test_before_after_and_scorecard_figures_write(tmp_path):
     assert p.exists() and p.stat().st_size > 0
     q = figures.legg_scorecard(data, tmp_path, 10.0)
     assert q.exists() and q.stat().st_size > 0
+
+
+# --- Plume theory diagnostic (BBL drag-mixing plan, Task 6; spec 2026-10-30-bbl-drag-mixing goal A, criterion 5) ---
+
+def _plume_series(nt=2, h_plume=100.0, dU=0.5, db=0.01):
+    """Flat 3600-m box at 50 km: in every column a bed-attached plume of h_plume (two layers, s = 1, u = −dU) under
+    still ambient water (s = 0) whose buoyancy is db higher (T from b = −g(ρ − 1030)/ρ₀ with the linear EOS)."""
+    c = cases.get(50.0)
+    hk = np.array([1700.0, 1800.0, 0.6 * h_plume, 0.4 * h_plume])      # surface first; the plume is the last two
+    nz = hk.size
+    h = np.broadcast_to(hk[None, :, None, None], (nt, nz, c.ny, c.nx)).copy()
+    b_amb, b_pl = -0.005, -0.005 - db
+
+    def T_of_b(b):
+        return cases.T_of_rho(cases.RHO_TOP - cases.RHO0 * b / cases.G)
+    T = np.empty_like(h)
+    T[:, :2], T[:, 2:] = T_of_b(b_amb), T_of_b(b_pl)
+    s_ = np.zeros_like(h)
+    s_[:, 2:] = 1.0
+    u = np.zeros((nt, nz, c.ny, c.nx + 1))
+    u[:, 2:] = -dU
+    return dict(t=np.arange(nt) * 86400.0, x=c.x, y=c.y, dx=np.full(c.nx, c.dx), dy=np.full(c.ny, c.dx),
+                H=np.full((c.ny, c.nx), 3600.0), h=h, T=T, s=s_, u=u, v=np.zeros((nt, nz, c.ny + 1, c.nx)),
+                eta=np.zeros((nt, c.ny, c.nx)))
+
+
+def test_plume_bulk_synthetic():
+    """h = 100 m, ΔU = 0.5 m/s, Δb = 0.01 m/s² → Ri_B = Δb h/ΔU² = 4.0 and Fr = ΔU/√(Δb h) = 0.5 to 1e-12."""
+    from validation.dome import theory
+    s = _plume_series()
+    r = theory.plume_bulk(s, 0.0, s["t"][-1])
+    np.testing.assert_allclose(r["h"], 100.0, rtol=1e-12)
+    np.testing.assert_allclose(r["dU"], 0.5, rtol=1e-12)
+    np.testing.assert_allclose(r["db"], 0.01, rtol=1e-12)
+    np.testing.assert_allclose(r["RiB"], 4.0, rtol=1e-12)
+    np.testing.assert_allclose(r["Fr"], 0.5, rtol=1e-12)
+    assert r["xp"].shape == r["RiB"].shape == (s["x"].size,)
+
+
+def test_interface_cells():
+    """A plume interface spread over four 20-m layers (s 0 → 1) with Δb = 1e-3 between them (N² = 5e-5 s⁻²): three
+    interfaces with Δu = 0.4 m/s (S² = 4e-4, Ri = 0.125 < 0.25) and one with Δu = 0.05 (Ri = 8); a 1-mm vanished
+    layer with odd T and u inside the interface is skipped.  Count 3 in every column; 4 band interfaces each."""
+    from validation.dome import theory
+    c = cases.get(50.0)
+    nt = 2
+    # surface first: ambient A, B (s 0), C, D, vanished V, E, F (s 1), plume core G
+    hk = np.array([3000.0, 20.0, 20.0, 20.0, 1e-3, 20.0, 20.0, 480.0])
+    sk = np.array([0.0, 0.0, 0.25, 0.5, 0.5, 0.75, 1.0, 1.0])
+    bk = -0.005 - 1e-3 * np.array([0.0, 0.0, 1.0, 2.0, 9.0, 3.0, 4.0, 4.0])
+    uk = np.array([0.0, 0.0, -0.4, -0.8, 5.0, -1.2, -1.25, -1.25])
+    nz = hk.size
+    shp = (nt, nz, c.ny, c.nx)
+    h = np.broadcast_to(hk[None, :, None, None], shp).copy()
+    T = np.broadcast_to(cases.T_of_rho(cases.RHO_TOP - cases.RHO0 * bk / cases.G)[None, :, None, None], shp).copy()
+    s_ = np.broadcast_to(sk[None, :, None, None], shp).copy()
+    u = np.broadcast_to(uk[None, :, None, None], (nt, nz, c.ny, c.nx + 1)).copy()
+    s = dict(t=np.arange(nt) * 86400.0, x=c.x, y=c.y, dx=np.full(c.nx, c.dx), dy=np.full(c.ny, c.dx),
+             H=np.full((c.ny, c.nx), 3600.0), h=h, T=T, s=s_, u=u, v=np.zeros((nt, nz, c.ny + 1, c.nx)),
+             eta=np.zeros((nt, c.ny, c.nx)))
+    r = theory.interface_richardson(s, 0.0, s["t"][-1])
+    np.testing.assert_allclose(r["n_low"], 3.0)
+    np.testing.assert_allclose(r["n_band"], 4.0)
+    assert r["hist"].sum() == pytest.approx(4 * nt * c.nx)              # band interfaces at the path row, all records
+    np.testing.assert_allclose(np.sort(r["ri_samples"][:4]), [0.125, 0.125, 0.125, 8.0], rtol=1e-9)
+
+
+def test_entrainment_laws():
+    """Ellison–Turner (Turner 1986; Xu eqs. 3–4) and Xu (2006) eq. 16 at their end points."""
+    from validation.dome import theory
+    e = theory.entrainment_laws(np.array([0.0, 0.25, 0.8, 1.5]))
+    np.testing.assert_allclose(e["ellison_turner"][[0, 2, 3]], [0.08, 0.0, 0.0], atol=1e-15)
+    np.testing.assert_allclose(e["xu"][[0, 1, 3]], [0.20, 0.0, 0.0], atol=1e-15)
+    assert e["ellison_turner"][1] == pytest.approx((0.08 - 0.025) / 2.25)
+
+
+def test_legg_numbers_reproduce_table_2():
+    """Legg et al. (2006) Table 2, Case 1: Fr 1, Δb₀/(N²h₀) 12, stretching 0.8, W/L_ρ 4.1, N/f 23.0, drag Ekman 0.127;
+    frictional Ekman ν_v/(h₀² f) = 0.5/9 for ν_v = 0.5."""
+    from validation.dome import theory
+    L = theory.legg_numbers(0.5, 2e-3)
+    assert L["Fr"] == pytest.approx(1.0)
+    assert L["db_ratio"] == pytest.approx(12.0, rel=1e-12)
+    assert L["stretching"] == pytest.approx(0.8, abs=0.01)
+    assert L["width"] == pytest.approx(4.1, abs=0.1)
+    assert L["N_over_f"] == pytest.approx(23.0, abs=0.05)
+    assert L["drag_ekman"] == pytest.approx(0.127, abs=5e-4)
+    assert L["frictional_ekman"] == pytest.approx(0.5 / 9.0, rel=1e-12)
+
+
+def test_bottom_ekman_and_nof_synthetic():
+    """No shear inside the plume → no Ekman excess; a 10-m bed sheet moving 0.1 m/s down-slope faster than the plume
+    above carries 0.1 × 10 × Δy per row (excess = raw bottom transport, the interior is still).  Nof: no u_t = g′s/f
+    on a flat bed; the plume-mean along-slope speed is ΔU."""
+    from validation.dome import theory
+    s = _plume_series(h_plume=100.0)
+    q = theory.bottom_ekman_transport(s, 0.0, s["t"][-1], d=10.0)
+    np.testing.assert_allclose(q["excess"], 0.0, atol=1e-12)
+    # a bed sheet: split the bottom 40-m layer into 30 + 10 m and give the 10 m −0.1 m/s extra v (down-slope = −y)
+    h = s["h"]
+    s["h"] = np.concatenate([h[:, :3], np.full_like(h[:, 3:], 30.0), np.full_like(h[:, 3:], 10.0)], axis=1)
+    for k in ("T", "s"):
+        s[k] = np.concatenate([s[k], s[k][:, -1:]], axis=1)
+    s["u"] = np.concatenate([s["u"], s["u"][:, -1:]], axis=1)
+    v = np.zeros((s["h"].shape[0], 5, s["y"].size + 1, s["x"].size))
+    v[:, -1] = -0.1
+    s["v"] = v
+    q = theory.bottom_ekman_transport(s, 0.0, s["t"][-1], d=10.0)
+    ny = s["y"].size
+    np.testing.assert_allclose(q["excess"], 0.1 * 10.0 * s["dy"][0] * ny, rtol=1e-12)
+    np.testing.assert_allclose(q["bbl"], 0.1 * 10.0 * s["dy"][0] * ny, rtol=1e-12)
+    n = theory.nof_speed(_plume_series(), 0.0, 86400.0)
+    assert np.all(np.isnan(n["u_nof"]))                                  # flat bed: no Nof speed
+    np.testing.assert_allclose(n["u_plume"], 0.5, rtol=1e-12)
+
+
+def test_bbl_and_ubg_tags():
+    """--drag-bg-vel U appends '_ubg<U>' (U ≠ 0) and --bbl '_bbl', after '_jackson'; both reach the model."""
+    from validation.dome import run_pyocean
+    p = run_pyocean.parser()
+    a = p.parse_args(["10", "hybrid", "--kv-low", "--smag", "0.15", "--shear", "jackson", "--drag-bg-vel", "0.05",
+                      "--bbl", "lotw"])
+    tag = run_pyocean.default_tag(a.closure, a.kv_low, a.smag, a.shear, a.shear_pr, a.drag_bg_vel, a.bbl)
+    assert tag == "kv_low_smag0.15_jackson_ubg0.05_bbl"
+    assert run_pyocean.default_tag("constant", True, 0.15, None, 1.0, 0.05, None) == "kv_low_smag0.15_ubg0.05"
+    assert run_pyocean.default_tag("constant", True, 0.15, None, 1.0, 0.0, "lotw") == "kv_low_smag0.15_bbl"
+    assert run_pyocean.default_tag("constant", True, 0.15, "jackson", 1.0) == "kv_low_smag0.15_jackson"
+    a = p.parse_args(["10", "hybrid"])
+    assert a.drag_bg_vel == 0.0 and a.bbl is None
+    m, _ = run_pyocean.build(cases.get(50.0), "zstar", nu_v=cases.NU_V_LOW, drag_bg_vel=0.05, bbl_mixing="lotw")
+    assert m.drag_bg_vel == 0.05 and m.bbl_mixing == "lotw"
+
+
+def test_plume_theory_figure_writes(tmp_path):
+    """figures.plume_theory writes its PNG for a synthetic plume."""
+    from validation.dome import figures
+    s = _plume_series(nt=3)
+    s["t"] = np.array([0.0, 30.0, 50.0]) * 86400.0
+    p = figures.plume_theory([("pyocean_hybrid", s)], tmp_path, 10.0)
+    assert p.exists() and p.stat().st_size > 0

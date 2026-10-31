@@ -10,7 +10,8 @@ legg2006_nonhydro.json) and the tracer by buoyancy class (Fig. 4, latter half of
 dome_<res>km_legg_scorecard.png (Task 8): b_f, corner E, T(x' = −200 km), α_E and the mean dye buoyancy at
 x' = −300 km of each run against Legg's truth; ``--before-after base,new[,ref]``: dome_<res>km_before_after.png (bottom
 dye of the baseline and the new run, path, transport and tracer by class against Legg) and the bottom-dye animation
-of those runs only.
+of those runs only.  dome_<res>km_plume_theory.png (BBL drag-mixing plan, Task 6; ``plume_theory``): Ri_B, Fr, the
+interfaces with Ri < 0.25 and α_E against Ellison–Turner and Xu along x' (validation/dome/theory.py).
 
 Usage: python validation/dome/figures.py 10 [--no-anim] [--runs name1,name2,... --sub dir]
        python validation/dome/figures.py 10 --before-after base,new[,ref] [--sub dir] [--no-anim]
@@ -315,6 +316,56 @@ def legg_scorecard(data: list, out: Path, res_km: float, t0: float = 30 * 86400.
     return path
 
 
+def plume_theory(data: list, out: Path, res_km: float, t0: float = 30 * 86400.0, t1: float = 50 * 86400.0) -> Path:
+    """
+    Theoretical diagnostic of the plume along x' (BBL drag-mixing plan, Task 6; validation/dome/theory.py): per run,
+    (a) the bulk Richardson number Ri_B = Δb h/ΔU² and (b) the Froude number Fr = ΔU/√(Δb h) on the path, (c) the
+    number of interfaces with gradient Ri < 0.25 across the plume interface (Jackson et al. 2008 §6: ≥ 2–4 needed) and
+    (d) the measured α_E(x') (Legg eq. 12) against Ellison–Turner E(Ri_B) (dashed) and Xu (2006) E(median Ri_g)
+    (dotted).  Laboratory laws without rotation; Legg §3: DOME entrains ~10× less than they give.  Writes
+    dome_<res>km_plume_theory.png and returns its path.
+    """
+    from validation.dome import theory
+    fig, axs = plt.subplots(2, 2, figsize=(11, 7), sharex=True)
+    (a1, a2), (a3, a4) = axs
+    for name, s in data:
+        pb = theory.plume_bulk(s, t0, t1)
+        ir = theory.interface_richardson(s, t0, t1)
+        x, aE = metrics.entrainment(s, t0, t1)
+        xp = pb["xp"] / 1e3
+        lab = LABELS.get(name, name)
+        line, = a1.plot(xp, pb["RiB"], label=lab)
+        c = line.get_color()
+        a2.plot(xp, pb["Fr"], color=c)
+        a3.plot(xp, ir["n_low"], color=c)
+        a4.plot(xp, aE, color=c)
+        a4.plot(xp, theory.entrainment_laws(pb["RiB"])["ellison_turner"], "--", color=c, lw=0.9)
+        a4.plot(xp, theory.entrainment_laws(ir["ri_median"])["xu"], ":", color=c, lw=0.9)
+    a1.axhline(0.25, color="0.5", lw=0.7)
+    a1.axhline(0.8, color="0.5", lw=0.7, ls="--")
+    a2.axhline(1.0, color="0.5", lw=0.7)
+    a3.axhspan(2, 4, color="0.9", zorder=0)
+    a1.set(ylabel="Ri_B = Δb h/ΔU²", yscale="log", title="(a) Ri bulk (0.25 y 0.8: Xu, Ellison–Turner)")
+    a2.set(ylabel="Fr = ΔU/√(Δb h)", ylim=(0, 3), title="(b) Froude local (Ezer: 0.4–0.6 aguas abajo)")
+    a3.set(ylabel="interfaces con Ri < 0.25", xlabel="x' [km]", title="(c) celdas de Ri bajo (Jackson §6: ≥ 2–4)")
+    a4.set(ylabel="E", xlabel="x' [km]", title="(d) α_E medido (ec. 12) — E-T(Ri_B) -- Xu(Ri_g) ··",
+           ylim=(-1e-2, 1e-1))
+    a4.set_yscale("symlog", linthresh=1e-4)
+    for a in axs.flat:
+        a.set_xlim(-700, 50)
+        a.tick_params(labelsize=7)
+        a.title.set_fontsize(9)
+    h, lab = a1.get_legend_handles_labels()
+    fig.legend(h, lab, loc="lower center", ncol=3, fontsize=7, frameon=False)
+    fig.suptitle(f"DOME {res_km:g} km: diagnóstico teórico de la pluma, días {t0 / 86400:.0f}–{t1 / 86400:.0f}",
+                 x=0.02, ha="left", fontsize=10)
+    fig.tight_layout(rect=(0, 0.04 + 0.025 * int(np.ceil(len(data) / 3)), 1, 1))
+    path = out / f"dome_{res_km:g}km_plume_theory.png"
+    fig.savefig(path, dpi=110)
+    plt.close(fig)
+    return path
+
+
 def main(res_km: float, anim: bool = True, only: list[str] | None = None, sub: str = "") -> None:
     runs = [p for p in sorted((cases.RUNS / f"{res_km:g}km").glob("*/series.npz"))
             if not only or p.parent.name in only]
@@ -368,6 +419,7 @@ def main(res_km: float, anim: bool = True, only: list[str] | None = None, sub: s
     plt.close(fig)
     legg_truth_figures(data, out, res_km)
     legg_scorecard(data, out, res_km)
+    plume_theory(data, out, res_km)
     print(out)
     if anim:
         order = list(LABELS)

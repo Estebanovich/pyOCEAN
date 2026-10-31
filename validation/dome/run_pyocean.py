@@ -16,8 +16,15 @@ condition of the GLS (``core.model.driver._ale_bed_ustar2``); ``kv`` = 0, so κ_
 (``shear_mixing='jackson'``, ``shear_prandtl`` = ``--shear-pr``, default 1) added to the closure; the default tag gets
 '_jackson' ('_jacksonpr<P>' when P ≠ 1).  ``--kv-low`` works in every coordinate (z*, σ and hybrid).
 
+``--drag-bg-vel U`` and ``--bbl lotw`` (BBL drag-mixing plan, Task 6; spec 2026-10-30-bbl-drag-mixing, Claude's
+decision 1): the background velocity U_bg of the quadratic drag (``drag_bg_vel``, MOM6 DOME and Legg use 0.05 m/s;
+the baseline 0) and the drag-driven bottom-boundary-layer mixing (``bbl_mixing='lotw'``, MOM6/OM4
+add_LOTW_BBL_diffusivity with the default ``BBLParams``).  The default tag gets '_ubg<U>' when U ≠ 0 and then '_bbl',
+after '_jackson', e.g. 'kv_low_smag0.15_jackson_ubg0.05_bbl'.
+
 Usage: NUMBA_NUM_THREADS=5 python validation/dome/run_pyocean.py 10 zstar [--dt 600 (default)] [--days 50] [--tag x]
            [--closure {constant,gls}] [--smag C] [--kv-low] [--shear jackson [--shear-pr P]]
+           [--drag-bg-vel U] [--bbl lotw]
 """
 from __future__ import annotations
 
@@ -74,14 +81,35 @@ def shear_kwargs(shear: str | None, shear_pr: float = 1.0) -> dict:
     return dict(shear_mixing=shear, shear_prandtl=float(shear_pr))
 
 
-def default_tag(closure: str, kv_low: bool, smag: float, shear: str | None = None, shear_pr: float = 1.0) -> str:
+BBLS = ("lotw",)
+
+
+def bbl_kwargs(bbl: str | None, drag_bg_vel: float = 0.0) -> dict:
+    """Model arguments of the drag background velocity and the BBL mixing: {} for the baseline (U_bg = 0, no BBL)."""
+    out = {}
+    if float(drag_bg_vel) != 0.0:
+        out["drag_bg_vel"] = float(drag_bg_vel)
+    if bbl is not None:
+        if bbl not in BBLS:
+            raise ValueError(f"unknown BBL mixing {bbl!r}; use one of {BBLS}")
+        out["bbl_mixing"] = bbl
+    return out
+
+
+def default_tag(closure: str, kv_low: bool, smag: float, shear: str | None = None, shear_pr: float = 1.0,
+                drag_bg_vel: float = 0.0, bbl: str | None = None) -> str:
     """Run-directory tag: 'kv_low' / '' (constant) / closure name, then '_smag<C>', then '_jackson' ('_jacksonpr<P>'
-    when P ≠ 1), e.g. 'kv_low_smag0.15_jacksonpr0'."""
+    when P ≠ 1), then '_ubg<U>' when the drag background velocity U ≠ 0, then '_bbl' with the BBL mixing, e.g.
+    'kv_low_smag0.15_jacksonpr0' or 'kv_low_smag0.15_jackson_ubg0.05_bbl'."""
     parts = ["kv_low" if kv_low else "" if closure == "constant" else closure]
     if smag > 0.0:
         parts.append(f"smag{smag:g}")
     if shear is not None:
         parts.append(shear + ("" if float(shear_pr) == 1.0 else f"pr{float(shear_pr):g}"))
+    if float(drag_bg_vel) != 0.0:
+        parts.append(f"ubg{float(drag_bg_vel):g}")
+    if bbl is not None:
+        parts.append("bbl")
     return "_".join(p for p in parts if p)
 
 
@@ -136,14 +164,17 @@ def record(m, st) -> dict:
 
 def run(res_km: float, coord: str, dt: float | None = None, days: float | None = None, tag: str | None = None,
         threads: int = 5, nu_v: float | None = None, closure: str = "constant", write: bool = True,
-        smag: float = 0.0, kv_low: bool = False, shear: str | None = None, shear_pr: float = 1.0) -> Path | dict:
+        smag: float = 0.0, kv_low: bool = False, shear: str | None = None, shear_pr: float = 1.0,
+        drag_bg_vel: float = 0.0, bbl: str | None = None) -> Path | dict:
     """Run and write cases.run_dir(res_km, 'pyocean', coord, tag)/series.npz; returns its path.  ``tag`` None:
     '' for the constant closure, 'gls' for the GLS.  ``write`` False (cost measurement): nothing is written and the
     run metadata are returned.  ``smag`` > 0 (Smagorinsky C) appends '_smag<C>' to the default tag
     ('smag0.15', 'gls_smag0.15'); ``kv_low`` is the variant ν_v = cases.NU_V_LOW (constant closure only; default tag
     'kv_low', so the baseline is not overwritten).  With smag > 0 the meta also hold ``smag``, ``n_visc_limited``
     and ``nu_t_max`` (max ν at the output times).  ``shear`` ('jackson') adds the interior shear mixing with
-    Prandtl number ``shear_pr`` (tag default_tag; meta ``shear_mixing``, ``shear_prandtl``)."""
+    Prandtl number ``shear_pr`` (tag default_tag; meta ``shear_mixing``, ``shear_prandtl``).  ``drag_bg_vel`` (U_bg
+    of the quadratic drag) and ``bbl`` ('lotw') add '_ubg<U>' and '_bbl' to the tag (meta ``drag_bg_vel``,
+    ``bbl_mixing``)."""
     set_threads(threads)
     c = cases.get(res_km)
     if kv_low:
@@ -151,13 +182,13 @@ def run(res_km: float, coord: str, dt: float | None = None, days: float | None =
             raise ValueError("kv_low sets ν_v = 1e-4 of the constant closure; do not combine with --closure gls / --nu-v")
         nu_v = cases.NU_V_LOW
     if tag is None:
-        tag = default_tag(closure, kv_low, smag, shear, shear_pr)
+        tag = default_tag(closure, kv_low, smag, shear, shear_pr, drag_bg_vel, bbl)
     out = cases.run_dir(res_km, "pyocean", coord, tag) / "series.npz"
     if write:
         out.unlink(missing_ok=True)
     dt = default_dt(c) if dt is None else dt
     days = c.days if days is None else days
-    m, st = build(c, coord, dt, nu_v, closure, smag, **shear_kwargs(shear, shear_pr))
+    m, st = build(c, coord, dt, nu_v, closure, smag, **shear_kwargs(shear, shear_pr), **bbl_kwargs(bbl, drag_bg_vel))
     n_steps = int(round(days * 86400.0 / dt))
     every = max(1, int(round(c.out_s / dt)))
     recs, times, tic, nu_max = [record(m, st)], [0.0], None, float("nan")
@@ -181,6 +212,7 @@ def run(res_km: float, coord: str, dt: float | None = None, days: float | None =
         meta.update(smag=smag, n_visc_limited=int(st.n_visc_limited or 0), nu_t_max=float(nu_max))
     if shear is not None:
         meta.update(shear_mixing=shear, shear_prandtl=float(shear_pr))
+    meta.update(drag_bg_vel=float(drag_bg_vel), bbl_mixing=bbl)
     if not write:
         return meta
     return series.save(out, s, meta)
@@ -202,13 +234,16 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--cost", action="store_true", help="cost measurement: write nothing, print the metadata")
     ap.add_argument("--shear", choices=SHEARS, default=None, help="interior shear mixing added to the closure")
     ap.add_argument("--shear-pr", type=float, default=1.0, help="Prandtl number ν/κ of the shear mixing (default 1)")
+    ap.add_argument("--drag-bg-vel", type=float, default=0.0,
+                    help="background velocity U_bg of the quadratic drag [m/s] (default 0; MOM6 DOME/Legg 0.05)")
+    ap.add_argument("--bbl", choices=BBLS, default=None, help="drag-driven BBL mixing added to the closure")
     return ap
 
 
 def main() -> None:
     a = parser().parse_args()
     print(run(a.res_km, a.coord, a.dt, a.days, a.tag, a.threads, a.nu_v, a.closure, write=not a.cost, smag=a.smag,
-              kv_low=a.kv_low, shear=a.shear, shear_pr=a.shear_pr))
+              kv_low=a.kv_low, shear=a.shear, shear_pr=a.shear_pr, drag_bg_vel=a.drag_bg_vel, bbl=a.bbl))
 
 
 if __name__ == "__main__":

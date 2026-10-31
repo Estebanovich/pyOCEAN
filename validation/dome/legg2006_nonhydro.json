@@ -14,7 +14,8 @@
    "method": "text",
    "source": "Legg et al. 2006 §3.1 after eq. 14, journal p. 79 (PDF page 11); local text copy .md l. 727 (the .md lost the minus of 10^-4)",
    "resolution_km": 0.5,
-   "model": "MITgcm non-hydrostatic, 500 m x 30 m"
+   "model": "MITgcm non-hydrostatic, 500 m x 30 m",
+   "equation": "eq. 14: corner-mean E = (<T_out> - <T_in>)/(<U_rms> <S>) over -50 < x' < 50 km, -50 < y' < 0"
   },
   "corner_E_nonhydro_fig14": {
    "method": "digitized",
@@ -23,7 +24,8 @@
    "value": 0.000877,
    "units": "1",
    "resolution_km": 0.5,
-   "model": "MITgcm non-hydrostatic"
+   "model": "MITgcm non-hydrostatic",
+   "equation": "eq. 14: corner-mean E = (<T_out> - <T_in>)/(<U_rms> <S>) over -50 < x' < 50 km, -50 < y' < 0"
   },
   "corner_E_2p5km_z": {
    "method": "digitized",
@@ -32,7 +34,8 @@
    "value": 0.000773,
    "units": "1",
    "resolution_km": 2.5,
-   "model": "MITgcm z"
+   "model": "MITgcm z",
+   "equation": "eq. 14: corner-mean E = (<T_out> - <T_in>)/(<U_rms> <S>) over -50 < x' < 50 km, -50 < y' < 0"
   },
   "corner_E_10km_z": {
    "method": "digitized",
@@ -41,7 +44,8 @@
    "value": 0.000219,
    "units": "1",
    "resolution_km": 10,
-   "model": "MITgcm z (hydrostatic), nu_v 0.5"
+   "model": "MITgcm z (hydrostatic), nu_v 0.5",
+   "equation": "eq. 14: corner-mean E = (<T_out> - <T_in>)/(<U_rms> <S>) over -50 < x' < 50 km, -50 < y' < 0"
   },
   "corner_E_10km_iso": {
    "method": "digitized",
@@ -50,7 +54,8 @@
    "value": 0.00094,
    "units": "1",
    "resolution_km": 10,
-   "model": "HIM isopycnal, nu_v 1e-4 + Hallberg 2000 Ri mixing"
+   "model": "HIM isopycnal, nu_v 1e-4 + Hallberg 2000 Ri mixing",
+   "equation": "eq. 14: corner-mean E = (<T_out> - <T_in>)/(<U_rms> <S>) over -50 < x' < 50 km, -50 < y' < 0"
   },
   "corner_E_50km_iso": {
    "method": "digitized",
@@ -59,7 +64,8 @@
    "value": 0.000698,
    "units": "1",
    "resolution_km": 50,
-   "model": "HIM isopycnal"
+   "model": "HIM isopycnal",
+   "equation": "eq. 14: corner-mean E = (<T_out> - <T_in>)/(<U_rms> <S>) over -50 < x' < 50 km, -50 < y' < 0"
   },
   "transport_nonhydro": {
    "method": "digitized",
@@ -249,7 +255,8 @@
     0.00224
    ],
    "resolution_km": 0.5,
-   "note": "sampled every 10 km; finite and positive only for -200 < x' < -50 km (Legg p. 79)"
+   "note": "sampled every 10 km; finite and positive only for -200 < x' < -50 km (Legg p. 79); the mean of these samples over -180 < x' < -50 km is 1.03e-3 (compare.py truth table, figures scorecard). It is an eq.-12 alpha_E, not Legg's printed 8.6e-4, which is the eq.-14 corner E (corner_E_nonhydro; Legg p. 79: 'of the same order of magnitude as the value just west of the corner'). Checked in the PDF 2026-10-30 (BBL drag-mixing plan, Task 6): labels were correct, only the equation was not stated",
+   "equation": "eq. 12: alpha_E(x) = (dT/dx)/(L U), U = T / integral over A of dy dz (eq. 13), from the time-mean transport"
   },
   "alphaE_fit_nonhydro": {
    "method": "digitized",
@@ -276,7 +283,9 @@
     0.00262,
     0.00259
    ],
-   "resolution_km": 0.5
+   "resolution_km": 0.5,
+   "equation": "eq. 12: alpha_E(x) = (dT/dx)/(L U), U = T / integral over A of dy dz (eq. 13), from the time-mean transport",
+   "note": "the red segment of Fig. 3b: eq. 12 with T(x) replaced by a linear fit of the time-mean transport; the caption gives the fit over -180 < x < -50 km but the segment is drawn from about -145 km (samples from -140 km); mean of the samples 1.9e-3"
   },
   "tracer_by_class_nonhydro": {
    "method": "digitized",
