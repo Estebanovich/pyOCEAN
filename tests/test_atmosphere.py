@@ -164,12 +164,13 @@ needs_era5 = pytest.mark.skipif(not all(p.exists() for p in _JULY),
 
 
 def _read_raw(paths: list[Path]) -> xr.Dataset:
-    """Raw ERA5 files read into memory and closed (normalised coordinate names)."""
+    """Raw ERA5 files read into memory and closed (normalised coordinate names), joined as the adapter does
+    (``ERA5Source._combine``: per variable along time, then merged; a plain merge drops later months)."""
     parts = []
     for p in paths:
         with xr.open_dataset(p) as f:
             parts.append(ERA5Source._normalise(f).load())
-    return xr.merge(parts, compat="override", join="outer")
+    return ERA5Source._combine(parts)
 
 
 def _model_files() -> list[Path]:

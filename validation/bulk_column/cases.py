@@ -198,22 +198,23 @@ class Run:
     prescribed: str | None = None    # 'mitgcm' | 'croco': no bulk, the reference's own hourly-mean fluxes
     croco_background: bool = False   # KPP interior ν = 1e-4, κ = 1e-5 m² s⁻¹ (CROCO lmd_vmix.F:116-117, hard-wired)
     h_mix: float = 0.0               # horizontal viscosity = diffusivity [m² s⁻¹] (ah, kh): zero on a uniform column,
-                                     # damps the 3-D growth of round-off differences between the 25 columns (README §5)
+                                     # damps the KPP-amplified round-off differences between the 25 columns (README §5)
 
 
 RUNS_PYOCEAN: dict[str, Run] = {
     "ly04": Run("ly04", "ncar_ly04"),                           # vs MITgcm exf (NCAR reference)
     "coare": Run("coare", "coare"),                             # vs CROCO bulk_flux.F (COARE reference)
-    # CROCO's coupling (step 4); absolute wind removes the relative-wind damping of column-to-column differences, and
-    # without h_mix the 25 columns drifted apart from round-off to 3.1 °C (README §5)
+    # CROCO's coupling (step 4).  Without h_mix the 25 columns drifted apart from round-off to 3.1 °C: KPP amplifies
+    # column-to-column differences in discrete OBL-deepening events, and absolute wind lacks the relative-wind
+    # damping between the events (README §5)
     "coare_croco": Run("coare_croco", "coare", relative_wind=False, h_sfc=0.0, h_mix=100.0),
     "fms": Run("fms", "ncar"),                                  # pyOCEAN default (FMS form), for information
     # diagnostic runs that separate the ocean model from the bulk formula (README §4)
-    # (prescribed stress has no relative-wind feedback either: h_mix as in coare_croco, inert on a 1-D column)
-    "flux_mitgcm": Run("flux_mitgcm", "none", prescribed="mitgcm", h_mix=10.0),
-    "flux_croco": Run("flux_croco", "none", prescribed="croco", h_mix=10.0),
-    "flux_croco_bg": Run("flux_croco_bg", "none", prescribed="croco", croco_background=True, h_mix=10.0),
-    "coare_bg": Run("coare_bg", "coare", croco_background=True, h_mix=10.0),
+    # (prescribed stress has no relative-wind feedback either: the same h_mix as coare_croco, inert on a 1-D column)
+    "flux_mitgcm": Run("flux_mitgcm", "none", prescribed="mitgcm", h_mix=100.0),
+    "flux_croco": Run("flux_croco", "none", prescribed="croco", h_mix=100.0),
+    "flux_croco_bg": Run("flux_croco_bg", "none", prescribed="croco", croco_background=True, h_mix=100.0),
+    "coare_bg": Run("coare_bg", "coare", croco_background=True, h_mix=100.0),
 }
 BULK_RUNS = ("ly04", "coare", "coare_croco", "fms")
 #: CROCO's interior mixing with LMD_MIXING (lmd_vmix.F:116-117, lmd_nuwm, lmd_nuws; always added below the OBL)

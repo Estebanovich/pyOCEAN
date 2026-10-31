@@ -53,7 +53,7 @@ Las salidas van a `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/bulk_column/` (nunca al rep
 |---|---|---|---|
 | bulk | `'ncar_ly04'` (+ `'ncar'` FMS informativo) / `'coare'` | `exf` con `ALLOW_BULK_LARGEYEAGER04`, `EXF_CALC_ATMRHO` | `bulk_flux.F` por defecto (COARE 3.0, `BULK_GUSTINESS`, `BULK_LW`) |
 | viento | relativo a la corriente de la capa superior | `useRelativeWind` | absoluto (CROCO) |
-| T, q, presión | 2 m, 2 m, msl | 2 m (`ht`), `apressure` = msl | 2 m, `rhum` = q en g/kg (regla m2 de la tarea 2), p = 1e5 Pa constante |
+| T, q, presión | 2 m, 2 m; msl en `'ncar_ly04'`/`'ncar'`, 1e5 Pa constante en `'coare'` (como CROCO, `surface_fluxes.py` `PSURF`) | 2 m (`ht`), `apressure` = msl | 2 m, `rhum` = q en g/kg (regla m2 de la tarea 2), p = 1e5 Pa constante |
 | onda corta | (1 − 0.066) SW↓, Jerlov III | `exf_albedo` 0.066, `swfrac.F` jwtype = 5 | `radsw` neta = (1 − 0.066) SW↓, `lmd_swfrac.F` lmd_Jwt = 5 |
 | onda larga | 0.97 (LW↓ − σT⁴) (LY04) / LW↓ − 0.985 σT⁴ (COARE) | `EXF_LWDOWN_WITH_EMISSIVITY`, 0.97 | `BULK_LW`, 0.985 σT⁴ sin reflexión |
 | agua dulce | real, fw = (P − E)/ρ₀ | sal virtual (`convertFW2Salt` = −1) | sal virtual (E − P)·S |
@@ -166,7 +166,7 @@ el resto viene del modelo oceánico (KPP).**
 | 1 | **Fórmula LY04 de pyOCEAN contra `exf`**, con la misma SST y corriente: Q_net +0.33 W m⁻² (0.45 %), Q_lat +0.27 (0.3 %), Q_sens +0.09 (0.7 %), Q_lw −0.03, \|τ\| −0.25 %, E −0.3 % | separación, fila `ly04`, "fórmula"; dentro del 2 % en todos los flujos. Son las elecciones de constantes de `validation/bulk_points/README.md` (c_p 1000.5/1005, Γ 0.0098/0.010, viento mínimo en los flujos, ρ_a de θ o de T) | c |
 | 2 | **Fórmula COARE de pyOCEAN contra `bulk_flux.F`**, con el estado de CROCO y el viento absoluto de CROCO: Q_net +0.14 W m⁻² (0.14 %), Q_lat +0.12, \|τ\| −0.2 % | separación, fila `coare_croco`; el port es idéntico al compilado (tarea 2). Lo que queda es la evaluación fuera de línea (aprox. +0.15) | — (a redondeo de la evaluación) |
 | 3 | **Viento relativo** (pyOCEAN por defecto) contra el viento absoluto de CROCO: \|τ\| −2.7 % en el estado de CROCO, τ_x −10 %; la SST final pasa de +0.32 a +0.15 °C contra CROCO | `coare` contra `coare_croco`, fila "fórmula" de \|τ\| (−0.0012 contra −0.0001 N m⁻²). Con `h_sfc` = 1 m = la capa superior de 1 m, el promedio de SST no cambia nada aquí | c (elección de CROCO; LY04 y MOM6 usan viento relativo) |
-| 4 | **SST de pyOCEAN 0.30 °C bajo MITgcm** al final (RMS 0.29) y, por eso, flujos medios mayores hacia el océano: Q_net +14 %, Q_lat +7.5 %, Q_sens +16 %, E −7.5 % | La separación pone 98 % de la diferencia de Q_net en el estado. Con los **flujos horarios de MITgcm prescritos** (`flux_mitgcm`), el océano de pyOCEAN acaba **1.26 °C** bajo MITgcm: mezcla más hondo (MLD 8.1 contra 7.3 m, hbl 8.9 contra 8.4 m). Con el bulk acoplado, la realimentación de la SST reduce la brecha a 0.30 °C. Los presupuestos de calor de los dos cierran (ΔHC/∫Q_net = 1.000 y 1.004). Es la diferencia entre el KPP de CVMix (pyOCEAN, = MOM6 a 0.3 % en N3) y el de MITgcm (búsqueda de h, V_t², interpolación de Ri_b, `KPP_SMOOTH_*`), amplificada por la piscina fría: una diferencia de 0.8 m en la capa de mezcla sobre un salto de 10 K en 10 m | c (dos implementaciones publicadas de KPP; no se tocó ningún parámetro) |
+| 4 | **SST de pyOCEAN 0.30 °C bajo MITgcm** al final (RMS 0.29) y, por eso, flujos medios mayores hacia el océano: Q_net +14 %, Q_lat +7.5 %, Q_sens +16 %, E −7.5 % | La separación pone 98 % de la diferencia de Q_net en el estado. Con los **flujos horarios de MITgcm prescritos** (`flux_mitgcm`), el océano de pyOCEAN acaba **1.26 °C** bajo MITgcm: mezcla más hondo (MLD 8.1 contra 7.3 m, hbl 8.9 contra 8.4 m). Con el bulk acoplado, la realimentación de la SST reduce la brecha a 0.30 °C. Los presupuestos de calor de los dos cierran (ΔHC/∫Q_net = 1.000 y 1.004). Es la diferencia entre el KPP de CVMix (pyOCEAN, = MOM6 a 0.3 % en N3) y el de MITgcm (búsqueda de h, V_t², interpolación de Ri_b, `KPP_SMOOTH_*`), amplificada por la piscina fría: una diferencia de 0.8 m en la capa de mezcla sobre un salto de 10 K en 10 m. **Horquilla:** con los flujos de MITgcm, pyOCEAN mezcla más hondo que el KPP de MITgcm (−1.26 °C, MLD 8.1 contra 7.3 m); con los flujos de CROCO y su fondo, mezcla menos que el KPP de CROCO (+0.68 °C, `flux_croco_bg`). El KPP de pyOCEAN queda entre dos implementaciones publicadas. Cuál está bien no lo decide este caso | **c [hipótesis]** hasta la mejora 1 (columna MOM6/CVMix): si MOM6 coincide con pyOCEAN es c; si no, a. No se tocó ningún parámetro |
 | 5 | **SST de pyOCEAN 0.32 °C sobre CROCO** (máx. +1.4 °C) y flujos medios menores hacia el océano: Q_net −14 %, Q_lat −12 %, Q_sens −44 % (el flujo sensible medio es pequeño, −7 W m⁻²), E +12 % | La separación pone el 100 % en el estado. La diferencia nace en el temporal del 24–25 de julio (\|τ\| 0.18 N m⁻²): CROCO mezcla hasta la piscina fría y su SST cae 1.5 °C más que la de pyOCEAN, y después recibe más calor porque está más fría (Q_net 102 contra 88 W m⁻²). (i) CROCO suma siempre ν = 1e-4 y κ = 1e-5 bajo la capa límite (`lmd_vmix.F:116-117`): con ese fondo, `coare_bg` acaba a +0.20 °C (último día +0.13) y la MLD media baja de 8.0 a 6.0 m (CROCO 6.4). (ii) Ri_c = 0.45 y la forma "sin ifs" del KPP 2005 de CROCO contra CVMix (N3: h_bl de CROCO-KPP 13–27 % distinta). (iii) Viento relativo (fila 3). Con los flujos de CROCO prescritos, pyOCEAN acaba +0.94 °C (+0.68 con el fondo de CROCO): el resto es la diferencia de KPP | c (elecciones de CROCO: fondo fijo, viento absoluto, su KPP) |
 | 6 | **Onda larga** −3.7 % / +2.4 % | Solo estado: la fórmula difiere < 0.05 W m⁻². σT⁴ sigue a la SST (0.3 °C ≈ 1.7 W m⁻²) | c (consecuencia de 4 y 5) |
 | 7 | **E en volumen**: CROCO a ρ₀ = 1025, pyOCEAN masa/ρ₀, MITgcm a 1000. `compare` lo compara como flujo de masa | E y Q_lat difieren en el mismo porcentaje en todas las corridas | — (convención resuelta) |
@@ -174,14 +174,15 @@ el resto viene del modelo oceánico (KPP).**
 | 9 | **CROCO `RESET_RHO0`**: con EOS lineal, CROCO cambia ρ₀ a la media inicial (1025.41) | flujos cinemáticos 0.04 % distintos | c (d leve: el ρ₀ de `croco.in` no se usa) |
 | 10 | **Onda corta en el fondo**: MITgcm y CROCO dejan el remanente en la capa del fondo y pyOCEAN lo reparte (MOM6). Capa del fondo de MITgcm +0.6 K en 45 días, la de pyOCEAN +0.09 K | 0.26 % de SW con Jerlov III; no afecta a la SST | c |
 | 11 | **Hallazgo (a), corregido: el adaptador ERA5 perdía el segundo mes.** Con archivos mensuales (instant y accum de julio y agosto), `xr.merge(compat="override")` guardaba el primer mes de cada variable y dejaba NaN en agosto; CROCO estalló el día 31 | `ERA5Source._combine` concatena en el tiempo por grupo de variables y luego une los grupos. Commit c79c1cf, con la prueba `test_time_chunks_are_concatenated` (falla antes, pasa después) | **a** |
-| 12 | Columna 5 × 5 con viento absoluto: las columnas se separan desde el redondeo (§5) | bisección, semilla en η de 3e-21 m, amplificación por KPP sin amortiguamiento lateral | c (arnés: `h_mix`) |
+| 12 | Columna 5 × 5: las columnas se separan desde el redondeo (§5) | semilla en η de 3e-21 m; KPP la amplifica en saltos (≈ ×10⁶ por evento); con cierre constante no crece | arnés (`h_mix`); propiedad abierta del KPP de pyOCEAN en 3-D (mejora 4) |
 
 **Contra el criterio:**
 
 - **NCAR:** la fórmula pasa dentro del 2 % en todos los flujos con el mismo estado (máx. 0.7 %).
   - Los flujos medios acoplados no: Q_net +14 %, Q_lat +7.5 %, Q_sens +16 %.
   - La SST final tampoco: −0.30 °C.
-  - Las dos diferencias vienen del océano (KPP), clase c, explicadas por `flux_mitgcm`.
+  - Las dos diferencias vienen del océano (KPP), como muestra `flux_mitgcm`; clase c [hipótesis] hasta la mejora 1
+    (el KPP de pyOCEAN queda entre el de MITgcm y el de CROCO, fila 4).
 - **COARE:** la fórmula pasa a 0.14 % con el estado de CROCO.
   - Con el acoplamiento de CROCO, la SST final pasa: +0.15 °C, último día +0.13.
   - `'coare'` (viento relativo) acaba a +0.32 °C.
@@ -191,32 +192,44 @@ el resto viene del modelo oceánico (KPP).**
 
 ## 5. Columna 5 × 5: crecimiento de diferencias de redondeo (hallazgo)
 
-La corrida `coare_croco` original (viento absoluto, `h_sfc` = 0) terminó con 3.1 °C de diferencia entre las 25
-columnas, y las demás con ≤ 4e-6. El controlador lo marcó como posible error (a).
+La corrida `coare_croco` original (viento absoluto, `h_sfc` = 0, sin mezcla horizontal) terminó con 3.1 °C de
+diferencia entre las 25 columnas. El controlador lo marcó como posible error (a).
 
-- **Bisección (100 h):**
-  - con viento absoluto, la dispersión crece a 0.1 °C con `h_sfc` = 0 y también con `h_sfc` = 1;
-  - con viento relativo queda en 1e-9 con cualquier `h_sfc`.
-  - El camino `h_sfc` = 0 del promedio de superficie es idéntico al oráculo de la tarea 4
-    (`tests/test_surface_average.py`, 36 pruebas).
-- **Semilla:** tras el primer paso, η difiere en 3.4e-21 m entre columnas (redondeo, en el último bit de 5.7e-6 m, de
-  la superficie libre). T, S, u y v son idénticos. Es el mismo nivel que N3 aceptó (columna doblemente periódica
-  uniforme a 1e-12).
-- **Amplificación:**
-  - KPP amplifica la diferencia en saltos de 10³–10⁴ cuando la capa límite se profundiza (horas 24–27 y 50–52):
-    el número de Richardson global cruza Ri_c en pasos distintos según la columna.
-  - Sin viscosidad ni difusión horizontales nada la amortigua, y la estructura de 2 km crece después
-    exponencialmente (×10³ cada 15 h).
-  - El viento relativo amortigua las diferencias de corriente de superficie, con una tasa ρ_a C_d |ΔU|/(ρ₀ h) ≈
-    1.4e-5 s⁻¹. Por eso esas corridas no crecen.
-  - CROCO no tiene la semilla: su caja queda idéntica bit a bit. MITgcm es 1 × 1.
-- **Clase (c), no (a):** no es un error del código de flujos. Es la inestabilidad de un estado uniforme, sembrada
-  por redondeo, en un modelo 3-D sin mezcla horizontal.
-- **Arreglo en el arnés:** viscosidad y difusión horizontales `h_mix` en las corridas sin viento relativo
-  (`coare_croco`, `flux_*`, `coare_bg`), nulas sobre una columna uniforme.
-  - 90 h de `'coare'` con y sin `h_mix` = 10 m² s⁻¹: la columna (0, 0) difiere ≤ 1.1e-9 °C.
-  - Con `h_mix` = 10, `coare_croco` quedó en 2.1e-2 °C. Con 100 (definitivo) quedó en 3.3e-7 °C, y la SST final cambió 1e-3 °C (24.714 → 24.715), así que `h_mix` es inerte en la solución 1-D.
+- **No es el código de flujos.**
+  - Bisección (100 h): con viento absoluto la dispersión llega a 0.1 °C con `h_sfc` = 0 y también con `h_sfc` = 1.
+  - El camino `h_sfc` = 0 es idéntico al oráculo de la tarea 4 (`tests/test_surface_average.py`, 36 pruebas).
+- **Semilla:** tras el primer paso, η difiere en 3.4e-21 m entre columnas. Es el redondeo de la superficie libre, en
+  el último bit de 5.7e-6 m. T, S, u y v son idénticos. CROCO no tiene semilla (su caja queda idéntica bit a bit);
+  MITgcm es 1 × 1.
+- **KPP es el amplificador.** El control del revisor (`spread_exp.py`, 100 h, viento absoluto, sin `h_mix`):
+  - con KPP, la dispersión de T va 0 → 4e-13 (h 12) → 4e-10 (h 30) → 1.5e-7 (h 54) → 7e-3 (h 78) → 0.137 °C (h 84),
+    y queda plana después (0.13 a h 96);
+  - con un cierre constante (κ = 1e-3, la misma atmósfera), queda en el último bit de T (≤ 5e-13) las 100 h.
+- **El crecimiento llega en saltos, no como una inestabilidad exponencial.**
+  - Los saltos coinciden con la profundización de la capa límite (aquí, horas 24–27, 50–52 y 72–78) y son de 10³ a
+    10⁶ por evento (1e-8 → 7e-3 en uno solo).
+  - Entre eventos la dispersión queda plana o decae. La dinámica 3-D sola no la hace crecer (control con cierre
+    constante).
+  - [hipótesis] El salto viene de la selección de la profundidad de la capa límite: el índice del primer cruce de
+    Ri_c o el cambio del índice de la capa de superficie (εh) caen en pasos distintos según la columna.
+- **El viento relativo no evita los eventos.** Las corridas con viento relativo y sin `h_mix` (`ly04`, `coare`,
+  `fms`) llegan a 1.4–4.4e-6 °C al día 45, unas 10¹⁵ veces la semilla. El revisor ve el mismo salto ×10³ en h 72–78.
+  Lo que hace el viento relativo es amortiguar la diferencia *entre* eventos: la tasa ρ_a C_d |ΔU|/(ρ₀ h) ≈
+  1.4e-5 s⁻¹ actúa sobre la corriente de superficie de cada columna. Con viento absoluto o esfuerzo prescrito
+  (`coare_croco`, `flux_*`) no hay ese amortiguamiento, y los saltos se acumulan.
+- **La solución 1-D no es caótica** a la escala del criterio. Control del revisor (`sens_exp.py`): +1e-9 °C uniforme en
+  la capa superior no cambia la SST de la columna (0, 0) en 1e-6 °C en 100 h. Las columnas solo divergen por
+  estructura horizontal.
+- **Arreglo en el arnés:** `h_mix` = 100 m² s⁻¹ (viscosidad = difusividad horizontal) en todas las corridas sin
+  realimentación del viento (`coare_croco`, `flux_*`, `coare_bg`). Es nula sobre una columna uniforme.
+  - 90 h de `'coare'` con y sin `h_mix` = 10: la columna (0, 0) difiere ≤ 1.1e-9 °C.
+  - La SST final de `coare_croco` cambió 1e-3 °C entre `h_mix` = 10 y 100 (24.714 → 24.715).
+  - La primera ronda usó 10 en `flux_*` y `coare_bg` y 100 en `coare_croco` (con 10, `coare_croco` quedaba en
+    2.1e-2 °C). La ronda de correcciones 1 usa 100 en todas y las corrió de nuevo: dispersión final `flux_mitgcm` 7.9e-9, `flux_croco` 6.3e-9 (antes 1.0e-4), `flux_croco_bg` 2.9e-11, `coare_bg` 4.5e-9 °C; las tablas no cambian en ningún dígito mostrado.
   - La prueba exige < 1e-3 °C en todas las corridas.
+- **Clase:** el arnés queda resuelto (c). La ganancia de KPP en 3-D es una propiedad abierta de pyOCEAN (mejora 4).
+  En una corrida regional con mezcla lateral débil convertiría perturbaciones de 1e-8 en ruido de escala de malla en
+  hbl y SST.
 
 ## 6. Qué debe mejorar pyOCEAN
 
@@ -233,9 +246,13 @@ columnas, y las demás con ≤ 4e-6. El controlador lo marcó como posible error
    la capa límite, la cizalla de las ondas inerciales (corrientes de hasta 0.7–0.9 m/s) puede bajar Ri por
    debajo de 0.25, y ni pyOCEAN ni MITgcm la mezclan aquí [hipótesis: no se diagnosticó Ri bajo h]. Repetir con
    Jackson y comparar con 44025.
-4. **La semilla de redondeo en η**: la superficie libre debería dar η uniforme bit a bit en una caja uniforme (CROCO
-   lo hace), para que una columna 3-D sea una columna de verdad sin `h_mix`. Hay que buscar la reducción no
-   simétrica (CG o LU en la caja periódica).
+4. **La ganancia de KPP en 3-D** (§5): ≈ ×10⁶ por evento de profundización entre columnas vecinas casi iguales.
+   - Buscar el paso de `kpp_column` que la produce. Candidatos: el índice o salto del primer cruce de Ri_c, y el
+     cambio del índice de la capa de superficie (εh).
+   - Registrar el índice de la capa límite por columna en h 72–78 del caso con viento absoluto.
+   - Comparar con MOM6/CVMix, que interpola Ri_b de forma cuadrática.
+   - Con mezcla lateral débil, esta ganancia daría ruido de escala de malla en hbl y SST en las corridas regionales.
+   - La semilla en η (3e-21 m) no es el problema: cualquier corrida real tiene perturbaciones mucho mayores.
 5. **Validar contra la boya NDBC 44025** (SST horaria, julio–agosto 2017) en el proyecto 3: es la verdad que decide
    entre KPP, fondo y fórmula. Aquí solo se compara entre modelos.
 6. **Adaptador ERA5**: la prueba de archivos mensuales ya está (hallazgo 11). Añadir a `tests/test_atmosphere.py`

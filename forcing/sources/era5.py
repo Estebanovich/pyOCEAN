@@ -162,7 +162,16 @@ class ERA5Source(ForcingSource):
             pad = np.timedelta64(int(self.accumulation_seconds), "s")
             ds = ds.sel(time=slice(np.datetime64(t0, "ns") - pad, np.datetime64(t1, "ns") + pad))
             # Subset lazily, then read only the needed block into memory
-            return subset_bbox(ds, bbox).load()
+            out = subset_bbox(ds, bbox).load()
+            # a variable missing from one time chunk (e.g. a month's accum file not downloaded) would reach the
+            # model as NaN after the outer join: refuse it here (task 7 review m1; the original bug was a CROCO
+            # blow-up on day 31)
+            bad = [v for v in (*_INSTANT, *_ACCUM) if not np.isfinite(out[v].values).all()]
+            if bad:
+                t = out["time"].values
+                raise ValueError(f"ERA5 files give non-finite {bad} in [{t[0]}, {t[-1]}] (a time chunk of these "
+                                 f"variables is missing from {[p.name for p in self.paths]})")
+            return out
         finally:
             for f in files:
                 f.close()
@@ -190,20 +199,19 @@ class ERA5Source(ForcingSource):
         """
         One dataset from files split by variable group and by time chunk.
 
-        Files with the same variables (e.g. the monthly ``instant`` files) are
-        concatenated along time (sorted; a stamp present in two chunks is kept
-        once), then the groups are merged.  A plain ``xr.merge(compat=
-        "override")`` of all files keeps the first chunk of each variable and
-        leaves NaN in the others (found with July + August 2017 files, N2b
-        task 7).
+        Each variable is concatenated along time over the files that hold it
+        (sorted; a stamp present in two chunks is kept once), then the
+        variables are merged.  A plain ``xr.merge(compat="override")`` of all
+        files keeps the first chunk of each variable and leaves NaN in the
+        others (found with July + August 2017 files, N2b task 7); grouping
+        files by their exact variable set still did so when one month carried
+        an extra variable (task 7 review m1), hence per variable.
         """
-        groups: dict[tuple[str, ...], list[xr.Dataset]] = {}
-        for p in parts:
-            groups.setdefault(tuple(sorted(p.data_vars)), []).append(p)
+        names = sorted({v for p in parts for v in p.data_vars})
         joined = []
-        for g in groups.values():
+        for name in names:
+            g = sorted((p[[name]] for p in parts if name in p.data_vars), key=lambda d: d["time"].values[0])
             if len(g) > 1:
-                g = sorted(g, key=lambda d: d["time"].values[0])
                 c = xr.concat(g, dim="time", data_vars="minimal", coords="minimal", compat="override",
                               join="outer")
                 _, first = np.unique(c["time"].values, return_index=True)

@@ -234,6 +234,38 @@ class TestERA5Load:
         np.testing.assert_allclose(sw[3], 750.0)
         np.testing.assert_allclose(sw[4:], 1000.0)
 
+    def _chunks(self, tmp_path, extra_in_first: bool = False, drop_accum_second: bool = False) -> list[Path]:
+        """The synthetic new-CDS files split in two time chunks (u10 = 7, then 9 m/s)."""
+        out = []
+        for i, sl in enumerate((slice(0, 4), slice(4, NT))):
+            for p in _write(tmp_path):
+                if drop_accum_second and i == 1 and "accum" in p.name:
+                    continue
+                with xr.open_dataset(p) as f:
+                    part = f.isel(valid_time=sl).load()
+                if "u10" in part:
+                    part["u10"] = part["u10"] + 2.0 * i
+                    if extra_in_first and i == 0:
+                        part["sst"] = part["t2m"] - 1.0              # a field only the first month requested
+                q = tmp_path / f"c{i}_{p.name}"
+                part.to_netcdf(q)
+                out.append(q)
+        return out
+
+    def test_chunks_with_different_variable_lists(self, tmp_path):
+        # Review m1 of N2b task 7: one month with an extra variable formed its own group, and the merge of the
+        # groups brought back NaN in the other month.  Every required variable must hold both chunks.
+        ds = ERA5Source(self._chunks(tmp_path, extra_in_first=True)).load(datetime(2015, 4, 1, 0),
+                                                                          datetime(2015, 4, 1, 7), BB)
+        np.testing.assert_allclose(ds.u10.isel(lat=0, lon=0).values, [7.0] * 4 + [9.0] * 4)
+        assert np.isfinite(ds.to_array()).all()
+
+    def test_missing_chunk_of_a_variable_is_an_error(self, tmp_path):
+        # the accumulated file of the second month is missing: no silent NaN, a clear error naming the variables
+        with pytest.raises(ValueError, match="ssrd|non-finite"):
+            ERA5Source(self._chunks(tmp_path, drop_accum_second=True)).load(datetime(2015, 4, 1, 0),
+                                                                            datetime(2015, 4, 1, 7), BB)
+
 
 # ---------------------------------------------------------------------------
 # Files the user already holds open

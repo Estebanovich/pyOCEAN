@@ -92,7 +92,8 @@ def test_croco_inputs_match_cases():
     assert float(val("bottom_drag")[2].replace("d", "e")) == C.Z0
     sh = (HERE / "croco" / "build_croco.sh").read_text()
     assert "N=36" in sh and "depth=36." in sh and f"lmd_Jwt={C.JERLOV_INDEX}" in sh
-    assert f"f0={C.F0:.6e}".replace("e-05", "e-5") in sh
+    f0 = re.search(r"f0=([0-9.eEdD+-]+)", sh).group(1).replace("d", "e").replace("D", "e")
+    assert float(f0) == pytest.approx(C.F0, rel=1e-6)
     assert "LMD_SKPP" in sh and "LMD_NONLOCAL" in sh and "BULK_FLUX" in sh and "BULK_LW" in sh
 
 
