@@ -144,7 +144,8 @@ _CONFIG_DEFAULTS = {"salinity": 0, "s_coef": 0.0, "s_ref": 35.0, "sponge_S": "no
 
 _SECTIONS = {"ab_hist": "time_stepper", "gls_": "closure", "kpp_": "closure", "shear_": "closure",
              "T_ext": "open_boundary", "h_ext": "open_boundary",
-             "tr_ext": "open_boundary", "S_ext": "open_boundary", "fs_lu_": "free_surface", "rho_ref_": "pgf"}
+             "tr_ext": "open_boundary", "S_ext": "open_boundary", "fs_lu_": "free_surface", "rho_ref_": "pgf",
+             "tef_": "diagnostics"}
 
 
 def _file_prefix(cl, name: str) -> str:
@@ -208,6 +209,13 @@ def write_restart(path: str | Path, model: SigmaBaroclinic, state: SigmaState) -
     if getattr(model, "tr_ext", None) is not None:
         data["tr_ext"] = xr.Variable(("tracer", "layer", "y", "x"), np.asarray(model.tr_ext, np.float64),
                                      {"units": "1", "long_name": "external passive tracers (kept in z with h_ext)"})
+    if getattr(model, "tef", None) is not None:                      # N2b task 5: TEF accumulators
+        for k, v in model.tef.state().items():
+            data[f"tef_{k}"] = xr.Variable(("tef_bin",) if np.ndim(v) else (), v, {"long_name": f"TEF transect {k}"})
+    if getattr(model, "tef_region_budget", None) is not None:
+        for k, v in model.tef_region_budget.state().items():
+            dims = ("tef_three",) if np.ndim(v) else ()
+            data[f"tef_region_{k}"] = xr.Variable(dims, v, {"long_name": f"TEF region {k}"})
     pre = model.fs.preconditioner_state() if hasattr(model.fs, "preconditioner_state") else None
     if pre is not None:
         data["fs_lu_data"] = xr.Variable(("lu_nnz",), pre["data"], {"long_name": "lagged CG preconditioner matrix (CSC data)"})
@@ -303,6 +311,17 @@ def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
             model.h_ext = ds["h_ext"].values.copy()
         if "tr_ext" in ds:
             model.tr_ext = ds["tr_ext"].values.copy()
+    if getattr(model, "tef", None) is not None:
+        keys = ("vol", "salt", "salt2", "time")
+        miss = [f"tef_{k}" for k in keys if f"tef_{k}" not in ds]
+        if miss:
+            raise ValueError(f"restart has no TEF state ({', '.join(miss)}) but the model has tef_face")
+        model.tef.load({k: ds[f"tef_{k}"].values for k in keys})
+    if getattr(model, "tef_region_budget", None) is not None:
+        reg = [k for k in ds.variables if str(k).startswith("tef_region_")]
+        if "tef_region_time" not in ds:
+            raise ValueError("restart has no TEF region state (tef_region_*) but the model has tef_region")
+        model.tef_region_budget.load({k[len("tef_region_"):]: ds[k].values for k in reg})
     if hasattr(model.fs, "set_preconditioner_state"):
         model.fs.set_preconditioner_state(
             dict(data=ds["fs_lu_data"].values.copy(), indices=ds["fs_lu_indices"].values.astype(np.int32),

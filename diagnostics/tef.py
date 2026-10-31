@@ -90,6 +90,18 @@ class TEFTransect:
         np.add.at(self.salt2, b, dt * Fs2)
         self.time += float(dt)
 
+    def state(self) -> dict[str, np.ndarray]:
+        """Accumulators for a bit-for-bit restart: vol, salt, salt2 [per bin] and time (N2b task 5)."""
+        return dict(vol=self.vol.copy(), salt=self.salt.copy(), salt2=self.salt2.copy(),
+                    time=np.array(self.time, np.float64))
+
+    def load(self, d: dict[str, np.ndarray]) -> None:
+        """Restore ``state()``; the bins must be those of this transect."""
+        if np.shape(d["vol"]) != self.vol.shape:
+            raise ValueError(f"restart TEF has {np.shape(d['vol'])[0]} bins, the transect {self.n_bins}")
+        self.vol, self.salt, self.salt2 = (np.array(d[k], np.float64) for k in ("vol", "salt", "salt2"))
+        self.time = float(d["time"])
+
     @property
     def q(self) -> np.ndarray:
         """Time-mean volume transport per bin q(s) Δs [m³ s⁻¹] (+ into the region)."""
@@ -132,6 +144,24 @@ class TEFRegion:
         self.time = 0.0
         self.start: tuple[float, float, float] | None = None
         self.end: tuple[float, float, float] | None = None
+
+    def state(self) -> dict[str, np.ndarray]:
+        """Accumulators for a bit-for-bit restart (N2b task 5): the budget sums (one entry ``sum_<key>`` each),
+        Qsurf, Qopen, time and the start/end contents (NaN when not yet set; ``has_start`` flags the start)."""
+        nan = np.full(3, np.nan)
+        d = {f"sum_{k}": np.array(v, np.float64) for k, v in self.sums.items()}
+        d.update(Qsurf=np.array(self.Qsurf), Qopen=np.array(self.Qopen), time=np.array(self.time),
+                 start=nan.copy() if self.start is None else np.array(self.start, np.float64),
+                 end=nan.copy() if self.end is None else np.array(self.end, np.float64),
+                 has_start=np.array(self.start is not None), has_end=np.array(self.end is not None))
+        return d
+
+    def load(self, d: dict[str, np.ndarray]) -> None:
+        """Restore ``state()`` (floats are kept exactly)."""
+        self.sums = {k[4:]: float(v) for k, v in d.items() if k.startswith("sum_")}
+        self.Qsurf, self.Qopen, self.time = float(d["Qsurf"]), float(d["Qopen"]), float(d["time"])
+        self.start = tuple(float(x) for x in d["start"]) if bool(d["has_start"]) else None
+        self.end = tuple(float(x) for x in d["end"]) if bool(d["has_end"]) else None
 
     def content(self, V: np.ndarray, S: np.ndarray) -> tuple[float, float, float]:
         """(Σ V, Σ V S, Σ V S²) over the region; V, S (N, ny, nx)."""

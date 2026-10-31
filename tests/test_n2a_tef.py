@@ -252,3 +252,45 @@ def test_tef_without_budget_advects_S2():
         st = m.step(st, fw=_fw())
     b = m.tef.bulk()
     assert b["Qs2_in"] > 0 and np.isfinite(b["s2_in"])
+
+
+def test_tef_restart_bit_for_bit(tmp_path):
+    """N2b task 5: N continuous steps = N/2 + restart + N/2 for the TEF accumulators (transect and region)."""
+    from core.restart import read_restart, write_restart
+    warnings.simplefilter("ignore")
+    n = 8
+    a = _model("sigma_rk3")
+    sa = a.initial_state(np.zeros((NY, NX)), np.full((NZ, NY, NX), 10.0), S=_S0())
+    for _ in range(n):
+        sa = a.step(sa, fw=_fw())
+    b = _model("sigma_rk3")
+    sb = b.initial_state(np.zeros((NY, NX)), np.full((NZ, NY, NX), 10.0), S=_S0())
+    for _ in range(n // 2):
+        sb = b.step(sb, fw=_fw())
+    write_restart(tmp_path / "r.nc", b, sb)
+    c = _model("sigma_rk3")
+    sc = read_restart(tmp_path / "r.nc", c)
+    for _ in range(n // 2):
+        sc = c.step(sc, fw=_fw())
+    for f in ("vol", "salt", "salt2"):
+        assert np.array_equal(getattr(a.tef, f), getattr(c.tef, f)), f
+    assert a.tef.time == c.tef.time
+    ra, rc = a.tef_region_budget, c.tef_region_budget
+    assert ra.sums.keys() == rc.sums.keys() and ra.sums
+    for k in ra.sums:
+        assert ra.sums[k] == rc.sums[k], k
+    for f in ("Qsurf", "Qopen", "time", "start", "end"):
+        assert getattr(ra, f) == getattr(rc, f), f
+
+
+def test_tef_restart_missing_variables_raises(tmp_path):
+    from core.restart import read_restart, write_restart
+    warnings.simplefilter("ignore")
+    m = _model("sigma_rk3", tef_face=None, tef_region=None)
+    s = m.initial_state(np.zeros((NY, NX)), np.full((NZ, NY, NX), 10.0), S=_S0())
+    s = m.step(s, fw=_fw())
+    write_restart(tmp_path / "r.nc", m, s)
+    import xarray as xr
+    assert not any(k.startswith("tef_") for k in xr.open_dataset(tmp_path / "r.nc").variables)
+    with pytest.raises(ValueError, match="tef_"):
+        read_restart(tmp_path / "r.nc", _model("sigma_rk3"))
