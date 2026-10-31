@@ -346,7 +346,10 @@ class Driver:
             bf = ctx.bflux or {}
             bflux = {"Q_ns": bf.get("Q_ns", np.zeros(m.H.shape)), "Q_sw": bf.get("Q_sw"),
                      "sw_frac_iface": bf.get("sw_frac_iface"), "fw": fw, "S_sfc": None if S is None else S[-1]}
-        cl.update(uc, vc, h, rho, self._surface_ustar2(ctx), ctx.ustar2_bot, bflux=bflux)
+        kw = {}
+        if getattr(m, "bbl_mixing", None) is not None:                 # drag-driven BBL mixing (BBLAddedClosure)
+            kw["bbl_energy"] = ctx.bbl_energy
+        cl.update(uc, vc, h, rho, self._surface_ustar2(ctx), ctx.ustar2_bot, bflux=bflux, **kw)
         ctx.set(closure=cl.state(), kpp_h=h)
 
     def _surface_ustar2(self, ctx: StepContext) -> np.ndarray:
@@ -570,6 +573,8 @@ class Driver:
                                                              wv=ctx.wv, nu_u=nu_u, nu_v=nu_v, **visc)
         ustar2_bot = self._ale_bed_ustar2(ctx, u_new, v_new, visc)
         ctx.set(eta_new=eta_new, u_new=u_new, v_new=v_new, fluxes=fluxes, ustar2_bot=ustar2_bot)
+        if getattr(m, "bbl_mixing", None) is not None:                 # drag work for the BBL mixing (phase 7)
+            ctx.set(bbl_energy=self._ale_bed_energy(ctx, u_new, v_new, visc))
         if cl.stateful and cl.update_phase == "implicit":              # GLS on the layers hⁿ (N3 task 5)
             kw = {}
             if cl.production == "energy":                              # the viscous solve's own face thickness
@@ -630,14 +635,49 @@ class Driver:
         (C_d |U_b| u_b with the full bed speed, N3 task 9b, as σ's ``SigmaWetDry.bed_ustar2``; C_d on the face
         geometry of hⁿ); quadratic drag: the rates of the step (from uⁿ) times the new velocities; no bed drag: zero.
         """
+        rates = self._ale_bed_rates(ctx, u_new, v_new, visc)
+        if rates is None:
+            return np.zeros(self.m.H.shape)
+        r_u, r_v = rates
+        return bed_ustar2((r_u * u_new).sum(axis=0), (r_v * v_new).sum(axis=0))
+
+    def _ale_bed_rates(self, ctx: StepContext, u_new: np.ndarray, v_new: np.ndarray, visc: dict):
+        """
+        Per-layer bed rates (r_u, r_v) [m s⁻¹] that act on the new velocities, as ``_ale_bed_ustar2`` uses them:
+        quadratic drag: the rates of the step (from uⁿ, already times the hbbl fractions f_k); law of the wall:
+        recomputed at the new velocities on the face geometry of hⁿ; no bed drag: None.
+        """
         m = self.m
         if m.bottom_drag != "quadratic" and m.core.z0 is None:
-            return np.zeros(m.H.shape)
+            return None
         if m.bottom_drag == "quadratic":
-            r_u, r_v = visc["r_u"], visc["r_v"]
-        else:
-            r_u, r_v = m._bed_drag.rates(u_new, v_new, ctx.hu, ctx.hv)
-        return bed_ustar2((r_u * u_new).sum(axis=0), (r_v * v_new).sum(axis=0))
+            return visc["r_u"], visc["r_v"]
+        return m._bed_drag.rates(u_new, v_new, ctx.hu, ctx.hv)
+
+    def _ale_bed_energy(self, ctx: StepContext, u_new: np.ndarray, v_new: np.ndarray, visc: dict) -> np.ndarray:
+        """
+        Kinetic energy per unit area and density that the bed drag removes from the flow in this step, at the cell
+        centres (ny, nx) [m³ s⁻³]: the energy of the drag-driven BBL mixing (``bbl_mixing``, spec
+        2026-10-30-bbl-drag-mixing "Energía física, no la de MOM6").
+
+            e_face = Σ_k r_k u_k²     (τ_b/ρ₀ · u summed over the bbl layers; = C_d |U| U² ≈ C_d |U|³),
+            E = ½ (e_W + e_E) + ½ (e_S + e_N),
+
+        with the rates and velocities of ``_ale_bed_ustar2`` (``_ale_bed_rates``: quadratic r_k = r f_k from uⁿ,
+        U_bg included; law of the wall recomputed at the new velocities) and the new velocities u_new of the
+        implicit step, the same that give ``ctx.ustar2_bot``.  The face-to-centre rule is that of ``bed_ustar2``:
+        each cell takes its two faces per direction, so with periodic axes cells 0 and n−1 share the wrap face
+        (stored twice and equal), and a cell next to an open edge takes the open face's own drag work.  Faces of
+        walls and land (u = 0) give 0.  Legg et al. (2006) eq. (A.1) and MOM6 ``set_BBL_TKE`` (SD:2132-2137) use
+        the same quantity; MOM6's discrete form is ≈ 2 C_d |U|³ (task 2, class (d)).  No bed drag: zeros.
+        """
+        rates = self._ale_bed_rates(ctx, u_new, v_new, visc)
+        if rates is None:
+            return np.zeros(self.m.H.shape)
+        r_u, r_v = rates
+        eu = (r_u * (u_new * u_new)).sum(axis=0)
+        ev = (r_v * (v_new * v_new)).sum(axis=0)
+        return 0.5 * (eu[:, :-1] + eu[:, 1:]) + 0.5 * (ev[:-1, :] + ev[1:, :])
 
     def _ale_boundary_velocity(self, ctx: StepContext) -> None:
         m, st = self.m, ctx.st

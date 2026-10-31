@@ -105,9 +105,10 @@ from core.components.pgf import PressureGradient
 from core.components.momentum import Momentum, sum_terms
 from core.components.open_boundary import CONFIG as _OB_CONFIG, OpenBoundary
 from core.components.bottom_drag import LogLawBedDrag, QuadraticBedDrag
-from core.components.closure import ShearAddedClosure, make_closure
+from core.components.closure import BBLAddedClosure, ShearAddedClosure, find_closure, make_closure
 from physics.mixing.kpp_cvmix import KPPParams
 from physics.mixing.kappa_shear import JacksonParams
+from physics.mixing.bbl_mixing import BBLParams
 from core.components.free_surface import FreeSurfaceVerticalViscosity
 from core.components.layer_transport import ALELayerTransport, SigmaLayerTransport
 from core.components.tracers import TracerAdvection, TracerDiffusion
@@ -993,6 +994,18 @@ class SigmaBaroclinic:
     shear_prandtl : turbulent Prandtl number Pr = ν_shear/κ_shear (default 1.0, Jackson et al. 2008; MOM6
           PRANDTL_TURB; MOM6's DOME uses 0).  Assignable after construction, from the next closure update
     jackson_params : ``physics.mixing.kappa_shear.JacksonParams`` (None: MOM6's defaults, JHL best-fit set 1)
+    bbl_mixing : drag-driven bottom-boundary-layer diapycnal mixing added to the closure (BBL plan, Task 4; spec
+          docs/superpowers/specs/2026-10-30-bbl-drag-mixing-design.md): None (default, nothing changes, bit for
+          bit) or 'lotw' — MOM6's ``add_LOTW_BBL_diffusivity`` (OM4; ``physics.mixing.bbl_mixing``): a
+          law-of-the-wall Kd_BBL limited by ``bbl_effic`` times the energy pyOCEAN's bed drag removes in the step
+          (Σ_k r_k u_k² at the faces to the centres, ≈ C_d |U|³; MOM6's ≈ 2 C_d |U|³ is not copied, class (d)),
+          added to κ of T, S and passive tracers (κ = κ_closure (+ κ_shear) + Kd_BBL), no viscosity.  ALE only (σ,
+          z* and hybrid ALE), with a bed drag (``bottom_drag='quadratic'`` or ``z0``) and closure 'constant',
+          'none' or 'kpp' (not 'gls': its k already has a bed condition), alone or with ``shear_mixing``.
+          Computed in the tracer phase from the step's u*, drag work, density and layers; no state of its own
+          (``core.components.closure.BBLAddedClosure``)
+    bbl_params : ``physics.mixing.bbl_mixing.BBLParams`` (None: MOM6/OM4 defaults: bbl_effic 0.2, max_decay 200 m,
+          von_karman 0.41, use_omega True, kd_max 0.1 m² s⁻¹).  Assignable after construction (checked)
     adv : momentum advection: 'flux' (default; momentum-conserving flux form with WENO5,
           as CROCO) or the advective form 'upwind3' / 'centred' of core.dynamics.nonlinear
     vertical_coordinate : 'sigma_eulerian' (default; σ-layers with vertical advection) or 'ale'
@@ -1112,7 +1125,8 @@ class SigmaBaroclinic:
                  gls_stratified: bool = True, cp: float = 3985.0, jerlov: str = "I",
                  periodic: tuple[str, ...] = (), gls_production: str = "croco",
                  kpp_params: KPPParams | None = None, smagorinsky: float = 0.0, shear_mixing: str | None = None,
-                 shear_prandtl: float = 1.0, jackson_params: JacksonParams | None = None) -> None:
+                 shear_prandtl: float = 1.0, jackson_params: JacksonParams | None = None,
+                 bbl_mixing: str | None = None, bbl_params: BBLParams | None = None) -> None:
         _args = {k: v for k, v in locals().items() if k != "self"}
         raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
         self.periodic = Periodic(periodic)                              # N3 task 3 (class docstring)
@@ -1263,6 +1277,8 @@ class SigmaBaroclinic:
         self.shear_mixing = shear_mixing                                # None or 'jackson' (shear-mixing Task 4)
         self.shear_prandtl = float(shear_prandtl)
         self.jackson_params = jackson_params
+        self.bbl_mixing = bbl_mixing                                    # None or 'lotw' (BBL plan, Task 4)
+        self.bbl_params = bbl_params
         self._closure = make_closure(self)
         self.core.turbulence = self._closure
         if self.ale:                                                    # GLS on the ALE layers + remap (N3 task 5)
@@ -1927,13 +1943,44 @@ def _jackson_params_property() -> property:
             if errs:
                 raise ConfigurationError("invalid jackson_params:\n  " + "\n  ".join(errs))
         self.__dict__[key] = value
-        cl = self.__dict__.get("_closure")
-        if isinstance(cl, ShearAddedClosure):
+        cl = find_closure(self.__dict__.get("_closure"), ShearAddedClosure)   # under a BBL wrapper too
+        if cl is not None:
             cl.params = JacksonParams() if value is None else value
     return property(get, put, doc="``jackson_params``, kept in sync with the shear-mixing closure")
 
 
 SigmaBaroclinic.jackson_params = _jackson_params_property()
+
+
+def _bbl_params_property() -> property:
+    """
+    ``bbl_params`` kept in sync with the ``BBLAddedClosure`` (as ``jackson_params``).  Assigning later is checked
+    like the constructor argument (``ConfigurationError`` listing every bad field); None = MOM6/OM4 defaults.
+    """
+    key = "_pre_bbl_params"
+
+    def get(self):
+        try:
+            return self.__dict__[key]
+        except KeyError:
+            raise AttributeError("bbl_params") from None
+
+    def put(self, value) -> None:
+        if value is not None and "_closure" in self.__dict__:
+            from core.model.contract import ConfigurationError
+            from core.model.preflight import bbl_params_errors
+            errs = (bbl_params_errors(value) if isinstance(value, BBLParams)
+                    else [f"bbl_params must be a BBLParams, got {type(value).__name__}"])
+            if errs:
+                raise ConfigurationError("invalid bbl_params:\n  " + "\n  ".join(errs))
+        self.__dict__[key] = value
+        cl = find_closure(self.__dict__.get("_closure"), BBLAddedClosure)
+        if cl is not None:
+            cl.bbl_params = BBLParams() if value is None else value
+    return property(get, put, doc="``bbl_params``, kept in sync with the BBL-mixing closure")
+
+
+SigmaBaroclinic.bbl_params = _bbl_params_property()
 for _name in ("rho0", "t_coef", "t_ref", "s_coef", "s_ref"):
     setattr(SigmaBaroclinic, _name, _fixed_after_construction(_name))
 

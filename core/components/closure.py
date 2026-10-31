@@ -37,6 +37,7 @@ import numpy as np
 from core.model import threads
 from core.model.contract import BuildContext, Issue, Role
 from core.vertical import remap as rm
+from physics.mixing.bbl_mixing import BBLParams, lotw_bbl_columns
 from physics.mixing.gls import KT_MIN, N2_FLOOR, RM, RN, RP, GLSKEpsilon, buoyancy_frequency2
 from physics.mixing.gls_merged import merged_columns
 from physics.mixing.kappa_shear import JacksonParams, kappa_shear_columns
@@ -49,6 +50,7 @@ H_THIN_MAX = 0.1           # [m] ALE: cap of the threshold (the value of HYCOM's
 THIN_RTOL = 1e-9           # [-] a layer within this relative tolerance of the threshold is thin (N3 task 9c fix 1)
 PRODUCTIONS = ("croco", "energy")
 SHEAR_SCHEMES = ("jackson",)
+BBL_SCHEMES = ("lotw",)
 KAPPA0_MIN = 1e-7          # [m² s⁻¹] floor of Jackson's κ0: KD_KAPPA_SHEAR_0 = max(KD, 1e-7), MOM_kappa_shear.F90:2170-2173
 
 
@@ -1097,12 +1099,241 @@ class ShearAddedClosure(Closure):
         self.kv_shear_flat = np.asarray(d[STATE_PREFIX + "shear_kv"]).reshape(self.n + 1, -1).copy()
 
 
+class BBLAddedClosure(Closure):
+    """
+    Drag-driven bottom-boundary-layer diapycnal mixing **added** to a closure ('constant', 'none', 'kpp', or any of
+    them already wrapped in ``ShearAddedClosure``): the energy-limited law-of-the-wall diffusivity of MOM6
+    ``add_LOTW_BBL_diffusivity`` (``physics.mixing.bbl_mixing``; spec 2026-10-30-bbl-drag-mixing-design.md, the
+    OM4 scheme, MOM_set_diffusivity.F90:1606-1789), additive as in OM4 (SD:1782-1783):
+
+        κ = κ_inner + Kd_BBL,      ν = ν_inner   (no viscosity, no Prandtl number: MOM6 neither)
+
+    κ_inner is the wrapped closure's tracer diffusivity (Jackson's κ_base + κ_shear), or the constant ``kv`` when it
+    has none ('constant', 'none' without shear: the value the driver uses without BBL mixing).
+
+    Inputs of each update (driver phase 7, ``Driver._kpp_update``; MOM6 computes Kd_BBL in its diabatic step too):
+
+    * E (ny, nx) [m³ s⁻³] = ``bbl_energy``: the kinetic energy per unit area and density that pyOCEAN's bed drag
+      removed in this step, Σ_k r_k u_k² at the faces averaged to the centres (``Driver._ale_bed_energy``).
+      **pyOCEAN's physical drag work** (≈ C_d |U|³), not MOM6's ``BBL_meanKE_loss`` (≈ 2 C_d |U|³ with ≈ √2 u*,
+      task 2, class (d)): Esteban's decision of 2026-10-30, so BBL_EFFIC = 0.2 here equals 0.1 in MOM6/OM4.
+    * TKE_col = ``bbl_effic`` · E (SD:1709);
+    * u* = √(u*²_b), u*²_b = |τ_b|/ρ₀ of the same drag (``ctx.ustar2_bot``, U_bg and the law of the wall included);
+      the velocities are those after the implicit viscosity (MOM6: start of step; class (c), spec decision 2);
+    * |f| at the centres = ¼ Σ |f| of the four corners, in MOM6's order (SD:1680-1681);
+    * N² from the layer density with ``physics.mixing.gls.buoyancy_frequency2`` (0 at the bed and the surface, and
+      at an interface between two empty layers);
+    * the thin-layer threshold of the ALE closures (``thin_layer_threshold``); the merge is pyOCEAN's choice
+      (``physics.mixing.bbl_mixing`` section "Columns with thin-layer merge"; MOM6's LOTW does not merge).
+
+    Kd_BBL is computed and used in the same step: no state of its own (``state``, ``load``, ``state_fields``,
+    ``load_state``, ``remap`` are those of the wrapped closure).  Only wet columns (h summing to > 0) are computed;
+    elsewhere Kd_BBL = 0, and the driver's ``_dry_still`` keeps their tracers still.  A Kd_BBL that is zero
+    everywhere returns the wrapped closure's own κ unchanged (None included), so no drag work = base bit for bit.
+
+    ``update_phase`` 'tracers' and ``stateful`` True, as ``ShearAddedClosure``, so the driver calls ``update`` in
+    phase 7 even when the wrapped closure is the constant one.  Attributes not defined here are read from the
+    wrapped closure (``obl_depth`` of KPP, ``kd_shear``/``params`` of Jackson …); ``kv`` and ``prandtl`` set on the
+    wrapper reach the wrapped closure, so the model's ``kv``/``shear_prandtl`` setters keep working.
+
+    Parameters
+    ----------
+    base : the wrapped closure;  n_layers : N;  shape : (ny, nx) of the tracer grid
+    absf : (ny, nx) |f| at the cell centres [s⁻¹]
+    kv : constant tracer diffusivity of the model [m² s⁻¹] (κ_inner of a closure without κ)
+    params : ``physics.mixing.bbl_mixing.BBLParams`` (None: MOM6/OM4 defaults)
+    rho0, g : ρ₀ [kg m⁻³], g [m s⁻²] of N² = −(g/ρ₀) ∂ρ/∂z
+    """
+    stateful = True
+    update_phase = "tracers"
+
+    def __init__(self, base: Closure, n_layers: int, shape: tuple[int, int], absf: np.ndarray, kv: float = 0.0,
+                 params: BBLParams | None = None, rho0: float = 1000.0, g: float = 9.81) -> None:
+        self.base = base
+        self.n, self.shape = int(n_layers), tuple(shape)
+        self.absf = np.asarray(absf, float).reshape(-1)
+        self._kv = float(kv)
+        self.bbl_params = BBLParams() if params is None else params
+        self.rho0, self.g = float(rho0), float(g)
+        m = self.shape[0] * self.shape[1]
+        self.kd = np.zeros((self.n + 1, m))                            # Kd_BBL of the last update [m² s⁻¹]
+        self.energy_flat = np.zeros(m)                                 # drag work E of the last update [m³ s⁻³]
+        self._per = None
+
+    # ------------------------------------------------------------------ delegation
+    def __getattr__(self, name: str):
+        if name == "base" or name.startswith("__"):
+            raise AttributeError(name)
+        try:
+            base = self.__dict__["base"]
+        except KeyError:
+            raise AttributeError(name) from None
+        return getattr(base, name)
+
+    @property
+    def kv(self) -> float:
+        """Constant tracer diffusivity [m² s⁻¹]; set: also the wrapped closure's (Jackson κ_base, κ0)."""
+        return self._kv
+
+    @kv.setter
+    def kv(self, value: float) -> None:
+        self._kv = float(value)
+        if "kv" in vars(self.base):                                     # ShearAddedClosure: κ_base and κ0
+            self.base.kv = float(value)
+
+    @property
+    def prandtl(self) -> float:
+        """Jackson's Prandtl number of the wrapped shear closure (AttributeError without one)."""
+        return self.base.prandtl
+
+    @prandtl.setter
+    def prandtl(self, value: float) -> None:
+        if not hasattr(self.base, "prandtl"):
+            raise AttributeError("prandtl: no shear mixing under the BBL mixing")
+        self.base.prandtl = value
+
+    @property
+    def restart_prefix(self) -> str:
+        return self.base.restart_prefix
+
+    @property
+    def per(self):
+        return self._per
+
+    @per.setter
+    def per(self, value) -> None:
+        self._per = value
+        self.base.per = value
+
+    @property
+    def F_T(self) -> np.ndarray:
+        """The wrapped closure's non-local heat flux (KPP), else zeros (no non-local term)."""
+        f = getattr(self.base, "F_T", None)
+        return np.zeros(self.kd.shape[1]) if f is None else f
+
+    @property
+    def F_S(self) -> np.ndarray:
+        f = getattr(self.base, "F_S", None)
+        return np.zeros(self.kd.shape[1]) if f is None else f
+
+    def nonlocal_tendency(self, h: np.ndarray, flux: np.ndarray, dt: float) -> np.ndarray:
+        return self.base.nonlocal_tendency(h, flux, dt)
+
+    def nonlocal_flux(self) -> np.ndarray | None:
+        return self.base.nonlocal_flux()
+
+    def bind_ale(self, remap_code: int) -> None:
+        self.base.bind_ale(remap_code)
+
+    def remap(self, h_src: np.ndarray, h_dst: np.ndarray) -> None:
+        """The wrapped closure remaps its own state; Kd_BBL has none."""
+        self.base.remap(h_src, h_dst)
+
+    def check(self, ctx: BuildContext) -> list[Issue]:
+        return self.base.check(ctx)
+
+    # ------------------------------------------------------------------ fields
+    @property
+    def kd_bbl(self) -> np.ndarray:
+        """Kd_BBL (N+1, ny, nx) at the interfaces of the last update [m² s⁻¹] (registry ``kd_bbl``)."""
+        return self.kd.reshape(self.n + 1, *self.shape)
+
+    @property
+    def energy(self) -> np.ndarray:
+        """Drag work E (ny, nx) of the last update [m³ s⁻³] (before the factor ``bbl_effic``)."""
+        return self.energy_flat.reshape(self.shape)
+
+    # ------------------------------------------------------------------ interface
+    def viscosity(self, st) -> tuple[np.ndarray, np.ndarray] | None:
+        """The wrapped closure's ν: the BBL mixing produces no viscosity (MOM6 SD:374, 486-488)."""
+        return self.base.viscosity(st)
+
+    def update(self, u: np.ndarray, v: np.ndarray, h: np.ndarray, rho: np.ndarray | None,
+               ustar2_sfc: np.ndarray | None, ustar2_bot: np.ndarray, bflux: dict | None = None,
+               bbl_energy: np.ndarray | None = None) -> None:
+        """
+        The wrapped closure's update, then Kd_BBL of the wet columns (``lotw_bbl_columns``).
+
+        u, v : (N, ny, nx) velocities at the cell centres [m s⁻¹] (to the wrapped closure);  h : (N, ny, nx) layer
+        thicknesses [m], zero in dry and land columns;  rho : (N, ny, nx) layer density [kg m⁻³] (None: Kd_BBL = 0);
+        ustar2_bot : (ny, nx) |τ_b|/ρ₀ [m² s⁻²];  bbl_energy : (ny, nx) drag work E [m³ s⁻³] (None: 0).
+        """
+        self.base.update(u, v, h, rho, ustar2_sfc, ustar2_bot, bflux=bflux)
+        n = self.n
+        m = self.kd.shape[1]
+        energy = np.zeros(m) if bbl_energy is None else np.asarray(bbl_energy, float).reshape(m)
+        hh = np.asarray(h, float).reshape(n, m)
+        wet = np.flatnonzero(hh.sum(axis=0) > 0.0)
+        kd = np.zeros((n + 1, m))
+        if wet.size and rho is not None:
+            dz = np.ascontiguousarray(hh[:, wet])
+            rw = np.asarray(rho, float).reshape(n, m)[:, wet]
+            n2 = np.zeros((n + 1, wet.size))
+            hi = 0.5 * (dz[:-1] + dz[1:])                              # interface cell height of buoyancy_frequency2
+            with np.errstate(divide="ignore", invalid="ignore"):
+                n2[1:n] = np.where(hi > 0.0, buoyancy_frequency2(rw, dz, self.rho0, self.g), 0.0)
+            p = self.bbl_params
+            ustar = np.sqrt(np.asarray(ustar2_bot, float).reshape(m)[wet])
+            tke = p.bbl_effic * energy[wet]                            # TKE_col = BBL_EFFIC · E (SD:1709)
+            numba.set_num_threads(threads._THREADS[0])
+            kd[:, wet] = lotw_bbl_columns(dz, n2, ustar, self.absf[wet], tke, thin_layer_threshold(dz), p)
+        kd[0] = 0.0                                                    # no flux through the bed or the surface
+        kd[n] = 0.0
+        self.kd = kd
+        self.energy_flat = energy
+
+    def tracer_diffusivity(self) -> np.ndarray | None:
+        """κ_inner + Kd_BBL (N+1, ny, nx) [m² s⁻¹]; the wrapped closure's own value when Kd_BBL is zero everywhere."""
+        kb = self.base.tracer_diffusivity()
+        if not self.kd.any():
+            return kb
+        if kb is None:
+            return self.kv + self.kd_bbl
+        return kb + self.kd_bbl
+
+    def load(self, closure: dict | None) -> None:
+        self.base.load(closure)
+
+    def state(self) -> dict | None:
+        return self.base.state()
+
+    def state_fields(self) -> dict[str, np.ndarray]:
+        return dict(self.base.state_fields()) if self.base.stateful else {}
+
+    def load_state(self, d: dict[str, np.ndarray]) -> None:
+        if self.base.stateful:
+            self.base.load_state(d)
+
+
+def find_closure(cl: Closure, kind: type) -> Closure | None:
+    """The closure of class ``kind`` in the wrapper chain ``cl`` (BBL → shear → base), or None."""
+    while cl is not None:
+        if isinstance(cl, kind):
+            return cl
+        cl = cl.__dict__.get("base") if isinstance(cl, (ShearAddedClosure, BBLAddedClosure)) else None
+    return None
+
+
 def make_closure(model) -> Closure:
     """
     The closure component of a ``SigmaBaroclinic`` model, from its core settings: 'gls' → ``GLSClosure``
     (stratified with ``gls_stratified``; κ_t floor ``kv`` if > 0, else CROCO's 1e-6), anything else →
-    ``ConstantClosure``; with ``shear_mixing='jackson'`` that closure wrapped in ``ShearAddedClosure``.
+    ``ConstantClosure``; with ``shear_mixing='jackson'`` that closure wrapped in ``ShearAddedClosure``; with
+    ``bbl_mixing='lotw'`` the result wrapped in ``BBLAddedClosure``.
     """
+    core = model.core
+    cl = _shear_closure(model)
+    if getattr(model, "bbl_mixing", None) is None:
+        return cl
+    # |f| at the centres: ¼ Σ |f| of the four corners, MOM6's order (MOM_set_diffusivity.F90:1680-1681)
+    fq = np.abs(np.asarray(model._fq, float))
+    absf = 0.25 * ((fq[:-1, :-1] + fq[1:, 1:]) + (fq[1:, :-1] + fq[:-1, 1:]))
+    return BBLAddedClosure(cl, core.n_layers, core.H.shape, absf, kv=float(getattr(model, "kv", 0.0)),
+                           params=getattr(model, "bbl_params", None), rho0=core.rho0, g=core.g)
+
+
+def _shear_closure(model) -> Closure:
+    """The base closure, wrapped in ``ShearAddedClosure`` with ``shear_mixing='jackson'``."""
     core = model.core
     cl = _base_closure(model)
     if getattr(model, "shear_mixing", None) is None:

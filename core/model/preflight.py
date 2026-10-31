@@ -13,6 +13,7 @@ from __future__ import annotations
 import numpy as np
 
 from core.model.contract import Issue
+from physics.mixing.bbl_mixing import BBLParams
 from physics.mixing.kappa_shear import JacksonParams
 from physics.mixing.kpp_cvmix import KPPParams
 from physics.surface.shortwave import JERLOV
@@ -24,6 +25,7 @@ TRACER_SCHEMES = ("weno5", "weno5js", "upwind3", "upwind1")
 ADV = ("flux", "upwind3", "centred")
 KE_SCHEMES = ("arakawa", "gudonov", "godunov")
 REMAP = ("pcm", "plm", "ppm_h4")
+BBL_SCHEMES = ("lotw",)
 
 # arguments that only the ALE coordinate uses (ignored, with a warning, in σ)
 ALE_ONLY = ("regrid", "regrid_params", "remap_scheme", "h_thin_bed", "init_iterations", "max_truncations",
@@ -71,6 +73,31 @@ def jackson_params_errors(jp: JacksonParams) -> list[str]:
         v = getattr(jp, name)
         if isinstance(v, bool) or not isinstance(v, (int, np.integer)) or v < 1:
             out.append(f"jackson_params.{name}={v!r}: must be an integer ≥ 1 (iteration count)")
+    return out
+
+
+def bbl_params_errors(bp: BBLParams) -> list[str]:
+    """
+    One message per invalid field of ``BBLParams`` (drag-driven BBL mixing, ``physics.mixing.bbl_mixing``), so that
+    all errors are reported together.  bbl_effic ∈ [0, 1] (a fraction of the drag work); max_decay > 0 (the decay
+    scale cap, 1/max_decay); von_karman > 0; kd_max > 0 (the LOTW Kd where the mixing work is zero, SD:1769-1772;
+    MOM6's default −1 would give a negative Kd).  Every value must be finite; use_omega a bool.
+    """
+    rules = (("bbl_effic", lambda v: 0.0 <= v <= 1.0, "in [0, 1] (fraction of the drag work; MOM6 BBL_EFFIC 0.2)"),
+             ("max_decay", lambda v: v > 0, "> 0 [m] (BBL_MIXING_MAX_DECAY 200)"),
+             ("von_karman", lambda v: v > 0, "> 0 (VON_KARMAN_BBL 0.41)"),
+             ("kd_max", lambda v: v > 0, "> 0 [m² s⁻¹] (KD_MAX, OM4 0.1; used where the mixing work is zero)"))
+    out = []
+    for name, ok, rule in rules:
+        v = getattr(bp, name)
+        try:
+            good = bool(np.isfinite(v) and ok(v))
+        except TypeError:
+            good = False
+        if not good:
+            out.append(f"bbl_params.{name}={v!r}: must be a finite number {rule}")
+    if not isinstance(bp.use_omega, (bool, np.bool_)):
+        out.append(f"bbl_params.use_omega={bp.use_omega!r}: must be True or False")
     return out
 
 
@@ -288,6 +315,29 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
         for name in ("shear_prandtl", "jackson_params"):
             if name in given:
                 warn("closure", f"{name} is ignored without shear_mixing (it applies to shear_mixing='jackson')")
+    # drag-driven BBL mixing added to the closure (BBL plan, Task 4; spec 2026-10-30-bbl-drag-mixing)
+    bm = a.get("bbl_mixing")
+    if bm is not None and bm not in BBL_SCHEMES:
+        err("closure", f"unknown bbl_mixing={bm!r} (valid: None, 'lotw')")
+    if bm is not None:
+        if a["closure"] in ("gls", "parabolic"):
+            err("closure", f"bbl_mixing={bm!r} cannot be added to closure={a['closure']!r}: the GLS k-ε already has "
+                           "a bed boundary condition for k (double counting) and the parabolic ν is a fixed bed "
+                           "profile; use closure 'constant', 'none' or 'kpp'")
+        if not ale:
+            err("closure", f"bbl_mixing={bm!r} needs vertical_coordinate='ale' (σ, z* or hybrid ALE): in the σ "
+                           "model the bed drag lives inside the column solver, without the rates its energy needs")
+        if bd != "quadratic" and a["z0"] is None:
+            err("closure", f"bbl_mixing={bm!r} needs a bed drag, bottom_drag='quadratic' or z0 (law of the wall): "
+                           "its energy is the work of the drag")
+    bp = a.get("bbl_params")
+    if bp is not None and not isinstance(bp, BBLParams):
+        err("closure", f"bbl_params must be a physics.mixing.bbl_mixing.BBLParams, got {type(bp).__name__}")
+    elif bp is not None:
+        for msg in bbl_params_errors(bp):
+            err("closure", msg)
+    if bm is None and "bbl_params" in given:
+        warn("closure", "bbl_params is ignored without bbl_mixing (it applies to bbl_mixing='lotw')")
     if a["sponge_rate"] is None and ({"sponge_T", "sponge_zw", "sponge_tr", "sponge_S"} & given):
         warn("interior_sponge", "sponge_T / sponge_zw / sponge_tr / sponge_S are ignored without sponge_rate")
     return out

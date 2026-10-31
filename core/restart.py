@@ -14,7 +14,8 @@ SCHISM #140).  For ``SigmaBaroclinic`` that is:
 * the GLS turbulence state k, ε, ν (and κ_t) of the closure component (``core.components.closure``; file
   variables ``gls_*``), or the KPP viscosity ν of the last step (``kpp_akv``, N3 task 7); a restart written with
   another closure is rejected; with ``shear_mixing`` the lagged Jackson shear viscosity after the base's fields
-  (``shear_kv``, whatever the base), and a restart written with another shear_mixing is rejected;
+  (``shear_kv``, whatever the base), and a restart written with another shear_mixing is rejected; the drag-driven
+  BBL mixing (``bbl_mixing``) has no state of its own, but its scheme and parameters are checked;
 * the lagged-LU CG preconditioner of the free surface (the matrix it factorised and the refactor
   flag): CG stops at an iterate that depends on it;
 * ALE (``vertical_coordinate='ale'``, Plan D): the layer thicknesses h, the exterior profile kept in z
@@ -35,6 +36,7 @@ import numpy as np
 import xarray as xr
 
 from core.components.closure import STATE_PREFIX as CLOSURE_PREFIX
+from core.components.closure import BBLAddedClosure, KPPClosure, ShearAddedClosure, find_closure
 from core.dynamics.sigma_baroclinic import ReferenceProfile, SigmaBaroclinic, SigmaState
 
 _FIELDS = {          # name: (dims, units, long name)
@@ -83,14 +85,20 @@ def _config(model: SigmaBaroclinic) -> dict:
         cfg.update(gls_stratified=int(getattr(model, "gls_stratified", False)),
                    gls_production=str(getattr(model, "gls_production", "croco")))   # N3 task 5
     if core.closure == "kpp":                                   # N3 task 7: every KPP parameter
-        cl = getattr(model._closure, "base", model._closure)   # the KPP base under shear mixing (own keys below)
+        cl = find_closure(model._closure, KPPClosure)          # the KPP base under shear / BBL mixing
         cfg.update({f"kpp_{k}": _text("none" if v is None else v) for k, v in sorted(vars(cl.params).items())})
         cfg.update(kpp_cp=cl.cp)
     sm = getattr(model, "shear_mixing", None)                  # shear-mixing Task 4: scheme, Pr and every parameter
     cfg.update(shear_mixing="none" if sm is None else str(sm))
     if sm is not None:
-        cfg.update(shear_prandtl=model._closure.prandtl)
-        cfg.update({f"jackson_{k}": _text(v) for k, v in sorted(vars(model._closure.params).items())})
+        sc = find_closure(model._closure, ShearAddedClosure)   # under a BBL wrapper too
+        cfg.update(shear_prandtl=sc.prandtl)
+        cfg.update({f"jackson_{k}": _text(v) for k, v in sorted(vars(sc.params).items())})
+    bm = getattr(model, "bbl_mixing", None)                    # BBL plan Task 4: scheme and every parameter
+    cfg.update(bbl_mixing="none" if bm is None else str(bm))
+    if bm is not None:
+        bc = find_closure(model._closure, BBLAddedClosure)
+        cfg.update({f"bbl_{k}": _text(v) for k, v in sorted(vars(bc.bbl_params).items())})
     if getattr(model, "ale", False):                           # ALE (Plan D): the rule and every scheme choice
         cfg.update(vertical_coordinate="ale", regrid=model.regrid_rule, remap=int(model.remap_code),
                    thickness_flux=model.thickness_flux, momentum=model.momentum, ke_scheme=model.ke_scheme,
@@ -120,7 +128,8 @@ _CONFIG_DEFAULTS = {"salinity": 0, "s_coef": 0.0, "s_ref": 35.0, "sponge_S": "no
                     "gls_production": "croco",                                              # N3 task 5: CROCO P
                     "periodic": "none",                                                     # N3 task 3: no periodic axis
                     "smagorinsky": 0.0,                                                     # Smagorinsky off
-                    "shear_mixing": "none"}                                                 # no shear mixing
+                    "shear_mixing": "none",                                                 # no shear mixing
+                    "bbl_mixing": "none"}                                                   # no BBL mixing
 
 _SECTIONS = {"ab_hist": "time_stepper", "gls_": "closure", "kpp_": "closure", "shear_": "closure",
              "T_ext": "open_boundary", "h_ext": "open_boundary",

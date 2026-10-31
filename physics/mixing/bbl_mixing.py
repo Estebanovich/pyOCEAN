@@ -252,10 +252,16 @@ def lotw_bbl_column(dz: np.ndarray, n2: np.ndarray, ustar: float, absf: float,
 # A layer thinner than h_thin (``core.components.closure.thin_layer_threshold``) is merged before the column scheme,
 # exactly as for GLS and Jackson (``core.components.closure.active_layers`` + ``kappa_shear._merge_map``): it joins
 # the nearest open layer above it (k' ≥ k), else the nearest below (a top thin stack < h_massless); the merged
-# thickness is the sum of the members.  Why: a 1 mm layer gives dz_int ≈ 0.5 mm at its interfaces, so the mixing
-# work Kd dz_int N² is nearly zero there and, with N² ≤ 0 and no Ω² floor, an interface takes KD_MAX (SD:1769-1772);
-# MOM6's interface list in a vanished-layer column has the same problem, which its hybrid/layer configurations meet
-# by ``KAPPA_SHEAR_ELIM_MASSLESS``-style clusters only in the shear scheme (MOM_kappa_shear.F90:254-307).
+# thickness is the sum of the members.
+#
+# The merge and the interpolation of Kd back onto the model interfaces (below) are **pyOCEAN's choice**, the same
+# one made for the ALE GLS and for Jackson; **MOM6's LOTW does no merge**: ``add_LOTW_BBL_diffusivity`` sweeps every
+# interface of the column, vanished layers included (SD:1728-1787).  MOM6 merges massless layers only inside its
+# shear scheme (``KAPPA_SHEAR_ELIM_MASSLESS``, MOM_kappa_shear.F90:254-307), not here.  Why pyOCEAN merges: a 1 mm
+# layer gives dz_int ≈ 0.5 mm at its interfaces, so the mixing work Kd dz_int N² is nearly zero there and, with
+# N² ≤ 0 and no Ω² floor, the interface takes KD_MAX (SD:1769-1772).  The unmerged kernel is the one compared with
+# compiled MOM6 (task 2, spec "Decisiones de Claude" 6); the merge is tested by the property that a column with
+# near-empty layers gives the Kd of the column without them (spec criterion 2).
 #
 # * N² of the merged column is taken at the **surviving** interfaces: merged interface q < c is the bottom of the
 #   lowest member of merged layer q, and q = c is the surface.  N² at interfaces inside a merged layer is not used
@@ -494,11 +500,16 @@ def lotw_bbl_columns(dz: np.ndarray, n2: np.ndarray, ustar: np.ndarray, absf: np
     n2 = np.ascontiguousarray(n2, dtype=float)
     if n2.shape != (n + 1, m):
         raise ValueError(f"lotw_bbl_columns: n2 must have shape {(n + 1, m)}, got {n2.shape}")
+    if not np.isfinite(n2).all():
+        raise ValueError("lotw_bbl_columns: n2 must be finite")
     cols = []
     for name, x in (("ustar", ustar), ("absf", absf), ("tke", tke), ("h_thin", h_thin)):
         arr = np.asarray(x, float)
         if arr.ndim != 0 and arr.shape != (m,):
             raise ValueError(f"lotw_bbl_columns: {name} must be a scalar or have shape ({m},), got {arr.shape}")
+        # a NaN u* would fail ``ustar > 0`` in the kernel and give Kd = 0 silently (task 3 review M2)
+        if not np.isfinite(arr).all() or (arr < 0.0).any():
+            raise ValueError(f"lotw_bbl_columns: {name} must be finite and >= 0")
         cols.append(np.ascontiguousarray(np.broadcast_to(arr, (m,))))
     ustar, absf, tke, h_thin = cols
     n2_min = OMEGA * OMEGA if p.use_omega else 0.0                       # SD:1666-1667

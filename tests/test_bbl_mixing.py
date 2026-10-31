@@ -209,3 +209,23 @@ def test_dry_column_zero() -> None:
         kd = fn(dz, n2, 0.01 * one, 1.0e-4 * one, 1.0e-5 * one, thin_layer_threshold(dz), BBLParams())
         assert np.all(kd[:, 0] == 0.0)
         assert np.any(kd[:, 1] > 0.0)
+
+
+def test_columns_refuse_non_finite_inputs() -> None:
+    """Task 3 review M2: a NaN u* (or any non-finite / negative input) raises instead of giving Kd = 0 silently."""
+    import pytest
+    dz = np.full((10, 3), 5.0)
+    n2 = np.full((11, 3), 1e-5)
+    ok = dict(ustar=np.full(3, 0.01), absf=np.full(3, 1e-4), tke=np.full(3, 1e-6), h_thin=np.full(3, 1e-3))
+    lotw_bbl_columns(dz, n2, **ok)
+    for name in ok:
+        for bad in (np.nan, np.inf, -1e-3):
+            kw = dict(ok)
+            kw[name] = np.array(ok[name])
+            kw[name][1] = bad
+            with pytest.raises(ValueError, match=name):
+                lotw_bbl_columns(dz, n2, **kw)
+    n2b = n2.copy()
+    n2b[4, 2] = np.nan
+    with pytest.raises(ValueError, match="n2"):
+        lotw_bbl_columns(dz, n2b, **ok)

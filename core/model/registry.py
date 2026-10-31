@@ -63,6 +63,10 @@ _SPECS = [
             "Jackson et al. (2008) shear-driven viscosity ν_shear = Pr κ_shear at the layer interfaces (cell "
             "centres), added to the next step's vertical viscosity (shear_mixing='jackson'; "
             "ShearAddedClosure.kv_shear)"),
+    VarSpec("kd_bbl", ("kw", "y", "x"), "w", "m2 s-1", None, "diagnostic",
+            "drag-driven bottom-boundary-layer diffusivity Kd_BBL at the layer interfaces of the last step (MOM6 "
+            "add_LOTW_BBL_diffusivity, energy = bbl_effic × the bed-drag work), added to the closure's κ "
+            "(bbl_mixing='lotw'; BBLAddedClosure.kd_bbl)"),
     VarSpec("closure.akt", ("kw", "y", "x"), "w", "m2 s-1", None, "component_state",
             "eddy tracer diffusivity (stratified GLS k-ε, gls_stratified; N2a task 8c)"),
 ]
