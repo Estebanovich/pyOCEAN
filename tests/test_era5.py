@@ -316,3 +316,86 @@ def test_era5_to_surface_fluxes(tmp_path):
     for k, v in fluxes.items():
         assert np.all(np.isfinite(v)), k
     assert np.all(fluxes["tau_x"] > 0) and np.all(fluxes["tau_y"] < 0)
+
+
+# ---------------------------------------------------------------------------
+# Land: ERA5 carries real values over land (N2b final review I1, ruling R7)
+# ---------------------------------------------------------------------------
+
+LAND_LON = -94.5                       # land east of this meridian in the synthetic ERA5 grid
+LAND_T2M = 320.0                       # warm land block, K (ocean: 298 K)
+
+
+def _land_files(tmp: Path, nan_land: bool = False, lsm_in_file: bool = False) -> list[Path]:
+    """Synthetic ERA5 files with a warm (or NaN) land block east of LAND_LON, as real ERA5 over land."""
+    paths = _write(tmp)
+    for p in paths:
+        ds = xr.load_dataset(p)
+        land = (ds["longitude"] > LAND_LON).broadcast_like(ds[list(ds.data_vars)[0]])
+        for v in ("t2m", "u10", "d2m"):
+            if v in ds:
+                ds[v] = ds[v].where(~land, np.nan if nan_land else {"t2m": LAND_T2M, "d2m": 290.0, "u10": 2.0}[v])
+        if lsm_in_file and "t2m" in ds:
+            ds["lsm"] = _lsm_array().isel(valid_time=0, drop=True)
+        ds.to_netcdf(p)
+    return paths
+
+
+def _lsm_array(with_time: bool = True) -> xr.DataArray:
+    """ERA5 land-sea mask (1 land, 0 sea; fractional on the coast) on the synthetic grid."""
+    lon = np.arange(-100.0, -89.75, 0.25)
+    lat = np.arange(25.0, 14.75, -0.25)
+    a = np.broadcast_to((lon > LAND_LON).astype(float)[None, :], (lat.size, lon.size)).copy()
+    da = xr.DataArray(a, dims=("latitude", "longitude"), coords={"latitude": lat, "longitude": lon}, name="lsm")
+    return da.expand_dims(valid_time=[T_START]) if with_time else da
+
+
+class TestERA5Land:
+
+    def _t2m(self, tmp_path, **kw):
+        from forcing.atmosphere import era5_atmosphere
+        grid = create_spherical_grid(nx=12, ny=10, dlon=0.25, dlat=0.25, lon0=-96.0, lat0=19.0)
+        lsm = kw.pop("lsm", None)
+        paths = _land_files(tmp_path, **kw)
+        prov = era5_atmosphere(paths, grid, T_START, T0, T1, bbox=BBox.from_grid(grid, pad=0.5), lsm=lsm)
+        return prov(2 * 3600.0)
+
+    def test_coastal_cells_get_ocean_values_with_the_mask(self, tmp_path):
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")                   # no warning when a mask is given
+            out = self._t2m(tmp_path, lsm=_lsm_array())
+        np.testing.assert_allclose(out["t2m"], 298.0, atol=1e-9)
+        np.testing.assert_allclose(out["u10"], 7.0, atol=1e-9)
+
+    def test_mask_from_a_netcdf_file(self, tmp_path):
+        (tmp_path / "m").mkdir()
+        f = tmp_path / "m" / "lsm.nc"
+        _lsm_array().to_netcdf(f)
+        out = self._t2m(tmp_path, lsm=f)
+        np.testing.assert_allclose(out["t2m"], 298.0, atol=1e-9)
+
+    def test_mask_found_inside_the_era5_files(self, tmp_path):
+        out = self._t2m(tmp_path, lsm_in_file=True)
+        np.testing.assert_allclose(out["t2m"], 298.0, atol=1e-9)
+
+    def test_without_mask_coastal_cells_see_land_and_a_warning_is_given(self, tmp_path):
+        with pytest.warns(UserWarning, match="land"):
+            out = self._t2m(tmp_path)
+        assert out["t2m"].max() > 310.0                      # the default stays unmasked (Task 7 reproducible)
+        assert out["u10"].min() < 5.0
+
+    def test_nan_over_land_loads_and_is_filled(self, tmp_path):
+        with pytest.warns(UserWarning, match="land"):
+            out = self._t2m(tmp_path, nan_land=True)
+        for k, v in out.items():
+            assert np.isfinite(v).all(), k
+        np.testing.assert_allclose(out["t2m"], 298.0, atol=1e-9)
+
+    def test_entirely_nan_record_still_raises(self, tmp_path):
+        paths = _write(tmp_path)
+        ds = xr.load_dataset(paths[0])
+        ds["t2m"][3] = np.nan                                # one whole time record missing
+        ds.to_netcdf(paths[0])
+        with pytest.raises(ValueError, match="entirely non-finite"):
+            ERA5Source(paths).load(T0, T1, BB)

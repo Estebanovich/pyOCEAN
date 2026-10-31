@@ -20,7 +20,11 @@ For a record k of the source (on its own lon/lat grid):
 
 1. sea-over-land: ``forcing.interp.fill_land`` replaces land NaNs by the
    iterative 4-neighbour mean (HYCOM-tools ``landfill``, croco_tools
-   ``fillmask``), so coastal model points do not see land values;
+   ``fillmask``).  It acts only where the source is NaN over land: WRF is
+   masked with LANDMASK, ERA5 only if a land-sea mask ``lsm`` is given
+   (``era5_atmosphere(..., lsm=...)``).  ERA5 carries real values over
+   land, so without ``lsm`` model cells within one ERA5 cell of the coast
+   are interpolated from land t2m, q2m and u10 (a warning is given);
 2. bilinear interpolation to the T points, ``forcing.interp.to_model_grid``
    (Press et al. 2007, eq. 3.6.5).
 
@@ -212,7 +216,8 @@ class AtmosphereProvider:
 # ---------------------------------------------------------------------------
 
 def era5_atmosphere(paths: list[str | Path], grid: xr.Dataset, origin: np.datetime64,
-                    t0: datetime, t1: datetime, bbox: BBox | None = None) -> AtmosphereProvider:
+                    t0: datetime, t1: datetime, bbox: BBox | None = None,
+                    lsm: str | Path | xr.DataArray | None = None) -> AtmosphereProvider:
     """
     Atmosphere provider from hourly ERA5 single-level files.
 
@@ -234,9 +239,15 @@ def era5_atmosphere(paths: list[str | Path], grid: xr.Dataset, origin: np.dateti
         to it (``window``).
     bbox : BBox, optional
         Region to read; default ``BBox.from_grid(grid)`` (1° margin).
+    lsm : str, Path, xr.DataArray or None
+        ERA5 land-sea mask (CDS variable ``land_sea_mask``, named ``lsm`` in the file; a path or a DataArray on
+        the same grid as the data).  Where lsm > 0.5 the ERA5 fields are set to NaN before the sea-over-land
+        fill, as WRF does with LANDMASK, so coastal ocean cells see only ocean values.  An ``lsm`` variable
+        inside ``paths`` is used if this is None.  Without any mask the fields are used as delivered (they
+        hold land values) and a ``UserWarning`` says so.
     """
     bbox = BBox.from_grid(grid) if bbox is None else bbox
-    ds = ERA5Source(paths).load(t0, t1, bbox)
+    ds = ERA5Source(paths, lsm=lsm).load(t0, t1, bbox)
     return AtmosphereProvider(ds, grid, origin, window=(np.datetime64(t0, "ns"), np.datetime64(t1, "ns")))
 
 

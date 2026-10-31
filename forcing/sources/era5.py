@@ -18,6 +18,28 @@ ERA5 variables used (CDS short names)
 | strd  | surface thermal radiation down [J m⁻²]| lw_down   | accumulation → rate, centred       |
 | tp    | total precipitation [m]               | precip    | accumulation → rate, centred       |
 
+Land
+----
+ERA5 single-level fields are defined over land (t2m, d2m, u10, ... carry the
+land-surface values, not NaN), so ``forcing.interp.fill_land`` has nothing to
+fill and the bilinear step mixes land values into every model cell within
+one ERA5 cell (~28 km) of the coast.  The optional land-sea mask ``lsm``
+(CDS variable ``land_sea_mask``, invariant) removes them: where
+lsm > 0.5 the fields are set to NaN, so ``fill_land`` replaces them by the
+nearest sea values, as ``WRFSource`` does with LANDMASK.  ``lsm`` is a path
+to an ERA5 lsm NetCDF file (single or no time), an ``xr.DataArray``, or an
+``lsm`` variable inside the ERA5 files.  Without a mask the default stays
+unmasked and a ``UserWarning`` is given.  Reference implementations:
+MITgcm ``pkg/exf/exf_interp.F`` has no land handling (plain bilinear
+interpolation of the input field, 4 surrounding points, no mask test); the
+only masking is ``EXF_FILTER_RL`` on the model grid after interpolation
+(``exf_set_fld.F:236-237, 293-294``), so land values of the input do reach
+coastal ocean points unless the user prepares sea-filled files.  The CROCO
+tree at ``~/pyOCEAN_refs/croco`` does not include croco_tools (the
+``fillmask`` preprocessing, which fills land by iterative extrapolation of
+sea values) nor ERA5 scripts, so what CROCO does with ERA5 land was not
+checked here.
+
 ERA5's own evaporation ``e`` is deliberately not used: evaporation is
 computed by the bulk formula so that latent heat and freshwater fluxes are
 consistent (as in MITgcm, CROCO and HYCOM).
@@ -52,6 +74,7 @@ Buck, A.L. (1981). New equations for computing vapor pressure and
 
 from __future__ import annotations
 
+import warnings
 from datetime import datetime
 from pathlib import Path
 
@@ -132,15 +155,24 @@ class ERA5Source(ForcingSource):
         module docstring.
     accumulation_seconds : float
         Accumulation period of ssrd, strd and tp [s]; 3600 for hourly ERA5.
+    lsm : str, Path, xr.DataArray or None
+        ERA5 land-sea mask (fraction of land, 0-1; lsm > 0.5 is land) as an
+        ERA5 NetCDF file or a DataArray with latitude/longitude (or lat/lon)
+        and optionally a single time.  If None, an ``lsm`` variable inside
+        ``paths`` is used when present.  With a mask the land values are set
+        to NaN before ``fill_land``; with none a ``UserWarning`` says that
+        coastal cells may see land values.
     """
 
     kind = "atmosphere"
 
-    def __init__(self, paths: list[str | Path], accumulation_seconds: float = 3600.0) -> None:
+    def __init__(self, paths: list[str | Path], accumulation_seconds: float = 3600.0,
+                 lsm: str | Path | xr.DataArray | None = None) -> None:
         if not paths:
             raise ValueError("ERA5Source needs at least one file in paths")
         self.paths = [Path(p) for p in paths]
         self.accumulation_seconds = accumulation_seconds
+        self.lsm = lsm
 
     # ------------------------------------------------------------------
     def open(self, t0: datetime, t1: datetime, bbox: BBox) -> xr.Dataset:
@@ -153,7 +185,10 @@ class ERA5Source(ForcingSource):
         """
         files = [_open_era5(p) for p in self.paths]
         try:
-            ds = self._combine([self._normalise(f) for f in files])
+            parts = [self._normalise(f) for f in files]
+            in_file = next((p["lsm"] for p in parts if "lsm" in p.data_vars), None)
+            parts = [p.drop_vars("lsm") if "lsm" in p.data_vars else p for p in parts]
+            ds = self._combine(parts)
 
             missing = [v for v in (*_INSTANT, *_ACCUM) if v not in ds]
             if missing:
@@ -163,18 +198,71 @@ class ERA5Source(ForcingSource):
             ds = ds.sel(time=slice(np.datetime64(t0, "ns") - pad, np.datetime64(t1, "ns") + pad))
             # Subset lazily, then read only the needed block into memory
             out = subset_bbox(ds, bbox).load()
-            # a variable missing from one time chunk (e.g. a month's accum file not downloaded) would reach the
-            # model as NaN after the outer join: refuse it here (task 7 review m1; the original bug was a CROCO
-            # blow-up on day 31)
-            bad = [v for v in (*_INSTANT, *_ACCUM) if not np.isfinite(out[v].values).all()]
-            if bad:
-                t = out["time"].values
-                raise ValueError(f"ERA5 files give non-finite {bad} in [{t[0]}, {t[-1]}] (a time chunk of these "
-                                 f"variables is missing from {[p.name for p in self.paths]})")
+            land = self._land_mask(out, in_file)
+            if land is None:
+                warnings.warn("ERA5Source: no land-sea mask (lsm) given: ERA5 carries real values over land, so "
+                              "ocean cells within one ERA5 cell of the coast may see land t2m, q2m and u10. "
+                              "Pass lsm=... (CDS variable 'land_sea_mask') to mask them.", UserWarning,
+                              stacklevel=3)
+            else:
+                for v in (*_INSTANT, *_ACCUM):
+                    out[v] = out[v].where(~land)
+            self._check_finite(out)
             return out
         finally:
             for f in files:
                 f.close()
+
+    # ------------------------------------------------------------------
+    def _land_mask(self, out: xr.Dataset, in_file: xr.DataArray | None) -> xr.DataArray | None:
+        """
+        Boolean land mask (lsm > 0.5) on the lat/lon points of ``out``, or None.
+
+        The mask comes from the ``lsm`` argument (path or DataArray) or else from an ``lsm`` variable of the
+        ERA5 files.  A time axis is reduced to its first record (the field is invariant).  The mask is matched
+        to the data grid by nearest point within 1e-3 degrees; a mismatch is an error, not a silent shift.
+        """
+        src = self.lsm if self.lsm is not None else in_file
+        if src is None:
+            return None
+        if isinstance(src, (str, Path)):
+            with xr.open_dataset(src, engine="h5netcdf") as f:
+                name = "lsm" if "lsm" in f else next(iter(f.data_vars))
+                src = f[name].load()
+        src = src.rename({k: v for k, v in {"valid_time": "time", "latitude": "lat",
+                                            "longitude": "lon"}.items() if k in src.dims})
+        if "time" in src.dims:
+            src = src.isel(time=0)
+        src = src.reset_coords(drop=True)
+        m = src.reindex(lat=out["lat"], lon=out["lon"], method="nearest", tolerance=1e-3)
+        if m.isnull().any():
+            raise ValueError("ERA5 lsm does not cover the lon/lat points of the data (it must be the same ERA5 "
+                             "grid, requested with an area that contains the forcing region)")
+        return m > 0.5
+
+    @staticmethod
+    def _check_finite(out: xr.Dataset) -> None:
+        """
+        Refuse missing data, accept NaN over land.
+
+        NaN that is the same at every time (the land mask, or land that the user's file leaves undefined) is
+        expected and is filled by ``fill_land``.  A whole record of a variable that is NaN, or a variable with
+        no finite value, means a missing file or time chunk (an outer join of monthly files leaves NaN: the
+        original bug was a CROCO blow-up on day 31, task 7 review m1) and raises, as does NaN that changes
+        with time.
+        """
+        t = out["time"].values
+        for v in (*_INSTANT, *_ACCUM):
+            fin = np.isfinite(out[v].values)                       # (time, lat, lon)
+            if not fin.any():
+                raise ValueError(f"ERA5 variable {v} has no finite value in the requested region and period")
+            empty = ~fin.any(axis=(1, 2))
+            if empty.any():
+                raise ValueError(f"ERA5 variable {v} is entirely non-finite at {t[empty][:3]} (a time chunk of "
+                                 f"this variable is missing from the files, or the record is empty)")
+            if not (fin == fin[0]).all():
+                raise ValueError(f"ERA5 variable {v} has NaN that changes with time (not a land mask): "
+                                 f"incomplete record in [{t[0]}, {t[-1]}]")
 
     # ------------------------------------------------------------------
     def to_canonical(self, ds: xr.Dataset) -> xr.Dataset:

@@ -208,10 +208,18 @@ for _ in range(n_steps):
 - **Atmosphere.** `era5_atmosphere(paths, grid, origin, t0, t1)` and `wrf_atmosphere(...)` return an
     `AtmosphereProvider`: the canonical atmosphere on the T points as a pure function of the model time, with linear
     interpolation in time between the stored records and land filled with the nearest sea value before the bilinear
-    step. The files are read once per record (two records are cached), never inside the step. `coverage()` gives the
+    step (WRF: always, LANDMASK; ERA5: only with a land-sea mask, see the next item). The files are read once per record (two records are cached), never inside the step. `coverage()` gives the
     first and last time in seconds from `origin`; a step outside it raises `ValueError` naming the date. For a
     restarted run load the atmosphere from the restart date (the `t0` of the continuation) and keep the same `origin`:
     the restart checks the origin and the result is bit for bit the uninterrupted run.
+- **ERA5 land-sea mask.** ERA5 carries real values over land (t2m, d2m, u10, ...), not NaN, so the sea-over-land fill
+    has nothing to fill and ocean cells within one ERA5 cell (~28 km) of the coast are interpolated partly from land
+    values. Pass `lsm=` (path to an ERA5 `land_sea_mask` file, or an `xr.DataArray`; an `lsm` variable inside the
+    ERA5 files is also used) to `era5_atmosphere` or `ERA5Source`: where lsm > 0.5 the fields become NaN before the
+    fill, as WRF does with LANDMASK. Without it the default stays unmasked and a `UserWarning` is given. Request the
+    mask from CDS once per box (`reanalysis-era5-single-levels`, `product_type` reanalysis, `variable`
+    `land_sea_mask`, one day and hour, same `area` and `data_format` netcdf as the forcing), or run
+    `validation/bulk_points/fetch_era5.py --groups lsm`.
 - **Options of `BulkFluxes`.** `scheme` (`'ncar'` default, `'ncar_ly04'`, `'coare'`, `'kara'`), `h_sfc` = 1 m, `h_uv_sfc`
     (None = `h_sfc`, 0 = top layer), `relative_wind` = True, `albedo` = 0.066, `emissivity` = 0.97, heights `z_u`, `z_t`,
     `z_q` = 10, 2, 2 m. All are listed in the [configuration reference](configuration-reference.md#surface_fluxes-bulk-surface-fluxes-n2b).

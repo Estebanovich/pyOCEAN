@@ -71,6 +71,9 @@ GROUPS: dict[str, list[str]] = {
         "surface_thermal_radiation_downwards",
         "total_precipitation",
     ],
+    # invariant land-sea mask (N2b final review I1): opt-in with --groups lsm, one file per box; pass it as
+    # ERA5Source(paths, lsm=path) / era5_atmosphere(..., lsm=path)
+    "lsm": ["land_sea_mask"],
     "mean": [
         "mean_surface_downward_short_wave_radiation_flux",
         "mean_surface_downward_long_wave_radiation_flux",
@@ -120,7 +123,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--east", type=float, default=-68.0)
     p.add_argument("--tag", default="nwa_shelf", help="file-name tag of the box")
     p.add_argument("--outdir", type=Path, default=DEFAULT_OUTDIR)
-    p.add_argument("--groups", nargs="+", default=list(GROUPS), choices=list(GROUPS))
+    p.add_argument("--groups", nargs="+", default=["instant", "accum"], choices=list(GROUPS))
     a = p.parse_args(argv)
 
     import cdsapi  # imported here so --help works without credentials
@@ -130,6 +133,16 @@ def main(argv: list[str] | None = None) -> int:
     client = cdsapi.Client()
     for year, month in months(a.start, a.end):
         for group in a.groups:
+            if group == "lsm":                       # invariant: one request, first month, one hour
+                target = a.outdir / f"era5_{a.tag}_lsm.nc"
+                if (year, month) == months(a.start, a.end)[0] and not target.exists():
+                    req = request(year, month, GROUPS[group], area)
+                    req.update(day=["01"], time=["00:00"])
+                    tmp = target.with_suffix(".nc.part")
+                    client.retrieve("reanalysis-era5-single-levels", req, str(tmp))
+                    tmp.rename(target)
+                    print(f"done {target.name}", flush=True)
+                continue
             target = a.outdir / f"era5_{a.tag}_{year:04d}-{month:02d}_{group}.nc"
             if target.exists() and target.stat().st_size > 0:
                 print(f"skip {target.name} (exists)", flush=True)
