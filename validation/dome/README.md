@@ -309,6 +309,100 @@ Cada cambio se atribuye con el control: (operador) = de la corrida base al contr
 3. **Mezcla por cizalla con ν_v bajo (b).** `kv_low` termina, pero la cuenca profunda se acelera sin freno vertical hasta el umbral de truncamiento. Una mezcla por Ri (Jackson et al. 2008) es lo que usa el DOME de MOM6 con su ν_v bajo.
 4. **Estudio (c): por qué el operador de tensor pesado por grosor baja max\|u\|** (punto 2): 5.52 → 3.56 m/s en caras gruesas sin término de Smagorinsky.
 
+## Mezcla por cizalla de Jackson et al. (2008) contra la verdad no hidrostática de Legg (spec 2026-10-30, criterios 4, 5 y 7)
+
+`--shear jackson` agrega la mezcla interior por cizalla de Jackson, Hallberg & Legg (2008), el `kappa_shear` de MOM6 (`shear_mixing='jackson'`, `shear_prandtl` = `--shear-pr`, por defecto 1), al cierre constante. El kernel coincide con `kappa_shear_column` de MOM6 compilado (`validation/mom6_column/README.md`, criterio 1). Solo cambia el cierre: κ_shear se suma a la difusividad de los trazadores, que en DOME es 0 (física común, sin difusión de trazadores), y ν_shear = Pr κ_shear se suma a ν_v con un paso de retraso. Con kv = 0, κ0 = 1e-7 m²/s (MOM6: max(KD, 1e-7)). La corrida principal es la híbrida `kv_low` (ν_v = 1e-4) + Jackson Pr = 1 + Smagorinsky C = 0.15: es el equivalente a 10 km del isopicnal de Legg (ν_v = 1e-4 + mezcla por Ri de Hallberg 2000 + Smagorinsky; Legg 2006 p. 77). Las salidas van a `RUNS/10km/pyocean_<coord>_<variante>_jackson[pr0]/`. Las bitácoras están en `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/shear_logs/` (cadena `chain.sh`, 8 corridas, rc = 0, 2026-10-30 19:36–21:19).
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 MKL_NUM_THREADS=1 \
+  python validation/dome/run_pyocean.py 10 hybrid --kv-low --smag 0.15 --shear jackson                 # la principal
+python validation/dome/run_pyocean.py 10 hybrid --kv-low --smag 0.15 --shear jackson --shear-pr 0      # sensibilidad Pr = 0
+python validation/dome/run_pyocean.py 10 hybrid --shear jackson                                        # ν_v = 0.5 + Jackson
+python validation/dome/run_pyocean.py 10 zstar --kv-low --smag 0.15 [--shear jackson]                  # también sigma
+python validation/dome/compare.py 10 --only "pyocean_hybrid,pyocean_zstar_kv,pyocean_sigma_kv,mitgcm_z_legg"
+python validation/dome/figures.py 10 --no-anim --sub jackson --runs mitgcm_z_legg,pyocean_hybrid_kv_low_smag0.15,pyocean_hybrid_kv_low_smag0.15_jackson,pyocean_hybrid_kv_low_smag0.15_jacksonpr0,pyocean_hybrid,pyocean_hybrid_jackson,pyocean_hybrid_gls,pyocean_zstar_kv_low_smag0.15,pyocean_zstar_kv_low_smag0.15_jackson,pyocean_sigma_kv_low_smag0.15,pyocean_sigma_kv_low_smag0.15_jackson
+python validation/dome/figures.py 10 --before-after pyocean_hybrid_kv_low_smag0.15,pyocean_hybrid_kv_low_smag0.15_jackson,mitgcm_z_legg --sub jackson
+```
+
+### Resultados (10 km, 50 días, Δt 600 s, 5 hilos; E, T, α_E, b_f, trayectoria en los días 30–50; trazador por clase en la segunda mitad, días 25–50)
+
+**Contra la verdad.** "dig." = leído de las figuras de Legg et al. (2006) (`legg2006_nonhydro.json`, con figura, página e incertidumbre: ±5 % en E, ±0.15e-3 en b_f, ±0.5×10⁶ m² en el color de la Fig. 4). El 8.6e-4 de E no hidrostático sale del texto (p. 79) y a 0.5 km; a 10 km, las referencias equivalentes de E son las corridas de 10 km de Legg (z 2.19e-4, isopicnal 9.4e-4), porque S crece con la resolución. Además, E cambia ~×2 con la definición (`compare.py`): diferencias de E menores que ×2 no son significativas.
+
+| corrida | E esquina, U_rms pluma / todo | T_out, T_in [Sv] | T(x′ = −200 / −300) [Sv] | α_E (−180…−50 km) | b_f [1e-3 m s⁻²] | b medio del trazador en x′ = −300 [1e-3 m s⁻²] | clase con más trazador x′ = −300 / −100 |
+|---|---|---|---|---|---|---|---|
+| Legg no hidrostático 0.5 km (verdad) | 8.6e-4 (texto) | — | 22.5 / 20.6 (dig.) | 1.03e-3 (dig.) | −8.75 (dig.) | −8.99 (dig.) | −10…−9 (dig.) |
+| Legg 10 km z (ν_v 0.5) | 2.19e-4 (dig.) | — | — | — | −11.67 (dig.) | — | — |
+| Legg 10 km isopicnal (ν_v 1e-4 + Ri) | 9.4e-4 (dig.) | — | — | — | −11.07 (dig.); ν_v 0.5: −12.09 | — | — |
+| MITgcm z legg | 1.04e-3 / 1.96e-3 | 14.83, 12.66 | 20.4 / 22.1 | 6.14e-4 | −10.85 | −10.79 | −14…−13 / −16…−15 |
+| híbrida `kv_low` + Smag 0.15 (línea base) | −1.02e-4 / −2.40e-4 | 8.29, 9.26 | 10.1 / 9.2 | 1.92e-5 | −17.91 | −17.94 | −19…−18 / −19…−18 |
+| **+ Jackson Pr = 1 (principal)** | **4.88e-4** / 1.13e-3 | 12.46, 9.83 | **15.9 / 17.9** | **4.77e-4** | **−12.84** | **−12.98** | **−17…−16** / −19…−18 |
+| + Jackson Pr = 0 (sensibilidad) | 1.14e-3 / 1.50e-3 | 16.49, 12.73 | 12.3 / 16.3 | 1.56e-3 | −8.29 | −8.18 | −9…−8 / −8…−7 |
+| híbrida ν_v = 0.5 | −4.48e-5 / −1.55e-4 | 8.24, 8.49 | 11.2 / 15.4 | 1.70e-4 | −16.18 | −16.27 | −19…−18 / −19…−18 |
+| + Jackson Pr = 1 | 1.96e-4 / 6.53e-4 | 10.21, 9.12 | 15.5 / 18.4 | 2.96e-4 | −16.27 | −16.44 | −19…−18 / −19…−18 |
+| híbrida + GLS (referencia, N3) | 5.09e-4 / 1.28e-3 | 13.90, 10.94 | 17.8 / 18.4 | 3.69e-4 | −12.99 | −13.16 | −18…−17 / −18…−17 |
+| z\* `kv_low` + Smag 0.15 | 8.41e-4 / 1.18e-3 | 13.75, 10.49 | 19.2 / 20.2 | 8.46e-4 | −8.81 | −9.27 | −12…−11 / −18…−17 |
+| + Jackson Pr = 1 | 1.10e-3 / 1.59e-3 | 13.82, 10.38 | 18.4 / 19.7 | 1.28e-3 | −8.98 | −9.41 | −12…−11 / −18…−17 |
+| σ `kv_low` + Smag 0.15 | 1.48e-4 / 2.19e-4 | 10.34, 9.72 | 17.7 / 20.7 | 1.21e-3 | −11.84 | −12.04 | −14…−13 / −19…−18 |
+| + Jackson Pr = 1 | 5.70e-4 / 8.57e-4 | 11.76, 9.51 | 19.7 / 20.8 | 1.41e-3 | −11.31 | −11.34 | −13…−12 / −18…−17 |
+
+"b medio del trazador": primer momento de la distribución del trazador por clase en la columna de x′ = −300 km (`figures.mean_class_b`); el de Legg sale del mismo cálculo sobre su Fig. 4 digitalizada.
+
+**Trayectoria, robustez y costo.**
+
+| corrida | Y′(x′ = −200/−300/−500/−800 km) [km] | centroide día 50 [m] | \|u\| delgadas / gruesas [m/s] | máx. diario de \|u\|, días 30–50 (media) / día 50 [m/s] | trunc / lim / visc | s por día (reloj de producción) |
+|---|---|---|---|---|---|---|
+| MITgcm z legg | −52 / −72 / −107 / −204 | 1433 | — / 2.04 | 2.02 / — | — | 4.7 |
+| híbrida `kv_low` + Smag 0.15 | −101 / −128 / −163 / −230 | 2090 | 5.81 / 7.61 | 5.99 / 8.23 | 61 / 239 337 / 1 563 566 | 16.9 |
+| **+ Jackson Pr = 1** | −69 / −86 / −105 / −152 | 1428 | 2.70 / 2.64 | 2.45 / 2.87 | **0 / 0** / 57 993 | 21.1 |
+| + Jackson Pr = 0 | −50 / −56 / −69 / −85 | 902 | 4.07 / 3.59 | 2.47 / 2.79 | 0 / 0 / 105 001 | 18.6 |
+| híbrida ν_v = 0.5 | −115 / −150 / −192 / −224 | 2179 | 3.10 / 3.21 | 2.57 / 3.21 | 0 / 0 / — | 14.9 |
+| + Jackson Pr = 1 | −125 / −160 / −199 / −238 | 2321 | 2.25 / 2.76 | 2.34 / 2.42 | 0 / 0 / — | 16.2 |
+| z\* `kv_low` + Smag 0.15 | −40 / −51 / −67 / −116 | 928 | — / 5.66 | 2.72 / 5.82 | 0 / 0 / 598 | 14.8 |
+| + Jackson Pr = 1 | −41 / −52 / −73 / −116 | 962 | — / 3.41 | 2.23 / 3.27 | 0 / 0 / 1 893 | 16.9 |
+| σ `kv_low` + Smag 0.15 | −71 / −95 / −130 / −161 | 1459 | — / 7.34 | 3.85 / 6.55 | 0 / 0 / 0 | 14.9 |
+| + Jackson Pr = 1 | −71 / −91 / −122 / −166 | 1328 | — / 3.24 | 2.60 / 3.94 | 0 / 0 / 0 | 17.7 |
+
+Legg 10 km: Y′(x′ = −200 / −300 / −500 / −700) z −80 / −105 / −150 / −170, isopicnal −90 / −95 / −100 / −120 km. "Máx. diario de \|u\|": máximo de \|u\| y \|v\| en caras con las dos celdas ≥ 1 m en cada registro diario (cálculo sobre los `series.npz`, no versionado; con la cara delgada incluida el máximo de la línea base el día 50 es 8.29 m/s, sección de Smagorinsky). El rango de T es exacto en todas las corridas (−5.000 a 4.986 °C híbrida, 4.967 σ, 4.800 z\*) y s ∈ [−2.2e-20, 1] en la principal.
+
+**Figuras** (fuera del repo, `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/dome/figs/jackson/`):
+- `dome_10km_before_after.png`: la principal frente a su línea base: tinte de fondo los días 10/20/30/50, trayectoria, transporte y trazador por clase en x′ = −300 km con la verdad digitalizada;
+- `dome_10km_bottom_dye_before_after.gif` (y `.mp4`): animación diaria del tinte de fondo, línea base, principal y MITgcm legg;
+- `dome_10km_legg_scorecard.png`: b_f, E, T(x′ = −200), α_E y b medio del trazador de las 11 corridas contra Legg;
+- `dome_10km_legg_truth.png` (T(x′) y α_E(x′) contra la Fig. 3), `dome_10km_tracer_by_class.png` (Fig. 4 de cada corrida junto a la de Legg), `dome_10km_bottom_dye.png`, `dome_10km_path_transport.png`.
+
+### Lectura y clasificación
+
+1. **¿Jackson acerca pyOCEAN a la verdad no hidrostática? Sí, en todas las métricas de la corrida principal (criterio 4, dirección ✅); la magnitud queda abierta.** Contra su línea base:
+   - **b_f:** −17.91 → −12.84 (verdad −8.75 dig.): 55 % del camino. Queda 16 % más densa que el isopicnal de Legg a 10 km (−11.07) y 6 % más densa que su isopicnal con ν_v = 0.5 (−12.09).
+   - **E de la esquina:** −1.0e-4 (no entraba agua) → 4.88e-4. Está a ×1.9 debajo del isopicnal de Legg a 10 km (9.4e-4) y ×2.2 encima de su z (2.19e-4): dentro de la banda de ×2 de la definición, así que igual a sus 10 km dentro de lo que la métrica distingue.
+   - **Transporte:** T(x′ = −200) 10.1 → 15.9 Sv (verdad 22.5 dig.); α_E medio −180…−50 km 1.9e-5 → 4.77e-4 (verdad 1.03e-3 dig.).
+   - **Trazador por clase:** la clase con más trazador en x′ = −300 km pasa de la del agua de entrada sin mezclar (−19…−18) a −17…−16; el b medio, de −17.94 a −12.98 (verdad −8.99 dig., con el máximo en −10…−9). La distribución se ensancha entre −17 y −8 (figura `before_after`), pero no tiene el pico angosto de Legg.
+   - **Trayectoria:** −101 / −128 / −163 → −69 / −86 / −105 km en x′ = −200 / −300 / −500, a ≤ 21 km (2 celdas) del isopicnal de Legg a 10 km (−90 / −95 / −100). El centroide del día 50 baja de 2090 a 1428 m (MITgcm legg 1433).
+
+   **Lo que falta, clasificado:**
+   - **(c) Resolución.** Las corridas de 10 km del propio Legg están igual de lejos de su no hidrostático: b_f −11.07 (iso) y −11.67 (z) contra −8.75, y la nuestra −12.84. A 10 km la interfaz de la pluma tiene una o dos capas; la verdad no hidrostática resuelve la mezcla de Kelvin–Helmholtz a 30 m.
+   - **(a) Entrada de la híbrida por frontera abierta (abierto desde 2026-10-15, punto 2 de "Qué debe mejorar").** La columna de x′ = −100 km sigue con el máximo en la clase de entrada (−19…−18) con y sin Jackson: el agua más densa entra sin mezclar en una capa gruesa. **[Hipótesis]** que sea una parte grande del b_f restante; no separado.
+   - **(c) Configuración de Jackson.** El DOME de MOM6 usa `PRANDTL_TURB = 0` y `KD = 1e-4` (`~/pyOCEAN_refs/MOM6-examples/ocean_only/DOME/MOM_input:228, 373`), así que su κ0 = 1e-4 (aquí 1e-7, porque la física común no tiene difusión de trazadores). Con Pr = 0 (siguiente punto) b_f llega a −8.29.
+   - **(c) Geometría** de MOM6 (canal de 100 km, esponja, arrastre cuadrático) contra la de Legg (50 km, Orlanski, no-slip), como en el resto del benchmark. T_in = 9.83 Sv contra 8.4 Sv de la entrada: 1.4 Sv de agua con s > 0.01 se mezcla ya en el canal (MITgcm legg: 12.66).
+   - **El transporte no hidrostático (dig.) tiene su máximo en x′ = −150 km (24.6 Sv), se queda en 20–23 Sv hasta x′ = −350 km y baja al oeste de ahí** (1.55 Sv en x′ = −650); ningún modelo a 10 km lo hace (MITgcm sigue creciendo hasta 36.8 Sv). **[Hipótesis]** es el criterio s > 0.01 con la pluma muy diluida y el canal de 50 km de Legg (c); por eso T se compara en x′ = −200 / −300 km.
+2. **Pr = 0 (sensibilidad, no calibración): la más cercana a la verdad en la mezcla, la más lejana en la trayectoria.** b_f −8.29 (verdad −8.75), máximo de trazador en −9…−8 en x′ = −300 (verdad −10…−9), b medio −8.18 (−8.99), E 1.14e-3, α_E 1.56e-3 (verdad 1.03e-3). Pero la pluma casi no baja: Y′ −50 / −56 / −69 / −85 km (isopicnal de Legg −90 / −95 / −100 / −120) y centroide 902 m. **Por qué:** con Pr = 1, ν_shear quita la cizalla que produce la mezcla y el número de Richardson vuelve a ~¼; con Pr = 0 la cizalla queda y κ crece (κ_shear máximo en el dominio, calculado fuera de línea con el kernel de pyOCEAN sobre los registros de los días 30/40/50: 14 / 39 / 87 m²/s con Pr = 0 contra 2.1 / 4.7 / 12.7 con Pr = 1 [aproximado: un registro diario, no el paso del modelo]). Jackson et al. (2008) usan Pr = 1; MOM6 usa Pr = 0 en su DOME. Es una elección de configuración (c), no un error; no se cambió el valor por defecto.
+3. **Con ν_v = 0.5, Jackson casi no actúa (c, abierto).** b_f −16.18 → −16.27 y la clase de entrada sigue dominando; E sube de ≈ 0 a 1.96e-4. Fuera de línea (kernel de pyOCEAN sobre los registros de los días 30, 40 y 50, mismo Δt, κ0 = 1e-7; script no versionado) κ_shear > 1e-4 m²/s en **0 %** de las interfaces de la pluma (s > 0.01 a un lado), contra 13–19 % en la principal: ν_v = 0.5 m²/s alisa la cizalla y Ri queda arriba de ¼. El isopicnal de Legg con ν_v = 0.5 y la mezcla por Ri de Hallberg (2000) llega a −12.09. **[Hipótesis]** la diferencia está en la forma de la mezcla por Ri del HIM (Ri de par de capas sobre capas gruesas) contra el κ de Jackson en interfaces con la cizalla resuelta; no se probó.
+4. **Criterio 5 ✅: la principal termina sin truncamientos ni eventos del limitador.** 61 → 0 truncamientos y 239 337 → 0 eventos; `n_visc_limited` 1 563 566 → 57 993. La cuenca profunda ya no se acelera: el máximo diario de \|u\| (caras gruesas) promedia 2.45 m/s en los días 30–50 (línea base 5.99) y es 2.87 m/s el día 50 (8.23); MITgcm 2.02. Era la (b) de la sección de Smagorinsky (punto 3 de su lista): con Pr = 1, ν_shear acopla las capas interiores. Con Pr = 0 tampoco hay truncamientos (máx. diario 2.47 m/s): los acopla la mezcla de densidad, que baja la cizalla al quitar la estratificación de la interfaz.
+5. **Dependencia con la coordenada.**
+   - **z\*:** Jackson casi no cambia b_f (−8.81 → −8.98) ni la trayectoria, sube E (8.4e-4 → 1.1e-3) y α_E (8.5e-4 → 1.28e-3), y baja el máximo de \|u\| del día 50 de 5.82 a 3.27 m/s. Que z\* con ν_v = 1e-4 ya esté cerca de la verdad en b_f (−8.81 contra −8.75) es mezcla numérica (c): la z de Legg a 10 km da −11.67, MITgcm legg −10.85 y z\* con ν_v = 0.5 −10.07; con ν_v bajo la pluma de escalones mezcla más. No es mérito de la física.
+   - **σ:** b_f −11.84 → −11.31, E 1.5e-4 → 5.7e-4, máximo de \|u\| del día 50 6.55 → 3.94 m/s.
+   - En las tres coordenadas Jackson sube E y baja las velocidades interiores; el efecto sobre b_f es grande solo donde no había otra mezcla (híbrida, isopicnal en el interior).
+6. **Contra el GLS (N3).** La principal y la híbrida + GLS quedan juntas en b_f (−12.84 / −12.99), E (4.88e-4 / 5.09e-4) y trayectoria; Jackson + Smagorinsky lo hace sin truncamientos ni eventos del limitador (GLS: 1 / 1072) y con max\|u\| 2.64 contra 5.52 m/s en caras gruesas. Dos cierres distintos dan la misma pluma: lo que falta para la verdad no es del cierre (punto 1).
+7. **Costo (criterio 7).** Por paso (`scripts/shear_cost.py`, subsección siguiente): BayIW cut z\* 1.275×, DOME 1.096×. En producción (reloj de la corrida completa, incluye la salida y una trayectoria distinta): principal 1055 s contra 845 (1.25×), Pr = 0 930 s (1.10×), híbrida ν_v = 0.5 808 contra 747 s (1.08×), z\* 843 contra 742 (1.14×), σ 883 contra 743 (1.19×).
+
+### Qué debe mejorar pyOCEAN (Jackson en DOME)
+
+1. **(a) Entrada de la híbrida a 10 km** (punto 2 de la primera lista, sigue abierto): la clase de entrada sin mezclar domina en x′ = −100 km con cualquier cierre. Es lo primero para acercar b_f y el trazador por clase.
+2. **Variante con la configuración de Jackson del DOME de MOM6** (KD = 1e-4, así κ0 = 1e-4, y Pr = 0) como caso de referencia definido en `cases.py`, no como ajuste: separa la configuración (c) de lo que hace el esquema.
+3. **Verdad con más resolución.** DOME a 10 km no distingue la física de mezcla de la resolución (las corridas de 10 km de Legg están igual de lejos). Siguiente paso condicionado del spec: Xu et al. (2006) con Nek5000 como verdad, o DOME a 5 km con Jackson para ver la tendencia con la resolución (Legg Figs. 14–15 tienen 2.5 km).
+4. **κ_shear y ν_shear en la salida** (`kd_shear`, `kv_shear` están en el registro pero no en la serie ni en CF/Zarr; pendiente menor de la tarea 4) y **el balance de varianza** (`variance_budget=True`, término `phy_v`) en DOME e Ilicak, para medir en línea la mezcla física contra la numérica en vez del cálculo fuera de línea de aquí.
+5. **Estudio (c): por qué Jackson no actúa con ν_v = 0.5** (punto 3) cuando la mezcla por Ri de Hallberg (2000) sí lo hace en el HIM de Legg.
+
 ### Costo de la mezcla por cizalla de Jackson et al. (2008) (`shear_mixing='jackson'`)
 
 `scripts/shear_cost.py`: mediana de s/paso de 50 pasos tras 10 de calentamiento, 5 hilos, cada configuración en su propio proceso y alternando sin/con (3 rondas); `shear_mixing='jackson'` (Pr = 1) se pasa al constructor. El script verifica que el término esté activo (κ_shear máximo > 0, `update` llamado en los 50 pasos), mide el `update` del cierre aparte y suma las resoluciones implícitas verticales (`vertical_implicit`, ν y κ). Los dos casos ya llevan en su línea base lo que los distingue (BayIW cut z\*: `validation/bayiw_cut/cut.py::build_model("2layer", "bay", "zstar", 120.0)`; DOME 10 km híbrida: `kv_low` ν_v = 1e-4 y Smagorinsky 0.15), de modo que la razón aísla el efecto de Jackson.
@@ -327,7 +421,8 @@ Cada cambio se atribuye con el control: (operador) = de la corrida base al contr
 
 - Legg, S., Hallberg, R. W., Girton, J. B. (2006). Comparison of entrainment in overflows simulated by z-coordinate, isopycnal and non-hydrostatic models. *Ocean Modell.* 11, 69–97. [10.1016/j.ocemod.2004.11.006](https://doi.org/10.1016/j.ocemod.2004.11.006)
 - Hallberg, R. (2000). Time integration of diapycnal diffusion and Richardson number–dependent mixing in isopycnal coordinate ocean models. *Mon. Wea. Rev.* 128, 1402–1419. [verificar]
-- Jackson, L., Hallberg, R., Legg, S. (2008). A parameterization of shear-driven turbulence for ocean climate models. *J. Phys. Oceanogr.* 38, 1033–1053. [verificar]
+- Jackson, L., Hallberg, R., Legg, S. (2008). A parameterization of shear-driven turbulence for ocean climate models. *J. Phys. Oceanogr.* 38, 1033–1053. [10.1175/2007JPO3779.1](https://doi.org/10.1175/2007JPO3779.1)
+- Xu, X., Chang, Y. S., Peters, H., Özgökmen, T. M., Chassignet, E. P. (2006). Parameterization of gravity current entrainment for ocean circulation models using a high-order 3D nonhydrostatic spectral element model. *Ocean Modell.* 14, 19–44. [10.1016/j.ocemod.2006.02.006](https://doi.org/10.1016/j.ocemod.2006.02.006)
 - Pietrzak, J. (1998). The use of TVD limiters for forward-in-time upstream-biased advection schemes in ocean modeling. *Mon. Wea. Rev.* 126, 812–830. [verificar]
 - Ezer, T., Mellor, G. L. (2004). A generalized coordinate ocean model and a comparison of the bottom boundary layer dynamics in terrain-following and in z-level grids. *Ocean Modell.* 6, 379–403.
 - MOM6 `src/user/DOME_initialization.F90` y `MOM6-examples/ocean_only/DOME/MOM_input` (`~/pyOCEAN_refs/`).

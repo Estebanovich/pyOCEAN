@@ -440,6 +440,101 @@ The first four items below concern only `physics/mixing/kpp.py` (the legacy phas
 4. **Unresolved shear.** $V_t^2$ omits the factor of L94 eq. (23). Explicit time stepping (stable only for
     $\Delta t\le\Delta z^2/(2K)$).
 
+## Jackson shear mixing (`shear_mixing='jackson'`)
+
+Interior mixing by Kelvin–Helmholtz instability where the gradient Richardson number $Ri=N^2/S^2$ falls below
+$Ri_c\approx\tfrac14$: the scheme of Jackson, Hallberg & Legg (2008, "JHL"; DOI 10.1175/2007JPO3779.1), ported from MOM6
+`kappa_shear` (`MOM_kappa_shear.F90`, git 0e9a561; reading notes in `docs/design/shear_refs/mom6_kappa_shear.md`). It is
+the shear mixing MOM6 and OM4 use for overflows and is designed for long time steps. Without it the `'constant'` and
+`'kpp'` closures have no interior shear mixing; the GLS k-ε already produces shear turbulence, so GLS + Jackson is
+refused (it would count the shear twice).
+
+### Equations
+
+All quantities at interfaces: diffusivity $\kappa$ [m² s⁻¹], turbulent kinetic energy per unit mass $Q$ [m² s⁻²],
+$N^2=\max(0,\partial_z b)$ and $S^2=\lvert\partial_z\mathbf u\rvert^2$ [s⁻²], $b=-g(\rho-\rho_0)/\rho_0$ from the model's
+EOS (linear or TEOS-10; $N^2$ is clipped at 0, `:1499`, so there is no convective mixing).
+
+1. **Source of $\kappa$** (JHL eq. 10 and §4a; `:1646-1652`):
+
+$$K_{src}=2\gamma\lvert S\rvert\,\frac{Ri_c S^2-N^2}{Ri_c S^2+F_c N^2}\quad\text{if } N^2<Ri_c S^2,\qquad K_{src}=0\ \text{otherwise}.$$
+
+2. **Elliptic equation for $\kappa$** (JHL eq. 10; `:1775-1823`), $\kappa=0$ at the surface and the bed:
+
+$$\frac{\kappa}{L_d^2}-\frac{\partial^2\kappa}{\partial z^2}=K_{src},\qquad
+\frac{1}{L_d^2}=\frac{N^2/\lambda^2+f^2}{Q}+\frac{1}{L_{bdry}^2},\qquad
+\frac{1}{L_{bdry}^2}=\Big(\frac{1}{d_{top}}+\frac{1}{d_{bot}}\Big)^2 ,$$
+
+   with $d_{top}, d_{bot}$ the distances to the surface and the bed (`:1039-1049`). The length scale is tied to the
+   width of the low-$Ri$ zone.
+3. **Steady TKE equation** (JHL eq. 11 with MOM6's decay; `:1709-1773`), $Q=Q_{min}$ at the bed:
+
+$$0=\partial_z\big[(\kappa+\kappa_0)\partial_z Q\big]+(\kappa+\kappa_0)S^2-\kappa N^2-(Q-q_0)\sqrt{c_N^2N^2+c_S^2S^2}.$$
+
+4. **Coupled solve** (`:1701-2041`): alternating tridiagonal solves for $Q$ and $\kappa$ (Picard) that switch to Newton
+   (the corrected derivative, `KAPPA_SHEAR_ITER_BUG = False`), at most 50 iterations, converged when
+   $\lvert\Delta\kappa\rvert\le 0.1(\kappa_0+\kappa)$.
+
+### Time integration over Δt (Hallberg 2000)
+
+$\kappa$ changes the state that produces it, so a $\kappa$ from the state at the start of a long step can be far too
+large. As MOM6 (`kappa_shear_column`, `:1052-1374`, after Hallberg 2000 [verificar]):
+
+* one implicit $\kappa_0$ diffusion of $u, v, b$ over Δt smooths the input (`:1052-1088`); $\kappa_0$ is **not** returned
+  in $\kappa$ (no hidden background diffusivity);
+* up to 13 sub-steps: $\kappa$ from the current column, the longest sub-step over which $K_{src}$ stays within its
+  tolerated change (halving and bisection, `:1218-1296`), a predictor–corrector $\kappa_{mid}$, and the column state
+  (inside the routine only) mixed with $\kappa_{mid}$;
+* the returned $\kappa$ and $Q$ are the **Δt-averages** $\sum\kappa_{mid}\,\delta t/\Delta t$, so the averaged $\kappa$
+  stays bounded when Δt grows (`tests/test_kappa_shear.py::test_large_dt_terminates`: κ̄ at Δt = 3600 s ≤ 2× κ̄ at 600 s);
+* every call starts from $\kappa$ = 1 m² s⁻¹ (`KD_SEED_KAPPA_SHEAR`, `:325`): $\kappa$ is not model state.
+
+### In the model
+
+* **Parameters** (`JacksonParams`, MOM6 defaults = JHL set 1, `:2106-2112`): $Ri_c$ = 0.25, $\gamma$ = 0.089, $F_c$ = −0.97,
+  $\lambda$ = 0.82, $c_N$ = 0.24, $c_S$ = 0.14, $q_0$ = 0, tolerance 0.1, 50 iterations, 13 sub-steps. They are not tuned
+  to any case.
+* **Δt** of the scheme = the model step (pyOCEAN has no separate thermodynamic step).
+* **$\kappa_0$** (`KD_KAPPA_SHEAR_0`) = max(background κ, 1e-7) m² s⁻¹, as MOM6 max(KD, 1e-7): `kv` for a `'constant'`
+  base, `KPPParams.kappa_bg` (0 → 1e-7) for KPP.
+* **Thin layers:** layers thinner than the per-column threshold of the GLS, $\min(10\text{ cm}, \max(1\text{ mm}, 1\%\,D/N))$,
+  are merged into their neighbour with MOM6's pattern (`KAPPA_SHEAR_ELIM_MASSLESS`, `:254-303`) before the column call
+  and $\kappa$ is interpolated back. MOM6's own threshold $0.1\sqrt{\kappa_0\Delta t}$ would be ~6 cm in DOME and ~2 mm
+  with $\kappa_0$ = 1e-7; the relative rule is pyOCEAN's, as for the GLS (N3 task 9c). A column with nearly empty
+  layers gives the same $\kappa$ as the column without them.
+* **Velocities** at the cell centres (mean of the two faces, MOM6 `find_uv_at_h`); tracer-point mode
+  (`VERTEX_SHEAR = False`).
+* **Added to the base closure** (`ShearAddedClosure(base, shear)`, `core/components/closure.py`), as MOM6
+  (`MOM_set_diffusivity.F90:571-581`, `MOM_vert_friction.F90:2163-2205`): $\kappa_{tracers}=\kappa_{base}+\kappa_{shear}$
+  for T, S and passive tracers, $\nu=\nu_{base}+Pr\,\kappa_{shear}$ with the turbulent Prandtl number `shear_prandtl`
+  (default 1, as JHL; MOM6 `PRANDTL_TURB`; MOM6's own DOME example uses 0).
+* **Order in the step:** tracer phase (7), as KPP and MOM6's diabatic step: $\kappa_{shear}$ is computed from the state of
+  the step and diffuses this step's tracers; $\nu_{shear}$ enters the implicit viscosity of the **next** step (lagged,
+  as MOM6 `Kv_shear`). ν_shear is the only state carried (restart variable `shear_kv`); in ALE it is kept by interface
+  index through the regrid (MOM6 `REMAP_AUXILIARY_VARS = False`).
+* **Dry and land columns:** $\kappa=\nu=0$ and the column stays still bit for bit (N3 fix M1).
+* **Kernel:** `physics/mixing/kappa_shear.py`, a Numba kernel threaded over columns, bit for bit with its NumPy oracle,
+  the same with 1 and 5 threads; the oracle equals compiled MOM6 bit for bit on 18 columns
+  (`validation/mom6_column/README.md`). Off by default: with `shear_mixing=None` the step is unchanged in the order of
+  operations (33 goldens and 9 smoke runs bit for bit).
+
+### Validation and cost
+
+* **Column vs MOM6** (`tests/test_vertical_vs_mom6.py::test_kappa_shear_matches_mom6`, `validation/mom6_column/README.md`): 18 columns (shear layer,
+  overflow-like bottom jet, subcritical, Newton cases, 12 random), relative tolerance 1e-10; the result is 0 without
+  FMA contraction.
+* **Column properties** (`tests/test_kappa_shear.py`, 11 tests): $\kappa$ = 0 where $Ri\ge Ri_c$ and at the surface and bed;
+  thin-layer merge; bounded Δt-average; Numba = oracle and 1 = 5 threads bit for bit. **Model** (`tests/test_shear_model.py`,
+  21 tests): off = bit for bit, zero shear = base, restart bit for bit (σ and ALE), pre-flight, dry columns, KPP base.
+* **DOME 10 km** (`validation/dome/README.md`, Legg et al. 2006 Case 1): in the hybrid with $\nu_v$ = 1e-4 + Smagorinsky
+  0.15, Jackson moves every metric toward Legg's non-hydrostatic truth: final buoyancy −17.91e-3 → −12.84e-3 m s⁻²
+  (truth −8.75e-3, digitized; Legg's own 10-km isopycnal −11.07e-3), corner entrainment ≈ 0 → 4.88e-4 (Legg 10 km iso
+  9.4e-4), plume transport at x′ = −200 km 10.1 → 15.9 Sv (truth 22.5, digitized); CFL truncations 61 → 0 and limiter
+  events 239 337 → 0. With Pr = 0 the final buoyancy reaches −8.29e-3 but the plume stays on the upper slope.
+* **Ilicak overflow** (`validation/ilicak_benchmark/README.md`): one z* sensitivity (ν_h = 100): ΔRPE −24 %, with an
+  offline estimate of ≤ 0.24 of 1.34 W m⁻² physical mixing.
+* **Cost** per step: BayIW cut z* 1.275×, DOME 10 km hybrid 1.096×; the column kernel is ≈ 82 % / 65 % of the increase.
+
 ## Options and defaults
 
 | Option | Values | Default | Meaning | Where |
@@ -455,6 +550,9 @@ The first four items below concern only `physics/mixing/kpp.py` (the legacy phas
 | `first_layer_cd(dz, z0, ...)` | | same | 3-D first-layer $C_d$ | `physics/bottom_friction.py:48` |
 | `parabolic_viscosity(ustar, depth, sigma_w, nu_min, kappa)` | | 1e-5, 0.41 | parabolic $\nu$ at interfaces | `physics/mixing/parabolic.py:27` |
 | `GLSKEpsilon(n_layers, n_columns, z0_bed)` | | `z0_bed` = 1e-4 (floored at 1e-4) | k-ε column solver | `physics/mixing/gls.py:177` |
+| `shear_mixing` | `None`, `'jackson'` | `None` | Jackson et al. (2008) interior shear mixing added to a `'constant'`, `'none'` or `'kpp'` closure (refused with `'gls'`) | `core/components/closure.py` (`ShearAddedClosure`) |
+| `shear_prandtl` | ≥ 0 | 1.0 | $Pr=\nu_{shear}/\kappa_{shear}$ | same |
+| `jackson_params` | `JacksonParams` or `None` | `None` (MOM6 defaults) | coefficients of the scheme | `physics/mixing/kappa_shear.py` |
 
 ## Validation
 
@@ -499,6 +597,10 @@ See [Validation: wetting and drying](../validation/wetting-drying.md) for the TI
 * The pressure gradient and the implicit friction are split (fractional step): the friction does not see the
     pressure increment of the same step (first order in $\Delta t$; `validation/tidal_flat/README.md`, item 7).
 * GLS has no advection of $k$, $\varepsilon$.
+* Jackson shear mixing: no convective adjustment ($N^2$ clipped at 0; neither has the constant closure); buoyancy is
+    mixed as one tracer inside the solver (exact for a linear EOS in T, a local linearisation for TEOS-10); no
+    vertex mode; $\kappa_{shear}$, $\nu_{shear}$ are in the variable registry but not in the CF/Zarr output; with a large
+    constant $\nu_v$ (0.5 m² s⁻¹ in DOME) the shear stays above $Ri_c$ and the scheme is inactive.
 
 ## References
 

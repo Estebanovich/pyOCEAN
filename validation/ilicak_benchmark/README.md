@@ -148,6 +148,30 @@ python validation/ilicak_benchmark/figures.py overflow_smag                     
 - **La corrida está completa.** Llegó a las 40 h (14 400 pasos, 41 registros). Tarda 93 s de reloj, contra 89 s sin Smagorinsky y 94 s el control.
 - **Falta la comparación entre modelos.** MITgcm con `viscC2Smag` en este mismo caso daría, en nuestra malla, el equivalente del punto magenta de la Fig. 10 del artículo (l. 2049-2050 de la copia local). No se corrió.
 
+#### Overflow con la mezcla por cizalla de Jackson et al. (2008) (spec 2026-10-30 de Jackson, criterio 6)
+
+El banco de arriba no cambia: la mezcla por cizalla está apagada por defecto (KD = 0 en todos los modelos; el caso mide la mezcla espuria) y las corridas de humo dan 9/9 hashes iguales a `main` (`validation/dome/README.md`, costo de Jackson). Se corrió **una** sensibilidad: overflow z\* con ν_h = 100 y Jackson Pr = 1 (`--shear jackson`, tag `jackson`; `RUNS/overflow/pyocean_zstar_nu100_jackson/`; κ0 = 1e-7 m²/s porque no hay difusividad de fondo). `compare.py overflow` la agrega como fila.
+
+```bash
+python validation/ilicak_benchmark/run_pyocean.py overflow zstar 100 --shear jackson   # 40 h, Δt 10 s, 5 hilos
+python validation/ilicak_benchmark/compare.py overflow
+```
+
+| Corrida (z\*, ν_h = 100) | ΔRPE/RPE₀ | dRPE/dt, 13–37 h [W m⁻²] | mezcla física ρ₀∫κN² dV / área, 13–37 h [W m⁻²] | Exceso de T [°C] | Centroide frío: x [km], profundidad [m] | Reloj [s] |
+|---|---|---|---|---|---|---|
+| sin Jackson | 1.44e-5 | 1.86 | 0 (KD = 0) | 1.2e-8 | 154, 1450 | 88.7 |
+| **+ Jackson Pr = 1** | **1.10e-5** (−24 %) | **1.34** (−28 %) | **≈ 0.24** [aproximado] | 7.2e-10 | 156, 1540 | 133.2 |
+| MITgcm z\* | 1.34e-5 | 1.44 | 0 | 0.41 | 124, 1370 | — |
+| MOM6 z\* | 3.24e-5 | 4.36 | 0 | 0 | 137, 944 | — |
+
+**Mezcla física contra espuria.** La serie no guarda κ_shear, así que la mezcla física se estimó fuera de línea: el kernel de pyOCEAN (`kappa_shear_columns`, el mismo Δt de 10 s, κ0 = 1e-7) sobre los 41 registros horarios, y ρ₀ Σ κ N² Δz Δx sobre las interfaces interiores dividido por el área (script no versionado). Es una **cota superior aproximada**: N² es el del registro antes de mezclar (con κ hasta 30 m²/s, κΔt/Δz² llega a ~0.75) y ρ₀∫κN² es la tasa de energía potencial, que se aproxima a la de RPE cuando las isopicnas son casi horizontales.
+- Con Jackson la RPE total sube **menos**: 1.34 W m⁻² contra 1.86. Si la física aporta ≤ 0.24 W m⁻² (≤ 18 % del total), la parte espuria queda en ≳ 1.1 W m⁻², ≈ 40 % menos que sin Jackson.
+- **[Hipótesis]** Jackson mezcla la interfaz al llegar a Ri < ¼ y la deja más gruesa y suave; con menos gradiente de escala de malla, WENO5 + FCT generan menos mezcla espuria. Es el mismo mecanismo que la viscosidad de Smagorinsky (−48 %, subsección anterior) por otra vía. No se separó con el balance de varianza (`variance_budget`, término `phy_v` contra `num_adv`), que lo mediría exacto (punto 9 de la lista).
+- El mismo cálculo sobre los registros de la corrida sin Jackson da 1.48 W m⁻²: es lo que Jackson haría en ese estado (sin realimentación), no algo que haya ocurrido.
+- Clase: ninguna diferencia a corregir (el caso de referencia no tiene mezcla física); es información para la comparación con DOME.
+
+**Costo:** 133.2 s contra 88.7 s de reloj (1.50×). En este 2-D de 200 columnas el kernel de columna pesa más que en los 3-D (DOME 1.10×, BayIW cut 1.275× por paso; `validation/dome/README.md`).
+
 ### Onda interna (200 días)
 
 | ν_h | Modelo | ΔRPE/RPE₀ | dRPE/dt [W m⁻²] (días 10–100) | Rango de T | Oscilación final / inicial |
@@ -308,6 +332,7 @@ Notas:
 
 7. **Contador `n_visc_limited` (Smagorinsky).** Cuenta todo punto donde la cota redujo ν, también donde la cota × h_min/h queda por debajo del fondo (capas delgadas). Antes de la corrección I1 eran 74 puntos fijos por paso en el overflow z\* (caras recortadas en el fondo, que además anulaban ν); ahora 0 en el overflow. Debería contar solo los puntos donde C Δ² |S| pasa la cota.
 8. **Overflow con Smagorinsky en MITgcm** (`viscC2Smag`, la configuración del artículo) para comparar entre modelos el punto de la Fig. 19(b).
+9. **Mezcla física contra espuria en línea con Jackson.** Guardar κ_shear en la serie y correr el overflow con `variance_budget=True` (`phy_v` contra `num_adv`) para medir exacto lo que aquí se estimó fuera de línea (≤ 0.24 de 1.34 W m⁻²).
 
 **Para Esteban, fuera de pyOCEAN:**
 - Correr CROCO también con WENO5, como en `validation/lock_exchange`, para que su RPE sea comparable.

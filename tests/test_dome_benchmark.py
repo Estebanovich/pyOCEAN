@@ -349,3 +349,36 @@ def test_legg_json_has_sources():
         if v["method"] == "digitized":
             assert "uncertainty" in v, key
     assert vals["corner_E_nonhydro"]["value"] == 8.6e-4 and vals["corner_E_nonhydro"]["method"] == "text"
+
+
+def test_class_profile_and_mean_buoyancy():
+    """figures.class_profile: shares of the dye by class at a column sum to 1 and sit in the class of the water;
+    mean_class_b is their first moment; Legg's digitized profile at x' = −300 km peaks in (−0.010, −0.009)."""
+    from validation.dome import figures, metrics
+    _, s = _corner_series()
+    s["T"][:] = cases.T_of_rho(1031.0)                         # b = −g (1031 − 1030)/ρ₀ ≈ −0.0095
+    b, f = figures.class_profile(s, -300.0)
+    assert f.sum() == pytest.approx(1.0, rel=1e-12)
+    b_water = float(metrics.buoyancy(np.array(cases.T_of_rho(1031.0))))
+    k = int(np.argmax(f))
+    assert abs(b[k] - b_water) <= 0.0005 + 1e-12 and f[k] == pytest.approx(1.0)
+    assert figures.mean_class_b(s, -300.0) == pytest.approx(b[k], rel=1e-12)
+    lb, lf = figures.legg_class_profile(-300.0)
+    assert lf.sum() == pytest.approx(1.0) and -0.010 < lb[int(np.argmax(lf))] < -0.009
+    s["s"][:] = 0.0
+    assert np.isnan(figures.class_profile(s, -300.0)[1]).all()
+
+
+def test_before_after_and_scorecard_figures_write(tmp_path):
+    """figures.before_after and legg_scorecard run on synthetic 50-day-like series and write their PNGs."""
+    from validation.dome import figures
+    _, s = _corner_series(nt=3)
+    s["t"] = np.array([0.0, 30.0, 50.0]) * 86400.0
+    _, s2 = _corner_series(nt=3)
+    s2["t"] = s["t"]
+    s2["s"] = 0.5 * s2["s"]
+    data = [("pyocean_hybrid_kv_low_smag0.15", s), ("pyocean_hybrid_kv_low_smag0.15_jackson", s2)]
+    p = figures.before_after(data, tmp_path, 10.0)
+    assert p.exists() and p.stat().st_size > 0
+    q = figures.legg_scorecard(data, tmp_path, 10.0)
+    assert q.exists() and q.stat().st_size > 0
