@@ -157,6 +157,68 @@ def bulk_errors(b: Any, salinity: bool) -> list[str]:
     return out
 
 
+#: Relative margin of the top-layer cut of the surface average (``_surface_weights``): a layer is left out only
+#: when every column's bottom depth above it is ≥ h_sfc (1 + margin), which keeps its weight exactly 0 under
+#: round-off (proof in ``_surface_weights``).
+_SFC_MARGIN = 1e-6
+#: Below this ``h_sfc`` [m] the cut is not used (the round-off bound needs D ≤ 3e9 h_sfc) and every layer is weighted.
+_SFC_CUT_MIN = 1e-3
+
+
+def _surface_weights(h: np.ndarray, h_sfc: float, empty: np.ndarray | None = None
+                     ) -> tuple[int, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Weights of the surface average over the top ``h_sfc`` metres (``surface_average``), built only on the layers
+    k0 … N−1 that can carry weight in some column (N2b task 6, controller ruling R5; the full-column version cost
+    ≈ 7 ms per field on BayIW 50 × 159 × 198, 4 fields per step):
+
+        b_k = Σ_{j ≥ k} h_j   (bottom depth of layer k, summed from the top as ``np.cumsum`` of h[::-1]),
+        w_k = clip(min(b_k, h_sfc) − (b_k − h_k), 0, ∞)
+
+    Returns (k0, w (N − k0, ny, nx), ok = Σ w > 0, den = Σ w where ok else 1).  ``empty`` (ny, nx) marks columns
+    known to have h ≡ 0 (land and dry columns of the driver); None: found from h.
+
+    Bit for bit with the full column: b_k is the same sequential running sum as ``np.cumsum``, w_k the same
+    expression, and the left-out layers have w = 0 exactly, so the sums along k (sequential for axis 0) differ only
+    by leading ±0 terms.  The cut stops at the first layer k (from the top) where every non-empty column has
+    b_k ≥ h_sfc (1 + ε_m), ε_m = ``_SFC_MARGIN``.  For a deeper layer j < k, b_{j+1} ≥ b_k (adding h ≥ 0 rounds
+    monotonically) and the computed top depth fl(b_j − h_j) ≥ b_{j+1} − 3u D (u = 2⁻⁵³, D the column depth) ≥
+    h_sfc when ε_m h_sfc ≥ 3u D, i.e. D ≤ 3e9 h_sfc: then min(b_j, h_sfc) − (b_j − h_j) ≤ 0 and w_j = 0.
+    ``h_sfc < _SFC_CUT_MIN`` weights every layer.  Columns shallower than h_sfc (or within ε_m of it) keep the cut
+    going to the bed, which then is the full-column formula.  Left-out layers with a non-finite q would have given
+    NaN (0 × NaN) in the full formula and do not here; model states have finite T, S, u, v in wet columns.
+    """
+    h = np.asarray(h, float)
+    N = h.shape[0]
+    if h_sfc < _SFC_CUT_MIN:
+        k0 = 0
+        below = np.cumsum(h[::-1], axis=0)[::-1]
+    else:
+        if empty is None:
+            empty = ~np.any(h != 0, axis=0)
+        thr = h_sfc * (1.0 + _SFC_MARGIN)
+        run = h[N - 1].copy()                                    # = np.cumsum(h[::-1])[0]
+        bel = [run]
+        k0 = N - 1
+        while k0 > 0 and not np.all(empty | (run >= thr)):
+            k0 -= 1
+            run = run + h[k0]                                    # same sequential sum as np.cumsum
+            bel.append(run)
+        below = np.stack(bel[::-1])
+    hs = h[k0:]
+    w = np.clip(np.minimum(below, h_sfc) - (below - hs), 0.0, None)
+    wsum = w.sum(axis=0)
+    ok = wsum > 0
+    return k0, w, ok, np.where(ok, wsum, 1.0)
+
+
+def _apply_weights(wts: tuple, q_top: np.ndarray) -> np.ndarray:
+    """Σ w q / Σ w (NaN where Σ w = 0) with ``wts`` of ``_surface_weights`` and q_top = q[k0:] (N − k0, ny, nx)."""
+    _, w, ok, den = wts
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(ok, (w * q_top).sum(axis=0) / den, np.nan)
+
+
 def surface_average(h: np.ndarray, q: np.ndarray, h_sfc: float) -> np.ndarray:
     """
     Thickness-weighted mean of q (N, ny, nx) over the top ``h_sfc`` metres → (ny, nx), the MOM6 surface state
@@ -166,18 +228,16 @@ def surface_average(h: np.ndarray, q: np.ndarray, h_sfc: float) -> np.ndarray:
         q̄ = Σ w_k q_k / Σ w_k
 
     from the top layer k = N−1 down.  A column shallower than h_sfc gives the mean of the whole column;
-    ``h_sfc == 0`` gives the top layer q_{N−1}; an empty column (Σ h = 0) gives NaN.
+    ``h_sfc == 0`` gives the top layer q_{N−1}; an empty column (Σ h = 0) gives NaN.  The weights are built only on
+    the top layers that can carry weight (``_surface_weights``, bit for bit with the full column).
     """
     h = np.asarray(h, float)
     q = np.asarray(q, float)
-    D = h.sum(axis=0)
     if h_sfc == 0:
+        D = h.sum(axis=0)
         return np.where(D > 0, q[-1], np.nan)
-    below = np.cumsum(h[::-1], axis=0)[::-1]                    # depth of the bottom of layer k
-    w = np.clip(np.minimum(below, h_sfc) - (below - h), 0.0, None)
-    wsum = w.sum(axis=0)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        return np.where(wsum > 0, (w * q).sum(axis=0) / np.where(wsum > 0, wsum, 1.0), np.nan)
+    wts = _surface_weights(h, h_sfc)
+    return _apply_weights(wts, q[wts[0]:])
 
 
 def _to_faces(tc: np.ndarray, wet: np.ndarray, axis: int, periodic: bool) -> np.ndarray:
@@ -218,6 +278,35 @@ class SurfaceFluxes:
         self.h_uv = cfg.h_sfc if cfg.h_uv_sfc is None else cfg.h_uv_sfc
         self.last: dict[str, np.ndarray] = {}
 
+    @staticmethod
+    def _averager(h: np.ndarray, wet: np.ndarray):
+        """
+        ``avg(h_sfc, q, top=False)`` = ``surface_average(h, q, h_sfc)`` bit for bit, with the weights of each depth
+        built once per call of ``forcing`` (``_surface_weights``, empty columns = not ``wet``, where h was set to
+        0); ``avg.k0(h_sfc)`` is the first layer used, and ``top=True`` takes q already cut to q[k0:].
+        """
+        cache: dict[float, tuple] = {}
+        empty = ~wet
+
+        def weights(d: float):
+            if d not in cache:
+                if d == 0:
+                    N = h.shape[0]
+                    ok = h.sum(axis=0) > 0
+                    cache[d] = (N - 1, None, ok, None)
+                else:
+                    cache[d] = _surface_weights(h, d, empty)
+            return cache[d]
+
+        def avg(d: float, q: np.ndarray, top: bool = False) -> np.ndarray:
+            wts = weights(d)
+            qt = q if top else q[wts[0]:]
+            if d == 0:                                              # the top layer (surface_average, h_sfc = 0)
+                return np.where(wts[2], qt[-1], np.nan)
+            return _apply_weights(wts, qt)
+        avg.k0 = lambda d: weights(d)[0]
+        return avg
+
     def _check_time(self, t: float) -> None:
         c0, c1 = self.cfg.atmosphere.coverage()
         if not (c0 <= t <= c1):
@@ -242,13 +331,16 @@ class SurfaceFluxes:
             D = np.maximum(np.nan_to_num(fs.H + st.eta), 0.0)
             h = D[None] * self.ds[:, None, None]
         h = np.where(wet[None], h, 0.0)
-        sst = np.where(wet, surface_average(h, st.T, cfg.h_sfc), 10.0)   # land: any finite value, masked below
-        sss = np.where(wet, surface_average(h, st.S, cfg.h_sfc), 35.0) if st.S is not None else None
+        # weights once, on the top layers only, shared by T, S and (h_uv = h_sfc) the current (ruling R5)
+        avg = self._averager(h, wet)
+        sst = np.where(wet, avg(cfg.h_sfc, st.T), 10.0)                  # land: any finite value, masked below
+        sss = np.where(wet, avg(cfg.h_sfc, st.S), 35.0) if st.S is not None else None
         if cfg.relative_wind:
-            uc = 0.5 * (st.u[..., :-1] + st.u[..., 1:])
-            vc = 0.5 * (st.v[:, :-1, :] + st.v[:, 1:, :])
-            us = np.where(wet, surface_average(h, uc, self.h_uv), 0.0)
-            vs = np.where(wet, surface_average(h, vc, self.h_uv), 0.0)
+            k0 = avg.k0(self.h_uv)                                     # centre u, v on the layers used only
+            uc = 0.5 * (st.u[k0:, :, :-1] + st.u[k0:, :, 1:])
+            vc = 0.5 * (st.v[k0:, :-1, :] + st.v[k0:, 1:, :])
+            us = np.where(wet, avg(self.h_uv, uc, top=True), 0.0)
+            vs = np.where(wet, avg(self.h_uv, vc, top=True), 0.0)
         else:
             us = vs = np.zeros_like(sst)
         u10, v10, t2m, q2m, msl = (atm[k] for k in ("u10", "v10", "t2m", "q2m", "msl"))
