@@ -342,7 +342,7 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
     sf = a.get("surface_fluxes")
     if sf is not None:
         from core.components.surface_fluxes import bulk_errors
-        for msg in bulk_errors(sf, a["dt"], sal):
+        for msg in bulk_errors(sf, sal):
             err("surface_fluxes", msg)
     if a["sponge_rate"] is None and ({"sponge_T", "sponge_zw", "sponge_tr", "sponge_S"} & given):
         warn("interior_sponge", "sponge_T / sponge_zw / sponge_tr / sponge_S are ignored without sponge_rate")

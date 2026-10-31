@@ -207,6 +207,36 @@ def test_heat_conservation(kind):
 
 
 @pytest.mark.parametrize("kind", ["sigma", "zstar", "hybrid"])
+def test_heat_conservation_with_freshwater(kind):
+    """
+    Review m1: the full bulk step (heat and fw together), one step from a uniform T₀.  The freshwater mass enters
+    and leaves at the top-layer temperature (N2a; MOM6 applyBoundaryFluxesInOut, MOM_diabatic_aux.F90:1034-1045,
+    ``Temp_in = T2d``), which is T₀ after the advection of a uniform field, so
+
+        Δ Σ ρ₀ c_p (T − T_ref) V = Σ (Q_ns + Q_sw) A Δt + ρ₀ c_p Σ fw A Δt (T₀ − T_ref)
+
+    to ≤ 1e-13 of the change (T_ref = T₀ − 1 keeps the advective term in the balance).  One step only: afterwards the
+    top-layer T seen by the freshwater substep (after the advection) is not recoverable from the states.
+    """
+    H = _land_dry_H(dry=kind != "zstar")
+    T0 = 12.0
+    m, _ = _basin(kind, bulk=False, H=H,
+                  surface_fluxes=BulkFluxes(_atm(nc._grid(), sw_down=2e5, precip=4e-4), scheme="ncar"))
+    nz = m.core.n_layers
+    st = m.initial_state(np.maximum(0.0, -np.nan_to_num(H)), np.full((nz, nc.NY, nc.NX), T0), S=_S(nz))
+    T_ref = T0 - 1.0
+    c0 = _heat_content(m, st, T_ref)
+    st = m.step(st)
+    L, A = m._surface_fluxes.last, np.nan_to_num(m.area)
+    q = math.fsum((A * (L["q_sens"] + L["q_lat"] + L["q_lw"] + L["q_sw"])).ravel())
+    adv = m.rho0 * CP * (T0 - T_ref) * math.fsum((A * L["fw"]).ravel())
+    expected = m.dt * (q + adv)
+    assert abs(m.dt * adv) > 1e-3 * abs(expected)                       # the advective term is in the balance
+    change = _heat_content(m, st, T_ref) - c0
+    assert abs(change - expected) <= 1e-13 * abs(expected), (change, expected)
+
+
+@pytest.mark.parametrize("kind", ["sigma", "zstar", "hybrid"])
 def test_freshwater_and_salt_conservation(kind):
     """Σ ΔV = Σ (P − E) A Δt at the N2a level (1e-13 of the volume) and the salt content constant (1e-13)."""
     H = _land_dry_H(dry=kind != "zstar")
@@ -367,13 +397,23 @@ def test_coverage_ends_mid_run():
 
 
 def test_preflight_refuses_all_at_once():
+    """
+    Every configuration error in one report; an empty coverage (one record: c0 = c1) is refused there.  Whether the
+    coverage holds the run is a runtime check (ruling R4): an atmosphere starting after t = 0 constructs and the
+    first step raises, naming the date and the coverage.
+    """
     hg = nc._grid()
-    late = AtmosphereProvider(_source(np.arange(HOUR, 4 * HOUR, HOUR)), _ll(hg), ORIGIN)   # starts at 1 h
+    single = AtmosphereProvider(_source(np.array([0.0])), _ll(hg), ORIGIN)                  # c0 = c1 = 0
     with pytest.raises(ConfigurationError) as e:
-        nc._sigma(surface_fluxes=BulkFluxes(late, scheme="nope", albedo=2.0))
+        nc._sigma(surface_fluxes=BulkFluxes(single, scheme="nope", albedo=2.0))
     msg = str(e.value)
-    for part in ("unknown bulk scheme", "needs salinity=True", "does not cover", "albedo"):
+    for part in ("unknown bulk scheme", "needs salinity=True", "empty or not finite", "albedo"):
         assert part in msg, (part, msg)
+    late = AtmosphereProvider(_source(np.arange(HOUR, 4 * HOUR, HOUR)), _ll(hg), ORIGIN)   # starts at 1 h
+    m = nc._sigma(surface_fluxes=BulkFluxes(late), **SAL)
+    st = m.initial_state(nc._eta(), nc._T(), S=_S(nc.NZ))
+    with pytest.raises(ValueError, match=r"2017-07-01T00:00:30.*coverage \[2017-07-01T01:00"):
+        m.step(st)
     with pytest.raises(ConfigurationError) as e:
         nc._sigma(surface_fluxes=BulkFluxes(_atm(hg), h_sfc=-1.0, emissivity=0.0, z_q=10.0,
                                             scheme="ncar_ly04"), **SAL)
@@ -420,6 +460,32 @@ def test_restart_bit_for_bit_with_bulk(tmp_path, kind):
     m4, _ = _basin(kind, bulk=False)                                    # and so is a model without bulk
     with pytest.raises(ValueError, match="surface_fluxes"):
         read_restart(tmp_path / "bulk.nc", m4)
+
+
+def test_restart_with_atmosphere_from_the_restart_date(tmp_path):
+    """
+    Review I1 / ruling R4: a continuation whose atmosphere covers only [T, …] (ERA5 loaded from the restart date,
+    ``window`` trimming the padded record before it) constructs, reads the restart and steps bit for bit like the
+    uninterrupted run with an atmosphere that covers everything.
+    """
+    sb.set_threads(1)
+    hg, n0 = nc._grid(), 3
+    T = n0 * nc.DT
+    m, st = _basin("hybrid")
+    for _ in range(2 * n0):
+        st = m.step(st)
+    m1, s1 = _basin("hybrid")
+    for _ in range(n0):
+        s1 = m1.step(s1)
+    write_restart(tmp_path / "cont.nc", m1, s1)
+    later = AtmosphereProvider(_source(np.arange(-HOUR, 4 * HOUR + 1.0, HOUR)), _ll(hg), ORIGIN,
+                               window=(ORIGIN + np.timedelta64(int(T), "s"), ORIGIN + np.timedelta64(4, "h")))
+    assert later.coverage()[0] == T > 0
+    m2, _ = _basin("hybrid", bulk=False, surface_fluxes=BulkFluxes(later, scheme="ncar"))
+    s2 = read_restart(tmp_path / "cont.nc", m2)
+    for _ in range(n0):
+        s2 = m2.step(s2)
+    assert nc.state_hashes(s2, m2) == nc.state_hashes(st, m)
 
 
 def test_threads_bit_for_bit():

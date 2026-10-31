@@ -114,12 +114,14 @@ class BulkFluxes:
     z_q: float = 2.0
 
 
-def bulk_errors(b: Any, dt: float, salinity: bool) -> list[str]:
+def bulk_errors(b: Any, salinity: bool) -> list[str]:
     """
     Every problem of a ``BulkFluxes`` configuration, for the constructor pre-flight (spec criterion 6): the type,
     an unknown scheme, no salinity (E − P acts on S, and 'kara' needs the SSS), negative averaging depths, albedo
     outside [0, 1], emissivity outside (0, 1], z_q ≠ z_t for the one-height schemes ('ncar_ly04', 'coare'), and an
-    atmosphere that does not cover [0, Δt/2], the time of the first step's fluxes.
+    atmosphere whose coverage is not finite and non-empty (c1 > c0).  Whether the coverage holds the run is checked
+    where the start time is known, at the first ``SurfaceFluxes.forcing`` call (controller ruling R4): a restarted
+    run may load the atmosphere from its restart date only, so the constructor cannot require coverage from t = 0.
     """
     if not isinstance(b, BulkFluxes):
         return [f"surface_fluxes must be a core.components.surface_fluxes.BulkFluxes, got {type(b).__name__}"]
@@ -149,9 +151,9 @@ def bulk_errors(b: Any, dt: float, salinity: bool) -> list[str]:
     except Exception as e:                                             # noqa: BLE001 — reported, not raised
         out.append(f"surface_fluxes.atmosphere has no usable coverage() ({e})")
     else:
-        if not (c0 <= 0.0 and c1 >= 0.5 * dt):
-            out.append(f"the atmosphere covers [{c0}, {c1}] s from its origin and does not cover [0, {0.5 * dt}] s, "
-                       "the time of the first step's fluxes")
+        if not (np.isfinite(c0) and np.isfinite(c1) and c1 > c0):
+            out.append(f"the atmosphere coverage [{c0}, {c1}] s from its origin is empty or not finite (need "
+                       "finite c0 < c1)")
     return out
 
 
