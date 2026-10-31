@@ -13,7 +13,8 @@ SCHISM #140).  For ``SigmaBaroclinic`` that is:
   advection uses them), and the last numerical-mixing field;
 * the GLS turbulence state k, ε, ν (and κ_t) of the closure component (``core.components.closure``; file
   variables ``gls_*``), or the KPP viscosity ν of the last step (``kpp_akv``, N3 task 7); a restart written with
-  another closure is rejected;
+  another closure is rejected; with ``shear_mixing`` the lagged Jackson shear viscosity after the base's fields
+  (``shear_kv``, or ``kpp_shear_kv`` on KPP), and a restart written with another shear_mixing is rejected;
 * the lagged-LU CG preconditioner of the free surface (the matrix it factorised and the refactor
   flag): CG stops at an iterate that depends on it;
 * ALE (``vertical_coordinate='ale'``, Plan D): the layer thicknesses h, the exterior profile kept in z
@@ -85,6 +86,11 @@ def _config(model: SigmaBaroclinic) -> dict:
         cl = model._closure
         cfg.update({f"kpp_{k}": _text("none" if v is None else v) for k, v in sorted(vars(cl.params).items())})
         cfg.update(kpp_cp=cl.cp)
+    sm = getattr(model, "shear_mixing", None)                  # shear-mixing Task 4: scheme, Pr and every parameter
+    cfg.update(shear_mixing="none" if sm is None else str(sm))
+    if sm is not None:
+        cfg.update(shear_prandtl=model._closure.prandtl)
+        cfg.update({f"jackson_{k}": _text(v) for k, v in sorted(vars(model._closure.params).items())})
     if getattr(model, "ale", False):                           # ALE (Plan D): the rule and every scheme choice
         cfg.update(vertical_coordinate="ale", regrid=model.regrid_rule, remap=int(model.remap_code),
                    thickness_flux=model.thickness_flux, momentum=model.momentum, ke_scheme=model.ke_scheme,
@@ -113,9 +119,11 @@ _CONFIG_DEFAULTS = {"salinity": 0, "s_coef": 0.0, "s_ref": 35.0, "sponge_S": "no
                     "gls_stratified": 0,                                                    # N2a 8c: homogeneous GLS
                     "gls_production": "croco",                                              # N3 task 5: CROCO P
                     "periodic": "none",                                                     # N3 task 3: no periodic axis
-                    "smagorinsky": 0.0}                                                     # Smagorinsky off
+                    "smagorinsky": 0.0,                                                     # Smagorinsky off
+                    "shear_mixing": "none"}                                                 # no shear mixing
 
-_SECTIONS = {"ab_hist": "time_stepper", "gls_": "closure", "kpp_": "closure", "T_ext": "open_boundary", "h_ext": "open_boundary",
+_SECTIONS = {"ab_hist": "time_stepper", "gls_": "closure", "kpp_": "closure", "shear_": "closure",
+             "T_ext": "open_boundary", "h_ext": "open_boundary",
              "tr_ext": "open_boundary", "S_ext": "open_boundary", "fs_lu_": "free_surface", "rho_ref_": "pgf"}
 
 
@@ -151,12 +159,13 @@ def write_restart(path: str | Path, model: SigmaBaroclinic, state: SigmaState) -
         # KPP akv), in σ and ALE (N3 tasks 5 and 7), under the closure's file prefix (``Closure.restart_prefix``:
         # gls_ as the files written before N3, kpp_) that ``read_restart`` reads back
         ny, nx = model.H.shape
-        units_of = {"tke": "m2 s-2", "eps": "m2 s-3", "akv": "m2 s-1", "akt": "m2 s-1"}
+        units_of = {"tke": "m2 s-2", "eps": "m2 s-3", "akv": "m2 s-1", "akt": "m2 s-1", "shear_kv": "m2 s-1"}
         pref = cl.restart_prefix
         for name in (k[len(CLOSURE_PREFIX):] for k in cl.state_fields()):
             units = units_of.get(name, "1")
             data[f"{pref}{name}"] = xr.Variable(("level", "y", "x"), closure[name].reshape(-1, ny, nx),
-                                                {"units": units, "long_name": f"{pref[:-1].upper()} {name} at layer "
+                                                {"units": units,
+                                                 "long_name": f"{(pref[:-1] or 'closure').upper()} {name} at layer "
                                                                               "interfaces"})
     if (model.open or getattr(model, "ale", False)) and model.T_ext is not None:
         data["T_ext"] = xr.Variable(("layer", "y", "x"), np.asarray(model.T_ext, np.float64),
@@ -242,7 +251,8 @@ def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
         names = {k: pref + k[len(CLOSURE_PREFIX):] for k in cl.state_fields()}
         missing = [v for v in names.values() if v not in ds]
         if missing:
-            raise ValueError(f"restart has no {pref[:-1].upper()} state ({', '.join(missing)}) but the model uses "
+            raise ValueError(f"restart has no {(pref[:-1] or 'closure').upper()} state ({', '.join(missing)}) but "
+                             f"the model uses "
                              f"closure={model.core.closure!r}")
         # file names keep the gls_ prefix of the files written before N3; the component's fields are closure_*
         cl.load_state({k: ds[v].values for k, v in names.items()})

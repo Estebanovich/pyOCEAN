@@ -107,6 +107,7 @@ from core.components.open_boundary import CONFIG as _OB_CONFIG, OpenBoundary
 from core.components.bottom_drag import LogLawBedDrag, QuadraticBedDrag
 from core.components.closure import make_closure
 from physics.mixing.kpp_cvmix import KPPParams
+from physics.mixing.kappa_shear import JacksonParams
 from core.components.free_surface import FreeSurfaceVerticalViscosity
 from core.components.layer_transport import ALELayerTransport, SigmaLayerTransport
 from core.components.tracers import TracerAdvection, TracerDiffusion
@@ -980,6 +981,18 @@ class SigmaBaroclinic:
           redistribution of the non-solar surface heat (and freshwater-dilution salt) flux of ``heat``/``fw``, and
           ν for the next step's vertical viscosity; u* from the wind stress.  ``kv`` and ``nu_const`` are not used
           (backgrounds: ``KPPParams.kappa_bg``, ``nu_bg``)
+    shear_mixing : interior shear mixing added to the closure (Jackson shear-mixing plan, Task 4; spec
+          docs/superpowers/specs/2026-10-30-jackson-shear-mixing-design.md): None (default, nothing changes, bit for
+          bit) or 'jackson' — the Jackson, Hallberg & Legg (2008) scheme as MOM6 MOM_kappa_shear computes it
+          (``physics.mixing.kappa_shear``), in σ and ALE, with closure 'constant', 'none' or 'kpp' (not 'gls' nor
+          'parabolic': the GLS is itself a shear closure).  κ = κ_base + κ_shear for T, S and passive tracers
+          (κ_base = ``kv``, or KPP's κ_s), ν = ν_base + Pr κ_shear for the next step's implicit viscosity (ν_base =
+          ``nu_const``, 0 for 'none', or KPP's ν); computed in the tracer phase from the step's velocities and
+          density, Jackson's Δt = ``dt``, κ0 = max(kv, 1e-7) (KPP: max(kappa_bg, 1e-7)); dry and land columns get
+          κ = ν = 0 (``core.components.closure.ShearAddedClosure``).  Restart variable ``shear_kv``
+    shear_prandtl : turbulent Prandtl number Pr = ν_shear/κ_shear (default 1.0, Jackson et al. 2008; MOM6
+          PRANDTL_TURB; MOM6's DOME uses 0).  Assignable after construction, from the next closure update
+    jackson_params : ``physics.mixing.kappa_shear.JacksonParams`` (None: MOM6's defaults, JHL best-fit set 1)
     adv : momentum advection: 'flux' (default; momentum-conserving flux form with WENO5,
           as CROCO) or the advective form 'upwind3' / 'centred' of core.dynamics.nonlinear
     vertical_coordinate : 'sigma_eulerian' (default; σ-layers with vertical advection) or 'ale'
@@ -1098,7 +1111,8 @@ class SigmaBaroclinic:
                  tef_face: int | None = None, tef_sign: int = 1, tef_region: np.ndarray | None = None,
                  gls_stratified: bool = True, cp: float = 3985.0, jerlov: str = "I",
                  periodic: tuple[str, ...] = (), gls_production: str = "croco",
-                 kpp_params: KPPParams | None = None, smagorinsky: float = 0.0) -> None:
+                 kpp_params: KPPParams | None = None, smagorinsky: float = 0.0, shear_mixing: str | None = None,
+                 shear_prandtl: float = 1.0, jackson_params: JacksonParams | None = None) -> None:
         _args = {k: v for k, v in locals().items() if k != "self"}
         raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
         self.periodic = Periodic(periodic)                              # N3 task 3 (class docstring)
@@ -1246,6 +1260,9 @@ class SigmaBaroclinic:
         # turbulence closure as its own component (N3 task 1), stepped by the driver (phases 4 and 7); the core
         # keeps a reference only for the ``core.gls`` path.  Built here, after the EOS and c_p that KPP uses
         self.kpp_params = kpp_params                                    # closure='kpp' (N3 task 7)
+        self.shear_mixing = shear_mixing                                # None or 'jackson' (shear-mixing Task 4)
+        self.shear_prandtl = float(shear_prandtl)
+        self.jackson_params = jackson_params
         self._closure = make_closure(self)
         self.core.turbulence = self._closure
         if self.ale:                                                    # GLS on the ALE layers + remap (N3 task 5)
@@ -1868,6 +1885,8 @@ _PARAMS = {
     "momentum": ((("_momentum", "form"),),
                  lambda m, v: "vector_invariant" if m.ale and v == "vector_invariant" else "flux", None),
     "kh": ((("_tracer_diffusion", "kh"),), None, None),
+    "kv": ((("_closure", "kv"),), lambda m, v: float(v), None),                     # shear mixing: κ_base, κ0
+    "shear_prandtl": ((("_closure", "prandtl"),), lambda m, v: float(v), None),
     "tracer_scheme": ((("_tracer_advection", "tracer_scheme"),), None, None),
     "tracer_time": ((("_tracer_advection", "tracer_time"),), None, None),
     "pgf": ((("_pgf", "scheme"),), None, None),

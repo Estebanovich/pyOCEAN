@@ -243,3 +243,34 @@ def test_dry_and_single_layer_columns() -> None:
         k, q = fn(u, v, b, dz, f2, 600.0, KAPPA0, h_thin, JacksonParams())
         assert k.shape == (n + 1, 3) and q.shape == (n + 1, 3)
         assert np.all(k == 0.0) and np.all(q == 0.0)
+
+
+def test_h_massless_matches_closure() -> None:
+    """``kappa_shear.H_MASSLESS`` duplicates ``closure.H_MASSLESS`` (no circular import); they must agree."""
+    from core.components import closure
+    from physics.mixing import kappa_shear
+
+    assert kappa_shear.H_MASSLESS == closure.H_MASSLESS
+
+
+def test_columns_input_validation() -> None:
+    """f2 and h_thin must be scalars or one value per column; dz must be finite and ≥ 0 (clear ValueErrors)."""
+    import pytest
+
+    from physics.mixing.kappa_shear import kappa_shear_columns
+
+    n, m = 10, 3
+    u = np.zeros((n, m))
+    b = np.tile((1e-4 * np.arange(n))[:, None], (1, m))
+    dz = np.ones((n, m))
+    ok = np.full(m, 1e-8)
+    kappa_shear_columns(u, u, b, dz, 1e-8, 600.0, KAPPA0, 1e-3, JacksonParams())           # scalars broadcast
+    with pytest.raises(ValueError, match="f2 must be"):
+        kappa_shear_columns(u, u, b, dz, np.full(m + 1, 1e-8), 600.0, KAPPA0, ok, JacksonParams())
+    with pytest.raises(ValueError, match="h_thin must be"):
+        kappa_shear_columns(u, u, b, dz, ok, 600.0, KAPPA0, np.full(m - 1, 1e-3), JacksonParams())
+    for bad in (-1.0, np.nan, np.inf):
+        dzb = dz.copy()
+        dzb[2, 1] = bad
+        with pytest.raises(ValueError, match="dz must be finite"):
+            kappa_shear_columns(u, u, b, dzb, ok, 600.0, KAPPA0, ok, JacksonParams())

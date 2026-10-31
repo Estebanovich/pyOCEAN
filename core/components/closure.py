@@ -39,6 +39,7 @@ from core.model.contract import BuildContext, Issue, Role
 from core.vertical import remap as rm
 from physics.mixing.gls import KT_MIN, N2_FLOOR, RM, RN, RP, GLSKEpsilon, buoyancy_frequency2
 from physics.mixing.gls_merged import merged_columns
+from physics.mixing.kappa_shear import JacksonParams, kappa_shear_columns
 from physics.mixing.kpp_cvmix import KPPParams, kpp_column
 
 STATE_PREFIX = "closure_"
@@ -47,6 +48,8 @@ THIN_FRACTION = 0.01       # [-] ALE: thin = thinner than this fraction of the c
 H_THIN_MAX = 0.1           # [m] ALE: cap of the threshold (the value of HYCOM's tencm)
 THIN_RTOL = 1e-9           # [-] a layer within this relative tolerance of the threshold is thin (N3 task 9c fix 1)
 PRODUCTIONS = ("croco", "energy")
+SHEAR_SCHEMES = ("jackson",)
+KAPPA0_MIN = 1e-7          # [m² s⁻¹] floor of Jackson's κ0: KD_KAPPA_SHEAR_0 = max(KD, 1e-7), MOM_kappa_shear.F90:2170-2173
 
 
 def thin_layer_threshold(h: np.ndarray, h_massless: float = H_MASSLESS, fraction: float = THIN_FRACTION,
@@ -871,12 +874,225 @@ class KPPClosure(Closure):
         self.akv = np.asarray(d[STATE_PREFIX + "akv"]).reshape(self.n + 1, -1).copy()
 
 
+class ShearAddedClosure(Closure):
+    """
+    Interior shear mixing of Jackson, Hallberg & Legg (2008) **added** to a base closure ('constant', 'none' or
+    'kpp'), as MOM6 sums its vertical mixing terms (``docs/design/shear_refs/pyocean_current.md`` §4–5, option (b);
+    spec 2026-10-30-jackson-shear-mixing "Decisiones tomadas por Claude").
+
+        κ = κ_base + κ_shear,      ν = ν_base + ν_shear,      ν_shear = Pr κ_shear
+
+    κ_base is the base's tracer diffusivity, or the constant ``kv`` when the base has none ('constant', 'none':
+    the value the driver uses without shear mixing).  ν_base is the base's face viscosity, or the constant
+    ``nu_const`` at every face interface when the base has none ('constant'; 'none': 0) — the ν that
+    ``SigmaWetDry.column_step`` builds itself.  MOM6: Kd = Kd_bg + Kd_shear (MOM_set_diffusivity.F90:571-581),
+    Kv_shear added to the viscous Kv (MOM_vert_friction.F90:2163-2205), KPP additive (MOM_CVMix_KPP.F90:419-422).
+    GLS and parabolic are refused by the pre-flight: the GLS is itself a shear closure (double counting).
+
+    Parameters
+    ----------
+    base : the base closure component (``ConstantClosure`` or ``KPPClosure``)
+    n_layers : N;  shape : (ny, nx) of the tracer grid
+    dt : model time step [s] — Jackson's Δt (pyOCEAN has no separate DT_THERM)
+    f2 : (ny, nx) f² at the cell centres [s⁻²], the mean of the four corner f² (MOM_kappa_shear.F90:317-318)
+    kv : constant tracer diffusivity of the model [m² s⁻¹] (κ_base of a base without κ; pushed by the model when
+        ``kv`` changes after construction)
+    nu_const : constant viscosity of the model [m² s⁻¹] ('constant' base; 'none': ν_base = 0)
+    prandtl : turbulent Prandtl number Pr = ν_shear/κ_shear [-] (Jackson et al. 2008: 1; MOM6 PRANDTL_TURB)
+    params : ``physics.mixing.kappa_shear.JacksonParams`` (None: MOM6 defaults, JHL set 1)
+    rho0, g : ρ₀ [kg m⁻³], g [m s⁻²] of the buoyancy b = −g (ρ − ρ₀)/ρ₀
+
+    Place in the step: ``update_phase`` 'tracers' (phase 7, as KPP and as MOM6's diabatic step): κ_shear is computed
+    from the state of the step (velocities after the implicit viscosity averaged to the centres, the advected
+    layer density and the layer thicknesses of the driver's ``_kpp_update``; σ: D Δσ, ALE: h) and diffuses this
+    step's tracers; ν_shear is used by the implicit viscosity of the **next** step (lagged, as MOM6 Kv_shear).
+    ν_shear is therefore the only state carried between steps (``SigmaState.closure['shear_kv']``, restart
+    ``shear_kv`` after the base's fields); κ_shear is reseeded every call (KD_SEED_KAPPA_SHEAR).  ALE: ν_shear is
+    kept by interface index through the regrid (MOM6 REMAP_AUXILIARY_VARS = False); the base remaps its own state.
+
+    κ0 = max(background, 1e-7) m² s⁻¹ (MOM6 KD_KAPPA_SHEAR_0 = max(KD, 1e-7)) with the background ``kv`` for
+    'constant'/'none' and ``KPPParams.kappa_bg`` (0 by default: κ0 = 1e-7) for KPP.  Thin layers: the per-column
+    threshold of the GLS (``thin_layer_threshold``) with MOM6's merge (in ``kappa_shear_columns``).
+
+    Columns: only wet columns (h summing to > 0; the driver passes h = 0 in dry and land columns) are computed;
+    elsewhere κ = ν = 0, and the driver's ``_dry_still`` keeps their tracers still.  The bed and surface interface
+    values are 0 (no flux through the bed or the surface).  Without a layer density (``rho`` None) b = 0 is not
+    defined meaningfully, so κ_shear = 0 (the driver always passes ρ in phase 7).
+
+    A κ_shear (ν_shear) that is zero everywhere adds nothing: ``tracer_diffusivity`` (``viscosity``) then returns
+    the base's own value unchanged (None included), so a column without shear runs bit for bit as the base.
+    """
+    stateful = True
+    update_phase = "tracers"
+
+    def __init__(self, base: Closure, n_layers: int, shape: tuple[int, int], dt: float, f2: np.ndarray,
+                 kv: float = 0.0, nu_const: float = 0.0, prandtl: float = 1.0, params: JacksonParams | None = None,
+                 rho0: float = 1000.0, g: float = 9.81) -> None:
+        self.base = base
+        self.n, self.shape, self.dt = int(n_layers), tuple(shape), float(dt)
+        self.f2 = np.asarray(f2, float).reshape(-1)
+        self.kv, self.nu_const, self.prandtl = float(kv), float(nu_const), float(prandtl)
+        self.params = JacksonParams() if params is None else params
+        self.rho0, self.g = float(rho0), float(g)
+        m = self.shape[0] * self.shape[1]
+        self.kd = np.zeros((self.n + 1, m))                            # κ_shear of the last update [m² s⁻¹]
+        self.kv_shear_flat = np.zeros((self.n + 1, m))                 # ν_shear (lagged state) [m² s⁻¹]
+        self._per = None
+
+    # ------------------------------------------------------------------ delegation
+    @property
+    def restart_prefix(self) -> str:
+        """File prefix of the base (``kpp_`` or none); ``shear_kv`` follows it."""
+        return self.base.restart_prefix
+
+    @property
+    def per(self):
+        return self._per
+
+    @per.setter
+    def per(self, value) -> None:
+        self._per = value
+        self.base.per = value
+
+    @property
+    def F_T(self) -> np.ndarray:
+        """The base's non-solar kinematic heat flux of the non-local term (KPP), else zeros (no non-local term)."""
+        f = getattr(self.base, "F_T", None)
+        return np.zeros(self.kd.shape[1]) if f is None else f
+
+    @property
+    def F_S(self) -> np.ndarray:
+        f = getattr(self.base, "F_S", None)
+        return np.zeros(self.kd.shape[1]) if f is None else f
+
+    def nonlocal_tendency(self, h: np.ndarray, flux: np.ndarray, dt: float) -> np.ndarray:
+        return self.base.nonlocal_tendency(h, flux, dt)
+
+    def nonlocal_flux(self) -> np.ndarray | None:
+        return self.base.nonlocal_flux()
+
+    def bind_ale(self, remap_code: int) -> None:
+        self.base.bind_ale(remap_code)
+
+    def remap(self, h_src: np.ndarray, h_dst: np.ndarray) -> None:
+        """The base remaps its own state; ν_shear stays by interface index (MOM6 REMAP_AUXILIARY_VARS = False)."""
+        self.base.remap(h_src, h_dst)
+
+    def check(self, ctx: BuildContext) -> list[Issue]:
+        return self.base.check(ctx)
+
+    # ------------------------------------------------------------------ fields
+    @property
+    def kd_shear(self) -> np.ndarray:
+        """κ_shear (N+1, ny, nx) of the last update [m² s⁻¹] (registry ``kd_shear``)."""
+        return self.kd.reshape(self.n + 1, *self.shape)
+
+    @property
+    def kv_shear(self) -> np.ndarray:
+        """ν_shear = Pr κ_shear (N+1, ny, nx) at the cell centres [m² s⁻¹] (registry ``kv_shear``), lagged."""
+        return self.kv_shear_flat.reshape(self.n + 1, *self.shape)
+
+    def kappa0(self) -> float:
+        """Jackson's background κ0 [m² s⁻¹] = max(background κ, 1e-7) (class docstring)."""
+        bg = self.base.params.kappa_bg if isinstance(self.base, KPPClosure) else self.kv
+        return max(float(bg), KAPPA0_MIN)
+
+    # ------------------------------------------------------------------ interface
+    def viscosity(self, st) -> tuple[np.ndarray, np.ndarray] | None:
+        """ν_base + ν_shear at the u- and v-face interfaces (``centre_to_faces``, periodic wrap faces with ``per``);
+        the base's own value when ν_shear is zero everywhere."""
+        if st is not None:
+            self.load(getattr(st, "closure", None))
+        nb = self.base.viscosity(None)
+        if not self.kv_shear_flat.any():
+            return nb
+        su, sv = centre_to_faces(self.kv_shear, self._per)
+        if nb is None:
+            nu0 = self.nu_const if getattr(self.base, "kind", "constant") == "constant" else 0.0
+            return nu0 + su, nu0 + sv
+        return nb[0] + su, nb[1] + sv
+
+    def update(self, u: np.ndarray, v: np.ndarray, h: np.ndarray, rho: np.ndarray | None,
+               ustar2_sfc: np.ndarray | None, ustar2_bot: np.ndarray, bflux: dict | None = None) -> None:
+        """
+        The base's update, then κ_shear of the wet columns (``kappa_shear_columns``) and ν_shear = Pr κ_shear.
+
+        u, v : (N, ny, nx) velocities at the cell centres [m s⁻¹];  h : (N, ny, nx) layer thicknesses [m], zero in
+        dry and land columns;  rho : (N, ny, nx) layer density [kg m⁻³] (None: κ_shear = 0);  the rest goes to
+        the base.
+        """
+        self.base.update(u, v, h, rho, ustar2_sfc, ustar2_bot, bflux=bflux)
+        n = self.n
+        m = self.kd.shape[1]
+        hh = np.asarray(h, float).reshape(n, m)
+        wet = np.flatnonzero(hh.sum(axis=0) > 0.0)
+        kd = np.zeros((n + 1, m))
+        if wet.size and rho is not None:
+            dz = np.ascontiguousarray(hh[:, wet])
+            # buoyancy b = −g (ρ − ρ₀)/ρ₀ [m s⁻²]
+            b = -self.g * (np.asarray(rho, float).reshape(n, m)[:, wet] - self.rho0) / self.rho0
+            uw = np.asarray(u, float).reshape(n, m)[:, wet]
+            vw = np.asarray(v, float).reshape(n, m)[:, wet]
+            numba.set_num_threads(threads._THREADS[0])
+            kappa, _ = kappa_shear_columns(uw, vw, b, dz, self.f2[wet], self.dt, self.kappa0(),
+                                           thin_layer_threshold(dz), self.params)
+            kd[:, wet] = kappa
+        kd[0] = 0.0                                                    # no flux through the bed or the surface
+        kd[n] = 0.0
+        self.kd = kd
+        self.kv_shear_flat = self.prandtl * kd
+
+    def tracer_diffusivity(self) -> np.ndarray | None:
+        """κ_base + κ_shear (N+1, ny, nx) [m² s⁻¹]; the base's own value when κ_shear is zero everywhere."""
+        kb = self.base.tracer_diffusivity()
+        if not self.kd.any():
+            return kb
+        if kb is None:
+            return self.kv + self.kd_shear
+        return kb + self.kd_shear
+
+    def load(self, closure: dict | None) -> None:
+        if closure is not None:
+            self.base.load(closure)
+            if "shear_kv" in closure:
+                self.kv_shear_flat = closure["shear_kv"]
+
+    def state(self) -> dict:
+        out = dict(self.base.state() or {})
+        out["shear_kv"] = self.kv_shear_flat
+        return out
+
+    def state_fields(self) -> dict[str, np.ndarray]:
+        out = dict(self.base.state_fields()) if self.base.stateful else {}
+        out[STATE_PREFIX + "shear_kv"] = self.kv_shear_flat
+        return out
+
+    def load_state(self, d: dict[str, np.ndarray]) -> None:
+        if self.base.stateful:
+            self.base.load_state(d)
+        self.kv_shear_flat = np.asarray(d[STATE_PREFIX + "shear_kv"]).reshape(self.n + 1, -1).copy()
+
+
 def make_closure(model) -> Closure:
     """
     The closure component of a ``SigmaBaroclinic`` model, from its core settings: 'gls' → ``GLSClosure``
     (stratified with ``gls_stratified``; κ_t floor ``kv`` if > 0, else CROCO's 1e-6), anything else →
-    ``ConstantClosure``.
+    ``ConstantClosure``; with ``shear_mixing='jackson'`` that closure wrapped in ``ShearAddedClosure``.
     """
+    core = model.core
+    cl = _base_closure(model)
+    if getattr(model, "shear_mixing", None) is None:
+        return cl
+    # f² at the centres: the mean of the four corner f² (MOM_kappa_shear.F90:317-318)
+    fq = np.asarray(model._fq, float)
+    f2 = 0.25 * (fq[:-1, :-1] ** 2 + fq[:-1, 1:] ** 2 + fq[1:, :-1] ** 2 + fq[1:, 1:] ** 2)
+    return ShearAddedClosure(cl, core.n_layers, core.H.shape, core.dt, f2, kv=float(getattr(model, "kv", 0.0)),
+                             nu_const=float(core.nu_const), prandtl=float(getattr(model, "shear_prandtl", 1.0)),
+                             params=getattr(model, "jackson_params", None), rho0=core.rho0, g=core.g)
+
+
+def _base_closure(model) -> Closure:
+    """The closure of ``core.closure`` alone (``make_closure`` without the added shear mixing)."""
     core = model.core
     if core.closure == "kpp":
         cl = KPPClosure(core.n_layers, core.H.shape, params=getattr(model, "kpp_params", None), rho0=core.rho0,

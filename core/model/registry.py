@@ -53,6 +53,16 @@ _SPECS = [
             "turbulent kinetic energy (GLS k-ε)"),
     VarSpec("closure.eps", ("kw", "y", "x"), "w", "m2 s-3", None, "component_state", "dissipation rate (GLS k-ε)"),
     VarSpec("closure.akv", ("kw", "y", "x"), "w", "m2 s-1", None, "component_state", "eddy viscosity (GLS k-ε, or KPP of the last step: N3 task 7)"),
+    VarSpec("closure.shear_kv", ("kw", "y", "x"), "w", "m2 s-1", None, "component_state",
+            "Jackson et al. (2008) shear viscosity ν_shear = Pr κ_shear of the last step, used lagged "
+            "(shear_mixing)"),
+    VarSpec("kd_shear", ("kw", "y", "x"), "w", "m2 s-1", None, "diagnostic",
+            "Jackson et al. (2008) shear-driven tracer diffusivity κ_shear at the layer interfaces of the last step, "
+            "added to the closure's κ (shear_mixing='jackson'; ShearAddedClosure.kd_shear)"),
+    VarSpec("kv_shear", ("kw", "y", "x"), "w", "m2 s-1", None, "diagnostic",
+            "Jackson et al. (2008) shear-driven viscosity ν_shear = Pr κ_shear at the layer interfaces (cell "
+            "centres), added to the next step's vertical viscosity (shear_mixing='jackson'; "
+            "ShearAddedClosure.kv_shear)"),
     VarSpec("closure.akt", ("kw", "y", "x"), "w", "m2 s-1", None, "component_state",
             "eddy tracer diffusivity (stratified GLS k-ε, gls_stratified; N2a task 8c)"),
 ]

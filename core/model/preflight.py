@@ -13,6 +13,7 @@ from __future__ import annotations
 import numpy as np
 
 from core.model.contract import Issue
+from physics.mixing.kappa_shear import JacksonParams
 from physics.mixing.kpp_cvmix import KPPParams
 from physics.surface.shortwave import JERLOV
 
@@ -224,6 +225,32 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
             if name in given:
                 warn("closure", f"{name}={a[name]!r} is ignored with closure='kpp' (ν and κ come from KPP; a "
                                 f"background is KPPParams.{bg})")
+    # Jackson et al. (2008) shear mixing added to the closure (shear-mixing plan, Task 4)
+    sm = a.get("shear_mixing")
+    if sm is not None and sm not in ("jackson",):
+        err("closure", f"unknown shear_mixing={sm!r} (valid: None, 'jackson')")
+    if sm is not None and a["closure"] in ("gls", "parabolic"):
+        err("closure", f"shear_mixing={sm!r} cannot be added to closure={a['closure']!r}: the GLS k-ε already "
+                       "produces shear turbulence (double counting) and the parabolic ν is a fixed bed profile; use "
+                       "closure 'constant', 'none' or 'kpp'")
+    pr = a.get("shear_prandtl", 1.0)
+    try:
+        pr_ok = bool(np.isfinite(pr) and pr >= 0.0)
+    except TypeError:
+        pr_ok = False
+    if not pr_ok:
+        err("closure", f"shear_prandtl={pr!r}: the turbulent Prandtl number ν_shear/κ_shear must be a finite number "
+                       "≥ 0 (Jackson et al. 2008: 1; 0 = diffusivity only)")
+    jp = a.get("jackson_params")
+    if jp is not None and not isinstance(jp, JacksonParams):
+        err("closure", f"jackson_params must be a physics.mixing.kappa_shear.JacksonParams, got {type(jp).__name__}")
+    elif jp is not None and not jp.ri_crit > 0.0:
+        err("closure", f"jackson_params.ri_crit={jp.ri_crit!r}: the critical Richardson number must be > 0 "
+                       "(Jackson et al. 2008: 0.25)")
+    if sm is None:
+        for name in ("shear_prandtl", "jackson_params"):
+            if name in given:
+                warn("closure", f"{name} is ignored without shear_mixing (it applies to shear_mixing='jackson')")
     if a["sponge_rate"] is None and ({"sponge_T", "sponge_zw", "sponge_tr", "sponge_S"} & given):
         warn("interior_sponge", "sponge_T / sponge_zw / sponge_tr / sponge_S are ignored without sponge_rate")
     return out

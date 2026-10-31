@@ -1801,8 +1801,15 @@ def kappa_shear_columns(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: np.ndar
     for name, arr in (("u", u), ("v", v), ("b", b)):
         if arr.shape != dz.shape:
             raise ValueError(f"kappa_shear_columns: {name} must have shape {dz.shape}, got {arr.shape}")
-    f2 = np.ascontiguousarray(np.broadcast_to(np.asarray(f2, float), (m,)))
-    h_thin = np.ascontiguousarray(np.broadcast_to(np.asarray(h_thin, float), (m,)))
+    if not np.isfinite(dz).all() or (dz < 0.0).any():
+        raise ValueError("kappa_shear_columns: dz must be finite and >= 0 (dry columns: zero thicknesses)")
+    f2, h_thin = np.asarray(f2, float), np.asarray(h_thin, float)
+    for name, arr in (("f2", f2), ("h_thin", h_thin)):
+        if arr.ndim != 0 and arr.shape != (m,):
+            raise ValueError(f"kappa_shear_columns: {name} must be a scalar or have shape ({m},) (one value per "
+                             f"column of dz), got {arr.shape}")
+    f2 = np.ascontiguousarray(np.broadcast_to(f2, (m,)))
+    h_thin = np.ascontiguousarray(np.broadcast_to(h_thin, (m,)))
     kappa = np.zeros((n + 1, m))
     tke = np.zeros((n + 1, m))
     _columns_nb(u, v, b, dz, f2, float(dt), float(kappa0), h_thin, params_array(p), float(h_massless), kappa, tke)

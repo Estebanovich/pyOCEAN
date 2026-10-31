@@ -276,7 +276,8 @@ class SigmaWetDry:
             speed = np.hypot(uu[0], 0.0 if cross is None else np.asarray(cross, float).reshape(-1))   # |U_b|
             r = cd * speed
             ustar = np.sqrt(cd) * speed
-        if nu is not None:
+        nu_given = nu is not None                                      # a closure ν (also 'none' + shear mixing)
+        if nu_given:
             nu = np.asarray(nu, float).reshape(n + 1, -1)
         elif self.closure == "parabolic":
             nu = parabolic_viscosity(ustar, D, self.sigma_w, nu_min=self.nu_min)
@@ -285,7 +286,7 @@ class SigmaWetDry:
         else:
             nu = np.zeros((n + 1, D.size))
         tau = None if tau is None else np.asarray(tau, float).reshape(-1)
-        if self.closure == "none" and self.z0 is None and r_bed is None:
+        if self.closure == "none" and self.z0 is None and r_bed is None and not nu_given:
             out = uu.copy()
             if tau is not None:
                 out[-1] += self.dt * tau / dz[-1]
