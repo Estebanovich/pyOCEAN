@@ -12,8 +12,12 @@ condition of the GLS (``core.model.driver._ale_bed_ustar2``); ``kv`` = 0, so κ_
 = 1e-6 m² s⁻¹, gls_mixing.F:152), and ν its floor 1e-5.  Its outputs go to the run directory with the tag 'gls'
 (``--tag`` replaces it), next to the baseline.
 
+``--shear jackson`` (Jackson shear-mixing plan, Task 6): the Jackson et al. (2008) interior shear mixing of MOM6
+(``shear_mixing='jackson'``, ``shear_prandtl`` = ``--shear-pr``, default 1) added to the closure; the default tag gets
+'_jackson' ('_jacksonpr<P>' when P ≠ 1).  ``--kv-low`` works in every coordinate (z*, σ and hybrid).
+
 Usage: NUMBA_NUM_THREADS=5 python validation/dome/run_pyocean.py 10 zstar [--dt 600 (default)] [--days 50] [--tag x]
-           [--closure {constant,gls}] [--smag C] [--kv-low]
+           [--closure {constant,gls}] [--smag C] [--kv-low] [--shear jackson [--shear-pr P]]
 """
 from __future__ import annotations
 
@@ -56,6 +60,29 @@ def closure_kwargs(case: cases.Case, closure: str, nu_v: float | None = None) ->
             raise ValueError("--nu-v applies to closure 'constant' only (the GLS computes ν)")
         return dict(closure="gls", gls_stratified=True, kv=0.0)
     raise ValueError(f"unknown closure {closure!r}; use one of {CLOSURES}")
+
+
+SHEARS = ("jackson",)
+
+
+def shear_kwargs(shear: str | None, shear_pr: float = 1.0) -> dict:
+    """Model arguments of the interior shear mixing: {} without it, else shear_mixing and shear_prandtl."""
+    if shear is None:
+        return {}
+    if shear not in SHEARS:
+        raise ValueError(f"unknown shear mixing {shear!r}; use one of {SHEARS}")
+    return dict(shear_mixing=shear, shear_prandtl=float(shear_pr))
+
+
+def default_tag(closure: str, kv_low: bool, smag: float, shear: str | None = None, shear_pr: float = 1.0) -> str:
+    """Run-directory tag: 'kv_low' / '' (constant) / closure name, then '_smag<C>', then '_jackson' ('_jacksonpr<P>'
+    when P ≠ 1), e.g. 'kv_low_smag0.15_jacksonpr0'."""
+    parts = ["kv_low" if kv_low else "" if closure == "constant" else closure]
+    if smag > 0.0:
+        parts.append(f"smag{smag:g}")
+    if shear is not None:
+        parts.append(shear + ("" if float(shear_pr) == 1.0 else f"pr{float(shear_pr):g}"))
+    return "_".join(p for p in parts if p)
 
 
 def build(case: cases.Case, coord: str, dt: float | None = None, nu_v: float | None = None,
@@ -109,13 +136,14 @@ def record(m, st) -> dict:
 
 def run(res_km: float, coord: str, dt: float | None = None, days: float | None = None, tag: str | None = None,
         threads: int = 5, nu_v: float | None = None, closure: str = "constant", write: bool = True,
-        smag: float = 0.0, kv_low: bool = False) -> Path | dict:
+        smag: float = 0.0, kv_low: bool = False, shear: str | None = None, shear_pr: float = 1.0) -> Path | dict:
     """Run and write cases.run_dir(res_km, 'pyocean', coord, tag)/series.npz; returns its path.  ``tag`` None:
     '' for the constant closure, 'gls' for the GLS.  ``write`` False (cost measurement): nothing is written and the
     run metadata are returned.  ``smag`` > 0 (Smagorinsky C) appends '_smag<C>' to the default tag
     ('smag0.15', 'gls_smag0.15'); ``kv_low`` is the variant ν_v = cases.NU_V_LOW (constant closure only; default tag
     'kv_low', so the baseline is not overwritten).  With smag > 0 the meta also hold ``smag``, ``n_visc_limited``
-    and ``nu_t_max`` (max ν at the output times)."""
+    and ``nu_t_max`` (max ν at the output times).  ``shear`` ('jackson') adds the interior shear mixing with
+    Prandtl number ``shear_pr`` (tag default_tag; meta ``shear_mixing``, ``shear_prandtl``)."""
     set_threads(threads)
     c = cases.get(res_km)
     if kv_low:
@@ -123,15 +151,13 @@ def run(res_km: float, coord: str, dt: float | None = None, days: float | None =
             raise ValueError("kv_low sets ν_v = 1e-4 of the constant closure; do not combine with --closure gls / --nu-v")
         nu_v = cases.NU_V_LOW
     if tag is None:
-        tag = ("kv_low" if kv_low else "" if closure == "constant" else closure)
-        if smag > 0.0:
-            tag = f"{tag}_smag{smag:g}" if tag else f"smag{smag:g}"
+        tag = default_tag(closure, kv_low, smag, shear, shear_pr)
     out = cases.run_dir(res_km, "pyocean", coord, tag) / "series.npz"
     if write:
         out.unlink(missing_ok=True)
     dt = default_dt(c) if dt is None else dt
     days = c.days if days is None else days
-    m, st = build(c, coord, dt, nu_v, closure, smag)
+    m, st = build(c, coord, dt, nu_v, closure, smag, **shear_kwargs(shear, shear_pr))
     n_steps = int(round(days * 86400.0 / dt))
     every = max(1, int(round(c.out_s / dt)))
     recs, times, tic, nu_max = [record(m, st)], [0.0], None, float("nan")
@@ -153,12 +179,15 @@ def run(res_km: float, coord: str, dt: float | None = None, days: float | None =
                 T_max=float(np.nanmax(s["T"])))
     if smag > 0.0:
         meta.update(smag=smag, n_visc_limited=int(st.n_visc_limited or 0), nu_t_max=float(nu_max))
+    if shear is not None:
+        meta.update(shear_mixing=shear, shear_prandtl=float(shear_pr))
     if not write:
         return meta
     return series.save(out, s, meta)
 
 
-def main() -> None:
+def parser() -> argparse.ArgumentParser:
+    """Command-line options of the runner."""
     ap = argparse.ArgumentParser()
     ap.add_argument("res_km", type=float)
     ap.add_argument("coord", choices=["zstar", "sigma", "hybrid"])
@@ -171,8 +200,15 @@ def main() -> None:
     ap.add_argument("--smag", type=float, default=0.0, help="Smagorinsky C (default 0 = off)")
     ap.add_argument("--kv-low", action="store_true", help="variant kv_low: constant ν_v = 1e-4 (tag 'kv_low')")
     ap.add_argument("--cost", action="store_true", help="cost measurement: write nothing, print the metadata")
-    a = ap.parse_args()
-    print(run(a.res_km, a.coord, a.dt, a.days, a.tag, a.threads, a.nu_v, a.closure, write=not a.cost, smag=a.smag, kv_low=a.kv_low))
+    ap.add_argument("--shear", choices=SHEARS, default=None, help="interior shear mixing added to the closure")
+    ap.add_argument("--shear-pr", type=float, default=1.0, help="Prandtl number ν/κ of the shear mixing (default 1)")
+    return ap
+
+
+def main() -> None:
+    a = parser().parse_args()
+    print(run(a.res_km, a.coord, a.dt, a.days, a.tag, a.threads, a.nu_v, a.closure, write=not a.cost, smag=a.smag,
+              kv_low=a.kv_low, shear=a.shear, shear_pr=a.shear_pr))
 
 
 if __name__ == "__main__":

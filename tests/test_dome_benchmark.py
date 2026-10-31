@@ -209,3 +209,98 @@ def test_dome_smag_option_reaches_model():
     kv = run_pyocean.run(50.0, "hybrid", dt=600.0, days=600.0 * 2 / 86400.0, threads=1, write=False, kv_low=True,
                          smag=0.15)
     assert kv["nu_v"] == 1e-4
+
+
+# ---- Jackson shear-mixing plan, Task 6: Legg (2006) metrics against the non-hydrostatic truth ---------------------
+
+def _corner_series(nt=3, nz=4, U0=0.3, V0=0.2, h=900.0):
+    """Uniform-layer box on the 10-km grid: dye s = 1 in the bottom layer everywhere and also in the layer above it
+    in the corner row y' ∈ (−50, −40) km; westward U0 at every u-face of the dyed cells, southward V0 at the
+    y' = 0 faces of the corner columns (bottom layer)."""
+    c = cases.get(10.0)
+    shp = (nt, nz, c.ny, c.nx)
+    hh = np.full(shp, h)
+    s_ = np.zeros(shp)
+    s_[:, -1] = 1.0
+    j55 = int(np.argmin(np.abs(c.y - 555e3)))                          # the row −50 < y' < −40 km
+    s_[:, -2, j55, :] = 1.0
+    u = np.zeros((nt, nz, c.ny, c.nx + 1))
+    u[:, -1] = -U0
+    u[:, -2, j55, :] = -U0
+    v = np.zeros((nt, nz, c.ny + 1, c.nx))
+    i0, i1 = int(np.argmin(np.abs(c.x - 1005e3))), int(np.argmin(np.abs(c.x - 1095e3)))
+    jf = int(np.argmin(np.abs((np.arange(c.ny + 1) * c.dx) - 600e3)))    # the v-face at y' = 0
+    v[:, -1, jf, i0:i1 + 1] = -V0
+    T = np.full(shp, cases.T_of_rho(1031.0))
+    return c, dict(t=np.arange(nt) * 86400.0, x=c.x, y=c.y, dx=np.full(c.nx, c.dx), dy=np.full(c.ny, c.dx),
+                   H=np.full((c.ny, c.nx), nz * h), h=hh, T=T, s=s_, u=u, v=v, eta=np.zeros((nt, c.ny, c.nx)))
+
+
+def test_corner_entrainment_synthetic():
+    """Legg eq. 14 in −50 < x' < 50, −50 < y' < 0 km: (T_out − T_in)/(U_rms S) with T_out through x' = −50 km,
+    T_in through y' = 0, S the area of the s = 0.01 surface inside the corner (tops of the dyed columns plus the
+    side of the thicker row), U_rms over the dyed cells of the corner."""
+    from validation.dome import metrics
+    U0, V0, h = 0.3, 0.2, 900.0
+    c, s = _corner_series(U0=U0, V0=V0, h=h)
+    dx = c.dx
+    T_out = U0 * h * dx * (5 + 1)                    # 5 rows of the bottom layer + the second layer of row 55
+    T_in = V0 * h * dx * 10                          # 10 corner columns
+    S = 10 * 5 * dx * dx + 10 * h * dx               # tops + the side between rows 55 and 56
+    # U_rms over the dyed corner cells: (u, v) at cell centres; row 59 holds ½V0 in its bottom layer
+    n_cells = 10 * 6
+    U2 = (n_cells * U0 ** 2 + 10 * (0.5 * V0) ** 2) / n_cells
+    E = (T_out - T_in) / (np.sqrt(U2) * S)
+    got = metrics.corner_entrainment(s, 0.0, 2 * 86400.0)
+    assert got == pytest.approx(E, rel=1e-6)
+    parts = metrics.corner_entrainment(s, 0.0, 2 * 86400.0, parts=True)
+    assert parts["T_out"] == pytest.approx(T_out, rel=1e-12) and parts["T_in"] == pytest.approx(T_in, rel=1e-12)
+    assert parts["S"] == pytest.approx(S, rel=1e-12)
+
+
+def test_tracer_by_class_conserves():
+    """Σ_c Σ_x S(c, x) Δx = the time mean of Σ s V in the window (Legg Fig. 4: ∫ s dy dz per x and class)."""
+    from validation.dome import metrics
+    _, s = _corner_series()
+    rng = np.random.default_rng(1)
+    s["s"] = rng.uniform(0.0, 1.0, s["s"].shape)
+    s["T"] = cases.T_of_rho(rng.uniform(1030.0, 1032.0, s["T"].shape))
+    s["h"] = s["h"] * rng.uniform(0.0, 2.0, s["h"].shape)
+    x, edges, S = metrics.tracer_by_class(s, 86400.0, 2 * 86400.0, 20)
+    assert S.shape == (20, x.size) and edges.size == 21
+    want = np.mean([(s["s"][n] * metrics._vol(s)[n]).sum() for n in (1, 2)])
+    assert (S * s["dx"][None, :]).sum() == pytest.approx(want, rel=1e-12)
+
+
+def test_jackson_tag():
+    """--shear jackson appends '_jackson' to the run tag, '_jacksonpr0' with --shear-pr 0; the flags reach the model."""
+    from validation.dome import run_pyocean
+    p = run_pyocean.parser()
+    a = p.parse_args(["10", "hybrid", "--kv-low", "--smag", "0.15", "--shear", "jackson", "--shear-pr", "0"])
+    assert run_pyocean.default_tag(a.closure, a.kv_low, a.smag, a.shear, a.shear_pr) == "kv_low_smag0.15_jacksonpr0"
+    a = p.parse_args(["10", "hybrid", "--kv-low", "--smag", "0.15", "--shear", "jackson"])
+    assert run_pyocean.default_tag(a.closure, a.kv_low, a.smag, a.shear, a.shear_pr) == "kv_low_smag0.15_jackson"
+    assert run_pyocean.default_tag("constant", False, 0.0, "jackson", 1.0) == "jackson"
+    assert run_pyocean.default_tag("constant", False, 0.0, None, 1.0) == ""
+    assert run_pyocean.default_tag("gls", False, 0.15, None, 1.0) == "gls_smag0.15"
+    m, _ = run_pyocean.build(cases.get(50.0), "zstar", nu_v=cases.NU_V_LOW, smag=0.15,
+                             **run_pyocean.shear_kwargs("jackson", 0.0))
+    assert m.shear_mixing == "jackson" and m.shear_prandtl == 0.0
+    assert run_pyocean.shear_kwargs(None, 1.0) == {}
+
+
+def test_legg_json_has_sources():
+    """Every value of the Legg (2006) truth file carries its source (figure, PDF page) and method; digitized values
+    also their reading uncertainty."""
+    import json
+    from pathlib import Path
+    d = json.loads((Path(__file__).resolve().parents[1] / "validation/dome/legg2006_nonhydro.json").read_text())
+    vals = d["values"]
+    for key in ("corner_E_nonhydro", "corner_E_10km_z", "corner_E_10km_iso", "transport_nonhydro",
+                "alphaE_nonhydro", "tracer_by_class_nonhydro", "bf_nonhydro", "bf_10km_z", "bf_10km_iso"):
+        assert key in vals, key
+    for key, v in vals.items():
+        assert v.get("source") and v.get("method") in ("text", "digitized"), key
+        if v["method"] == "digitized":
+            assert "uncertainty" in v, key
+    assert vals["corner_E_nonhydro"]["value"] == 8.6e-4 and vals["corner_E_nonhydro"]["method"] == "text"

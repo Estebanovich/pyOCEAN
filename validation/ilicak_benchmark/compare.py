@@ -8,7 +8,9 @@ then the cost table (cost.json). Missing runs show '—'.  Extra cases (``EXTRA`
 2012 Fig. 19b) use the metrics and window of their base case and add the base-case run at the same ν_h as a
 reference row, and, when it exists, the operator control of the base case (tag ``CONTROL_TAG``, run with
 ``--smag 1e-9``: the background ν_h in the thickness-weighted tensor operator, no Smagorinsky term), which separates
-the operator change from the Smagorinsky term (final review M2).
+the operator change from the Smagorinsky term (final review M2).  Tagged sensitivity runs of a case (``TAGGED``:
+the overflow z* with the Jackson et al. 2008 shear mixing, run_pyocean.py --shear jackson, tag 'jackson'; Jackson
+shear-mixing plan, Task 6) are added as rows when their series exists.
 
 Usage: python validation/ilicak_benchmark/compare.py [lock|overflow|iw|seamount|overflow_smag]
 """
@@ -33,6 +35,7 @@ WINDOW = {"lock": (15 * 3600.0, 17 * 3600.0), "overflow": (13 * 3600.0, 37 * 360
 # extra case → (base case, its configurations); not in campaign.CONFIGS, so neither the results nor the cost
 # campaign runs them
 EXTRA = {"overflow_smag": ("overflow", [("pyocean", "zstar")])}
+TAGGED = {"overflow": [("pyocean", "zstar", "jackson", "pyOCEAN z* + Jackson (Pr = 1)")]}
 CONTROL_TAG = "smag1e-09"          # operator control of an EXTRA case: base case run with C = 1e-9 (C ≈ 0)
 
 
@@ -84,6 +87,8 @@ def table(case: str) -> list[str]:
             runs += [(base(case), model, coord, f"{NAMES[(model, coord)]} ({base(case)}, control de operador, C≈0)",
                       CONTROL_TAG) for model, coord in configs
                      if (cases.run_dir(base(case), model, coord, nu, CONTROL_TAG) / "series.npz").exists()]
+        runs += [(case, model, coord, label, tag) for model, coord, tag, label in TAGGED.get(case, [])
+                 if (cases.run_dir(case, model, coord, nu, tag) / "series.npz").exists()]
         for cs, model, coord, label, tag in runs:
             try:
                 r = summary(cs, model, coord, nu, tag)

@@ -3,7 +3,9 @@
 Figures of the DOME benchmark (spec 2026-10-14-dome-overflow §8), written to cases.RUNS/figs/ (never to the repo):
 the bottom dye of every 50-day run at days 10, 20, 30 and 50, and the time-mean path Y'(x') and plume transport T(x')
 (days 30–50) against Legg et al. (2006) at 10 km; dome_<res>km_bottom_dye.mp4/.gif, the bottom dye of every 50-day
-run day by day.
+run day by day; dome_<res>km_legg_truth.png and dome_<res>km_tracer_by_class.png (Jackson shear-mixing plan, Task 6),
+the plume transport T(x') and α_E(x') against Legg's non-hydrostatic Case 1 (Fig. 3, digitized,
+legg2006_nonhydro.json) and the tracer by buoyancy class (Fig. 4, latter half of the run) of each run beside Legg's.
 
 Usage: python validation/dome/figures.py 10 [--no-anim] [--runs name1,name2,... --sub dir]
   --runs keeps only those run directories (e.g. the Smagorinsky set) and --sub writes to RUNS/figs/<dir>/.
@@ -32,7 +34,14 @@ LABELS = {"mitgcm_z_legg": "MITgcm z (Legg physics)", "mitgcm_z_common": "MITgcm
           "pyocean_hybrid_gls_smag0.15": "pyOCEAN hybrid + GLS + Smag 0.15",
           "pyocean_hybrid_gls_smag0.5": "pyOCEAN hybrid + GLS + Smag 0.5",
           "pyocean_hybrid_gls_smag1e-09": "pyOCEAN hybrid + GLS, operator control C≈0",
-          "pyocean_hybrid_kv_low_smag0.15": "pyOCEAN hybrid ν_v 1e-4 + Smag 0.15"}
+          "pyocean_hybrid_kv_low_smag0.15": "pyOCEAN hybrid ν_v 1e-4 + Smag 0.15",
+          "pyocean_hybrid_kv_low_smag0.15_jackson": "pyOCEAN hybrid ν_v 1e-4 + Smag 0.15 + Jackson",
+          "pyocean_hybrid_kv_low_smag0.15_jacksonpr0": "pyOCEAN hybrid ν_v 1e-4 + Smag 0.15 + Jackson Pr 0",
+          "pyocean_hybrid_jackson": "pyOCEAN hybrid + Jackson",
+          "pyocean_zstar_kv_low_smag0.15": "pyOCEAN z* ν_v 1e-4 + Smag 0.15",
+          "pyocean_zstar_kv_low_smag0.15_jackson": "pyOCEAN z* ν_v 1e-4 + Smag 0.15 + Jackson",
+          "pyocean_sigma_kv_low_smag0.15": "pyOCEAN σ ν_v 1e-4 + Smag 0.15",
+          "pyocean_sigma_kv_low_smag0.15_jackson": "pyOCEAN σ ν_v 1e-4 + Smag 0.15 + Jackson"}
 
 
 def bottom_dye(s: dict, n: int) -> np.ndarray:
@@ -82,6 +91,52 @@ def anim_bottom_dye(res_km: float, data: list, out: Path | None = None) -> None:
     ps.save_animation(fig, update, t.size, (out or cases.RUNS / "figs") / f"dome_{res_km:g}km_bottom_dye", fps=6)
 
 
+def legg_truth_figures(data: list, out: Path, res_km: float, t0: float = 30 * 86400.0, t1: float = 50 * 86400.0):
+    """T(x') and α_E(x') of each run against Legg's non-hydrostatic Case 1 (Fig. 3a, 3b digitized), and the tracer by
+    buoyancy class (Fig. 4) of each run, latter half of the run, beside Legg's (legg2006_nonhydro.json)."""
+    from validation.dome.compare import legg_truth
+    v = legg_truth()
+    fig, (a1, a2) = plt.subplots(1, 2, figsize=(11, 4))
+    for name, s in data:
+        x, T = metrics.plume_transport(s, t0, t1)
+        _, aE = metrics.entrainment(s, t0, t1)
+        a1.plot((x - 1050e3) / 1e3, T / 1e6, label=LABELS.get(name, name))
+        a2.plot((x - 1050e3) / 1e3, aE, label=LABELS.get(name, name))
+    tr = v["transport_nonhydro"]
+    a1.plot(tr["x_km"], -np.array(tr["value"]) / 1e6, "k", lw=2.5, label="Legg no hidrostático (dig.)")
+    ae = v["alphaE_nonhydro"]
+    a2.plot(ae["x_km"], [np.nan if q is None else q for q in ae["value"]], "k", lw=2, label="Legg no hidrostático (dig.)")
+    a1.set(xlabel="x' [km]", ylabel="T [Sv] (hacia el oeste)", xlim=(-700, 100), title="Transporte de la pluma (s > 0.01)")
+    a2.set(xlabel="x' [km]", ylabel="α_E", xlim=(-700, 0), ylim=(-6e-3, 4e-3), title="α_E(x') (Legg ec. 12)")
+    a1.legend(fontsize=6)
+    fig.tight_layout()
+    fig.savefig(out / f"dome_{res_km:g}km_legg_truth.png", dpi=110)
+    plt.close(fig)
+
+    tc = v["tracer_by_class_nonhydro"]
+    n = len(data) + 1
+    fig, ax = plt.subplots(n, 1, figsize=(6, 2.0 * n), sharex=True, squeeze=False)
+    lb = np.array(tc["b_class_bounds"])
+    M = np.array([[np.nan if q is None else q for q in r] for r in tc["value"]])
+    xe = np.concatenate([np.array(tc["x_km"]) - 12.5, [tc["x_km"][-1] + 12.5]])
+    be = np.concatenate([lb[:, 1], [lb[-1, 0]]])
+    im = ax[0, 0].pcolormesh(xe, be * 1e3, M, cmap="jet", vmin=0)
+    fig.colorbar(im, ax=ax[0, 0], label="×10⁶ m²")
+    ax[0, 0].set_title("Legg no hidrostático, Fig. 4 (dig.)", fontsize=8)
+    for k, (name, s) in enumerate(data, start=1):
+        x, edges, S = metrics.tracer_by_class(s, 0.5 * s["t"][-1], s["t"][-1])
+        im = ax[k, 0].pcolormesh((np.concatenate([x - 0.5 * s["dx"], [x[-1] + 0.5 * s["dx"][-1]]]) - 1050e3) / 1e3,
+                                 edges * 1e3, S / 1e6, cmap="jet", vmin=0)
+        fig.colorbar(im, ax=ax[k, 0], label="×10⁶ m²")
+        ax[k, 0].set_title(LABELS.get(name, name), fontsize=8)
+    for a in ax[:, 0]:
+        a.set(ylabel="b [1e-3 m s⁻²]", xlim=(-700, 300), ylim=(-20, 0))
+    ax[-1, 0].set_xlabel("x' [km]")
+    fig.tight_layout()
+    fig.savefig(out / f"dome_{res_km:g}km_tracer_by_class.png", dpi=110)
+    plt.close(fig)
+
+
 def main(res_km: float, anim: bool = True, only: list[str] | None = None, sub: str = "") -> None:
     runs = [p for p in sorted((cases.RUNS / f"{res_km:g}km").glob("*/series.npz"))
             if not only or p.parent.name in only]
@@ -121,6 +176,7 @@ def main(res_km: float, anim: bool = True, only: list[str] | None = None, sub: s
     fig.tight_layout()
     fig.savefig(out / f"dome_{res_km:g}km_path_transport.png", dpi=110)
     plt.close(fig)
+    legg_truth_figures(data, out, res_km)
     print(out)
     if anim:
         order = list(LABELS)

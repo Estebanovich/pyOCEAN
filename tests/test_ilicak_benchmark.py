@@ -649,3 +649,32 @@ def test_ilicak_overflow_smag_case(tmp_path, monkeypatch):
     p = run_pyocean.run("overflow_smag", "zstar", 100.0, hours=100.0 / 3600.0, threads=1)
     _, meta = series.load(p)
     assert meta["smag"] == 0.5 and meta["n_visc_limited"] >= 0 and meta["nu_t_max"] >= 100.0
+
+
+def test_ilicak_jackson_tag_and_model():
+    """--shear jackson (Jackson shear-mixing plan, Task 6) adds the tag 'jackson' and reaches the model."""
+    from validation.ilicak_benchmark import cases, run_pyocean
+    assert run_pyocean.run_tag(cases.get("overflow"), None, "jackson", "") == "jackson"
+    assert run_pyocean.run_tag(cases.get("overflow"), 0.15, "jackson", "") == "smag0.15_jackson"
+    assert run_pyocean.run_tag(cases.get("overflow"), None, None, "") == ""
+    assert run_pyocean.run_tag(cases.get("overflow"), None, "jackson", "x") == "x"
+    a = run_pyocean.parser().parse_args(["overflow", "zstar", "100", "--shear", "jackson"])
+    assert a.shear == "jackson"
+    m, _ = run_pyocean.build(cases.get("overflow"), "zstar", 100.0, shear="jackson")
+    assert m.shear_mixing == "jackson" and m.shear_prandtl == 1.0
+
+
+def test_compare_overflow_table_adds_the_jackson_run(tmp_path, monkeypatch):
+    """The overflow table lists the tagged Jackson run at ν_h = 100 when it exists."""
+    from validation.ilicak_benchmark import cases, compare, series
+    monkeypatch.setattr(cases, "RUNS", tmp_path)
+    c = cases.get("overflow")
+    nt, nz = 3, 2
+    s = dict(t=np.array([0.0, 13 * 3600.0, 37 * 3600.0]), x=c.x, y=c.y, dx=c.dx, dy=c.dy, H=c.H,
+             h=np.ones((nt, nz, c.ny, c.nx)) * c.H[None, None] / nz,
+             T=np.full((nt, nz, c.ny, c.nx), 15.0), u=np.zeros((nt, nz, c.ny, c.nx + 1)),
+             v=np.zeros((nt, nz, c.ny + 1, c.nx)), eta=np.zeros((nt, c.ny, c.nx)))
+    s["T"][:, :, :, : c.nx // 4] = 10.0
+    series.save(cases.run_dir("overflow", "pyocean", "zstar", 100.0, "jackson") / "series.npz", s, dict(wall_s=1.0))
+    rows = [r for r in compare.table("overflow") if "Jackson" in r]
+    assert len(rows) == 1 and rows[0].startswith("| 100 |")
