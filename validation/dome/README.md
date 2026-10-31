@@ -417,6 +417,20 @@ Legg 10 km: Y′(x′ = −200 / −300 / −500 / −700) z −80 / −105 / �
 - κ_shear máximo: 1.1e-2 m²/s (BayIW) y 0.50 m²/s (DOME).
 - Humo (`scripts/n1_smoke.py` contra `main`): 9/9 hashes idénticos con la opción apagada (por defecto).
 
+### Costo de la mezcla de la capa límite de fondo por la fricción (`bbl_mixing='lotw'`)
+
+`scripts/bbl_cost.py` (plan 2026-10-30-bbl-drag-mixing, tarea 5; criterio 6 del spec: razón ≤ 1.05): mediana de s/paso de 50 pasos tras 10 de calentamiento, 5 hilos, cada configuración en su propio proceso y alternando sin/con (3 rondas). BayIW cut z\* lleva `bottom_drag='quadratic'` en ambos modos (la mezcla lo exige); DOME 10 km híbrida lleva `kv_low`, Smagorinsky 0.15 y Jackson en ambos modos, de modo que la razón aísla `bbl_mixing='lotw'`. El script verifica `BBLAddedClosure` y Kd_BBL máximo > 0, y mide el `update` del cierre (la parte BBL = `update` externo menos el del cierre envuelto) y `Driver._ale_bed_energy`.
+
+| Caso | sin BBL [s/paso] | con BBL [s/paso] | razón mín / mediana / máx | parte BBL del `update` | energía de la fricción | Kd_BBL máx |
+|------|------|------|------|------|------|------|
+| BayIW cut z\*, Δt 120 s | 0.349 | 0.380 | 1.089 / **1.092** / 1.094 | 17.0 ms (4.5 %) | 2.9 ms (0.8 %) | 6e-18 m²/s |
+| DOME 10 km híbrida, `kv_low` + Smag 0.15 + Jackson, Δt 600 s | 0.1207 | 0.1233 | 1.022 / **1.031** / 1.035 | 3.4 ms (2.7 %) | 0.4 ms (0.3 %) | 4.1 m²/s |
+
+- **BayIW supera 1.05 (1.092).** Perfil (cProfile, 30 pasos, con menos y con BBL, diferencia por paso en tiempo acumulado): el `update` de `BBLAddedClosure` +16.6 ms (kernel `lotw_bbl_columns` 4.5, N² de la columna 2.9, el resto NumPy del envoltorio), `_wet_thickness` +2.5, densidad `eos.density` +1.8, energía de la fricción +2.9, `tracer_diffusivity` +1.2. **[Hipótesis, con el perfil a favor]** con el cierre constante y sin cizalla el controlador no ejecutaba la fase 7 (densidad, N², espesor húmedo); `bbl_mixing` la activa, y ese costo fijo no depende de la magnitud de Kd_BBL. En DOME esa fase ya corre por Jackson y el costo es solo la parte BBL (razón 1.03).
+- **BayIW no ejercita el término**: en la corrida corta de la prueba la fricción casi no hace trabajo (Kd_BBL máx 6e-18 m²/s, > 0 solo en sentido estricto); el costo medido es el de la ruta completa pero el kernel no ve mezcla real. DOME sí lo ejercita (4.1 m²/s).
+- No se optimizó (fuera del alcance de la tarea).
+- Humo (`scripts/n1_smoke.py` contra `main`): 9/9 hashes idénticos con la opción apagada (por defecto).
+
 ## Referencias
 
 - Legg, S., Hallberg, R. W., Girton, J. B. (2006). Comparison of entrainment in overflows simulated by z-coordinate, isopycnal and non-hydrostatic models. *Ocean Modell.* 11, 69–97. [10.1016/j.ocemod.2004.11.006](https://doi.org/10.1016/j.ocemod.2004.11.006)
