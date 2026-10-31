@@ -1,6 +1,6 @@
 # N2b núcleo: flujos de superficie por fórmulas bulk en el modelo 3D
 
-**Fecha:** 2026-10-31. **Estado:** alcance, meta y antimetas aprobados por Esteban el 2026-10-31. Pendiente: revisión de constructor y la lectura de Esteban del documento completo.
+**Fecha:** 2026-10-31. **Estado:** aprobado por Esteban el 2026-10-31 (documento completo, tras la revisión de constructor).
 
 **Contexto:** `main` en `d44c2b1` (1886 tests). Es el primero de cuatro proyectos acordados para cerrar N2 (`docs/design/vision_roadmap.md` §8, N2; TEOS-10 agregado como proyecto propio el 2026-10-31 tras la revisión de constructor):
 1. **Este spec, el núcleo N2b:** fórmulas bulk con ERA5 en el paso 3D, más lo menor que N2a dejó abierto.
