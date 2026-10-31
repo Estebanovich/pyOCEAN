@@ -17,6 +17,7 @@ a 2-D tidal run.
     | `closure='kpp'` (CVMix/MOM6) | no | yes (N3) | yes (N3) | — |
     | Law-of-the-wall bed drag (`z0`) | yes (default `z0` = 1e-4 m) | yes (default `z0=None`) | **yes** (N3): over the bottom `hbbl` metres, full bed speed | — |
     | 2-D quadratic drag, constant or `log_law_cd(D, z0)` | — | — | — | in the run scripts |
+    | Drag-driven BBL mixing (`bbl_mixing='lotw'`, added to `'constant'`/`'none'`/`'kpp'`) | no | **no** (raises) | yes, with a bed drag | — |
     | Legacy z-level KPP (`physics/mixing/kpp.py`) | no | no | no | no (tests only) |
 
     Sources: `core/model/preflight.py` (closure and drag checks), `core/components/closure.py`,
@@ -535,6 +536,99 @@ large. As MOM6 (`kappa_shear_column`, `:1052-1374`, after Hallberg 2000 [verific
   offline estimate of ≤ 0.24 of 1.34 W m⁻² physical mixing.
 * **Cost** per step: BayIW cut z* 1.275×, DOME 10 km hybrid 1.096×; the column kernel is ≈ 82 % / 65 % of the increase.
 
+## Drag-driven bottom boundary layer mixing (`bbl_mixing='lotw'`)
+
+Diapycnal mixing in the bottom boundary layer (BBL) powered by the kinetic energy that bottom drag removes from the
+mean flow. Without it, a dense overflow in a model with low vertical viscosity slides down the slope as a thin, viscous,
+almost undiluted sheet (Legg et al. 2006, Appendix A and Fig. A.1). The scheme is MOM6's
+`add_LOTW_BBL_diffusivity` (`MOM_set_diffusivity.F90:1606-1789`, git 0e9a561), the one OM4 uses
+(`USE_LOTW_BBL_DIFFUSIVITY = True`; Adcroft et al. 2019, §2.2.4). Unlike MOM6's layer scheme `add_drag_diffusivity`
+(and Legg's single-layer form, eq. A.2) it does not depend on layer target densities, so it works in σ, z\* and hybrid
+ALE alike. Reading notes: `docs/design/bbl_refs/mom6_bbl_mixing.md`; spec
+`docs/superpowers/specs/2026-10-30-bbl-drag-mixing-design.md`.
+
+### Equations
+
+Per column, with heights in m, the diffusivity $K_d$ [m² s⁻¹] and the energy per unit area and density
+$\mathcal{E}$ [m³ s⁻³]:
+
+1. **Energy available** (SD:1709): $\mathcal{E}_{col}=\gamma\,\mathcal{E}_{drag}$, $\gamma$ = `bbl_effic` = 0.2.
+2. **Decay scale** (SD:1699-1700): $I_{decay}=\max(1/L_{max},\ \lvert f\rvert/u_*)$, i.e. an e-folding height
+   $\min(u_*/\lvert f\rvert,\ L_{max})$, $L_{max}$ = `max_decay` = 200 m (the 200 m also covers $f$ = 0).
+3. **Upward sweep** from the bed (SD:1729-1787). Across layer $k$ the energy left decays,
+   $\mathcal{E}\leftarrow e^{-I_{decay}h_k}\mathcal{E}$ (SD:1741). At the upper interface of layer $k$, at height $z_b$
+   above the bed in a column of depth $D$, the law-of-the-wall diffusivity limited by rotation is (SD:1756-1757)
+
+$$K_{wall}=\frac{\kappa\,u_*^2\,z_b\,(D-z_b)}{u_*D+\lvert f\rvert\,z_b\,(D-z_b)},\qquad \kappa = 0.41,$$
+
+   $\approx\kappa u_* z_b$ near the bed and $\to\kappa u_*^2/\lvert f\rvert$ far from it. Its work against buoyancy across
+   the interface is $W=K_{wall}\,\Delta z_{int}\max(N^2,\Omega^2)$ (SD:1762; the $\Omega^2$ floor is
+   `use_omega`), $\Delta z_{int}=\tfrac12(h_k+h_{k+1})$. If $W>0$:
+   $K_d=K_{wall}\min(W,\mathcal{E})/W$ and $\mathcal{E}\leftarrow\mathcal{E}-\min(W,\mathcal{E})$ (SD:1765-1767), so the
+   mixing never spends more than $\gamma\,\mathcal{E}_{drag}$. If $W\le 0$ (only without the $\Omega^2$ floor),
+   $K_d$ = `kd_max` while energy remains (SD:1769-1775). `kd_max` is **not** a cap on $K_{wall}$: with ample energy
+   $K_d\to\kappa u_*^2/\lvert f\rvert$ (4.1 m² s⁻¹ in DOME at 10 km), as in MOM6.
+4. $K_d$ = 0 at the bed and the surface interfaces. No viscosity is produced and there is no Prandtl number (MOM6
+   neither).
+
+### Physical drag work, not MOM6's
+
+$\mathcal{E}_{drag}$ is the kinetic energy pyOCEAN's bed drag actually removes in the step (`Driver._ale_bed_energy`):
+
+$$e_{face}=\sum_k r_k\,u_k^2\quad(=\tau_b\cdot u/\rho_0\approx C_d\lvert U\rvert^3),\qquad
+\mathcal{E}_{drag}=\tfrac12(e_W+e_E)+\tfrac12(e_S+e_N),$$
+
+with the per-layer implicit drag rates $r_k=r f_k$ over the bottom `hbbl` of the quadratic drag (U_bg = `drag_bg_vel`
+included) or of the law-of-the-wall drag, and the velocities after the implicit viscous step. $u_*=\sqrt{\lvert\tau_b
+\rvert/\rho_0}$ comes from the same drag (`ctx.ustar2_bot`). This is Legg's eq. (A.1) quantity. MOM6's
+`set_BBL_TKE` (SD:2132-2137) gives $\approx 2C_d\lvert U\rvert^3$ and $\approx\sqrt2\,u_*$ for a uniform flow
+(measured on compiled MOM6: `validation/mom6_column/README.md`, "El factor de `set_BBL_TKE`"), because it sums
+$u_*^2$ over four faces with a ½ and the energy over the two u faces without one. pyOCEAN does not copy that factor
+(class (d), Esteban's decision of 2026-10-30): **$\gamma$ = 0.2 here equals 0.1 in MOM6/OM4.**
+
+MOM6 takes the velocities at the start of the step; pyOCEAN those after the implicit viscosity (the ones that give
+`ctx.ustar2_bot`; class (c), spec decision 2).
+
+### In the model
+
+* **Added**, as OM4 (SD:1782-1783): $\kappa_{tracers}=\kappa_{closure}\,(+\,\kappa_{shear})+K_{d,BBL}$ for T, S and
+  passive tracers (`BBLAddedClosure(base)`, `core/components/closure.py`); it wraps a `'constant'`, `'none'` or `'kpp'`
+  closure, alone or already wrapped by Jackson (`ShearAddedClosure`). The viscosity is the base one.
+* **Order in the step:** tracer phase (7), as Jackson and KPP: $K_{d,BBL}$ is computed from the step's u\*, drag work,
+  density (the model EOS) and layers and diffuses the same step's tracers. No state of its own (nothing in the
+  restart beyond the scheme and parameters, which the restart checks).
+* **Thin layers:** merged before the column call with the threshold of the GLS and Jackson,
+  $\min(10\text{ cm}, \max(1\text{ mm}, 1\%\,D/N))$, and $K_d$ interpolated back; $N^2$ is recomputed at the surviving
+  interfaces. MOM6's LOTW does not merge, but with $\Delta z_{int}$ = 0 an interface would take the `kd_max` branch
+  (pyOCEAN's choice; a column with nearly empty layers gives the same $K_d$ as without them).
+* **ALE only** (σ, z\* and hybrid ALE), with a bed drag (`bottom_drag='quadratic'` or `z0`). The pre-flight refuses it
+  with `closure='gls'` (its $k$ has a bed boundary condition: double counting) and `'parabolic'`, in the legacy σ model
+  (the drag lives inside the column solver there, without the rates), without bed drag, and invalid `bbl_params`,
+  all errors together.
+* **Dry and land columns:** $K_d$ = 0, the column stays still bit for bit. No drag work anywhere → the base closure's
+  $\kappa$ bit for bit.
+* **Kernel:** `physics/mixing/bbl_mixing.py`: NumPy oracle `lotw_bbl_column` (MOM6's loop line by line) and the
+  threaded Numba kernel `lotw_bbl_columns`, bit for bit with the oracle and between 1 and 5 threads. The last step's
+  $K_{d,BBL}$ is the registry variable `kd_bbl` (not in the CF/Zarr output).
+
+### Validation and cost
+
+* **Column vs MOM6** (`tests/test_vertical_vs_mom6.py::test_lotw_bbl_matches_mom6`): 15 columns (stratified,
+  $N^2\le0$ with and without the $\Omega^2$ floor, $f$ = 0, 1 mm layers, large u\*, ample energy, 8 random) agree to
+  ≤ 1.5e-17 relative (tolerance 1e-10); `::test_set_bbl_tke_factor` pins MOM6's √2 and 2.
+* **Column properties** (`tests/test_bbl_mixing.py`, 11 tests): $K_d\ge0$, work ≤ γ $\mathcal E$, $K_d$ = 0 without drag,
+  thin layers, dry column, Numba = oracle, 1 = 5 threads. **Model** (`tests/test_bbl_model.py`, 12 tests): off = bit for
+  bit, energy = drag work (quadratic and log law), mixes a dense bottom layer, adds to Jackson and KPP, pre-flight,
+  restart bit for bit, dry columns, periodic and open edges.
+* **DOME 10 km** (`validation/dome/README.md`, Legg et al. 2006 Case 1), hybrid ν_v = 1e-4 + Smagorinsky 0.15 +
+  Jackson Pr 1, U_bg 0.05 m/s, without → with BBL: final buoyancy −12.70e-3 → −11.54e-3 m s⁻² against Legg's 10-km
+  isopycnal run (same physics, with his BBL mixing) −11.07e-3 (71 % of the way; non-hydrostatic truth −8.75e-3,
+  digitized), class with the most tracer at x′ = −300 km −17…−16 → −13…−12e-3 m s⁻², plume transport at x′ = −300 km
+  19.0 → 20.8 Sv (truth 20.6, digitized); no CFL truncations but 32 limiter events (control 0). z\*: −9.04 → −8.76;
+  σ: −11.39 → −10.18.
+* **Cost** per step (`scripts/bbl_cost.py`): DOME 10 km 1.031×; BayIW cut z\* 1.092× (above the spec's 1.05: with a
+  constant closure and no shear mixing the scheme switches on the density/N² phase).
+
 ## Options and defaults
 
 | Option | Values | Default | Meaning | Where |
@@ -553,6 +647,8 @@ large. As MOM6 (`kappa_shear_column`, `:1052-1374`, after Hallberg 2000 [verific
 | `shear_mixing` | `None`, `'jackson'` | `None` | Jackson et al. (2008) interior shear mixing added to a `'constant'`, `'none'` or `'kpp'` closure (refused with `'gls'`) | `core/components/closure.py` (`ShearAddedClosure`) |
 | `shear_prandtl` | ≥ 0 | 1.0 | $Pr=\nu_{shear}/\kappa_{shear}$ | same |
 | `jackson_params` | `JacksonParams` or `None` | `None` (MOM6 defaults) | coefficients of the scheme | `physics/mixing/kappa_shear.py` |
+| `bbl_mixing` | `None`, `'lotw'` | `None` | drag-driven BBL mixing (MOM6/OM4 `add_LOTW_BBL_diffusivity`) added to the tracer κ of a `'constant'`, `'none'` or `'kpp'` closure; ALE with bed drag only | `core/components/closure.py` (`BBLAddedClosure`) |
+| `bbl_params` | `BBLParams` or `None` | `None` (OM4: `bbl_effic` 0.2, `max_decay` 200 m, `von_karman` 0.41, `use_omega` True, `kd_max` 0.1 m² s⁻¹) | coefficients; γ = 0.2 on pyOCEAN's physical drag work = 0.1 in MOM6 | `physics/mixing/bbl_mixing.py` |
 
 ## Validation
 
@@ -602,8 +698,15 @@ See [Validation: wetting and drying](../validation/wetting-drying.md) for the TI
     vertex mode; $\kappa_{shear}$, $\nu_{shear}$ are in the variable registry but not in the CF/Zarr output; with a large
     constant $\nu_v$ (0.5 m² s⁻¹ in DOME) the shear stays above $Ri_c$ and the scheme is inactive.
 
+* Drag-driven BBL mixing: in DOME's hybrid run it adds 32 limiter events and 3–4 m/s bed layers in the last days
+    (open); the BayIW cost is 1.092× per step (spec limit 1.05); $K_{d,BBL}$ is not in the CF/Zarr output; LOTW
+    distributes the energy differently from Legg's single-layer form (A.2), a class (c) difference in the DOME
+    comparison.
+
 ## References
 
+* Adcroft, A. et al. (2019). The GFDL global ocean and sea ice model OM4.0: model description and simulation
+    features. *J. Adv. Model. Earth Syst.* 11, 3167–3211. [doi:10.1029/2019MS001726](https://doi.org/10.1029/2019ms001726)
 * Bowden, K.F. (1978). Physical problems of the benthic boundary layer. *Geophys. Surv.* 3, 255–296. **[verify]**
 * Burchard, H., Petersen, O. & Rippeth, T.P. (1998). Comparing the performance of the Mellor–Yamada and the κ–ε
     two-equation turbulence models. *J. Geophys. Res.* 103(C5), 10543–10554. **[verify]**
@@ -618,6 +721,9 @@ See [Validation: wetting and drying](../validation/wetting-drying.md) for the TI
 * Large, W.G., McWilliams, J.C. & Doney, S.C. (1994). Oceanic vertical mixing: a review and a model with a nonlocal
     boundary layer parameterization. *Rev. Geophys.* 32(4), 363–403.
     [doi:10.1029/94RG01872](https://doi.org/10.1029/94RG01872)
+* Legg, S., Hallberg, R.W. & Girton, J.B. (2006). Comparison of entrainment in overflows simulated by z-coordinate,
+    isopycnal and non-hydrostatic models. *Ocean Modell.* 11, 69–97.
+    [doi:10.1016/j.ocemod.2004.11.006](https://doi.org/10.1016/j.ocemod.2004.11.006)
 * Patankar, S.V. (1980). *Numerical Heat Transfer and Fluid Flow.* Hemisphere. **[verify]**
 * Rodi, W. (1993). *Turbulence Models and Their Application in Hydraulics.* IAHR.
 * Soulsby, R.L. (1997). *Dynamics of Marine Sands.* Thomas Telford, London, §3.

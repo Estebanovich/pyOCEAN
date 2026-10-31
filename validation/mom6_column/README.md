@@ -376,6 +376,12 @@ núcleo es un solo barrido sin iteración. Sus ramas discretas son el recorte po
 (SD:1765) y la rama de KD_MAX (SD:1769). Un error de traducción mueve Kd en O(1). El test
 exige también que la rama de KD_MAX aparezca (dos interfaces del caso 3).
 
+**Criterio 1 ✅** (`tests/test_vertical_vs_mom6.py::test_lotw_bbl_matches_mom6` y
+`::test_set_bbl_tke_factor`): el núcleo LOTW coincide con MOM6 compilado a ≤ 1.5e-17 relativo en las
+15 columnas (estratificada, N² ≤ 0, f = 0, capas de 1 mm), y el factor de `set_BBL_TKE` queda medido
+y documentado como clase (d) (subsección siguiente). En DOME 10 km esta energía da Kd_BBL de hasta
+4.1 m² s⁻¹ (`validation/dome/README.md`, sección de la mezcla BBL).
+
 **Diferencia conocida, no comparada.** Con u\* = 0 y energía > 0, MOM6 da KD_MAX en todas
 las interfaces interiores. El oráculo devuelve 0 (docstring de `bbl_mixing.py`). Ningún caso
 usa u\* = 0.
@@ -402,7 +408,8 @@ Killworth–Edwards del espesor. El espesor no cambia el factor, porque U es uni
 
 con |U_b| = √(U² + U_bg²).
 
-**Confirmado:** `ustar_BBL` = √2 √C_d|U_b| y `BBL_meanKE_loss` = 2 C_d|U_b| U², es decir,
+**Confirmado** (para U uniforme en x, con la misma u\*_f en las cuatro caras; un flujo oblicuo no se probó):
+`ustar_BBL` = √2 √C_d|U_b| y `BBL_meanKE_loss` = 2 C_d|U_b| U², es decir,
 2 C_d|U|³ sin U_bg. Las causas:
 - SD:2132 toma ½ Σ de u\*_f² sobre las **cuatro** caras, y las cuatro llevan u\*_f;
 - SD:2134-2137 suma las dos caras u **sin** ½ (las caras v no tienen velocidad normal).

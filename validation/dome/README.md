@@ -417,18 +417,133 @@ Legg 10 km: Y′(x′ = −200 / −300 / −500 / −700) z −80 / −105 / �
 - κ_shear máximo: 1.1e-2 m²/s (BayIW) y 0.50 m²/s (DOME).
 - Humo (`scripts/n1_smoke.py` contra `main`): 9/9 hashes idénticos con la opción apagada (por defecto).
 
+## Mezcla diapicna de la capa límite de fondo por la fricción (spec 2026-10-30-bbl-drag-mixing, criterios 4, 5, 6 y 7)
+
+- **Spec:** `docs/superpowers/specs/2026-10-30-bbl-drag-mixing-design.md`; lecturas de referencia `docs/design/bbl_refs/mom6_bbl_mixing.md` (MOM6, Legg Ap. A) y `docs/design/bbl_refs/entrainment_theory.md` (teoría de entrainment).
+- **Qué agrega.** `--bbl lotw` (`bbl_mixing='lotw'`) suma al cierre una difusividad de capa de fondo Kd_BBL, el esquema de OM4 `add_LOTW_BBL_diffusivity` de MOM6 (`MOM_set_diffusivity.F90:1606-1789`): ley de la pared κ u\* z limitada por la rotación y por la energía que la fricción de fondo de pyOCEAN quita en el paso, γ × Σ_k r_k u_k² con γ = `bbl_effic` = 0.2. Solo difusividad de trazadores; no hay viscosidad ni número de Prandtl (MOM6 tampoco). El kernel coincide con MOM6 compilado (criterio 1, `validation/mom6_column/README.md`).
+- **Convención de energía (decisión de Esteban, 2026-10-30).** pyOCEAN usa el trabajo físico de la fricción, ≈ C_d|U|³. `set_BBL_TKE` de MOM6 da 2 C_d|U|³ y √2 u\* para flujo uniforme (medido en MOM6 compilado: `validation/mom6_column/README.md`, "El factor de `set_BBL_TKE`"), clase (d). Por eso **γ = 0.2 aquí equivale a γ = 0.1 en MOM6/OM4**. Con energía de sobra no hay tope `kd_max` en el Kd de la pared (como MOM6, SD:1769-1772): en DOME Kd_BBL llega a 4.1 m²/s (prueba de costo).
+- **Diseño de las corridas** (decisiones 1 y 4 del spec). La referencia (Legg y el DOME de MOM6) usa `DRAG_BG_VEL` = 0.05 m/s; la línea base de pyOCEAN, 0. Por eso las corridas con BBL usan `--drag-bg-vel 0.05`, y cada una tiene un **control con la misma U_bg y sin BBL**: la dirección del criterio 4 se juzga contra ese control. La principal de Jackson (U_bg = 0) se reporta también, para separar el efecto de U_bg.
+
+```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 MKL_NUM_THREADS=1 \
+  python validation/dome/run_pyocean.py 10 hybrid --kv-low --smag 0.15 --shear jackson --drag-bg-vel 0.05            # control
+python validation/dome/run_pyocean.py 10 hybrid --kv-low --smag 0.15 --shear jackson --drag-bg-vel 0.05 --bbl lotw   # la principal
+python validation/dome/run_pyocean.py 10 zstar  --kv-low --smag 0.15 --shear jackson --drag-bg-vel 0.05 [--bbl lotw] # también sigma
+python validation/dome/compare.py 10 --theory --only "_jackson,mitgcm_z_legg"
+python validation/dome/figures.py 10 --before-after pyocean_hybrid_kv_low_smag0.15_jackson_ubg0.05,pyocean_hybrid_kv_low_smag0.15_jackson_ubg0.05_bbl,pyocean_hybrid_kv_low_smag0.15_jackson,mitgcm_z_legg --sub bbl
+python validation/dome/figures.py 10 --no-anim --sub bbl --runs mitgcm_z_legg,pyocean_hybrid_kv_low_smag0.15_jackson,pyocean_hybrid_kv_low_smag0.15_jackson_ubg0.05,pyocean_hybrid_kv_low_smag0.15_jackson_ubg0.05_bbl,pyocean_zstar_kv_low_smag0.15_jackson_ubg0.05,pyocean_zstar_kv_low_smag0.15_jackson_ubg0.05_bbl,pyocean_sigma_kv_low_smag0.15_jackson_ubg0.05,pyocean_sigma_kv_low_smag0.15_jackson_ubg0.05_bbl
+```
+
+Salidas en `RUNS/10km/pyocean_<coord>_kv_low_smag0.15_jackson_ubg0.05[_bbl]/`; bitácoras en `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/bbl_logs/` (cadena `chain.sh`, 6 corridas, rc = 0, 2026-10-30 23:57 – 2026-10-31 01:30, en `c8207f4`).
+
+### Resultados (10 km, 50 días, Δt 600 s, 5 hilos; métricas de los días 30–50; trazador por clase en la segunda mitad, días 25–50)
+
+**Contra la isopicna de Legg a 10 km (referencia principal) y la no hidrostática (secundaria).** "dig." = leído de las figuras de Legg et al. (2006) (`legg2006_nonhydro.json`). La isopicna de 10 km de Legg tiene la misma física que la principal: ν_v = 1e-4, mezcla por Ri de Hallberg (2000), Smagorinsky y mezcla BBL por arrastre (Ap. A, γ = 0.2, U_bg = 5 cm/s; Legg Ap. A y p. 77; `bbl_refs/mom6_bbl_mixing.md` §3). E de la esquina es la ec. 14 y α_E la ec. 12 (sección de Jackson); diferencias de E menores que ×2 no son significativas.
+
+| corrida | b_f [1e-3 m s⁻²] | E esquina ec. 14, U_rms pluma / todo | T_out, T_in [Sv] | T(x′ = −200 / −300) [Sv] | α_E ec. 12 (−180…−50 km) | b medio del trazador x′ = −300 / −100 [1e-3 m s⁻²] | clase con más trazador x′ = −300 / −100 |
+|---|---|---|---|---|---|---|---|
+| Legg 10 km isopicnal (ν_v 1e-4 + Ri + BBL; **referencia principal**) | **−11.07** (dig.) | 9.4e-4 (dig.) | — | — | — | — | — |
+| Legg no hidrostático 0.5 km (secundaria) | −8.75 (dig.) | 8.6e-4 (texto, 0.5 km) | — | 22.5 / 20.6 (dig.) | 1.03e-3 (dig.) | −8.99 (dig.) / — | −10…−9 (dig.) / — |
+| MITgcm z legg | −10.85 | 1.04e-3 / 1.96e-3 | 14.83, 12.66 | 20.4 / 22.1 | 6.14e-4 | — | −14…−13 / −16…−15 |
+| híbrida + Jackson, U_bg 0 (principal de Jackson) | −12.84 | 4.88e-4 / 1.13e-3 | 12.46, 9.83 | 15.9 / 17.9 | 4.77e-4 | −12.98 / −13.75 | −17…−16 / −19…−18 |
+| híbrida + Jackson, U_bg 0.05 (**control**) | −12.70 | 3.51e-4 / 7.42e-4 | 11.80, 9.96 | 17.7 / 19.0 | 9.95e-4 | −12.75 / −13.57 | −17…−16 / −19…−18 |
+| **+ BBL (principal)** | **−11.54** | 1.87e-4 / 2.71e-4 | 12.07, 11.27 | **19.0 / 20.8** | 9.45e-4 | **−11.94** / −13.50 | **−13…−12** / −17…−16 |
+| z\* + Jackson, U_bg 0.05 (control) | −9.04 | 1.12e-3 / 1.64e-3 | 13.86, 10.39 | 18.6 / 20.2 | 1.28e-3 | −9.40 / −10.68 | −12…−11 / −18…−17 |
+| + BBL | −8.76 | 1.55e-3 / 2.37e-3 | 14.18, 10.63 | 19.2 / 20.7 | 1.50e-3 | −9.36 / −10.41 | −11…−10 / −15…−14 |
+| σ + Jackson, U_bg 0.05 (control) | −11.39 | 5.39e-4 / 8.17e-4 | 11.67, 9.53 | 19.0 / 21.0 | 1.23e-3 | −11.48 / −12.45 | −14…−13 / −17…−16 |
+| + BBL | −10.18 | 5.82e-4 / 8.22e-4 | 11.83, 9.79 | 20.5 / 21.4 | 1.38e-3 | −10.57 / −11.95 | −12…−11 / −14…−13 |
+
+Todas con `kv_low` (ν_v = 1e-4), Smagorinsky 0.15 y Jackson Pr = 1. La entrada es de 8.38 Sv. "b medio del trazador": primer momento de la distribución por clase en la columna (`figures.mean_class_b`).
+
+**Trayectoria, robustez y costo.**
+
+| corrida | Y′(x′ = −200 / −300 / −500 / −700 / −800 km) [km] | centroide día 50 [m] | máx. diario de \|u\| en caras gruesas, días 30–50 (media) / día 50 [m/s] | trunc / lim / visc | reloj [s] (s por día) |
+|---|---|---|---|---|---|
+| Legg 10 km isopicnal | −90 / −95 / −100 / −120 / — (dig.) | — | — | — | — |
+| MITgcm z legg | −52 / −72 / −107 / — / −204 | 1433 | 2.02 / — | — | (4.7) |
+| híbrida + Jackson, U_bg 0 | −69 / −86 / −105 / −137 / −152 | 1428 | 2.45 / 2.87 | 0 / 0 / 57 993 | 1055 (21.1) |
+| híbrida control U_bg 0.05 | −71 / −87 / −108 / −135 / −154 | 1423 | 2.52 / 2.74 | 0 / 0 / 67 507 | 1031 (20.6) |
+| **+ BBL** | −62 / −81 / −104 / −128 / −118 | 1380 | 2.58 / **3.94** | **0 / 32** / 105 522 | 987 (19.7) |
+| z\* control | −41 / −53 / −70 / −93 / −118 | 970 | 2.21 / 3.27 | 0 / 0 / 1 113 | 844 (16.9) |
+| + BBL | −41 / −52 / −68 / −80 / −127 | 958 | 2.11 / 3.22 | 0 / 0 / 314 | 886 (17.7) |
+| σ control | −71 / −91 / −119 / −140 / −167 | 1337 | 2.63 / 3.64 | 0 / 0 / 0 | 865 (17.3) |
+| + BBL | −70 / −85 / −101 / −121 / −131 | 1262 | 2.49 / 3.87 | 0 / 0 / 0 | 903 (18.1) |
+
+"Máx. diario de \|u\|": máximo de \|u\| y \|v\| en caras con las dos celdas ≥ 1 m en cada registro diario, como en la sección de Jackson (cálculo sobre los `series.npz`, script no versionado). El rango de T queda dentro del de las fuentes en todas (la principal −4.986 a 4.986 °C: con BBL no queda agua de entrada de −5 °C sin mezclar en ninguna celda; σ + BBL −4.972, z\* + BBL −4.976); s ∈ [−8e-26, 1] en la principal y s máx. 0.998 en z\* + BBL.
+
+**Figuras** (fuera del repo, `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/dome/figs/bbl/`):
+- `dome_10km_before_after.png`: la principal frente a su control: tinte de fondo los días 10/20/30/50, trayectoria, transporte y trazador por clase en x′ = −300 km, con la principal de Jackson (U_bg 0), MITgcm legg, la isopicna de 10 km de Legg y la verdad no hidrostática digitalizada;
+- `dome_10km_bottom_dye_before_after.gif` (y `.mp4`): animación diaria del tinte de fondo de control, principal, Jackson U_bg 0 y MITgcm legg;
+- `dome_10km_legg_scorecard.png`, `dome_10km_legg_truth.png`, `dome_10km_tracer_by_class.png`, `dome_10km_path_transport.png`, `dome_10km_bottom_dye.png` de las 8 corridas;
+- `dome_10km_plume_theory.png`: el diagnóstico teórico (criterio 5) de las 8 corridas.
+
+### Lectura y clasificación
+
+1. **Criterio 4 (principal contra la isopicna de Legg a 10 km): dirección ✅, magnitud 71 % del camino; robustez no del todo (32 eventos del limitador).**
+   - **b_f:** control −12.70 → principal −11.54; la isopicna de Legg da −11.07. La BBL cierra 1.16 de los 1.63 × 10⁻³ m s⁻² que faltaban (71 %); queda 0.47 (4 %) más densa. Contra la no hidrostática (−8.75 dig.) cierra 29 % (3.95 → 2.79).
+   - **U_bg sola** (Jackson U_bg 0 → control): b_f −12.84 → −12.70, T(x′ = −200) 15.9 → 17.7 Sv y α_E 4.77e-4 → 9.95e-4. El efecto sobre b_f es pequeño; el de α_E no: U_bg aumenta la fricción en las zonas lentas de la cuña de entrada [inferencia, no aislado por x].
+   - **Trazador por clase:** la clase con más trazador en x′ = −300 km pasa de −17…−16 a −13…−12 (no hidrostática −10…−9 dig.) y el b medio de −12.75 a −11.94 (−8.99 dig.). La distribución tiene ahora un pico angosto (figura `before_after`), como la de Legg, corrido 3 × 10⁻³ m s⁻² hacia lo denso. **En x′ = −100 km la clase de entrada sin mezclar (−19…−18) deja de dominar** (−17…−16; antes solo lo lograba Jackson Pr = 0, cuya pluma no baja el talud): la BBL mezcla el agua de la entrada ya en el canal (T_in 9.96 → 11.27 Sv contra 8.38 Sv que entran).
+   - **Transporte:** T(x′ = −200 / −300) 17.7 / 19.0 → 19.0 / 20.8 Sv (no hidrostática 22.5 / 20.6 dig.): en x′ = −300 km ya coincide con la verdad digitalizada. α_E (ec. 12) casi no cambia (9.95e-4 → 9.45e-4; verdad 1.03e-3 dig.).
+   - **E de la esquina se aleja: 3.51e-4 → 1.87e-4** (isopicna de Legg 9.4e-4; ×5 debajo, fuera de la banda ×2). No es menos mezcla: T_out sube (11.80 → 12.07 Sv), pero T_in sube más (9.96 → 11.27), porque parte de la dilución pasa al canal, aguas arriba de la ventana de la ec. 14 (T_out − T_in baja de 1.84 a 0.80 Sv). Clase (c), definición de la métrica con un canal de 100 km (el de Legg mide 50 km); **[hipótesis]** que la BBL en el canal de Legg diluya menos, porque su entrada es más corta. No se probó.
+   - **Trayectoria** contra la isopicna de Legg (−90 / −95 / −100 / −120 km en x′ = −200 / −300 / −500 / −700): control a 19 / 8 / 8 / 15 km, principal a 28 / 14 / 4 / 8 km. Se acerca aguas abajo (x′ ≤ −500) y se aleja cerca de la esquina; la pluma de la principal baja menos en los primeros 300 km (centroide del día 50 1423 → 1380 m; MITgcm legg 1433).
+   - **Robustez:** 0 truncamientos, pero **32 eventos del limitador** (control 0) y `n_visc_limited` 67 507 → 105 522. El máximo diario de \|u\| en caras gruesas promedia 2.58 m/s en los días 30–50 (control 2.52), pero sube a 3.3–3.9 m/s en los días 46–50, en capas de fondo de 1–50 m del lado este de la cuenca profunda (x ≈ 1165–1375 km, H 2650–3600 m); en el control el máximo de esos días es 2.5–2.7 m/s. Abierto, sin clasificar: **[hipótesis]** la BBL aligera la capa de fondo en la cuenca profunda, el regridder de la híbrida la adelgaza hacia su densidad objetivo y la fricción de `hbbl` = 10 m actúa sobre una capa más delgada y más rápida. El criterio "sin nuevos eventos del limitador" del spec **no se cumple** (32 contra 0).
+
+   **Lo que queda contra −11.07, con el diagnóstico (punto 3):**
+   - **(c) Esquema y energía.** Legg pone toda la energía en la segunda capa desde el fondo con escala 0.4 u\*/f (A.2); LOTW la reparte con la ley de la pared y escala u\*/f hasta 200 m (`bbl_refs/mom6_bbl_mixing.md` §3). La E_BBL de Legg (A.1) se escribe ρ₀ c_D|u|³ y el texto dice "= ρ₀ u\*³", lo que no es consistente con u\* = √c_D|u| **[verificar en el PDF]**; con la convención física de pyOCEAN, γ = 0.2 es la mitad de la energía del γ = 0.2 de MOM6. No se cambia γ (anti-meta: no se ajusta).
+   - **(c) Resolución de la interfaz aguas abajo.** En −500…−200 km la principal tiene 1.3 interfaces con Ri < 0.25 de 8.0 en la banda de la pluma, menos que los 2–4 puntos que pide Jackson (§6) (control 2.1 de 11.8).
+   - **(a) Entrada de la híbrida.** Mejor que antes en x′ = −100 km (punto anterior), pero el agua de la entrada sigue siendo la más densa de la columna; no separado.
+   - **(c) Geometría** de MOM6 (canal de 100 km, esponja) contra la de Legg (50 km, Orlanski), como en el resto del benchmark.
+2. **Criterio 7 (z\* y σ).**
+   - **z\*:** la BBL casi no cambia b_f (−9.04 → −8.76) ni la trayectoria, y sube E de la esquina (1.12e-3 → 1.55e-3) y α_E (1.28e-3 → 1.50e-3). La z\* ya era más liviana que la isopicna de Legg (por mezcla numérica, (c) **[hipótesis]** de la sección de Jackson, no medida). Con niveles de 144 m en la cuenca solo 1–2 interfaces caen dentro de la escala de decaimiento min(u\*/|f|, 200 m) **[inferencia]**, así que la BBL tiene poco donde actuar. s máx. baja a 0.998: no queda agua de entrada sin mezclar ni en la celda de entrada. Clase (c).
+   - **σ:** b_f −11.39 → −10.18, pasa de −11.07 y queda 0.89 × 10⁻³ m s⁻² más liviana que la isopicna de Legg (hacia la no hidrostática). E 5.39e-4 → 5.82e-4, T(x′ = −200) 19.0 → 20.5 Sv, clase con más trazador en x′ = −300 −14…−13 → −12…−11; la trayectoria se acerca a la isopicna de Legg aguas abajo (−119 → −101 en x′ = −500, −140 → −121 en −700). En σ la capa de fondo tiene grosor fijo D/25 (≤ 144 m) en toda la cuenca, de modo que la BBL alcanza siempre a la pluma completa **[inferencia]**. Clase (c).
+   - En las tres coordenadas la BBL aligera la pluma; el tamaño del efecto (z\* 0.28, híbrida 1.16, σ 1.21 × 10⁻³ m s⁻²) sigue a cuántas interfaces caen dentro de la capa de fondo **[inferencia]**. No hay truncamientos ni eventos del limitador en z\* y σ.
+3. **Qué dice la teoría** (criterio 5; `theory.py`, tabla de `compare.py --theory`; ventanas cerca −180…−50 km / lejos −500…−200 km). Ri_B y Fr dependen del umbral de la pluma y solo se comparan entre corridas, no con el 0.4–0.5 de Legg (pie de la tabla de `compare.py`).
+
+   | corrida | h [m] | Ri_B | Fr | celdas Ri < 0.25 / banda (cerca ; lejos) | Ri_g mediana | Ekman de fondo / bajada de la pluma | u_pluma/(g′s/f) |
+   |---|---|---|---|---|---|---|---|
+   | MITgcm z legg | 428 / 468 | 9.07 / 18.92 | 0.34 / 0.24 | 0.6 / 2.9 ; 0.6 / 3.5 | 3.08 / 6.82 | 0.04 / 0.02 | 0.71 / 0.73 |
+   | híbrida + Jackson, U_bg 0 | 447 / 372 | 6.53 / 4.37 | 0.40 / 0.49 | 5.1 / 16.6 ; 2.3 / 12.1 | 0.36 / 0.47 | 0.11 / 0.20 | 0.81 / 0.72 |
+   | híbrida control U_bg 0.05 | 399 / 373 | 5.63 / 5.25 | 0.44 / 0.45 | 4.7 / 15.9 ; 2.1 / 11.8 | 0.37 / 0.53 | 0.08 / 0.04 | 0.82 / 0.67 |
+   | + BBL | 425 / 462 | 5.09 / 7.48 | 0.45 / 0.39 | 3.0 / 11.9 ; 1.3 / 8.0 | 0.43 / 0.61 | 0.04 / 0.03 | 1.04 / 0.72 |
+   | z\* control / + BBL | 669 / 717 → 613 / 710 | 10.51 / 8.54 → 9.17 / 8.98 | 0.31 / 0.35 → 0.33 / 0.34 | 0.1 / 4.4 ; 0.2 / 4.9 → 0.1 / 4.1 ; 0.5 / 4.8 | 2.10 / 1.79 → 2.20 / 1.70 | 0.04 / 0.08 → 0.06 / 0.03 | 0.84 / 0.59 → 0.92 / 0.63 |
+   | σ control / + BBL | 457 / 572 → 416 / 576 | 3.56 / 4.67 → 3.72 / 5.20 | 0.54 / 0.48 → 0.52 / 0.45 | 1.4 / 9.8 ; 1.2 / 8.8 → 2.2 / 9.0 ; 1.9 / 9.1 | 0.53 / 0.49 → 0.56 / 0.50 | 0.07 / 0.06 → 0.06 / 0.03 | 0.92 / 0.64 → 0.87 / 0.64 |
+
+   - **Las leyes de laboratorio no predicen DOME.** Ellison–Turner (Xu et al. 2006, ecs. 3–4) da E = 0 en todas estas corridas, porque Ri_B ≥ 0.8; la ley de Xu (ec. 16) con la mediana de Ri_g también da 0 (Ri_g ≥ 0.25). El α_E medido es 1e-4–1.5e-3. Legg §3.3 (p. 85) dice que el entrainment rotante es "considerablemente menor" que el de laboratorio (`bbl_refs/entrainment_theory.md`, "Qué dicen para DOME"). Ninguna ley local incluye f **[inferencia]**.
+   - **La pluma es subcrítica y geostrófica, con y sin BBL.** Fr 0.39–0.45 en la híbrida (Ezer: 0.4–0.6 aguas abajo, `entrainment_theory.md` "Qué dicen para DOME"); la velocidad a lo largo del talud sigue a Nof (1983), u_t = g′s/f (Ezer ec. 2): 0.67–1.04 de u_t. La BBL no cambia el régimen.
+   - **La BBL quita trabajo a Jackson en la interfaz.** Las interfaces con Ri < 0.25 bajan de 4.7 a 3.0 (cerca) y de 2.1 a 1.3 (lejos), y la mediana de Ri_g sube de 0.37 a 0.43. **[Inferencia]** al mezclar la pluma desde abajo baja Δb en la interfaz y cae el número de interfaces de la banda (15.9 → 11.9); aguas abajo quedan menos de los 2–4 puntos de Ri bajo que pide Jackson (§6; `entrainment_theory.md` Leyes 3), así que ahí la mezcla de interfaz no está resuelta (c).
+   - **Ekman de fondo.** El exceso talud abajo en los 10 m de fondo baja de 8 % a 4 % del transporte talud abajo de la pluma (cerca). Ezer da 22 % (`entrainment_theory.md`, "Qué dicen para DOME"); MITgcm legg 2–4 %. **[Inferencia]** la BBL homogeneiza la densidad de la capa de fondo y reduce la cizalla entre el fondo y el interior de la pluma; con esta medida de una sola corrida (`theory.py`, docstring de `bottom_ekman_transport`) es una cota inferior.
+   - **Lo que la teoría no explica.** Ninguna de las magnitudes de la tabla separa la BBL de la isopicna de Legg: a 10 km su Ri_B, Fr y Nof no están publicados. El diagnóstico explica por qué las leyes locales no sirven como meta y señala la interfaz no resuelta aguas abajo; la diferencia restante en b_f (0.47) queda atribuida a esquema y energía (c) y resolución (c), sin medir por separado.
+4. **Criterio 6 (costo, subsección siguiente): DOME ✅ 1.031×; BayIW cut ❌ 1.092×, el criterio 6 no se cumple en BayIW.** En producción (reloj de la corrida completa, incluye la salida y una trayectoria distinta) la principal tardó 987 s contra 1031 del control (0.96×), z\* 1.05× y σ 1.04×.
+
+### DOME 5 km híbrida `kv_low` + Smagorinsky 0.15 (con y sin Jackson; 2026-10-30)
+
+Corridas lanzadas durante el plan BBL, sin BBL y con U_bg = 0, Δt 600 s (el mismo que a 10 km; salida en `RUNS/5km/pyocean_hybrid_kv_low_smag0.15[_jackson]/`):
+- **Sin Jackson aborta** a los ~2 min de corrida con 1004 truncamientos CFL (capa 1, u = −4.21 m/s en una cara de 4.7 m). A 10 km la misma configuración completaba con 61 truncamientos. Clase (b), falta de mezcla por cizalla, como a 10 km.
+- **Con Jackson completa los 50 días, pero no es robusta:** 469 truncamientos, 232 331 eventos del limitador y `n_visc_limited` 4 230 005. b_f −12.28e-3 (10 km −12.84; isopicna de Legg a 10 km −11.07), E de la esquina 3.64e-4 / 6.09e-4, T(x′ = −200 / −300) 17.8 / 20.9 Sv, α_E (ec. 12) 6.48e-4, clase con más trazador en x′ = −300 / −100 −13…−12 / −18…−17, Y′ −81 / −105 / −138 / −170 km en x′ = −200 / −300 / −500 / −800; 98 s por día (10 km: 21). La tendencia con la resolución va en la dirección de Legg (b_f más liviano a 5 km), pero los truncamientos la invalidan como resultado. **[Hipótesis]** Δt 600 s a 5 km deja la mitad del margen CFL de 10 km; no se probó con Δt 300 s. Abierto, sin clasificar.
+
+### Qué debe mejorar pyOCEAN (BBL en DOME)
+
+1. **(abierto) Los 32 eventos del limitador y las capas de fondo de 3–4 m/s de la principal en los días 46–50.** Ver la evolución de la capa de fondo con la BBL en la cuenca profunda (densidad, espesor, Kd_BBL) y si viene del regridder de la híbrida o de la fricción sobre una capa delgada. Es lo que falta para el criterio 4 completo.
+2. **Kd_BBL en la salida** (`kd_bbl` está en el registro pero no en la serie ni en CF/Zarr, como `kd_shear`) y el **balance de varianza** (`variance_budget=True`, `phy_v`) para medir en línea cuánto de la mezcla de la pluma es BBL, Jackson o numérica.
+3. **Costo en BayIW (criterio 6, 1.092×):** la fase 7 (densidad, N², espesor húmedo) que la BBL enciende con el cierre constante sin Jackson; reutilizar la densidad y el N² que ya calcula el paso.
+4. **E de la esquina con la dilución del canal** (punto 1): reportar también T_in contra la entrada nominal (8.38 Sv), o medir E desde la boca del canal, para que la métrica no esconda la mezcla que la BBL hace aguas arriba.
+5. **DOME 5 km robusto** (subsección anterior): la misma configuración con Δt 300 s y con BBL, para la tendencia con la resolución (Legg Figs. 14–15) sin truncamientos.
+6. **Variante con la forma de una capa de Legg (A.2)** o `add_drag_diffusivity` de MOM6, solo si un caso lo pide (no meta del spec): separaría la parte (c) de esquema del resultado.
+
 ### Costo de la mezcla de la capa límite de fondo por la fricción (`bbl_mixing='lotw'`)
 
 `scripts/bbl_cost.py` (plan 2026-10-30-bbl-drag-mixing, tarea 5; criterio 6 del spec: razón ≤ 1.05): mediana de s/paso de 50 pasos tras 10 de calentamiento, 5 hilos, cada configuración en su propio proceso y alternando sin/con (3 rondas). BayIW cut z\* lleva `bottom_drag='quadratic'` en ambos modos (la mezcla lo exige); DOME 10 km híbrida lleva `kv_low`, Smagorinsky 0.15 y Jackson en ambos modos, de modo que la razón aísla `bbl_mixing='lotw'`. El script verifica `BBLAddedClosure` y Kd_BBL máximo > 0, y mide el `update` del cierre (la parte BBL = `update` externo menos el del cierre envuelto) y `Driver._ale_bed_energy`.
 
-| Caso | sin BBL [s/paso] | con BBL [s/paso] | razón mín / mediana / máx | parte BBL del `update` | energía de la fricción | Kd_BBL máx |
+| Caso | sin BBL [s/paso] | con BBL [s/paso] | razón mín / mediana / máx¹ | parte BBL del `update` | energía de la fricción | Kd_BBL máx |
 |------|------|------|------|------|------|------|
 | BayIW cut z\*, Δt 120 s | 0.349 | 0.380 | 1.089 / **1.092** / 1.094 | 17.0 ms (4.5 %) | 2.9 ms (0.8 %) | 6e-18 m²/s |
 | DOME 10 km híbrida, `kv_low` + Smag 0.15 + Jackson, Δt 600 s | 0.1207 | 0.1233 | 1.022 / **1.031** / 1.035 | 3.4 ms (2.7 %) | 0.4 ms (0.3 %) | 4.1 m²/s |
 
-- **BayIW supera 1.05 (1.092).** Perfil (cProfile, 30 pasos, con menos y con BBL, diferencia por paso en tiempo acumulado): el `update` de `BBLAddedClosure` +16.6 ms (kernel `lotw_bbl_columns` 4.5, N² de la columna 2.9, el resto NumPy del envoltorio), `_wet_thickness` +2.5, densidad `eos.density` +1.8, energía de la fricción +2.9, `tracer_diffusivity` +1.2. **[Hipótesis, con el perfil a favor]** con el cierre constante y sin cizalla el controlador no ejecutaba la fase 7 (densidad, N², espesor húmedo); `bbl_mixing` la activa, y ese costo fijo no depende de la magnitud de Kd_BBL. En DOME esa fase ya corre por Jackson y el costo es solo la parte BBL (razón 1.03).
+¹ La razón reportada es la mediana de las razones por ronda (cada ronda: s/paso con BBL entre s/paso sin BBL), no la razón de las medianas de s/paso; la razón de las medianas da 0.3804/0.3491 = 1.090 en BayIW (0.2 % menos) y 0.1233/0.1207 = 1.022 en DOME (0.9 % menos); las dos cumplen o no cumplen igual.
+
+- **Criterio 6 no se cumple en BayIW (1.092 > 1.05); en DOME sí (1.031).** La diferencia en BayIW es ≈ 31 ms/paso, de los que el `update` de la BBL es ≈ 17 ms. Perfil (cProfile, 30 pasos, con menos sin BBL, diferencia por paso en tiempo acumulado): el `update` de `BBLAddedClosure` +16.6 ms (kernel `lotw_bbl_columns` 4.5, N² de la columna 2.9, el resto NumPy del envoltorio), `_wet_thickness` +2.5, densidad `eos.density` +1.8, energía de la fricción +2.9, `tracer_diffusivity` +1.2. **[Hipótesis, con el perfil a favor]** con el cierre constante y sin cizalla el controlador no ejecutaba la fase 7 (densidad, N², espesor húmedo); `bbl_mixing` la activa, y ese costo fijo no depende de la magnitud de Kd_BBL. En DOME esa fase ya corre por Jackson y el costo es solo la parte BBL (razón 1.03).
 - **BayIW no ejercita el término**: en la corrida corta de la prueba la fricción casi no hace trabajo (Kd_BBL máx 6e-18 m²/s, > 0 solo en sentido estricto); el costo medido es el de la ruta completa pero el kernel no ve mezcla real. DOME sí lo ejercita (4.1 m²/s).
-- No se optimizó (fuera del alcance de la tarea).
+- No se optimizó (fuera del alcance de la tarea; punto 3 de la lista anterior).
 - Humo (`scripts/n1_smoke.py` contra `main`): 9/9 hashes idénticos con la opción apagada (por defecto).
 
 ## Referencias
@@ -439,4 +554,8 @@ Legg 10 km: Y′(x′ = −200 / −300 / −500 / −700) z −80 / −105 / �
 - Xu, X., Chang, Y. S., Peters, H., Özgökmen, T. M., Chassignet, E. P. (2006). Parameterization of gravity current entrainment for ocean circulation models using a high-order 3D nonhydrostatic spectral element model. *Ocean Modell.* 14, 19–44. [10.1016/j.ocemod.2006.02.006](https://doi.org/10.1016/j.ocemod.2006.02.006)
 - Pietrzak, J. (1998). The use of TVD limiters for forward-in-time upstream-biased advection schemes in ocean modeling. *Mon. Wea. Rev.* 126, 812–830. [verificar]
 - Ezer, T., Mellor, G. L. (2004). A generalized coordinate ocean model and a comparison of the bottom boundary layer dynamics in terrain-following and in z-level grids. *Ocean Modell.* 6, 379–403.
+- Ezer, T. (2005). Entrainment, diapycnal mixing and transport in three-dimensional bottom gravity current simulations using the Mellor–Yamada turbulence scheme. *Ocean Modell.* 9, 151–168. [10.1016/j.ocemod.2004.06.001](https://doi.org/10.1016/j.ocemod.2004.06.001) (en la biblioteca como `Ezer_2004`)
+- Nof, D. (1983). The translation of isolated cold eddies on a sloping bottom. *Deep-Sea Res.* 30A, 171–182. [verificar]
+- Adcroft, A., et al. (2019). The GFDL global ocean and sea ice model OM4.0: model description and simulation features. *J. Adv. Model. Earth Syst.* 11, 3167–3211. [10.1029/2019MS001726](https://doi.org/10.1029/2019ms001726) (§2.2.4: mezcla BBL de OM4)
+- MOM6 `src/parameterizations/vertical/MOM_set_diffusivity.F90` (`add_LOTW_BBL_diffusivity`, `set_BBL_TKE`), lectura en `docs/design/bbl_refs/mom6_bbl_mixing.md`.
 - MOM6 `src/user/DOME_initialization.F90` y `MOM6-examples/ocean_only/DOME/MOM_input` (`~/pyOCEAN_refs/`).
