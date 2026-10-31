@@ -23,7 +23,9 @@ All quantities are SI with temperatures in K, as ``ncar_ocean_fluxes``:
     p           sea-level pressure [Pa] (= p_atm = p_surf, OM4 data_table)
     u_ocean, v_ocean  surface current [m s⁻¹]
 
-``write_points`` writes them as text for ``fms_ncar_driver.F90``.
+``write_points`` writes them as text for ``fms_ncar_driver.F90``; ``COARE_POINTS`` (same
+states in CROCO's units, plus a downwelling longwave) and ``write_coare_points`` do the same
+for ``croco_bulk_driver.F90`` (N2b Task 2).
 ``LY04_VS_FMS_MAX_REL`` holds the measured largest relative difference between
 ``forcing.bulk.bulk_ncar`` (LY04 / MITgcm form) and ``bulk_ncar_fms`` on these
 points (``tests/test_bulk_fms.py::test_ly04_differences_documented``).
@@ -111,6 +113,38 @@ LY04_VS_FMS_MAX_REL: dict[str, float] = {
 }
 
 
+#: CROCO COARE inputs (N2b Task 2) derived from POINTS, as CROCO's ``bulk_flux.F`` takes them:
+#: temperatures in °C (POINTS minus T0_K), absolute wind (no surface current: CROCO
+#: without SFLUX_CFB, croco_bulk.md §1), specific humidity as given, and a downwelling
+#: longwave flux (``BULK_LW``) that POINTS lacks: a fraction 0.70–0.95 of σ T_air⁴
+#: (σ = 5.67e-8 W m⁻² K⁻⁴), cycling with the point index, deterministic.  The pressure is
+#: CROCO's constant psurf = 1e5 Pa (params_bulk.h:30-33), not POINTS["p"].
+COARE_INPUT_FIELDS: tuple[str, ...] = ("u10", "v10", "t_air_c", "q_air", "sst_c", "lw_down")
+
+
+def _make_coare_points() -> dict[str, np.ndarray]:
+    idx = np.arange(POINTS["u10"].size)
+    lw_frac = 0.70 + 0.25 * ((idx * 3) % 10) / 9.0
+    return {
+        "u10": POINTS["u10"],
+        "v10": POINTS["v10"],
+        "t_air_c": POINTS["t_air"] - T0_K,
+        "q_air": POINTS["q_air"],
+        "sst_c": POINTS["sst"] - T0_K,
+        "lw_down": lw_frac * 5.67e-8 * POINTS["t_air"] ** 4,
+    }
+
+
+COARE_POINTS: dict[str, np.ndarray] = _make_coare_points()
+
+#: Column order of croco_bulk_driver.F90 output: CROCO's own quantities, kinematic as the
+#: model uses them (bulk_flux.F:630-659; stress at a point, :706-712 with equal neighbours).
+COARE_OUTPUT_FIELDS: tuple[str, ...] = (
+    "sustr", "svstr", "hfsen", "hflat", "hflw", "evap", "cd", "rho_air",
+    "wstar", "tstar", "qstar", "delw", "qsea", "charn", "patm",
+)
+
+
 def write_points(path: str | Path) -> None:
     """Write POINTS as text, one point per line, columns INPUT_FIELDS, 17 significant digits."""
     data = np.column_stack([POINTS[k] for k in INPUT_FIELDS])
@@ -119,7 +153,18 @@ def write_points(path: str | Path) -> None:
         np.savetxt(f, data, fmt="%.17e")
 
 
+def write_coare_points(path: str | Path) -> None:
+    """Write COARE_POINTS as text for croco_bulk_driver.F90, columns COARE_INPUT_FIELDS."""
+    data = np.column_stack([COARE_POINTS[k] for k in COARE_INPUT_FIELDS])
+    with open(path, "w") as f:
+        f.write(f"{data.shape[0]}\n")
+        np.savetxt(f, data, fmt="%.17e")
+
+
 if __name__ == "__main__":
     import sys
 
-    write_points(sys.argv[1])
+    if len(sys.argv) > 2 and sys.argv[2] == "coare":
+        write_coare_points(sys.argv[1])
+    else:
+        write_points(sys.argv[1])

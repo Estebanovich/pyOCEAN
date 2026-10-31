@@ -15,6 +15,9 @@ to HYCOM flxflg=6 / wndflg=4, the setting of HYCOM-IOA.
 that MOM6 uses (FMScoupler ``surface_flux.F90``, OM4 settings); equal to the
 compiled Fortran bit for bit (validation/bulk_points/).
 
+``bulk_coare`` — COARE 3.0 as CROCO's ``bulk_flux.F`` (port in ``forcing/bulk_coare.py``),
+equal to the compiled Fortran to round-off (validation/bulk_points/).
+
 ``bulk_ncar`` — NCAR/CORE bulk formulae (Large & Yeager 2004, §2.1; with
 the optional high-wind drag cap of Large & Yeager 2009).  This is the
 algorithm of MITgcm ``pkg/exf/exf_bulkformulae.F`` (``ALLOW_BULK_LARGEYEAGER04``)
@@ -1011,7 +1014,42 @@ def radiative_fluxes(
 # Canonical atmosphere → surface_tendency arguments
 # ---------------------------------------------------------------------------
 
-_SCHEMES = {"ncar": bulk_ncar, "ncar_fms": bulk_ncar_fms, "kara": bulk_kara}
+def bulk_coare(
+    u10: np.ndarray,
+    v10: np.ndarray,
+    t_air: np.ndarray,
+    q_air: np.ndarray,
+    sst: np.ndarray,
+    p: np.ndarray | None = None,
+    *,
+    u_ocean: np.ndarray | float = 0.0,
+    v_ocean: np.ndarray | float = 0.0,
+    **kwargs,
+) -> TurbulentFluxes:
+    """
+    Turbulent part of CROCO's COARE 3.0 (``forcing.bulk_coare.bulk_coare_croco``) in the
+    calling convention of ``compute_surface_fluxes``.
+
+    t_air [K] (canonical ``t2m``) → °C with T0_K = 273.15 (CROCO's own CtoK = 273.16 is
+    applied inside the port); sst [°C].  The wind is taken relative to the surface current,
+    U − u_ocean (0 = CROCO's absolute wind).  ``p`` (msl) is not used: CROCO without
+    READ_PATM uses the constant psurf = 1e5 Pa; pass ``p_sfc=`` in kwargs to change it.
+    The longwave of the port is not returned (``q_lw`` needs LW↓ and is not turbulent).
+    C_h = C_e (one coefficient, bulk_flux.F:545-547).
+    """
+    from forcing.bulk_coare import bulk_coare_croco
+
+    du = np.asarray(u10, dtype=float) - u_ocean
+    dv = np.asarray(v10, dtype=float) - v_ocean
+    t_c = np.asarray(t_air, dtype=float) - T0_K
+    f = bulk_coare_croco(du, dv, t_c, q_air, sst, np.zeros_like(t_c), **kwargs)
+    return TurbulentFluxes(
+        tau_x=f.tau_x, tau_y=f.tau_y, q_sens=f.q_sens, q_lat=f.q_lat, evap=f.evap,
+        cd=f.cd, ch=f.ch, ce=f.ch, rho_air=f.rho_air, ustar=f.ustar,
+    )
+
+
+_SCHEMES = {"ncar": bulk_ncar, "ncar_fms": bulk_ncar_fms, "kara": bulk_kara, "coare": bulk_coare}
 _SST_KELVIN = {"ncar_fms"}       # schemes that take the SST in K, as FMS
 
 
@@ -1041,11 +1079,13 @@ def compute_surface_fluxes(
         Model surface temperature θ[k=0] [°C].
     u_sfc, v_sfc : np.ndarray or float
         Surface current at T-points [m s⁻¹] (0 for absolute wind).
-    scheme : {'ncar', 'ncar_fms', 'kara'}
+    scheme : {'ncar', 'ncar_fms', 'kara', 'coare'}
         Bulk algorithm: 'ncar' (Large & Yeager 2004, MITgcm), 'ncar_fms' (the
         same equations in the form of the FMS coupler of MOM6; SST passed in K,
         T and q heights through ``z_t``/``z_q`` in scheme_kwargs) or 'kara'
-        (Kara et al. 2005, HYCOM flxflg=6; needs ``sss=`` in scheme_kwargs).
+        (Kara et al. 2005, HYCOM flxflg=6; needs ``sss=`` in scheme_kwargs) or 'coare'
+        (COARE 3.0 as CROCO's bulk_flux.F, ``forcing/bulk_coare.py``; turbulent part only,
+        msl not used: CROCO's p = 1e5 Pa).
     albedo, emissivity : see ``radiative_fluxes``.
     **scheme_kwargs
         Passed to the bulk algorithm (e.g. ``n_iter``, ``high_wind``).
