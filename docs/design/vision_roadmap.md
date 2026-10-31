@@ -208,6 +208,7 @@ Reorganiza las fases del `CLAUDE.md`. Cambiar el plan del `CLAUDE.md` requiere l
 **Etapa C, ALE híbrido (la Fase 3 actual):**
 - Marco ALE con remapeo PPM/PQM y funciones objetivo z*, σ, z̃, híbrida y adaptativa.
 - Modo barotrópico split-explicit.
+- Paralelismo MPI **opcional** (agregado el 2026-10-30, decisión de Esteban), después del split-explicit: con la superficie libre implícita actual el sistema global no se reparte bien entre procesos. Por defecto siguen los hilos de Numba en una sola máquina (`pip install pyocean`, sin MPI ni compiladores); `pip install pyocean[mpi]` agrega `mpi4py` y el usuario lo activa según su equipo (`parallel="mpi"` o lanzando con `mpirun`). Descomposición del dominio en bloques con halos, MPI entre bloques + hilos de Numba dentro de cada uno (el esquema híbrido de MOM6 y HYCOM). Criterios de cierre: 1 y N procesos idénticos bit a bit (como ya se exige entre 1 y 5 hilos); el pre-flight avisa si se pide MPI sin `mpi4py` o si los bloques quedan demasiado chicos para sus halos; escalamiento medido en Ometeotl en un caso PAC_MEX.
 - *Overflow* (DOME) y monte submarino como referencia de entrada. DOME corrido el 2026-10-15 (🔶: z\* ✅ contra MITgcm; abiertos la inestabilidad con θ_bc = ½ a 10 km / 1200 s, la entrada de la híbrida por frontera abierta y la mezcla por Ri). Falta el modo barotrópico split-explicit.
 
 **Etapa N, núcleo modular y experiencia de usuario (agregada el 2026-10-15; diseño en la sección 9):**
@@ -281,6 +282,7 @@ Capa 1 — Núcleos       funciones puras sobre arreglos (NumPy/Numba hoy, JAX e
 - El driver arma el paso en orden fijo y valida la composición **antes del primer paso** (por ejemplo: KPP sin flujo de flotabilidad en superficie, TEOS-10 sin S, forzamiento que no cubre el dominio).
 - `SigmaBaroclinic` pasa a ser un modelo armado con componentes. Los 2D de marea siguen como modelo barotrópico que comparte grid, forzamiento y fronteras. La Fase 1 en z se retira.
 - Mismo API con `backend="numpy" | "jax"`; los tests actuales pasan a ser tests de equivalencia entre backends (sección 6).
+- Paralelismo como opción del usuario, independiente del backend: `parallel="threads"` (por defecto, Numba en una máquina) o `"mpi"` (opcional, `pyocean[mpi]`, para clústeres como Ometeotl). Mismo resultado bit a bit con 1 o N procesos (sección 8, Etapa C).
 
 Uso objetivo:
 
