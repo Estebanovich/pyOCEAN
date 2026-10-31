@@ -196,3 +196,134 @@ def read_kappa_shear_results(path: Path) -> list[dict]:
         out.append(dict(kappa=np.array(kap.split(), float)[::-1], tke=np.array(tke.split(), float)[::-1],
                         n_newton=nn, n_ramp=nr, n_abort=na, n_iter=ni))
     return out
+
+
+# --------------------------------------------------------------------------------------------
+# Drag-driven BBL mixing (MOM6 add_LOTW_BBL_diffusivity and set_BBL_TKE vs
+# physics/mixing/bbl_mixing.py)
+# --------------------------------------------------------------------------------------------
+# Columns in the model orientation of the oracle (k = 0 at the bed); the writer flips them to
+# MOM6's surface-first order and the reader flips the results back.  No thin-layer merge in any
+# case (spec decision 6): the 1 mm layer goes to both codes as it is.
+
+BBL_PARAM_FIELDS = ("bbl_effic", "max_decay", "von_karman", "kd_max")
+
+
+def _bbl_stratified(nz: int, depth: float, n2_0: float, scale: float) -> tuple[np.ndarray, np.ndarray]:
+    """nz equal layers over ``depth`` m and N² = n2_0 exp(z/scale) at the interfaces (bed = 0)."""
+    dz = np.full(nz, depth / nz)
+    zi = np.concatenate(([0.0], np.cumsum(dz)))
+    return dz, n2_0 * np.exp(zi / scale)
+
+
+def bbl_cases() -> list[dict]:
+    """
+    Columns of the LOTW BBL comparison.  ``tke`` is TKE_col = BBL_EFFIC × energy (SD:1709);
+    ``p`` is a dict of BBLParams overrides ({} = OM4 defaults).
+
+    1. stratified, 40 × 5 m, N² = 1e-5 e^{z/100}, u* 1 cm/s, |f| 1e-4: the energy runs out
+       about 15 m above the bed (energy-limited branch, SD:1765-1767);
+    2. as 1 with N² = −2e-6 and 0 at the interfaces 5 and 10 m above the bed (the Ω² floor
+       keeps W > 0);
+    3. as 2 with LOTW_BBL_USE_OMEGA = False: both interfaces take KD_MAX (SD:1769-1772);
+    4. f = 0: decay scale = BBL_MIXING_MAX_DECAY, Kd_wall = κ u* z (D − z)/D;
+    5. a 1 mm layer at the bed and one 3 layers up (dz_int = 2.5005 m beside them, no merge);
+    6. large u* (5 cm/s, |f| 1e-4: u*/|f| = 500 m > 200 m, so the 200 m decay cap) and
+       TKE 1e-3 m³ s⁻³: Kd grows toward κ u*²/|f| until the energy is spent high in the column;
+    7. ample energy, N² = 1e-8, 20 × 2 m: the energy never limits, Kd = Kd_wall at every
+       interface (SD:1756-1757, uncut);
+    8–15. seeded random columns (N = 5–60, dz 0.2–30 m, N² from −1e-6 to 1e-4,
+       u* 0.1–5 cm/s, |f| 0–1.4e-4, TKE 1e-9–1e-4 m³ s⁻³; every other one without the Ω² floor).
+    """
+    cases = []
+    dz, n2 = _bbl_stratified(40, 200.0, 1.0e-5, 100.0)
+    cases.append(dict(name="stratified", dz=dz, n2=n2, ustar=0.01, absf=1.0e-4, tke=5.0e-6, p={}))
+    n2c = n2.copy()
+    n2c[1] = -2.0e-6
+    n2c[2] = 0.0
+    cases.append(dict(name="N2 <= 0 at two interfaces", dz=dz, n2=n2c, ustar=0.01, absf=1.0e-4,
+                      tke=5.0e-6, p={}))
+    cases.append(dict(name="N2 <= 0, no omega floor", dz=dz, n2=n2c, ustar=0.01, absf=1.0e-4,
+                      tke=5.0e-6, p={"use_omega": False}))
+    cases.append(dict(name="f = 0", dz=dz, n2=n2, ustar=0.01, absf=0.0, tke=5.0e-6, p={}))
+    dzt = dz.copy()
+    dzt[0] = 1.0e-3
+    dzt[3] = 1.0e-3
+    cases.append(dict(name="1 mm layers", dz=dzt, n2=n2, ustar=0.01, absf=1.0e-4, tke=5.0e-6, p={}))
+    dz6, n26 = _bbl_stratified(50, 1000.0, 2.0e-6, 400.0)
+    cases.append(dict(name="large u* (200 m cap)", dz=dz6, n2=n26, ustar=0.05, absf=1.0e-4,
+                      tke=1.0e-3, p={}))
+    dz7, n27 = _bbl_stratified(20, 40.0, 1.0e-8, 1.0e9)
+    cases.append(dict(name="ample energy (uncut)", dz=dz7, n2=n27, ustar=0.02, absf=1.0e-4,
+                      tke=1.0e-3, p={}))
+    rng = np.random.default_rng(2006)
+    for i in range(8):
+        n = int(rng.integers(5, 61))
+        cases.append(dict(name=f"random {i}", dz=rng.uniform(0.2, 30.0, n),
+                          n2=rng.uniform(-1.0e-6, 1.0e-4, n + 1), ustar=float(rng.uniform(1e-3, 5e-2)),
+                          absf=float(rng.choice([0.0, rng.uniform(0.0, 1.4e-4)])),
+                          tke=float(10.0 ** rng.uniform(-9.0, -4.0)),
+                          p={} if i % 2 == 0 else {"use_omega": False}))
+    return cases
+
+
+def write_bbl_cases(path: Path, cases: list[dict]) -> None:
+    """
+    Write the cases for ``bbl_driver lotw`` (surface first).  MOM6 receives
+    visc%ustar_BBL = u* and visc%BBL_meanKE_loss = tke / BBL_EFFIC, so that its
+    TKE_column = BBL_EFFIC × BBL_meanKE_loss (SD:1709) is pyOCEAN's tke.
+    """
+    from core.grid.horizontal import OMEGA
+    from physics.mixing.bbl_mixing import BBLParams
+    with open(path, "w") as f:
+        f.write(f"{len(cases)}\n")
+        for c in cases:
+            p = BBLParams(**c["p"])
+            f.write(f"{len(c['dz'])} {c['ustar']:.17e} {c['absf']:.17e} {c['tke'] / p.bbl_effic:.17e}\n")
+            f.write(" ".join(f"{getattr(p, k):.17e}" for k in BBL_PARAM_FIELDS)
+                    + f" {OMEGA:.17e} {int(p.use_omega)}\n")
+            f.write(" ".join(f"{x:.17e}" for x in np.asarray(c["dz"])[::-1]) + "\n")
+            f.write(" ".join(f"{x:.17e}" for x in np.asarray(c["n2"])[::-1]) + "\n")
+
+
+def read_bbl_results(path: Path) -> list[dict]:
+    """MOM6 Kd_BBL at the interfaces (k = 0 at the bed) of each case."""
+    lines = [ln for ln in Path(path).read_text().split("\n") if ln.strip()]
+    n = int(lines[0])
+    return [dict(kd=np.array(lines[1 + i].split(), float)[::-1]) for i in range(n)]
+
+
+def bbl_tke_cases() -> list[dict]:
+    """
+    Uniform flow in x (u = U in every layer, v = 0) for ``bbl_driver tke`` (MOM6 set_BBL_TKE):
+    C_d, U [m/s], DRAG_BG_VEL U_bg [m/s], BBL thickness [m], layer thicknesses [m]
+    (surface first), KV_BBL_MIN [m² s⁻¹].
+    """
+    dz = np.full(20, 10.0)
+    return [dict(name="U 0.2, Ubg 0", cd=3.0e-3, u=0.2, ubg=0.0, bbl_thick=10.0, dz=dz, kv_min=0.0),
+            dict(name="U 0.5, Ubg 0, 25 m BBL", cd=2.0e-3, u=0.5, ubg=0.0, bbl_thick=25.0, dz=dz, kv_min=0.0),
+            dict(name="U 0.05, Ubg 0.1 (OM4)", cd=3.0e-3, u=0.05, ubg=0.1, bbl_thick=7.0, dz=dz, kv_min=0.0),
+            # C_d |U| h = 4e-5 < KV_BBL_MIN = 1e-4 (DOME): kv_bbl clipped with bbl_thick unchanged
+            # (CORRECT_BBL_BOUNDS = False, the default, SV:1103, 1142)
+            dict(name="U 0.002, clipped by KV_BBL_MIN", cd=2.0e-3, u=0.002, ubg=0.0, bbl_thick=10.0, dz=dz,
+                 kv_min=1.0e-4)]
+
+
+def write_bbl_tke_cases(path: Path, cases: list[dict]) -> None:
+    with open(path, "w") as f:
+        f.write(f"{len(cases)}\n")
+        for c in cases:
+            f.write(f"{len(c['dz'])} {c['cd']:.17e} {c['u']:.17e} {c['ubg']:.17e} "
+                    f"{c['bbl_thick']:.17e} {c['kv_min']:.17e}\n")
+            f.write(" ".join(f"{x:.17e}" for x in np.asarray(c["dz"])) + "\n")
+
+
+def read_bbl_tke_results(path: Path) -> list[dict]:
+    """visc%ustar_BBL and visc%BBL_meanKE_loss at the centre cell of each case."""
+    lines = [ln for ln in Path(path).read_text().split("\n") if ln.strip()]
+    n = int(lines[0])
+    out = []
+    for i in range(n):
+        us, ke = (float(x) for x in lines[1 + i].split())
+        out.append(dict(ustar_bbl=us, mean_ke_loss=ke))
+    return out

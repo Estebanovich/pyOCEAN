@@ -41,6 +41,8 @@ Los tests de pytest (`tests/test_vertical_vs_mom6.py`) se saltan cuando falta un
 | `remap_driver` | `MOM_remapping::remapping_core_h` (`initialize_remapping` con `boundary_extrapolation=.false.`, `om4_remap_via_sub_cells=.false.`, `answer_date=99991231`, `h_neglect=1e-30`, `h_neglect_edge=1e-10`) | `remap.remap_column` | 1e-11 |
 | `regrid_driver` | `coord_zlike::build_zstar_column`, `coord_sigma::build_sigma_column` (min_thickness 1e-3), `regrid_interp::build_and_interpolate_grid` (`P1M_H2`, sin extrapolación, `answer_date=99991231`) | `regrid.zstar_column`, `regrid.sigma_column`, `regrid._p1m_h2_positions` | 1e-10 (z\*, σ), 1e-9 (P1M) |
 | `kappa_shear_driver` | `MOM_kappa_shear::kappa_shear_column` (privada, extraída; `nzc = nz`, EOS lineal en T, Boussinesq, valores por defecto) | `physics.mixing.kappa_shear.kappa_shear_column` | 1e-10 × max de la columna (κ y Q) |
+| `bbl_driver lotw` | `MOM_set_diffusivity::add_LOTW_BBL_diffusivity` (extraída con `set_diffusivity_CS`; Boussinesq, valores OM4) | `physics.mixing.bbl_mixing.lotw_bbl_column` | 1e-10 × max Kd de la columna |
+| `bbl_driver tke` | `MOM_set_diffusivity::set_BBL_TKE` (extraída) | factor contra C_d\|U\|³ y √C_d\|U\| | 1e-12 relativo |
 
 Las columnas de prueba se generan en `columns.py`:
 - semilla 2026;
@@ -315,3 +317,105 @@ de Newton con la derivada corregida (`:1860-1866`) y la rampa de truncamiento de
 al redondeo. Que MOM6 aborte Newton en la primera iteración de casi toda llamada es un
 rasgo de MOM6, clase (d) como posible defecto de la referencia: hace más iteraciones de
 Picard, pero no cambia el resultado convergido. El oráculo lo reproduce a propósito.
+
+## Mezcla BBL por arrastre (`add_LOTW_BBL_diffusivity` y `set_BBL_TKE` de MOM6)
+
+Compara el oráculo NumPy `physics/mixing/bbl_mixing.py` (BBL, tarea 1) con MOM6 compilado
+(`MOM_set_diffusivity.F90`, git 0e9a561; SD abajo). Es el criterio 1 de la especificación
+`docs/superpowers/specs/2026-10-30-bbl-drag-mixing-design.md`.
+
+**Driver.** `add_LOTW_BBL_diffusivity` es privada; `set_BBL_TKE` es pública, pero exige un
+`set_diffusivity_CS` inicializado, cuyo tipo es privado (sus campos no se pueden fijar
+desde fuera sin `set_diffusivity_init` y un archivo de parámetros). `build_reference.sh` copia tal cual a
+`~/pyOCEAN_refs/build/column/bbl_column_mom6.F90`:
+- las líneas `use` del módulo (SD:8-45);
+- el tipo `set_diffusivity_CS` (SD:62-203), hecho público;
+- `add_LOTW_BBL_diffusivity` (SD:1606-1789) y `set_BBL_TKE` (SD:1947-2152), sin cambiar
+  ninguna línea.
+
+Los demás tipos que reciben (`ocean_grid_type`, `verticalGrid_type`, `unit_scale_type`,
+`thermo_var_ptrs`, `forcing`, `vertvisc_type`) son públicos con campos públicos.
+`bbl_driver.F90` construye a mano los mínimos, sin `MOM_grid_init` ni archivos de
+parámetros. Es más simple que extraer el cuerpo y reescribir sus argumentos:
+- malla de 3 × 3 celdas (celda de cómputo i = j = 1, un halo, memoria simétrica) con
+  celdas de 1 km × 1 km;
+- Boussinesq y escalas de unidades 1 (H = Z = L = m);
+- `GV%dZ_subroundoff` con la fórmula de `MOM_verticalGrid.F90:220`;
+- sin `Ray_u`/`Ray_v`, sin `ustar_tidal` ni `BBL_tidal_dis` (pyOCEAN no los tiene);
+- `LOTW_BBL_ANSWER_DATE = 99991231`.
+
+Se compila con `-ffp-contract=off`, igual que `kappa_shear_driver`.
+
+**Entradas de `lotw`.** MOM6 recibe `visc%ustar_BBL = u*` y
+`visc%BBL_meanKE_loss = tke / BBL_EFFIC`. Así, su `TKE_column = BBL_EFFIC × BBL_meanKE_loss`
+(SD:1709) es la `tke` de pyOCEAN, salvo 1 ulp, y se compara el núcleo con la misma energía.
+Las cuatro f de las esquinas son iguales, de modo que `absf` (SD:1680-1681) es |f| exacto.
+Ω es el `OMEGA` de pyOCEAN. Ninguna columna fusiona capas delgadas (decisión 6 de la
+especificación).
+
+**Casos** (`columns.bbl_cases`; parámetros OM4 de `BBLParams()` salvo donde se indica):
+
+| # | Columna | N | max Kd (m² s⁻¹) | max \|ΔKd\| / max Kd | interfaces con Kd > 0 |
+|---|---|---|---|---|---|
+| 1 | estratificada, 40 × 5 m, N² = 1e-5 e^{z/100 m}, u\* 1 cm/s, \|f\| 1e-4, tke 5e-6 m³ s⁻³ | 40 | 3.56e-2 | 0 | 3 |
+| 2 | 1 con N² = −2e-6 y 0 a 5 y 10 m del fondo (el piso Ω² mantiene W > 0) | 40 | 5.00e-2 | 0 | 4 |
+| 3 | 2 sin piso Ω² (`use_omega=False`): las dos interfaces toman KD_MAX = 0.1 (SD:1769-1772) | 40 | 0.100 | 0 | 4 |
+| 4 | 1 con f = 0 (escala de decaimiento = 200 m) | 40 | 3.90e-2 | 0 | 3 |
+| 5 | 1 con capas de 1 mm en el fondo y 3 capas más arriba | 40 | 3.55e-2 | 0 | 5 |
+| 6 | u\* grande: 5 cm/s, \|f\| 1e-4 (u\*/\|f\| = 500 m, tope de 200 m), 50 × 20 m, tke 1e-3 | 50 | 1.99 | 0 | 8 |
+| 7 | energía sobrada, N² = 1e-8, 20 × 2 m, u\* 2 cm/s: Kd = Kd_wall sin recorte (SD:1756-1757) | 20 | 7.81e-2 | 0 | 19 |
+| 8–15 | 8 aleatorias (semilla 2006): N = 5–60, dz 0.2–30 m, N² de −1e-6 a 1e-4, u\* 0.1–5 cm/s, \|f\| 0–1.4e-4, tke 1e-9–1e-4; la mitad sin piso Ω² | 13–60 | 6.3e-6 – 8.3e-2 | ≤ 1.5e-17 | 1–2 |
+
+**Resultado.** El oráculo coincide con MOM6 bit a bit en 14 de 15 columnas. La otra
+(aleatoria 0) difiere en 1.5e-17 relativo: es el ulp de `tke / BBL_EFFIC × BBL_EFFIC`. No
+hizo falta corregir el oráculo. El caso 7 también se compara con la fórmula cerrada
+κ u\*² z (D − z)/(u\* D + |f| z (D − z)) a 1e-12.
+
+**Tolerancia del test.** |ΔKd| ≤ 1e-10 max Kd por columna, la de la especificación. El
+núcleo es un solo barrido sin iteración. Sus ramas discretas son el recorte por energía
+(SD:1765) y la rama de KD_MAX (SD:1769). Un error de traducción mueve Kd en O(1). El test
+exige también que la rama de KD_MAX aparezca (dos interfaces del caso 3).
+
+**Diferencia conocida, no comparada.** Con u\* = 0 y energía > 0, MOM6 da KD_MAX en todas
+las interfaces interiores. El oráculo devuelve 0 (docstring de `bbl_mixing.py`). Ningún caso
+usa u\* = 0.
+
+### El factor de `set_BBL_TKE`
+
+`bbl_driver tke` corre `set_BBL_TKE` compilado (extraído tal cual, sin transcribir) para un
+flujo uniforme en x: u = U en todas las capas, v = 0. Sus entradas por cara son las que da
+`set_viscous_BBL` (`MOM_set_viscosity.F90`, SV), escritas en el driver:
+- u\*_f = √C_d √(u² + v_at_u² + U_bg²) (SV:687-689, 711). En las caras v, √(v² + u_at_v² + U_bg²)
+  vale lo mismo, así que las cuatro caras llevan el mismo u\*_f;
+- kv_bbl = (√C_d u\*_f) bbl_thick (SV:1115) y max(KV_BBL_MIN, kv_bbl) (SV:1142), con
+  `CORRECT_BBL_BOUNDS = False` (valor por defecto de MOM6 y de DOME).
+
+`set_viscous_BBL` no se corre: necesita `set_visc_init`, la EOS y la ecuación de
+Killworth–Edwards del espesor. El espesor no cambia el factor, porque U es uniforme.
+
+| Caso | C_d | U (m/s) | U_bg (m/s) | bbl_thick (m) | ustar_BBL / (√C_d \|U_b\|) | BBL_meanKE_loss / (C_d \|U_b\| U²) |
+|---|---|---|---|---|---|---|
+| 1 | 3e-3 | 0.2 | 0 | 10 | 1.414213562373095 | 1.9999999999999993 |
+| 2 | 2e-3 | 0.5 | 0 | 25 | 1.414213562373095 | 2.0 |
+| 3 | 3e-3 | 0.05 | 0.1 | 7 | 1.4142135623730951 | 2.0 |
+| 4 | 2e-3 | 0.002 | 0 | 10, KV_BBL_MIN 1e-4 | 3.5355339059327378 = √2 × 2.5 | 5.0 = 2 × 2.5 |
+
+con |U_b| = √(U² + U_bg²).
+
+**Confirmado:** `ustar_BBL` = √2 √C_d|U_b| y `BBL_meanKE_loss` = 2 C_d|U_b| U², es decir,
+2 C_d|U|³ sin U_bg. Las causas:
+- SD:2132 toma ½ Σ de u\*_f² sobre las **cuatro** caras, y las cuatro llevan u\*_f;
+- SD:2134-2137 suma las dos caras u **sin** ½ (las caras v no tienen velocidad normal).
+
+Es clase (d), un rasgo de la referencia. pyOCEAN usa la energía física C_d|U|³ y
+u\* = √(|τ_b|/ρ₀) (decisión de la especificación). Por eso, γ = BBL_EFFIC = 0.2 en pyOCEAN
+equivale a 0.1 en MOM6/OM4, y la u\* de MOM6 es √2 mayor. Hay que decirlo al comparar.
+
+**KV_BBL_MIN** (la duda de la lectura, confirmada). Con `CORRECT_BBL_BOUNDS = False`, SV:1142
+sube kv_bbl a KV_BBL_MIN sin cambiar bbl_thick. Entonces `set_BBL_TKE` recupera
+u\*_f = KV_BBL_MIN/(√C_d bbl_thick), mayor que √C_d|U_b|. Pasa cuando
+C_d|U_b| h_bbl < KV_BBL_MIN, por ejemplo con |U| < 5 mm/s para C_d = 2e-3, h_bbl = 10 m y
+KV_BBL_MIN = 1e-4 (DOME). Los dos factores crecen en KV_BBL_MIN/(C_d|U_b| h_bbl): 2.5 en el
+caso 4. Con `CORRECT_BBL_BOUNDS = True`, SV:1103-1110 recalcula bbl_thick y el u\* queda
+consistente. OM4 usa KV_BBL_MIN = 0. Solo afecta a flujos muy débiles, donde la energía es
+pequeña de todos modos.

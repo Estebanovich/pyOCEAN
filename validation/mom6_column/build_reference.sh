@@ -55,12 +55,30 @@ KSM=$REF/build/column/kappa_shear_column_mom6.F90
        /^end subroutine find_kappa_tke/{on=0}' "$KS_SRC"
   echo "end module kappa_shear_column_mom6"
 } > "$KSM"
-for d in remap_driver regrid_driver hybgen_driver kappa_shear_driver; do
+# Drag-driven BBL mixing: add_LOTW_BBL_diffusivity (:1606-1789) and set_BBL_TKE (:1947-2152)
+# of MOM_set_diffusivity.F90 need the private set_diffusivity_CS.  Extract both verbatim with
+# the CS type (:62-203, made public) and the module's use lines (:8-45); no line is changed.
+SD_SRC=$REF/MOM6/src/parameterizations/vertical/MOM_set_diffusivity.F90
+BBM=$REF/build/column/bbl_column_mom6.F90
+{
+  echo "module bbl_column_mom6"
+  sed -n '8,45p' "$SD_SRC"
+  echo "implicit none ; private"
+  echo "#include <MOM_memory.h>"
+  echo "public :: add_LOTW_BBL_diffusivity, set_BBL_TKE"
+  awk '/^type, public :: set_diffusivity_CS ; private/{on=1} on{sub(/ ; private$/, ""); print} /^end type set_diffusivity_CS/{on=0}' "$SD_SRC"
+  echo "contains"
+  awk '/^subroutine add_LOTW_BBL_diffusivity\(/{on=1} on{print} /^end subroutine add_LOTW_BBL_diffusivity/{on=0}' "$SD_SRC"
+  awk '/^subroutine set_BBL_TKE\(/{on=1} on{print} /^end subroutine set_BBL_TKE/{on=0}' "$SD_SRC"
+  echo "end module bbl_column_mom6"
+} > "$BBM"
+for d in remap_driver regrid_driver hybgen_driver kappa_shear_driver bbl_driver; do
   [ -f "$HERE/$d.F90" ] || continue
   EXTRA=""; [ "$d" = hybgen_driver ] && EXTRA="$HYB"
   # kappa_shear: preprocess MOM_memory.h; no FMA contraction, so the comparison with NumPy can
   # reach round-off (gfortran contracts a*b+c by default on arm64)
   [ "$d" = kappa_shear_driver ] && EXTRA="-ffp-contract=off -I$REF/MOM6/config_src/memory/dynamic_symmetric -I$REF/MOM6/src/framework $KSM"
+  [ "$d" = bbl_driver ] && EXTRA="-ffp-contract=off -I$REF/MOM6/config_src/memory/dynamic_symmetric -I$REF/MOM6/src/framework $BBM"
   mpif90 -O2 -fdefault-real-8 -fdefault-double-8 -I"$B" -I"$DEPS/include" -J"$REF/build/column" \
          $EXTRA "$HERE/$d.F90" $OBJS "$DEPS/lib/libFMS.a" "$DEPS/lib/libgsw.a" "$DEPS/lib/libcvmix.a" \
          $(nf-config --flibs) $(nc-config --libs) -o "$REF/build/column/$d"
