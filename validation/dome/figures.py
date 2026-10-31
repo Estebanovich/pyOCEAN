@@ -322,8 +322,11 @@ def plume_theory(data: list, out: Path, res_km: float, t0: float = 30 * 86400.0,
     (a) the bulk Richardson number Ri_B = Δb h/ΔU² and (b) the Froude number Fr = ΔU/√(Δb h) on the path, (c) the
     number of interfaces with gradient Ri < 0.25 across the plume interface (Jackson et al. 2008 §6: ≥ 2–4 needed) and
     (d) the measured α_E(x') (Legg eq. 12) against Ellison–Turner E(Ri_B) (dashed) and Xu (2006) E(median Ri_g)
-    (dotted).  Laboratory laws without rotation; Legg §3: DOME entrains ~10× less than they give.  Writes
-    dome_<res>km_plume_theory.png and returns its path.
+    (dotted), drawn only where there is a plume (NaN Ri gives no law value).  Laboratory laws without rotation; Legg
+    §3.3 (p. 85): the rotating plume entrains "considerably smaller" than they give (9–50× against the corner E
+    8.6e-4 [inferencia]).  Ri_B depends strongly on the plume threshold (×1.4–4.6 from s > 0.01 to 0.1 in
+    −180 < x' < −50 km) and is not Legg's Ri_B ≈ 0.4–0.5: compare runs with each other only; the figure carries this
+    note.  Writes dome_<res>km_plume_theory.png and returns its path.
     """
     from validation.dome import theory
     fig, axs = plt.subplots(2, 2, figsize=(11, 7), sharex=True)
@@ -359,6 +362,9 @@ def plume_theory(data: list, out: Path, res_km: float, t0: float = 30 * 86400.0,
     fig.legend(h, lab, loc="lower center", ncol=3, fontsize=7, frameon=False)
     fig.suptitle(f"DOME {res_km:g} km: diagnóstico teórico de la pluma, días {t0 / 86400:.0f}–{t1 / 86400:.0f}",
                  x=0.02, ha="left", fontsize=10)
+    fig.text(0.02, 0.005, "Ri_B (s > 0.01, ΔU contra los 100 m de encima) cambia ×1.4–4.6 con el umbral 0.01 → 0.1 y "
+             "no es el Ri_B ≈ 0.4–0.5 de Legg: comparar corridas entre sí. Leyes sin rotación: Legg (p. 85) halla un E "
+             "\"considerablemente menor\" (9–50× [inferencia]).", fontsize=6.5, ha="left", va="bottom")
     fig.tight_layout(rect=(0, 0.04 + 0.025 * int(np.ceil(len(data) / 3)), 1, 1))
     path = out / f"dome_{res_km:g}km_plume_theory.png"
     fig.savefig(path, dpi=110)

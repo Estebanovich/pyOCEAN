@@ -458,6 +458,9 @@ def test_entrainment_laws():
     np.testing.assert_allclose(e["ellison_turner"][[0, 2, 3]], [0.08, 0.0, 0.0], atol=1e-15)
     np.testing.assert_allclose(e["xu"][[0, 1, 3]], [0.20, 0.0, 0.0], atol=1e-15)
     assert e["ellison_turner"][1] == pytest.approx((0.08 - 0.025) / 2.25)
+    e = theory.entrainment_laws(np.array([np.nan, 0.0]))                 # no plume: no prediction (review I1)
+    assert np.isnan(e["ellison_turner"][0]) and np.isnan(e["xu"][0])
+    assert e["ellison_turner"][1] == 0.08 and e["xu"][1] == 0.20
 
 
 def test_legg_numbers_reproduce_table_2():

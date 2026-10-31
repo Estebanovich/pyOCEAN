@@ -212,9 +212,15 @@ def theory_table(items: list[tuple[str, dict]], t0: float, t1: float) -> str:
           "0.01 < s < 0.99 con Ri de gradiente < 0.25 (Jackson §6 pide ≥ 2–4); E_ET: Ellison–Turner (Xu ecs. 3–4), "
           "E_Xu: Xu ec. 16 con la mediana de Ri_g; Ekman: exceso talud abajo en los 10 m inferiores sobre el interior "
           "de la pluma, dividido por el transporte talud abajo de la pluma (Ezer: 22 %); Nof: u_t = g′s/f "
-          "(Ezer ec. 2). "
-          "Las leyes de laboratorio no tienen rotación: en DOME sobreestiman ~10× (Legg §3). Definiciones en "
-          "validation/dome/theory.py."]
+          "(Ezer ec. 2). La fracción Ri<0.25 es de todas las interfaces de la banda, juntando todas las x y todos "
+          "los registros (no solo las ventanas). "
+          "Ri_B depende mucho del umbral de la pluma: de s > 0.01 a s > 0.1 baja ×1.4–4.6 en −180…−50 km (MITgcm "
+          "legg 9.1 → 6.5; híbrido kv_low + Smag + Jackson 6.5 → 1.4), porque la envoltura diluida entra en h. Con ΔU "
+          "contra los 100 m de encima no es el Ri_B ≈ 0.4–0.5 de Legg, que no da su ΔU operativo [inferencia]: solo "
+          "se comparan corridas entre sí. E_ET(Ri_B) = 0 con Ri_B ≥ 0.8 sale de esta definición, no del modelo; "
+          "'—' = sin pluma. Las leyes de laboratorio no tienen rotación: Legg §3.3 (p. 85) da E = 8e-3–4e-2 con su "
+          "Ri_B y dice que el entrainment rotante es \"considerablemente menor\"; contra el E de la esquina 8.6e-4 "
+          "son 9–50× [inferencia]. Definiciones en validation/dome/theory.py."]
     return "\n".join(L)
 
 

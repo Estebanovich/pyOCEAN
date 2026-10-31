@@ -43,7 +43,7 @@ Modelling 9:151–168.
 
 ## Qué dicen para DOME
 
-- **Ellison–Turner.** Legg calcula Ri_B ≈ 0.4–0.5 cerca de la cima del talud, lo que predice E = 8e-3–4e-2. El valor medido es mucho menor (E de la esquina 8.6e-4, ec. 14) porque la rotación modifica las velocidades (§3). Las leyes de laboratorio sin rotación sobreestiman ~10×.
+- **Ellison–Turner.** Legg calcula Ri_B ≈ 0.4–0.5 cerca de la cima del talud, lo que predice E = 8e-3–4e-2. Legg (§3.3, p. 85) dice que el valor de las corridas rotantes es "considerablemente menor" porque la rotación modifica las velocidades. Contra el E de la esquina (8.6e-4, ec. 14), las leyes de laboratorio sin rotación sobreestiman 9–50× [inferencia: el factor es nuestro, no de Legg].
 - **Números adimensionales de Legg (Tabla 2).**
   - Fr de entrada = 1.
   - Ekman friccional ν_v/(h₀² f): > 0.1 da flujo laminar (Cenedese 2004).

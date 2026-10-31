@@ -122,7 +122,13 @@ def plume_bulk(s: dict, t0: float, t1: float, thr: float = 0.01, h_min: float = 
         Fr       ΔU / √(Δb h) (Ezer 2005 eq. 3) = RiB^(−1/2)
         u_along  plume-mean along-slope speed −u_p [m s⁻¹]
 
-    RiB and Fr are formed from the time means of h, ΔU and Δb (the bulk state, not the mean of a ratio).  Also x, xp
+    RiB and Fr are formed from the time means of h, ΔU and Δb (the bulk state, not the mean of a ratio).
+
+    Caveat (Task-6 review I2): Ri_B depends strongly on the plume threshold: from s > 0.01 to s > 0.1 it
+    falls ×1.4–4.6 in −180 < x' < −50 km (MITgcm legg 9.1 → 6.5, hybrid kv_low + Smag + Jackson 6.5 → 1.4), because
+    the dilute envelope enters h and the plume means.  With ΔU against the 100 m just above, it is not Legg's bulk
+    Ri_B ≈ 0.4–0.5 (Legg gives no operational ΔU) [inferencia]: compare runs with each other only, with one
+    threshold.  E_ET(Ri_B) = 0 for Ri_B ≥ 0.8 then follows from this definition, not from the model.  Also x, xp
     (= x − 1050 km) [m] and y_path, the mean row position on the path [m].
     """
     acc = {k: [] for k in ("h", "dU", "db", "u_along", "y")}
@@ -291,17 +297,19 @@ def nof_speed(s: dict, t0: float, t1: float, thr: float = 0.01, h_min: float = H
 
 def entrainment_laws(ri) -> dict:
     """
-    Entrainment laws E = w_E/ΔU against Ri (Ri < 0 taken as 0):
+    Entrainment laws E = w_E/ΔU against Ri (Ri < 0 taken as 0; NaN Ri, i.e. no plume, gives NaN, not a prediction):
         Ellison–Turner (Turner 1986; Xu et al. 2006 eqs. 3–4, Legg eq. 2): E = (0.08 − 0.1 Ri)/(1 + 5 Ri) for
             Ri < 0.8, else 0 — laboratory, no rotation, with the bulk Ri_B;
         Xu et al. (2006) eq. 16: E = 0.20 (1 − Ri/0.25) for Ri < 0.25, else 0 — fitted to Nek5000 (no rotation),
             used with a layer or gradient Ri.
-    Legg §3 (p. 79–80): in DOME the rotating plume entrains ~10× less than these laws give at its Ri_B (corner E
-    8.6e-4), so they explain trends, not targets (spec anti-goal).
+    Legg §3.3 (p. 85): at his Ri_B ≈ 0.4–0.5 these laws give E = 8e-3–4e-2 and the rotating plume's entrainment is
+    "considerably smaller"; against the corner E 8.6e-4 that is 9–50× [inferencia: the factor is ours, not Legg's].
+    They explain trends, not targets (spec anti-goal).
     """
-    r = np.maximum(np.asarray(ri, float), 0.0)
-    et = np.where(r < 0.8, (0.08 - 0.1 * r) / (1.0 + 5.0 * r), 0.0)
-    xu = np.where(r < RI_C, 0.20 * (1.0 - r / RI_C), 0.0)
+    ri = np.asarray(ri, float)
+    r = np.maximum(ri, 0.0)
+    et = np.where(np.isnan(ri), np.nan, np.where(r < 0.8, (0.08 - 0.1 * r) / (1.0 + 5.0 * r), 0.0))
+    xu = np.where(np.isnan(ri), np.nan, np.where(r < RI_C, 0.20 * (1.0 - r / RI_C), 0.0))
     return dict(ellison_turner=et, xu=xu)
 
 
