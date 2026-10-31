@@ -206,6 +206,34 @@ class TestERA5Load:
         ds = ERA5Source([nc3]).load(T0, T1, BB)
         np.testing.assert_allclose(ds.u10, 7.0)
 
+    def test_time_chunks_are_concatenated(self, tmp_path):
+        # Monthly CDS deliveries: instant and accum files for two consecutive time chunks (N2b task 7 found that
+        # xr.merge(compat="override") kept the first chunk's u10 … and left NaN in the second).  Every variable
+        # must hold the values of its own chunk.
+        paths = _write(tmp_path)
+        chunks = []
+        for i, sl in enumerate((slice(0, 4), slice(4, NT))):
+            for p in paths:
+                with xr.open_dataset(p) as f:
+                    part = f.isel(valid_time=sl).load()
+                if "u10" in part:
+                    part["u10"] = part["u10"] + 2.0 * i                       # 7 m/s, then 9 m/s
+                if "ssrd" in part:
+                    part["ssrd"] = part["ssrd"] * (1.0 + i)                  # 500, then 1000 W/m²
+                q = tmp_path / f"chunk{i}_{p.name}"
+                part.to_netcdf(q)
+                chunks.append(q)
+        ds = ERA5Source(chunks).load(datetime(2015, 4, 1, 0), datetime(2015, 4, 1, 7), BB)
+        assert np.isfinite(ds.to_array()).all()
+        u = ds.u10.isel(lat=0, lon=0).values
+        np.testing.assert_allclose(u, [7.0] * 4 + [9.0] * 4)
+        sw = ds.sw_down.isel(lat=0, lon=0).values
+        # hour-ending accumulations centred on the stamps: the hour ending at t4 (chunk 1) is centred 30 min
+        # before t4, so the stamp t3 sees half of each chunk
+        np.testing.assert_allclose(sw[1:3], 500.0)
+        np.testing.assert_allclose(sw[3], 750.0)
+        np.testing.assert_allclose(sw[4:], 1000.0)
+
 
 # ---------------------------------------------------------------------------
 # Files the user already holds open

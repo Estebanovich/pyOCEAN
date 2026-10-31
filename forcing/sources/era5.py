@@ -153,7 +153,7 @@ class ERA5Source(ForcingSource):
         """
         files = [_open_era5(p) for p in self.paths]
         try:
-            ds = xr.merge([self._normalise(f) for f in files], compat="override", join="outer")
+            ds = self._combine([self._normalise(f) for f in files])
 
             missing = [v for v in (*_INSTANT, *_ACCUM) if v not in ds]
             if missing:
@@ -185,6 +185,32 @@ class ERA5Source(ForcingSource):
         return out
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def _combine(parts: list[xr.Dataset]) -> xr.Dataset:
+        """
+        One dataset from files split by variable group and by time chunk.
+
+        Files with the same variables (e.g. the monthly ``instant`` files) are
+        concatenated along time (sorted; a stamp present in two chunks is kept
+        once), then the groups are merged.  A plain ``xr.merge(compat=
+        "override")`` of all files keeps the first chunk of each variable and
+        leaves NaN in the others (found with July + August 2017 files, N2b
+        task 7).
+        """
+        groups: dict[tuple[str, ...], list[xr.Dataset]] = {}
+        for p in parts:
+            groups.setdefault(tuple(sorted(p.data_vars)), []).append(p)
+        joined = []
+        for g in groups.values():
+            if len(g) > 1:
+                g = sorted(g, key=lambda d: d["time"].values[0])
+                c = xr.concat(g, dim="time", data_vars="minimal", coords="minimal", compat="override",
+                              join="outer")
+                _, first = np.unique(c["time"].values, return_index=True)
+                g = [c.isel(time=np.sort(first))]
+            joined.append(g[0])
+        return xr.merge(joined, compat="override", join="outer")
+
     @staticmethod
     def _normalise(ds: xr.Dataset) -> xr.Dataset:
         """Uniform coordinate names across CDS layouts; drop ensemble/version coords."""
