@@ -320,3 +320,52 @@ def test_wrapper_forwards_base_attributes():
     assert cl.akv is cl.base.akv
     with pytest.raises(AttributeError):
         cl.no_such_attribute
+
+
+# ---------------------------------------------------------------- final review: I1 and M3
+def test_preflight_refuses_every_bad_jackson_field_at_once():
+    # I1: one error per bad field, all reported together (spec criterion 3)
+    hg = create_cartesian_grid(nx=2, ny=2, dx=1000.0, dy=1000.0, f0=1e-4)
+    bad = JacksonParams(kappa_buoy_scale=0.0, max_ks_it=0, max_rino_it=0, shearmix_rate=-0.1, tke_background=-1.0,
+                        fri_curvature=-1.0, tol_err=0.0, kd_seed=0.0, max_kap_src_chg=0.5, kd_trunc_frac=-1.0,
+                        tke_n_decay=-1.0, tke_shear_decay=-1.0, lz_rescale=-1.0, ri_crit=float("nan"))
+    with pytest.raises(ConfigurationError) as e:
+        SigmaBaroclinic(hg, np.full((2, 2), H), dt=60.0, n_layers=NZ, shear_mixing="jackson", jackson_params=bad)
+    msg = str(e.value)
+    for name in ("kappa_buoy_scale", "max_ks_it", "max_rino_it", "shearmix_rate", "tke_background", "fri_curvature",
+                 "tol_err", "kd_seed", "max_kap_src_chg", "kd_trunc_frac", "tke_n_decay", "tke_shear_decay",
+                 "lz_rescale", "ri_crit"):
+        assert f"jackson_params.{name}" in msg, (name, msg)
+    inf = JacksonParams(kd_seed=float("inf"))
+    with pytest.raises(ConfigurationError, match="jackson_params.kd_seed"):
+        SigmaBaroclinic(hg, np.full((2, 2), H), dt=60.0, n_layers=NZ, shear_mixing="jackson", jackson_params=inf)
+
+
+def test_preflight_accepts_default_jackson_params():
+    hg = create_cartesian_grid(nx=2, ny=2, dx=1000.0, dy=1000.0, f0=1e-4)
+    for jp in (None, JacksonParams(), JacksonParams(tke_background=1e-6, shearmix_rate=0.0, kd_trunc_frac=0.0,
+                                                    max_kap_src_chg=10.0)):
+        SigmaBaroclinic(hg, np.full((2, 2), H), dt=60.0, n_layers=NZ, shear_mixing="jackson", jackson_params=jp)
+
+
+def test_jackson_params_after_construction_reach_the_closure():
+    # M3: like ke_scheme / kh (N1), jackson_params / shear_prandtl set later take effect
+    m = _model(None, shear_mixing="jackson")
+    new = JacksonParams(shearmix_rate=0.0)                  # γ = 0: no shear source, κ must vanish
+    m.jackson_params = new
+    assert m._closure.params is new
+    m.shear_prandtl = 2.0
+    assert m._closure.prandtl == 2.0
+    st = _run(m, 3)
+    assert np.all(m._closure.kd == 0.0)
+    m.jackson_params = None                                  # back to MOM6 defaults
+    assert m._closure.params == JacksonParams()
+    with pytest.raises(ConfigurationError, match="jackson_params.kappa_buoy_scale"):
+        m.jackson_params = JacksonParams(kappa_buoy_scale=0.0)
+
+
+def test_jackson_params_after_construction_leave_kpp_alone():
+    m = _model(None, closure="kpp", shear_mixing="jackson")
+    kp = m._closure.base.params
+    m.jackson_params = JacksonParams(ri_crit=0.3)
+    assert m._closure.base.params is kp and m._closure.params.ri_crit == 0.3

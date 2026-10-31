@@ -105,7 +105,7 @@ from core.components.pgf import PressureGradient
 from core.components.momentum import Momentum, sum_terms
 from core.components.open_boundary import CONFIG as _OB_CONFIG, OpenBoundary
 from core.components.bottom_drag import LogLawBedDrag, QuadraticBedDrag
-from core.components.closure import make_closure
+from core.components.closure import ShearAddedClosure, make_closure
 from physics.mixing.kpp_cvmix import KPPParams
 from physics.mixing.kappa_shear import JacksonParams
 from core.components.free_surface import FreeSurfaceVerticalViscosity
@@ -1902,6 +1902,38 @@ _PARAMS = {
 }
 for _name, (_targets, _to, _norm) in _PARAMS.items():
     setattr(SigmaBaroclinic, _name, _component_param(_name, _targets, _to, _norm))
+
+
+def _jackson_params_property() -> property:
+    """
+    ``jackson_params`` kept in sync with the ``ShearAddedClosure`` (shear-mixing final review M3).  Only the shear
+    wrapper takes it: KPP and GLS have their own ``params``.  Assigning later is checked like the constructor
+    argument (``ConfigurationError`` listing every bad field); None = MOM6's defaults.
+    """
+    key = "_pre_jackson_params"
+
+    def get(self):
+        try:
+            return self.__dict__[key]
+        except KeyError:
+            raise AttributeError("jackson_params") from None
+
+    def put(self, value) -> None:
+        if value is not None and "_closure" in self.__dict__:
+            from core.model.contract import ConfigurationError
+            from core.model.preflight import jackson_params_errors
+            errs = (jackson_params_errors(value) if isinstance(value, JacksonParams)
+                    else [f"jackson_params must be a JacksonParams, got {type(value).__name__}"])
+            if errs:
+                raise ConfigurationError("invalid jackson_params:\n  " + "\n  ".join(errs))
+        self.__dict__[key] = value
+        cl = self.__dict__.get("_closure")
+        if isinstance(cl, ShearAddedClosure):
+            cl.params = JacksonParams() if value is None else value
+    return property(get, put, doc="``jackson_params``, kept in sync with the shear-mixing closure")
+
+
+SigmaBaroclinic.jackson_params = _jackson_params_property()
 for _name in ("rho0", "t_coef", "t_ref", "s_coef", "s_ref"):
     setattr(SigmaBaroclinic, _name, _fixed_after_construction(_name))
 

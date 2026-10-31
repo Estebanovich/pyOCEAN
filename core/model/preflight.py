@@ -37,6 +37,43 @@ def _opts(values) -> str:
     return ", ".join(repr(v) for v in values)
 
 
+def jackson_params_errors(jp: JacksonParams) -> list[str]:
+    """
+    One message per invalid field of ``JacksonParams`` (Jackson et al. 2008; MOM_kappa_shear.F90), so that all
+    errors are reported together.  Ranges follow the use of each field in ``physics/mixing/kappa_shear.py``:
+    ri_crit > 0 (Ri_c S² − N² threshold); shearmix_rate ≥ 0 (γ, K_src = 2γ|S|…); fri_curvature > −1 (the source
+    denominator Ri_c S² + F_c N² must stay positive where N² < Ri_c S²); kappa_buoy_scale > 0 (λ, 1/λ²);
+    tke_n_decay, tke_shear_decay, kd_trunc_frac, tke_background, lz_rescale ≥ 0; kd_seed, tol_err > 0;
+    max_rino_it, max_ks_it integers ≥ 1; max_kap_src_chg > 0.5 (tol_dksrc_low = (x − 0.5)/x must be > 0,
+    MOM_kappa_shear.F90:1014-1019).  Every value must be finite.
+    """
+    rules = (("ri_crit", lambda v: v > 0, "> 0 (Jackson et al. 2008: 0.25)"),
+             ("shearmix_rate", lambda v: v >= 0, "≥ 0 (γ, the rate of shear mixing)"),
+             ("fri_curvature", lambda v: v > -1, "> −1 (keeps Ri_c S² + F_c N² positive)"),
+             ("kappa_buoy_scale", lambda v: v > 0, "> 0 (λ; the buoyancy length uses 1/λ²)"),
+             ("tke_n_decay", lambda v: v >= 0, "≥ 0"), ("tke_shear_decay", lambda v: v >= 0, "≥ 0"),
+             ("kd_seed", lambda v: v > 0, "> 0 (first guess of κ)"),
+             ("kd_trunc_frac", lambda v: v >= 0, "≥ 0 (κ_trunc / κ0)"),
+             ("tol_err", lambda v: v > 0, "> 0 (relative tolerance of the κ iteration)"),
+             ("max_kap_src_chg", lambda v: v > 0.5, "> 0.5 (otherwise tol_dksrc_low ≤ 0)"),
+             ("tke_background", lambda v: v >= 0, "≥ 0 (q0)"),
+             ("lz_rescale", lambda v: v >= 0, "≥ 0 (0 behaves as 1)"))
+    out = []
+    for name, ok, rule in rules:
+        v = getattr(jp, name)
+        try:
+            good = bool(np.isfinite(v) and ok(v))
+        except TypeError:
+            good = False
+        if not good:
+            out.append(f"jackson_params.{name}={v!r}: must be a finite number {rule}")
+    for name in ("max_rino_it", "max_ks_it"):
+        v = getattr(jp, name)
+        if isinstance(v, bool) or not isinstance(v, (int, np.integer)) or v < 1:
+            out.append(f"jackson_params.{name}={v!r}: must be an integer ≥ 1 (iteration count)")
+    return out
+
+
 def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
     """
     Issues of the constructor arguments ``a`` of ``SigmaBaroclinic`` (``given``: the names passed explicitly).
@@ -244,9 +281,9 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
     jp = a.get("jackson_params")
     if jp is not None and not isinstance(jp, JacksonParams):
         err("closure", f"jackson_params must be a physics.mixing.kappa_shear.JacksonParams, got {type(jp).__name__}")
-    elif jp is not None and not jp.ri_crit > 0.0:
-        err("closure", f"jackson_params.ri_crit={jp.ri_crit!r}: the critical Richardson number must be > 0 "
-                       "(Jackson et al. 2008: 0.25)")
+    elif jp is not None:
+        for msg in jackson_params_errors(jp):
+            err("closure", msg)
     if sm is None:
         for name in ("shear_prandtl", "jackson_params"):
             if name in given:
