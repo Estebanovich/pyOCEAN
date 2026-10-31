@@ -14,6 +14,7 @@ de la rutina NCAR del acoplador de FMS que usa MOM6 (OM4). Lectura de la fuente:
 | `croco_bulk_driver.F90` | llama a `bulk_point`, el bloque escalar de `bulk_flux.F` de CROCO extraído por `build_reference.sh` |
 | `build_reference.sh` | compila los drivers, los corre y escribe `tests/data/bulk_fms_ncar_reference.npz` (47 kB) y `tests/data/bulk_croco_coare_reference.npz` (33 kB; `build_reference.sh coare` hace solo esta, sin FMS) |
 | `compare_mitgcm.py` | compara `bulk_ncar` con la salida de MITgcm |
+| `fetch_era5.py` | descarga ERA5 horario con `cdsapi` (u10, v10, t2m, d2m, msl, ssrd, strd, tp y los flujos medios `avg_sdswrf`/`avg_sdlwrf`), un archivo por mes y grupo (`instant`, `accum`, `mean`), a `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/forcing/era5/`; por defecto julio–agosto de 2017, caja 38–43° N, 75–68° W (criterio 5 de N2b). Lo usan `forcing/atmosphere.py` y `tests/test_atmosphere.py` (tarea 3) |
 
 ## Fuentes y compilación
 
