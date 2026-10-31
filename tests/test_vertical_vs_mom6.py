@@ -76,7 +76,7 @@ def test_kappa_shear_matches_mom6(tmp_path):
     Tolerance |Δκ| ≤ 1e-10 max κ and |ΔQ| ≤ 1e-10 max Q per column.  The scheme iterates to
     KAPPA_SHEAR_TOL_ERR = 0.1 and has discrete branches (truncation at κ_trunc, sub-step
     halving, Newton switch); a port error or a branch taken differently shows up at
-    ≥ 1e-3 of κ.  Observed: bit for bit (one 2.6e-26 m² s⁻² in Q) with the reference built
+    ≥ 1e-3 of κ.  Observed: bit for bit (since task 3, squares as x*x) with the reference built
     with -ffp-contract=off, ≤ 2.1e-13 relative with FMA contraction on (README).  1e-10 is
     far above round-off and nine orders below the scheme's own tolerance.  The MOM6
     counters also check that the comparison covers the Newton branch and the truncation ramp.

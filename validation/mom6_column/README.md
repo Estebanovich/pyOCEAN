@@ -273,10 +273,13 @@ FMA por defecto en arm64, y NumPy no lo hace.
 | 4 capa de cizalla, 3600 s | 4.29e-3 | 0 | 0 | 3.0e-16 | 0 / 5 / 5 / 45 |
 | 5 cizalla uniforme, Ri 0.22 | 0.121 | 0 | 0 | 2.0e-15 | 4 / 0 / 1 / 10 |
 | 6 cizalla uniforme, Ri 0.15 | 0.936 | 0 | 0 | 2.1e-13 | 2 / 49 / 12 / 293 |
-| 7–18 aleatorias | 1.3e-3 – 7.6e-2 | 0 | ≤ 2.6e-26 m² s⁻² | ≤ 1.1e-13 | 0 / 2–135 / 3–18 / 19–198 |
+| 7–18 aleatorias | 1.3e-3 – 7.6e-2 | 0 | 0 (2.6e-26 m² s⁻² antes de la tarea 3) | ≤ 1.1e-13 | 0 / 2–135 / 3–18 / 19–198 |
 
-Sin FMA, el oráculo reproduce MOM6 bit a bit, salvo un 2.6e-26 m² s⁻² en Q de una columna
-aleatoria. Con la contracción FMA (compilación de prueba, no guardada), la diferencia sube a
+Sin FMA, el oráculo reproduce MOM6 bit a bit en los 18 casos. Hasta la tarea 3 quedaba un
+2.6e-26 m² s⁻² en Q de una columna aleatoria: el oráculo elevaba al cuadrado con `x ** 2` de
+NumPy/Python, que llama a `pow()` de libm y difiere de `x*x` en 1 ulp para ~0.1 % de los
+argumentos; gfortran compila `x**2` como `x*x`. El oráculo escribe ahora los cuadrados como
+productos. Con la contracción FMA (compilación de prueba, no guardada), la diferencia sube a
 ≤ 2.1e-13 relativa, sin cambiar ninguna decisión discreta.
 
 **Tolerancia del test.** |Δκ| ≤ 1e-10 max κ y |ΔQ| ≤ 1e-10 max Q, por columna. El esquema
