@@ -137,6 +137,7 @@ Papers rarely give every detail (limiters, boundary treatment, thin-layer guards
 | CROCO / ROMS (σ, GLS, OBC, W/D) | `~/pyOCEAN_refs/croco/` (compiled test cases in `~/pyOCEAN_refs/croco_runs/`) |
 | MITgcm (z / partial cells, OBCS, EXF) | `~/pyOCEAN_refs/MITgcm/` (also `/Volumes/ESTEBAN_MIT/MITgcm`, with the BayIW runs) |
 | HYCOM (hybgen, barotropic, forcing) | `~/pyOCEAN/HYCOM-src/` (git-ignored) |
+| Veros (Python; reference for architecture and performance only, not physics: NumPy/JAX backend, mpi4py domain decomposition, cost Python vs Fortran PyOM2, IDEMIX for stage E; z only, no ALE/σ/W-D) | `~/pyOCEAN_refs/veros/` (git d953b22, 2026-10-26); papers Häfner et al. 2018 and 2021 in the local library |
 
 Large reads go to a subagent that returns the algorithm with `file:line` references. Report the source as a reference implementation, not as truth: when it disagrees with the paper, say so and decide explicitly.
 
