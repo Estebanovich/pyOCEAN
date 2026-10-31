@@ -338,6 +338,12 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
             err("closure", msg)
     if bm is None and "bbl_params" in given:
         warn("closure", "bbl_params is ignored without bbl_mixing (it applies to bbl_mixing='lotw')")
+    # bulk surface fluxes (N2b task 4, spec 2026-10-31-n2b-bulk-surface-fluxes criterion 6)
+    sf = a.get("surface_fluxes")
+    if sf is not None:
+        from core.components.surface_fluxes import bulk_errors
+        for msg in bulk_errors(sf, a["dt"], sal):
+            err("surface_fluxes", msg)
     if a["sponge_rate"] is None and ({"sponge_T", "sponge_zw", "sponge_tr", "sponge_S"} & given):
         warn("interior_sponge", "sponge_T / sponge_zw / sponge_tr / sponge_S are ignored without sponge_rate")
     return out

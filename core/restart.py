@@ -15,7 +15,9 @@ SCHISM #140).  For ``SigmaBaroclinic`` that is:
   variables ``gls_*``), or the KPP viscosity ν of the last step (``kpp_akv``, N3 task 7); a restart written with
   another closure is rejected; with ``shear_mixing`` the lagged Jackson shear viscosity after the base's fields
   (``shear_kv``, whatever the base), and a restart written with another shear_mixing is rejected; the drag-driven
-  BBL mixing (``bbl_mixing``) has no state of its own, but its scheme and parameters are checked;
+  BBL mixing (``bbl_mixing``) has no state of its own, but its scheme and parameters are checked; the bulk
+  surface fluxes (``surface_fluxes``, N2b) have none either (the atmosphere is a pure function of time): their
+  scheme, averaging depths, wind choice, radiation constants, heights and the atmosphere's time origin are checked;
 * the lagged-LU CG preconditioner of the free surface (the matrix it factorised and the refactor
   flag): CG stops at an iterate that depends on it;
 * ALE (``vertical_coordinate='ale'``, Plan D): the layer thicknesses h, the exterior profile kept in z
@@ -99,6 +101,14 @@ def _config(model: SigmaBaroclinic) -> dict:
     if bm is not None:
         bc = find_closure(model._closure, BBLAddedClosure)
         cfg.update({f"bbl_{k}": _text(v) for k, v in sorted(vars(bc.bbl_params).items())})
+    sf = getattr(model, "surface_fluxes", None)                # bulk fluxes (N2b task 4): no state, the config
+    cfg.update(surface_fluxes="none" if sf is None else "bulk")
+    if sf is not None:
+        org = getattr(sf.atmosphere, "origin", None)
+        cfg.update(bulk_scheme=sf.scheme, bulk_h_sfc=sf.h_sfc, bulk_h_uv_sfc="none" if sf.h_uv_sfc is None
+                   else _text(sf.h_uv_sfc), bulk_relative_wind=int(sf.relative_wind), bulk_albedo=sf.albedo,
+                   bulk_emissivity=sf.emissivity, bulk_z_u=sf.z_u, bulk_z_t=sf.z_t, bulk_z_q=sf.z_q,
+                   bulk_origin="none" if org is None else str(np.datetime64(org, "ns")))
     if getattr(model, "ale", False):                           # ALE (Plan D): the rule and every scheme choice
         cfg.update(vertical_coordinate="ale", regrid=model.regrid_rule, remap=int(model.remap_code),
                    thickness_flux=model.thickness_flux, momentum=model.momentum, ke_scheme=model.ke_scheme,
@@ -129,7 +139,8 @@ _CONFIG_DEFAULTS = {"salinity": 0, "s_coef": 0.0, "s_ref": 35.0, "sponge_S": "no
                     "periodic": "none",                                                     # N3 task 3: no periodic axis
                     "smagorinsky": 0.0,                                                     # Smagorinsky off
                     "shear_mixing": "none",                                                 # no shear mixing
-                    "bbl_mixing": "none"}                                                   # no BBL mixing
+                    "bbl_mixing": "none",                                                   # no BBL mixing
+                    "surface_fluxes": "none"}                                               # no bulk fluxes
 
 _SECTIONS = {"ab_hist": "time_stepper", "gls_": "closure", "kpp_": "closure", "shear_": "closure",
              "T_ext": "open_boundary", "h_ext": "open_boundary",

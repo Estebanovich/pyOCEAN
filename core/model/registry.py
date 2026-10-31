@@ -67,6 +67,26 @@ _SPECS = [
             "drag-driven bottom-boundary-layer diffusivity Kd_BBL at the layer interfaces of the last step (MOM6 "
             "add_LOTW_BBL_diffusivity, energy = bbl_effic × the bed-drag work), added to the closure's κ "
             "(bbl_mixing='lotw'; BBLAddedClosure.kd_bbl)"),
+    # bulk surface fluxes of the last step (N2b task 4, core.components.surface_fluxes; SurfaceFluxes.last), at the
+    # T points, positive into the ocean, 0 on land and dry cells
+    VarSpec("q_sens", ("y", "x"), "t", "W m-2", "surface_downward_sensible_heat_flux", "diagnostic",
+            "bulk sensible heat flux"),
+    VarSpec("q_lat", ("y", "x"), "t", "W m-2", "surface_downward_latent_heat_flux", "diagnostic",
+            "bulk latent heat flux"),
+    VarSpec("q_lw", ("y", "x"), "t", "W m-2", "surface_net_downward_longwave_flux", "diagnostic",
+            "net longwave radiation"),
+    VarSpec("q_sw", ("y", "x"), "t", "W m-2", "surface_net_downward_shortwave_flux", "diagnostic",
+            "net shortwave radiation (1 − albedo) SW↓"),
+    VarSpec("evap", ("y", "x"), "t", "m s-1", None, "diagnostic",
+            "evaporation as a volume flux at the model ρ₀ (mass flux / ρ₀), positive out of the ocean"),
+    VarSpec("precip", ("y", "x"), "t", "m s-1", None, "diagnostic",
+            "precipitation as a volume flux at the model ρ₀ (1000 P / ρ₀)"),
+    VarSpec("tau_x_bulk", ("y", "x"), "t", "N m-2", "surface_downward_x_stress", "diagnostic",
+            "bulk wind stress at the T points, x (averaged to the u faces for the model)"),
+    VarSpec("tau_y_bulk", ("y", "x"), "t", "N m-2", "surface_downward_y_stress", "diagnostic",
+            "bulk wind stress at the T points, y (averaged to the v faces for the model)"),
+    VarSpec("sst_bulk", ("y", "x"), "t", "degC", "sea_surface_temperature", "diagnostic",
+            "SST seen by the bulk formula: thickness-weighted mean over the top h_sfc m"),
     VarSpec("closure.akt", ("kw", "y", "x"), "w", "m2 s-1", None, "component_state",
             "eddy tracer diffusivity (stratified GLS k-ε, gls_stratified; N2a task 8c)"),
 ]

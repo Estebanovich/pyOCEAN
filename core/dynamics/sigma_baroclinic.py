@@ -113,6 +113,7 @@ from core.components.free_surface import FreeSurfaceVerticalViscosity
 from core.components.layer_transport import ALELayerTransport, SigmaLayerTransport
 from core.components.tracers import TracerAdvection, TracerDiffusion
 from core.components.sponge import InteriorSponge
+from core.components.surface_fluxes import BulkFluxes, SurfaceFluxes
 from core.components.vertical_coordinate import ALECoordinate
 from core.model.driver import Driver
 from core.model.contract import ConfigurationError, Issue, raise_issues
@@ -1006,6 +1007,14 @@ class SigmaBaroclinic:
           (``core.components.closure.BBLAddedClosure``)
     bbl_params : ``physics.mixing.bbl_mixing.BBLParams`` (None: MOM6/OM4 defaults: bbl_effic 0.2, max_decay 200 m,
           von_karman 0.41, use_omega True, kd_max 0.1 m² s⁻¹).  Assignable after construction (checked)
+    surface_fluxes : ``core.components.surface_fluxes.BulkFluxes`` (N2b task 4; spec
+          2026-10-31-n2b-bulk-surface-fluxes): bulk surface fluxes computed every step from an atmosphere provider
+          (``forcing.atmosphere``) at tⁿ + Δt/2 and the model's own surface state (SST, SSS and current averaged
+          over the top ``h_sfc`` m, MOM6 HMIX_SFC_PROP), with scheme 'ncar' (FMS/MOM6 form of Large & Yeager
+          2004), 'ncar_ly04' (MITgcm), 'coare' (CROCO COARE 3.0) or 'kara' (HYCOM).  They enter as the wind stress
+          at the faces, the heat flux (non-solar + Jerlov shortwave) and the real freshwater flux P − E; ``step``
+          then takes no ``tau_x``/``tau_y``/``fw``/``heat``.  Needs ``salinity=True``.  None (default): nothing
+          changes, bit for bit
     adv : momentum advection: 'flux' (default; momentum-conserving flux form with WENO5,
           as CROCO) or the advective form 'upwind3' / 'centred' of core.dynamics.nonlinear
     vertical_coordinate : 'sigma_eulerian' (default; σ-layers with vertical advection) or 'ale'
@@ -1126,7 +1135,8 @@ class SigmaBaroclinic:
                  periodic: tuple[str, ...] = (), gls_production: str = "croco",
                  kpp_params: KPPParams | None = None, smagorinsky: float = 0.0, shear_mixing: str | None = None,
                  shear_prandtl: float = 1.0, jackson_params: JacksonParams | None = None,
-                 bbl_mixing: str | None = None, bbl_params: BBLParams | None = None) -> None:
+                 bbl_mixing: str | None = None, bbl_params: BBLParams | None = None,
+                 surface_fluxes: BulkFluxes | None = None) -> None:
         _args = {k: v for k, v in locals().items() if k != "self"}
         raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
         self.periodic = Periodic(periodic)                              # N3 task 3 (class docstring)
@@ -1299,6 +1309,10 @@ class SigmaBaroclinic:
                                                         layer_volumes=self.layer_volumes, ob=self._ob,
                                                         area=self.area)
         self._last_layer_fluxes = None
+        self.surface_fluxes = surface_fluxes                            # bulk fluxes (N2b task 4), or None
+        self._surface_fluxes = (None if surface_fluxes is None else
+                                SurfaceFluxes(surface_fluxes, fs=self.fs, area=self.area, ds=self.ds, ale=self.ale,
+                                              periodic=self.periodic, rho0=self.rho0, salinity=self.salinity))
         self._driver = Driver(self)
         self._tracer_advection = TracerAdvection(scheme=self.tracer_scheme, time=self.tracer_time, dt=dt, ob=self._ob)
         self._tracer_diffusion = TracerDiffusion(kh=self.kh, dt=dt, ds=self.ds, fs=self.fs, eos=self._eos, pgf=self._pgf,
@@ -1804,7 +1818,12 @@ class SigmaBaroclinic:
         [W m⁻², positive into the ocean].  Q_ns heats the top layer; Q_sw penetrates with the Paulson & Simpson
         (1977) profile of the Jerlov type ``jerlov`` and what reaches the bed stays in the bottom layer; ΔT =
         Q Δt / (ρ₀ c_p h).  Ignored on land and dry cells.  None (default) changes nothing, bit for bit.
+
+        With ``surface_fluxes`` (bulk fluxes, N2b task 4) the four forcing arguments come from the bulk component
+        (``core.components.surface_fluxes``) every step, and passing any of them is an error (spec decision 9).
         """
+        if self._surface_fluxes is not None:
+            self._refuse_prescribed(tau_x, tau_y, fw, heat)
         if heat is not None:
             heat = self._check_heat(heat)
         if fw is not None:
@@ -1817,6 +1836,13 @@ class SigmaBaroclinic:
                                     f"fw must have shape {self.H.shape} (ny, nx), got {fw.shape}"))
             raise_issues(issues)
         return self._driver.step(st, tau_x, tau_y, fw, heat)
+
+    def _refuse_prescribed(self, tau_x, tau_y, fw, heat) -> None:
+        """With bulk fluxes the step takes no prescribed forcing (spec decision 9): every one given, at once."""
+        given = [n for n, v in (("tau_x", tau_x), ("tau_y", tau_y), ("fw", fw), ("heat", heat)) if v is not None]
+        raise_issues([Issue("error", "surface_fluxes", f"step({n}=...) with surface_fluxes: the bulk component "
+                                                       "computes it every step; build the model without "
+                                                       "surface_fluxes to prescribe it") for n in given])
 
     def _check_heat(self, heat: dict) -> dict:
         """Validated copy of the ``heat`` dict of ``step`` (keys, shapes), every error at once."""

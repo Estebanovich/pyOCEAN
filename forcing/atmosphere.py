@@ -96,6 +96,11 @@ class AtmosphereProvider:
         pyOCEAN horizontal grid with ``lon_t``, ``lat_t`` (ny, nx).
     origin : np.datetime64
         Model time origin; ``t`` is in seconds from it.
+    window : (np.datetime64, np.datetime64), optional
+        The period the run asked for.  ``coverage()`` and the times accepted are trimmed to it (N2b task 4,
+        Task 3 review m2): the ERA5 and WRF adapters load one record of margin on each side, and past t1 the
+        hour-ending rates (SW, LW, precipitation) of that margin record are centred 30 min after t1, so it serves
+        only the interpolation at t1, never a step beyond it.  None (default): the records themselves.
 
     Raises
     ------
@@ -103,7 +108,8 @@ class AtmosphereProvider:
         If a required variable is missing or the source has no records.
     """
 
-    def __init__(self, source_ds: xr.Dataset, grid: xr.Dataset, origin: np.datetime64) -> None:
+    def __init__(self, source_ds: xr.Dataset, grid: xr.Dataset, origin: np.datetime64,
+                 window: tuple[np.datetime64, np.datetime64] | None = None) -> None:
         missing = [v for v in _REQUIRED if v not in source_ds]
         if missing:
             raise ValueError(f"atmosphere source is missing canonical variables {missing}")
@@ -125,11 +131,24 @@ class AtmosphereProvider:
         self._t = (self._times - self._origin).astype("timedelta64[ns]").astype(np.int64) / 1e9
         self._shape = grid["lon_t"].shape
         self._cache: dict[int, dict[str, np.ndarray]] = {}
+        lo, hi = float(self._t[0]), float(self._t[-1])
+        if window is not None:
+            w0, w1 = ((np.datetime64(w, "ns") - self._origin).astype(np.int64) / 1e9 for w in window)
+            lo, hi = max(lo, w0), min(hi, w1)
+            if lo > hi:
+                raise ValueError(f"atmosphere records [{self._times[0]}, {self._times[-1]}] do not overlap the "
+                                 f"window [{window[0]}, {window[1]}]")
+        self._cov = (lo, hi)
 
     # ------------------------------------------------------------------
+    @property
+    def origin(self) -> np.datetime64:
+        """Model time origin (``t`` = 0) [datetime64[ns]]."""
+        return self._origin
+
     def coverage(self) -> tuple[float, float]:
-        """First and last record times [s from ``origin``]."""
-        return float(self._t[0]), float(self._t[-1])
+        """Times the provider serves [s from ``origin``]: the first and last records, trimmed to ``window``."""
+        return self._cov
 
     # ------------------------------------------------------------------
     def __call__(self, t: float) -> dict[str, np.ndarray]:
@@ -153,10 +172,10 @@ class AtmosphereProvider:
             If ``t`` is outside the source records.
         """
         t = float(t)
-        if not (self._t[0] <= t <= self._t[-1]):
+        if not (self._cov[0] <= t <= self._cov[1]):
             when = self._origin + np.timedelta64(int(round(t * 1e9)), "ns")
-            raise ValueError(f"time {when} (t = {t} s) is outside the atmosphere records "
-                             f"[{self._times[0]}, {self._times[-1]}]")
+            c0, c1 = (self._origin + np.timedelta64(int(round(c * 1e9)), "ns") for c in self._cov)
+            raise ValueError(f"time {when} (t = {t} s) is outside the atmosphere records [{c0}, {c1}]")
         n = int(np.searchsorted(self._t, t, side="right")) - 1
         if n == self._t.size - 1:
             last = self._record(n)
@@ -211,13 +230,14 @@ def era5_atmosphere(paths: list[str | Path], grid: xr.Dataset, origin: np.dateti
     origin : np.datetime64
         Model time origin.
     t0, t1 : datetime
-        Period to load (one record of margin is added by the adapter).
+        Period to load (one record of margin is added by the adapter); the provider's coverage is trimmed
+        to it (``window``).
     bbox : BBox, optional
         Region to read; default ``BBox.from_grid(grid)`` (1° margin).
     """
     bbox = BBox.from_grid(grid) if bbox is None else bbox
     ds = ERA5Source(paths).load(t0, t1, bbox)
-    return AtmosphereProvider(ds, grid, origin)
+    return AtmosphereProvider(ds, grid, origin, window=(np.datetime64(t0, "ns"), np.datetime64(t1, "ns")))
 
 
 def wrf_atmosphere(paths: list[str | Path], grid: xr.Dataset, origin: np.datetime64,
@@ -229,4 +249,4 @@ def wrf_atmosphere(paths: list[str | Path], grid: xr.Dataset, origin: np.datetim
     per cycle; mixing ratio → specific humidity).
     """
     ds = WRFSource(paths).load(t0, t1, BBox.from_grid(grid))
-    return AtmosphereProvider(ds, grid, origin)
+    return AtmosphereProvider(ds, grid, origin, window=(np.datetime64(t0, "ns"), np.datetime64(t1, "ns")))

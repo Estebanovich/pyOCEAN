@@ -154,8 +154,21 @@ class Driver:
                                                    f"dt_tracer={self.dt_tracer}, dt_therm={self.dt_therm} must be equal")])
         self.last_terms: dict | None = None
         self.last_bflux: dict | None = None
+        if getattr(model, "_surface_fluxes", None) is not None:      # bulk fluxes (N2b task 4): see _step_bulk
+            self.step = self._step_bulk
 
     # ------------------------------------------------------------------ driver
+    def _step_bulk(self, st, tau_x=None, tau_y=None, fw=None, heat=None):
+        """
+        ``step`` with bulk surface fluxes (N2b task 4, ``core.components.surface_fluxes``): the four forcing
+        arguments come from the bulk component, evaluated with the state n and the atmosphere at tⁿ + Δt/2 (spec
+        decision 2), before the step context is built; the facade has refused prescribed ones.  Bound in place of
+        ``step`` at construction, so the default path (no bulk) runs no new line.
+        """
+        m = self.m
+        tau_x, tau_y, fw, heat = m._surface_fluxes.forcing(st, st.time + m.dt / 2)
+        return Driver.step(self, st, tau_x, tau_y, fw, heat)
+
     def step(self, st, tau_x=None, tau_y=None, fw=None, heat=None):
         """
         One step; ``fw`` (ny, nx) is the surface freshwater flux P − E [m s⁻¹] (N2a, checked by the facade);
