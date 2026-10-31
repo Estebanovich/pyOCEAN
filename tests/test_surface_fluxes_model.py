@@ -500,3 +500,29 @@ def test_threads_bit_for_bit():
         finally:
             sb.set_threads(1)
     assert out[0] == out[1]
+
+
+@pytest.mark.parametrize("kind", ["sigma", "zstar"])
+def test_variance_budget_closes_with_bulk(kind):
+    """
+    N2b task 8 (ruling R6; open check of task 6): bulk fluxes together with ``variance_budget=True``.  The exact
+    discrete budget of Σ V c² of S and T (Klingbeil et al. 2014; N2a ``tests/test_n2a_budget.py``) closes to the same
+    1e-12 relative tolerance with the real freshwater flux and the heat flux of the bulk formulae in the basin.
+    """
+    sb.set_threads(1)
+    m, st = _basin(kind, variance_budget=True, kh=50.0, kv=1e-3)
+    keys = {"num_adv", "phy_v", "phy_h", "surf", "sponge"} | ({"num_remap"} if m.ale else set())
+    for _ in range(6):
+        V0 = m.layer_volumes(st.eta, st.h)
+        S0, T0 = st.S, st.T
+        st = m.step(st)
+        V1 = m.layer_volumes(st.eta, st.h)
+        b = st.budget
+        assert set(b) == {f"{c}_{k}" for c in "ST" for k in keys}
+        for c, c0, c1 in (("S", S0, st.S), ("T", T0, st.T)):
+            lhs = (V1 * c1**2).sum() - (V0 * c0**2).sum()
+            rhs = m.dt * (b[f"{c}_surf"].sum() - b[f"{c}_num_adv"].sum() - b[f"{c}_phy_v"].sum()
+                          - b[f"{c}_phy_h"].sum() - b.get(f"{c}_num_remap", np.zeros(1)).sum()
+                          - b[f"{c}_sponge"].sum())
+            assert abs(lhs - rhs) <= 1e-12 * (V0 * c0**2).sum(), (kind, c, lhs, rhs)
+            assert np.abs(b[f"{c}_surf"]).sum() > 0                        # the bulk fluxes are a real source

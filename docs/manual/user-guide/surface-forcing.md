@@ -21,10 +21,13 @@ signs and time stamps, and every grid/time operation is shared (`forcing/interp.
 separation between the ocean core and a flux coupler (Adcroft et al. 2019; `docs/design/forcing_architecture.md`).
 The physics of the bulk formulae is in [Air–sea fluxes](../theory/air-sea-fluxes.md).
 
-!!! warning "What the models consume today"
-    `SigmaBaroclinic.step(st, tau_x, tau_y)` takes only the **wind stress at the u- and v-faces** [N m⁻²].
-    Heat and freshwater fluxes are computed but are consumed only by the legacy phase-1 `surface_tendency`
-    (see [Which model line consumes each flux](../theory/air-sea-fluxes.md#which-model-line-consumes-each-flux)).
+!!! warning "What the models consume"
+    Since N2b, `SigmaBaroclinic(..., surface_fluxes=BulkFluxes(atmosphere))` computes the wind stress, heat and
+    freshwater fluxes itself at every step from an atmosphere (ERA5 or WRF) and its own sea-surface state; see
+    [Bulk fluxes inside the 3-D model](#bulk-fluxes-inside-the-3-d-model-n2b). Without it, `step(st, tau_x, tau_y)`
+    takes the **wind stress at the u- and v-faces** [N m⁻²] and, optionally, prescribed `heat` and `fw`. The other
+    lines (`SigmaWetDry`, the 2-D tidal models, the phase-1 `surface_tendency`) are described in
+    [Which model line consumes each flux](../theory/air-sea-fluxes.md#which-model-line-consumes-each-flux).
     Ocean products feed initial and boundary conditions.
 
 ## The canonical contract
@@ -117,7 +120,7 @@ TPXO tides are read by `forcing.sources.tpxo.read_tpxo` (not a `ForcingSource`; 
 | `U10`, `V10` (grid-relative) | `u10`, `v10` | $u_e = U\cos\alpha - V\sin\alpha$, $v_e = V\cos\alpha + U\sin\alpha$ with `COSALPHA`/`SINALPHA` when present (identity on Mercator) |
 | `T2` | `t2m` | none |
 | `Q2` (mixing ratio) | `q2m` | $q = r/(1+r)$ |
-| `PSFC` | `msl` | none (surface pressure ≈ MSLP over the ocean) |
+| `PSFC` | `msl` | none: the surface pressure is passed as the sea-level pressure, a **known approximation** (see below) |
 | `SWDOWN`, `GLW` | `sw_down`, `lw_down` | none (instantaneous) |
 | `RAINC + RAINNC` [mm since cycle start] | `precip` | de-accumulated per file, centred, mm → m; bucket counters `I_RAINC`, `I_RAINNC` × `BUCKET_MM` added |
 | `LANDMASK` (and `LAKEMASK`) | — | land set to NaN when `mask_land=True` |
@@ -179,6 +182,59 @@ All functions are in `forcing/interp.py`:
 
 Land NaNs must be removed with `fill_land` **before** `to_model_grid`. Curvilinear sources are not
 handled.
+
+## Bulk fluxes inside the 3-D model (N2b)
+
+The recommended way to force `SigmaBaroclinic` with a real atmosphere. The model needs `salinity=True` (the freshwater
+flux acts on S).
+
+```python
+import numpy as np
+from datetime import datetime
+from core.components.surface_fluxes import BulkFluxes
+from core.dynamics.sigma_baroclinic import SigmaBaroclinic
+from forcing.atmosphere import era5_atmosphere
+
+origin = np.datetime64("2017-07-01T00:00", "ns")             # model time 0 [s] is this date
+atm = era5_atmosphere(["era5_2017-07_instant.nc", "era5_2017-07_accum.nc"], hg, origin,
+                      t0=datetime(2017, 7, 1), t1=datetime(2017, 7, 8))
+model = SigmaBaroclinic(hg, H, dt=120.0, n_layers=36, salinity=True, s_coef=0.78, s_ref=35.0,
+                        closure="kpp", surface_fluxes=BulkFluxes(atm, scheme="ncar"), ...)
+st = model.initial_state(eta0, T0, S=S0)
+for _ in range(n_steps):
+    st = model.step(st)                                       # no tau, heat or fw: the bulk computes them
+```
+
+- **Atmosphere.** `era5_atmosphere(paths, grid, origin, t0, t1)` and `wrf_atmosphere(...)` return an
+    `AtmosphereProvider`: the canonical atmosphere on the T points as a pure function of the model time, with linear
+    interpolation in time between the stored records and land filled with the nearest sea value before the bilinear
+    step. The files are read once per record (two records are cached), never inside the step. `coverage()` gives the
+    first and last time in seconds from `origin`; a step outside it raises `ValueError` naming the date. For a
+    restarted run load the atmosphere from the restart date (the `t0` of the continuation) and keep the same `origin`:
+    the restart checks the origin and the result is bit for bit the uninterrupted run.
+- **Options of `BulkFluxes`.** `scheme` (`'ncar'` default, `'ncar_ly04'`, `'coare'`, `'kara'`), `h_sfc` = 1 m, `h_uv_sfc`
+    (None = `h_sfc`, 0 = top layer), `relative_wind` = True, `albedo` = 0.066, `emissivity` = 0.97, heights `z_u`, `z_t`,
+    `z_q` = 10, 2, 2 m. All are listed in the [configuration reference](configuration-reference.md#surface_fluxes-bulk-surface-fluxes-n2b).
+- **Sea-surface state.** The bulk uses a 1 m thickness-weighted mean of T, S and current, not the top layer, so
+    σ, z\* and hybrid give the same fluxes for the same column.
+- **Choosing the scheme.** Use `'ncar'` to compare with MOM6 and `'ncar_ly04'` to compare with MITgcm; use `'coare'`
+    (with `relative_wind=False`, `h_sfc=0` to imitate CROCO's absolute wind and top-layer SST) to compare with CROCO;
+    `'kara'` reproduces HYCOM `flxflg = 6` and needs the SSS, which the model supplies.
+- **Output.** The registry holds `q_sens`, `q_lat`, `q_lw`, `q_sw`, `evap`, `precip`, `tau_x_bulk`, `tau_y_bulk` and
+    `sst_bulk` as diagnostics; `model._surface_fluxes.last` (a dict; private, no public accessor yet) holds the last step's values.
+- **Refused combinations** (pre-flight, all reported at once): bulk together with `tau_x`/`tau_y`/`heat`/`fw` passed to
+    `step`, bulk without `salinity=True`, an unknown scheme, negative `h_sfc`, albedo outside [0, 1], emissivity outside
+    (0, 1], `z_q` ≠ `z_t` for `'ncar_ly04'` and `'coare'`, and an atmosphere with an empty coverage.
+- **Cost.** 1.020 of the step on BayIW cut z\* (50 layers); reading and interpolating the atmosphere is ~1 ms per step.
+
+!!! warning "Known approximation: WRF `PSFC` is used as the sea-level pressure"
+    The WRF adapter fills `msl` with the surface pressure `PSFC`, because `wrfout` has no sea-level pressure. The
+    bulk uses `msl` for the air density and the saturation humidity (`'ncar'`, `'ncar_ly04'`, `'kara'`; `'coare'`
+    uses CROCO's 1e5 Pa). Over the sea the surface is at sea level so the two are close, but the difference was not
+    quantified in N2b. ERA5 gives the true `msl`.
+
+The atmospheric pressure gradient (inverse barometer) is not applied by the model; it is planned with the regional
+chain. There is no SST or SSS restoring and no sea ice.
 
 ## Worked example: wind stress for `SigmaBaroclinic` from ERA5
 
@@ -290,7 +346,13 @@ validation: [Air–sea fluxes](../theory/air-sea-fluxes.md#validation).
 
 ## Known limitations
 
-- Heat, freshwater and pressure forcing are not used by the σ/ALE model (wind stress only).
+- Atmospheric pressure forcing (inverse barometer, ∇p_a) is not applied by any model line. Heat and freshwater are
+    applied by `SigmaBaroclinic` only (bulk, or prescribed `heat`/`fw`); the older lines take wind stress only.
+- WRF `PSFC` stands for `msl` (approximation above); only `'ncar'`/`'ncar_ly04'`/`'kara'` use it.
+- The bulk is validated against MITgcm and CROCO on an ERA5 column (formula ≤ 0.7 % / 0.14 %), but the coupled mean
+    fluxes differ by 14 % and the SST by 0.3 °C, which the model mixing explains
+    ([Air–sea fluxes](../theory/air-sea-fluxes.md#validation-of-the-coupled-fluxes-n2b)); it has not been compared with
+    observations yet.
 - No GFS, CMEMS, river or FES adapters yet (planned in `docs/design/forcing_architecture.md`).
 - Only rectilinear source grids (no Lambert WRF, no curvilinear HYCOM grids); bilinear interpolation only.
 - `HYCOMArchiveSource` supports `yrflag = 3` only; layer → z sampling is piecewise constant.
@@ -298,6 +360,9 @@ validation: [Air–sea fluxes](../theory/air-sea-fluxes.md#validation).
 
 ## References
 
+- Fairall, C.W. et al. (2003). Bulk parameterization of air–sea fluxes: updates and verification for the COARE
+    algorithm. *J. Climate* 16, 571–591. doi:10.1175/1520-0442(2003)016<0571:BPOASF>2.0.CO;2 **[verify]**
+- Large, W.G. & Yeager, S.G. (2004). NCAR/TN-460+STR. doi:10.5065/D6KK98Q6.
 - Adcroft, A. et al. (2019). The GFDL global ocean and sea ice model OM4.0. *J. Adv. Model. Earth Syst.*
     11, 3167–3211. doi:10.1029/2019MS001726 **[verify]**
 - Buck, A.L. (1981). New equations for computing vapor pressure and enhancement factor. *J. Appl. Meteor.*

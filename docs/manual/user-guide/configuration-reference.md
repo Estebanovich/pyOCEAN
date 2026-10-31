@@ -110,12 +110,29 @@ columns, v-faces ny + 1 rows; "σ" means `vertical_coordinate="sigma_eulerian"`,
 reaching the bed of the boundary column; optional `eta (n,)` [m] and `ubar (n,)` [m s⁻¹] for Flather (None = 0).
 `n` = ny on west/east, nx on south/north. `S` is ignored (no salinity).
 
+### `surface_fluxes`: bulk surface fluxes (N2b)
+
+| Name | Type | Default | Units | Meaning | Valid values | Notes |
+|---|---|---|---|---|---|---|
+| `surface_fluxes` | `BulkFluxes` or None | None | — | compute τ, heat and P − E at every step from an atmosphere and the model sea-surface state | a `core.components.surface_fluxes.BulkFluxes` | needs `salinity=True`; `step` then refuses `tau_x`, `tau_y`, `fw`, `heat`. Without it everything is bit for bit as before |
+| `BulkFluxes.atmosphere` | `AtmosphereProvider` | required | — | canonical atmosphere on the T points, `__call__(t)`, `coverage()`, `origin` | `era5_atmosphere(...)`, `wrf_atmosphere(...)` (`forcing/atmosphere.py`) | pure function of t [s from `origin`]; coverage checked at the first step |
+| `BulkFluxes.scheme` | str | `"ncar"` | — | bulk algorithm | `"ncar"` (FMS form, MOM6), `"ncar_ly04"` (MITgcm), `"coare"` (CROCO), `"kara"` (HYCOM) | see [Air–sea fluxes](../theory/air-sea-fluxes.md#bulk-fluxes-coupled-to-the-3-d-model-n2b) |
+| `BulkFluxes.h_sfc` | float | 1.0 | m | depth of the thickness-weighted mean of T, S (and the current) given to the bulk | ≥ 0; 0 = top layer | MOM6 `HMIX_SFC_PROP`; same in σ, z\*, hybrid |
+| `BulkFluxes.h_uv_sfc` | float or None | None → `h_sfc` | m | depth of the current mean | ≥ 0; 0 = top layer (MOM6) | |
+| `BulkFluxes.relative_wind` | bool | True | — | wind relative to the surface current | True (LY04, MOM6), False (CROCO) | |
+| `BulkFluxes.albedo` | float | 0.066 | — | shortwave albedo | [0, 1] | LY04; in `"coare"` the net SW is (1 − albedo) SW↓ |
+| `BulkFluxes.emissivity` | float | 0.97 | — | longwave emissivity | (0, 1] | LY04/MITgcm; `"coare"` uses CROCO's 0.985 σT⁴ without reflection |
+| `BulkFluxes.z_u`, `z_t`, `z_q` | float | 10, 2, 2 | m | heights of wind, temperature, humidity | > 0; `z_q` = `z_t` for `"ncar_ly04"` and `"coare"` | ERA5 heights |
+
+The shortwave profile uses the model's `jerlov` and `cp`; there is no SST or SSS restoring. The restart checks the scheme,
+`h_sfc`, `h_uv_sfc`, `relative_wind`, albedo, emissivity, the heights and the atmosphere origin.
+
 ### Methods and state
 
 | Method | Signature | Returns |
 |---|---|---|
 | ``initial_state`` (`:1190`) | `(eta, T, h_src=None)` | resting `SigmaState`; sets `rho_ref` if `"auto"`, `T_ext`, `h_ext` |
-| ``step`` (`:2084`) | `(st, tau_x=None, tau_y=None)`, τ [N m⁻²] at u-/v-faces | new `SigmaState` |
+| ``step`` (`:2084`) | `(st, tau_x=None, tau_y=None, fw=None, heat=None)`, τ [N m⁻²] at u-/v-faces; none of the forcing arguments with `surface_fluxes` | new `SigmaState` |
 | ``layer_heights`` (`:1267`) | `(eta, h=None)` | layer-centre heights (N, ny, nx) [m], z = 0 at rest |
 | ``layer_volumes`` (`:1289`) | `(eta, h=None)` | layer volumes [m³] |
 | ``density`` (`:1285`) | `(T)` | ρ [kg m⁻³] |
@@ -284,6 +301,11 @@ Grouped by where they are raised. The message text is the code's.
 | `cells with H ≤ 0 can dry: use regrid='sigma', or 'hybrid' with a shallow σ zone (regrid_params d_sigma, d_hybrid > 0) covering them` | floodable cells with z*, or hybrid without a window — also the symptom of 0-for-land bathymetry | `:1171` |
 | `open boundaries next to cells with H ≤ 0 (which can dry) are not supported with vertical_coordinate='ale'` | | `:1178` |
 | `unknown tracer_limiter …` / `tracer_limiter='fct' needs vertical_coordinate='ale', tracer_time='ssprk3' and a WENO5 tracer_scheme` | | `:1116`, `:1119` |
+| `surface_fluxes must be a core.components.surface_fluxes.BulkFluxes, got …` / `unknown bulk scheme … (valid: …)` / `surface_fluxes needs salinity=True (…)` | bulk configuration (pre-flight, every problem reported at once) | `core/components/surface_fluxes.py:117-157` |
+| `surface_fluxes.h_sfc=…: the averaging depth must be ≥ 0 m` / `surface_fluxes.albedo=… must be in [0, 1]` / `surface_fluxes.emissivity=… must be in (0, 1]` / `surface_fluxes.z_u=…: a measurement height must be > 0 m` / `surface_fluxes.z_q=… ≠ z_t=…: scheme … takes T and q at one height` | invalid `BulkFluxes` values | same |
+| `the atmosphere coverage [c0, c1] s from its origin is empty or not finite` | provider with no usable coverage | same |
+| `step(tau_x=...) with surface_fluxes: the bulk component computes it every step; build the model without surface_fluxes to prescribe it` (one per argument given) | bulk together with prescribed forcing | `core/dynamics/sigma_baroclinic.py` (`_refuse_prescribed`) |
+| `… atmosphere at <date> … outside its coverage [<date>, <date>]` (`ValueError`) | the run reaches a time the atmosphere does not cover (first step or later) | `core/components/surface_fluxes.py` (`_check_time`) |
 | **UserWarning** `hybrid z* floor (Σ dz_top = … m) stops above the deepest bed (… m)` | Σ `dz_top` < max H | `:1165` |
 
 ### In `initial_state` and the first steps

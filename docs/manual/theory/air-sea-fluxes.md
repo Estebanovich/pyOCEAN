@@ -8,10 +8,15 @@ MITgcm `pkg/exf` and HYCOM `flxflg = 5`, and **`bulk_kara`**, the polynomial fit
 to COARE 3.0, identical to HYCOM `flxflg = 6` / `wndflg = 4` (the setting of the HYCOM-IOA operational
 system). `forcing/surface.py` converts fluxes into tendencies of the top model layer.
 
-!!! warning "Which model line uses which flux today"
-    The flux *computation* is complete, but only the **wind stress** is consumed by the production model
-    lines. Read [Which model line consumes each flux](#which-model-line-consumes-each-flux) before planning
-    a run with heat or freshwater forcing.
+Since N2b (2026-10-31) the production 3-D model (`SigmaBaroclinic`, σ and ALE) computes these fluxes **itself at
+every step** from an atmosphere and its own sea-surface state; see
+[Bulk fluxes coupled to the 3-D model](#bulk-fluxes-coupled-to-the-3-d-model-n2b). The older `NCAR` and `Kara` schemes
+are still available as functions and, through `BulkFluxes`, inside the model.
+
+!!! warning "Which model line uses which flux"
+    Only `SigmaBaroclinic` with `surface_fluxes=BulkFluxes(...)` computes and applies all fluxes by itself. The
+    other model lines still take prescribed fluxes or only the wind stress. Read
+    [Which model line consumes each flux](#which-model-line-consumes-each-flux) before planning a run.
 
 ## Physics
 
@@ -236,6 +241,98 @@ stress $\tau = \rho_a C_D\lvert\mathbf U_{10}\rvert\mathbf U_{10}$ for idealised
 *Fraction of the surface shortwave left at depth z. The red band (58 %) is absorbed in the top metre; the
 blue-green part still carries ~5 % of the surface flux at 60 m.*
 
+## Bulk fluxes coupled to the 3-D model (N2b)
+
+`SigmaBaroclinic(..., surface_fluxes=BulkFluxes(atmosphere, scheme='ncar'))` replaces the `tau_x`, `tau_y`, `heat` and
+`fw` arguments of `step`. At every step the component (`core/components/surface_fluxes.py`) takes the atmosphere at the
+middle of the step, $t^{n+1/2}$, the sea-surface state of the start of the step, computes the fluxes with the chosen
+scheme and hands them to the paths that already exist: $\tau$ to the u and v faces, $Q_{ns} = Q_{LW} + Q_S + Q_L$ and
+$Q_{SW}$ to the N3 heat path (below), and $P - E$ to the N2a real freshwater flux. The atmosphere is a pure function of
+the model time (`AtmosphereProvider`, `forcing/atmosphere.py`), so nothing of it is stored in a restart.
+
+### Sea-surface temperature, salinity and current: a 1 m mean
+
+The bulk formulae need the temperature, salinity and current of the sea surface. The model does not use its top layer,
+which is 1 mm thick in a hybrid grid and 200 m in a deep σ column. It uses the **thickness-weighted mean over the top
+$h_{sfc}$ = 1 m** (MOM6 `HMIX_SFC_PROP`, `MOM.F90:2695, 4242-4301`)
+
+$$
+\mathrm{SST} = \frac{\sum_k w_k\,T_k}{\sum_k w_k},\qquad w_k = \max\!\Big(0,\ \min\big(h_k,\ h_{sfc} - d_k^{top}\big)\Big),
+$$
+
+with $d_k^{top}$ the depth of the top of layer $k$; where the water is shallower than 1 m the mean is over the whole
+column. It is computed in the same way in σ, z\* and hybrid, so a horizontally uniform column at rest gives the same
+SST in z\* and σ (measured identical; hybrid within the bounds derived in `tests/test_surface_fluxes_model.py`). MOM6
+takes the current from the first layer (`HMIX_UV_SFC_PROP` = 0); pyOCEAN averages it over the same 1 m, because a
+200 m top layer must not decide the relative wind. `h_uv_sfc=0` gives MOM6's choice. The mean is restricted to the layers
+a wet column needs to reach 1 m, which makes it cheap (8.5 ms per step on BayIW 560×352) and bit for bit equal to the
+full formula.
+
+### The schemes
+
+| `scheme` | Function | Reference | Compared with |
+|---|---|---|---|
+| `'ncar'` (default) | `bulk_ncar_fms` | NCAR/CORE as coded in the FMS coupler (`surface_flux.F90`, FMScoupler 2025.02, git 5b700a4), the bulk of MOM6/OM4 | the compiled FMS routine: **bit for bit** on 250 points (10 m and 2 m forms) |
+| `'ncar_ly04'` | `bulk_ncar` | Large & Yeager (2004), as MITgcm `pkg/exf` | compiled MITgcm `exf`: ≤ 4.5e-4 (τ), 3.3e-2 ($Q_S$), 4.3e-2 ($Q_L$) of the maximum; 4.7e-3 and 5.8e-4 for $W \ge 0.5$ m s⁻¹ |
+| `'coare'` | `bulk_coare_croco` | COARE 3.0 as in CROCO `bulk_flux.F` (`:199-659, 758-972`, git ab63b58), with `BULK_GUSTINESS` and `BULK_LW` | the compiled CROCO routine: $u_*, \theta_*, q_*$, $\rho_a$, $C_d$, $E$ bit for bit; fluxes ≤ 9e-15 relative |
+| `'kara'` | `bulk_kara` | Kara et al. (2005), HYCOM `flxflg = 6` | compiled HYCOM to 1e-10 |
+
+The nine differences between `'ncar_ly04'` and `'ncar'` are all choices of constants or of a floor, class (c)
+(`validation/bulk_points/README.md`): the wind speed floor of 0.5 m s⁻¹ in the fluxes (LY04 and `bulk_ncar` have it,
+FMS and MITgcm do not; $Q_S$ 3.8e-2, $Q_L$ 4.8e-2), the saturation humidity ($q_s$ +0.04 … +2.2 %), $\theta_a$ against
+$T_a$ ($Q_S$ 1.0e-2), $c_{pa}$ 1000.5 against 1004.64 J kg⁻¹ K⁻¹ ($Q_S$ 4.1e-3), the $C_{DN}$ slope, $g$, the air
+density and the $\zeta = 0$ branch. `'ncar'` is the default so that the regional comparison with MOM6 compares models and
+not formulae; `'ncar_ly04'` is kept as the MITgcm form.
+
+**Conventions.** All fluxes are positive into the ocean. ERA5 gives the wind at 10 m and temperature and humidity at
+2 m: `BulkFluxes(z_u=10, z_t=2, z_q=2)` are passed explicitly, and `'ncar_ly04'` and `'coare'` take temperature and
+humidity at one height (`z_q` = `z_t`, checked by the pre-flight). The wind is **relative to the surface current** by
+default (LY04, MOM6); `relative_wind=False` gives CROCO's absolute wind. The pressure is `msl` for `'ncar'`,
+`'ncar_ly04'` and `'kara'`; `'coare'` uses CROCO's constant 1e5 Pa. Radiation: `'ncar'`, `'ncar_ly04'` and `'kara'` use
+the LY04 values the module already cites (albedo 0.066, emissivity 0.97 in the outgoing and reflected longwave),
+`'coare'` CROCO's (net shortwave $(1-\alpha)SW_\downarrow$, outgoing longwave $0.985\,\sigma T^4$ without reflection).
+Nothing is tuned to a case: albedo, emissivity and heights are arguments with cited defaults, and there is no SST or SSS
+restoring.
+
+**Freshwater.** $E$ is a volume rate at the density each scheme uses: $\rho_{fw}$ = 1000 kg m⁻³ for `'ncar'`,
+`'ncar_ly04'` and `'kara'`, $\rho_0$ = 1025 kg m⁻³ in CROCO's `'coare'`
+($E = -C_p\,H_{lat}/L_v$, `bulk_flux.F:636`). The component converts each to mass and divides by the model's $\rho_0$
+(Boussinesq volume, MOM6 `MOM_verticalGrid.F90:195-197`), so $P - E$ is a conserving volume source of the free surface
+that enters S = 0 in the top layers (N2a), not a virtual salt flux.
+
+**Heat.** $Q_{ns}$ enters from the top over the 1 mm forcing depth and $Q_{SW}$ by the Paulson & Simpson (1977) profile
+of the prescribed heat flux (next section), Jerlov type `jerlov` of the model. The heat
+content changes by the flux to ≤ 1e-13 of the change in σ, z\* and hybrid, with land and dry columns untouched.
+
+### Differences with MOM6 and CROCO, classified
+
+| Difference | MOM6 | CROCO | pyOCEAN | Class |
+|---|---|---|---|---|
+| Bulk code | `'ncar'` = the FMS routine, bit for bit | no NCAR; COARE port bit for bit | both | — |
+| Radiation (albedo, longwave) | SIS2 (`ocean_albedo_option = 2`, not on disk) | prescribed net SW, 0.985 σT⁴ | LY04 values; CROCO's inside `'coare'` | c |
+| Shortwave penetration | 4 bands, `MANIZZA_05` with chlorophyll | Jerlov I fixed, remainder in the bottom layer | Jerlov I–III, remainder spread over the column in proportion to $h$ (as MOM6 `absorbRemainingSW`) | c |
+| Surface current | layer 1 | layer 1 | 1 m mean | c |
+| SST | 1 m mean | top layer | 1 m mean | — / c |
+| Wind | relative | absolute | relative (option `relative_wind=False`) | c |
+| E − P | real mass flux | virtual salt flux | real volume flux | c |
+| Gusts | 1e-4 m s⁻¹ in OM4 `data_table` | `BULK_GUSTINESS` | none in `'ncar'` (effect ≤ 5e-7 relative at 0.1 m s⁻¹); inside `'coare'` | c |
+| Atmospheric pressure gradient, inverse barometer | yes | optional | not yet | b (project 3 of the regional chain) |
+
+### Validation of the coupled fluxes (N2b)
+
+- **Algorithm.** Bit for bit with compiled FMS (`'ncar'`) and compiled CROCO (`'coare'`), 250 points each, in
+  `tests/data/bulk_fms_ncar_reference.npz` and `tests/data/bulk_croco_coare_reference.npz`
+  (`validation/bulk_points/build_reference.sh`).
+- **ERA5 conversion.** Hand-computed values at a real node and hour; the July 2017 monthly mean of the converted
+  radiation differs from ERA5's own mean fluxes by −3.6e-5 (shortwave) and −4.5e-5 (longwave) relative.
+- **Conservation, restart, cost.** Heat ≤ 1e-13 of the change, volume and salt 1e-13, S and T variance budgets closed to
+  1e-12 with bulk on; restart bit for bit; 1 = 5 threads; cost 1.020 of the step on BayIW cut z\* (limit 1.05).
+- **Column against MITgcm and CROCO** (`validation/bulk_column/README.md`): 45 days of an ERA5 point on the New Jersey
+  shelf with KPP in the three models. With the same state the formulae agree within 0.7 % (MITgcm `exf`) and 0.14 %
+  (CROCO). The coupled mean $Q_{net}$ differs by +14 % and −14 % and the final SST by −0.30 °C and +0.32 °C, which the
+  runs with prescribed fluxes attribute to the vertical mixing (KPP and interior background), class (c) [hypothesis]; the
+  criterion of 2 % and 0.2 °C is therefore explained, not met.
+
 ## Prescribed heat flux in the σ/ALE model (N3)
 
 `SigmaBaroclinic.step(st, tau_x, tau_y, fw=None, heat=None)` accepts `heat={"Q_ns": ..., "Q_sw": ...}` [W m⁻², positive
@@ -271,9 +368,9 @@ freshwater substep:
 | Flux | Computed by | Consumed by | Notes |
 |---|---|---|---|
 | Wind stress $\tau_x, \tau_y$ | `compute_surface_fluxes`, `bulk_ncar`, `bulk_kara`, `bulk_wind_stress` | **`SigmaBaroclinic.step(st, tau_x, tau_y)`** (`core/dynamics/sigma_baroclinic.py:2084`): stress at the **u- and v-faces**, shapes (ny, nx+1), (ny+1, nx), N m⁻²; τ/ρ₀ enters as the top boundary flux of the implicit vertical viscosity (as ROMS/CROCO `sustr/svstr`), not through AB3. `SigmaWetDry.step(..., tau_u, tau_v)` (`core/dynamics/sigma_wd.py:258`) takes the kinematic stress τ/ρ₀ [m² s⁻²]. Phase-1 line: `surface_tendency`. | The bulk functions return τ at **T-points**: average to faces yourself (example in the [Surface forcing guide](../user-guide/surface-forcing.md)). Validated: Ekman transport τ/ρ₀f to 0.05 % (`core/dynamics/sigma_baroclinic.py:37`). |
-| Net heat $Q_{net}$, penetrating $Q_{SW}$ | `compute_surface_fluxes` | Only `surface_tendency` (phase-1 `ModelState` line). **Not used by `SigmaBaroclinic`, `SigmaWetDry` or the 2-D tidal models.** | `SigmaBaroclinic` carries one tracer T with a linear EOS $\rho = \rho_0 - \alpha(T - T_0)$ (`core/dynamics/sigma_baroclinic.py:1285`) and has no surface tracer flux argument. |
-| Fresh water $E - P$ | `compute_surface_fluxes` | Only `surface_tendency` (virtual salt flux). | No salinity in `SigmaBaroclinic`; no volume flux in any free surface. |
-| Sea-level pressure `msl` | adapters | Used only inside the bulk formulae ($\rho_a$, $q_s$). | No inverse-barometer / atmospheric pressure gradient in any model line. |
+| Net heat $Q_{net}$, penetrating $Q_{SW}$ | `compute_surface_fluxes`, `BulkFluxes` | `SigmaBaroclinic` (N2b: computed from the atmosphere and the model SST at every step with `surface_fluxes=BulkFluxes(...)`; N3: prescribed with `step(..., heat=...)`) and `surface_tendency` (phase-1 `ModelState` line). **Not used by `SigmaWetDry` or the 2-D tidal models.** | The two ways to force `SigmaBaroclinic` are exclusive: the pre-flight refuses bulk together with prescribed `tau`/`heat`/`fw`. |
+| Fresh water $E - P$ | `compute_surface_fluxes`, `BulkFluxes` | `SigmaBaroclinic` with `salinity=True` (real freshwater flux, N2a; bulk needs salinity) and `surface_tendency` (virtual salt flux). | `SigmaWetDry`, the 2-D models and the phase-1 line have no volume flux. |
+| Sea-level pressure `msl` | adapters | Used only inside the bulk formulae ($\rho_a$, $q_s$). WRF's `PSFC` (surface pressure) is passed as `msl`: a known approximation. | No inverse-barometer / atmospheric pressure gradient in any model line (planned in the regional chain). |
 
 Note that no driver in the repository calls `surface_tendency`; it is meant to be added inside the
 `tendency_fn` of `ab2_step` / `ab2_step_implicit_fs` (`core/timestepping/ab2.py`). The BayIW runs force
@@ -330,12 +427,17 @@ See also [Forcing and column checks](../validation/components.md).
 
 ## Known limitations
 
-- **The bulk formulae are not coupled to the σ/ALE model.** `SigmaBaroclinic` takes a *prescribed* freshwater flux
-    (N2a) and, since N3, a prescribed heat flux (below); computing them from ERA5/WRF with `bulk_ncar`/`bulk_kara` is
-    the N2b work.
-- No COARE 3.0 scheme yet: `bulk_ncar` is unreliable in weak wind with strongly stable air and has no fixed
-    point for warm dry air (see the note above).
-- No gustiness, no wave-dependent roughness, no stress cap (MITgcm caps at ±2 N m⁻²; HYCOM caps $C_D$ at
+- Since N2b the bulk formulae are coupled to `SigmaBaroclinic` (section above). The coupled run is not yet judged against
+    observations (project 4 of the regional chain), and in the ERA5 column the mean fluxes and SST differ from MITgcm
+    and CROCO by 14 % and 0.3 °C, explained by the vertical mixing, not by the bulk formula.
+- COARE 3.0 exists only as CROCO's port (`'coare'`, with its quirks copied on purpose); the planned `bulk_coare30`
+    (levelling-off stable functions) is not separate. `bulk_ncar` (`'ncar_ly04'`) is unreliable in weak wind with
+    strongly stable air and has no fixed point for warm dry air (see the note above); `'ncar'` in the FMS form does not
+    floor the wind in the fluxes.
+- OM4's gusts (`gust` 1e-4 m s⁻¹) are not in `bulk_ncar_fms`; no wave-dependent roughness.
+- WRF's `PSFC` is passed as `msl`; ERA5 has the true `msl`.
+- No salinity or SST restoring (off by design); no sea ice (no freezing-point limit).
+- No gustiness in the NCAR forms, no wave-dependent roughness, no stress cap (MITgcm caps at ±2 N m⁻²; HYCOM caps $C_D$ at
     34 m s⁻¹, which `bulk_kara` reproduces through the $V_a$ clip).
 - `surface_tendency` uses full cell thicknesses (no partial cells) and the shortwave that reaches the
     bottom interface, $Q_{SW} F(z_{bottom})$, leaves the column (it is not deposited in the last layer).
@@ -351,6 +453,9 @@ See also [Forcing and column checks](../validation/components.md).
 - Fairall, C.W., Bradley, E.F., Hare, J.E., Grachev, A.A. & Edson, J.B. (2003). Bulk parameterization of
     air–sea fluxes: updates and verification for the COARE algorithm. *J. Climate* 16, 571–591.
     doi:10.1175/1520-0442(2003)016<0571:BPOASF>2.0.CO;2 **[verify]**
+- Brodeau, L., Barnier, B., Gulev, S.K. & Woods, C. (2017). Climatologically significant effects of some approximations
+    in the bulk parameterizations of turbulent air–sea fluxes. *J. Phys. Oceanogr.* 47, 5–28.
+    doi:10.1175/JPO-D-16-0169.1 **[verify]**
 - Kara, A.B., Hurlburt, H.E. & Wallcraft, A.J. (2005). Stability-dependent exchange coefficients for
     air–sea fluxes. *J. Atmos. Oceanic Technol.* 22, 1080–1094. doi:10.1175/JTECH1747.1 **[verify]**
 - Large, W.G. & Yeager, S.G. (2004). Diurnal to decadal global forcing for ocean and sea-ice models: the
