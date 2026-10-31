@@ -527,7 +527,7 @@ large. As MOM6 (`kappa_shear_column`, `:1052-1374`, after Hallberg 2000 [verific
   thin-layer merge; bounded Δt-average; Numba = oracle and 1 = 5 threads bit for bit. **Model** (`tests/test_shear_model.py`,
   21 tests): off = bit for bit, zero shear = base, restart bit for bit (σ and ALE), pre-flight, dry columns, KPP base.
 * **DOME 10 km** (`validation/dome/README.md`, Legg et al. 2006 Case 1): in the hybrid with $\nu_v$ = 1e-4 + Smagorinsky
-  0.15, Jackson moves every metric toward Legg's non-hydrostatic truth: final buoyancy −17.91e-3 → −12.84e-3 m s⁻²
+  0.15, Jackson moves every metric against Legg's non-hydrostatic truth toward it (the path against Legg's 10-km isopycnal improves at x′ = −300 and −500 km but moves away at −200 km, 11 → 21 km): final buoyancy −17.91e-3 → −12.84e-3 m s⁻²
   (truth −8.75e-3, digitized; Legg's own 10-km isopycnal −11.07e-3), corner entrainment ≈ 0 → 4.88e-4 (Legg 10 km iso
   9.4e-4), plume transport at x′ = −200 km 10.1 → 15.9 Sv (truth 22.5, digitized); CFL truncations 61 → 0 and limiter
   events 239 337 → 0. With Pr = 0 the final buoyancy reaches −8.29e-3 but the plume stays on the upper slope.
