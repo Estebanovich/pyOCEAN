@@ -99,6 +99,26 @@ def specific_humidity_from_dewpoint(d2m: np.ndarray, p: np.ndarray) -> np.ndarra
     return _EPS * e / (p - (1.0 - _EPS) * e)
 
 
+def _open_era5(path: Path) -> xr.Dataset:
+    """
+    Open one ERA5 file with the h5netcdf engine, or netCDF4 for NetCDF3 files.
+
+    With the netCDF4 engine, re-opening files that the user already holds open
+    through ``xr.open_dataset`` (two new-CDS files, one of them read) crashed
+    the process with a SIGSEGV inside netCDF-C on the second load; it did not
+    depend on the xarray (2023.6, 2024.11), netCDF4 (1.7.1, 1.7.2) or HDF5
+    (1.14.3, 1.14.4) version (tests/test_era5.py::
+    test_load_while_user_holds_the_files_open).  h5netcdf reads the files
+    through h5py, outside netCDF-C, and decodes the same values, dtypes and
+    attributes (checked on the 2017-07 instant/accum/mean files).  NetCDF3
+    files (some legacy CDS deliveries) are not HDF5, so they use netCDF4.
+    """
+    try:
+        return xr.open_dataset(path, engine="h5netcdf")
+    except OSError:
+        return xr.open_dataset(path, engine="netcdf4")
+
+
 @register_source("era5")
 class ERA5Source(ForcingSource):
     """
@@ -131,7 +151,7 @@ class ERA5Source(ForcingSource):
         so that centring accumulated fields and time interpolation at t0 and
         t1 have data on both sides.
         """
-        files = [xr.open_dataset(p) for p in self.paths]
+        files = [_open_era5(p) for p in self.paths]
         try:
             ds = xr.merge([self._normalise(f) for f in files], compat="override", join="outer")
 

@@ -11,6 +11,9 @@ Both use ``latitude`` (descending) and ``longitude``.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
 from datetime import datetime
 from pathlib import Path
 
@@ -191,6 +194,50 @@ class TestERA5Load:
     def test_no_files_rejected(self):
         with pytest.raises(ValueError, match="paths"):
             ERA5Source([])
+
+
+    def test_netcdf3_file_still_read(self, tmp_path):
+        # Old CDS deliveries can be NetCDF3, which h5netcdf cannot open: the
+        # adapter falls back to the netCDF4 engine for them.
+        path = _write(tmp_path, layout="legacy")[0]
+        nc3 = tmp_path / "era5_legacy_nc3.nc"
+        with xr.open_dataset(path) as f:
+            f.load().to_netcdf(nc3, format="NETCDF3_64BIT")
+        ds = ERA5Source([nc3]).load(T0, T1, BB)
+        np.testing.assert_allclose(ds.u10, 7.0)
+
+
+# ---------------------------------------------------------------------------
+# Files the user already holds open
+# ---------------------------------------------------------------------------
+
+def test_load_while_user_holds_the_files_open(tmp_path):
+    """
+    A user (e.g. in a notebook) holds both new-CDS files open with
+    ``xr.open_dataset`` and has read from one; loading the same files with
+    ``ERA5Source`` three times must not crash.  With the netCDF4 engine on both
+    sides this was a SIGSEGV inside netCDF-C on the second load (xarray
+    2023.6/2024.11, netCDF4 1.7.1/1.7.2, HDF5 1.14.3/1.14.4; pure netCDF4 or a
+    single file did not crash), so it runs in a subprocess.
+    """
+    paths = _write(tmp_path)
+    script = textwrap.dedent(f"""
+        import sys
+        sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})
+        from datetime import datetime
+        import xarray as xr
+        from forcing.sources.base import BBox
+        from forcing.sources.era5 import ERA5Source
+        paths = {[str(p) for p in paths]!r}
+        held = [xr.open_dataset(p) for p in paths]
+        float(held[1]["ssrd"].isel(valid_time=2).mean())
+        for _ in range(3):
+            ERA5Source(paths).load(datetime(2015, 4, 1, 1), datetime(2015, 4, 1, 6),
+                                   BBox(-97.0, -93.0, 18.0, 22.0))
+        print(float(held[1]["ssrd"].isel(valid_time=3).mean()))
+    """)
+    run = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, timeout=300)
+    assert run.returncode == 0, f"exit {run.returncode}\n{run.stderr[-2000:]}"
 
 
 # ---------------------------------------------------------------------------
