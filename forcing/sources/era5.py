@@ -23,22 +23,33 @@ Land
 ERA5 single-level fields are defined over land (t2m, d2m, u10, ... carry the
 land-surface values, not NaN), so ``forcing.interp.fill_land`` has nothing to
 fill and the bilinear step mixes land values into every model cell within
-one ERA5 cell (~28 km) of the coast.  The optional land-sea mask ``lsm``
-(CDS variable ``land_sea_mask``, invariant) removes them: where
-lsm > 0.5 the fields are set to NaN, so ``fill_land`` replaces them by the
-nearest sea values, as ``WRFSource`` does with LANDMASK.  ``lsm`` is a path
-to an ERA5 lsm NetCDF file (single or no time), an ``xr.DataArray``, or an
-``lsm`` variable inside the ERA5 files.  Without a mask the default stays
-unmasked and a ``UserWarning`` is given.  Reference implementations:
+one ERA5 cell (~28 km) of the coast.  The land-sea mask ``lsm`` (CDS variable
+``land_sea_mask``, invariant) removes them.  The mask is applied
+automatically whenever an ``lsm`` is available, from the ``lsm`` argument (a
+path to an ERA5 lsm NetCDF file, single or no time, or an ``xr.DataArray``)
+or from an ``lsm`` variable inside the ERA5 files; with none a
+``UserWarning`` is given and the fields are used as delivered.
+
+* Rule: a cell is land where ``lsm > lsm_threshold`` (default 0.0, so any
+  land fraction counts, as CROCO).  CROCO: ``mask(mask ~= 0) = 1``
+  (croco_tools ``Aforc_ERA5/make_ERA5.m:78-81``, b31b038).  ``lsm_threshold=0.5``
+  gives the usual "mostly land" mask and keeps more coastal ERA5 cells.
+* Variables touched: every field the adapter reads, that is u10, v10, t2m,
+  d2m, msl, ssrd, strd and tp (CROCO likewise applies ``get_missing_val`` to
+  every field, ``Aforc_ERA5/interp_ERA5.m``).  Masked cells are NaN and
+  ``fill_land`` replaces them from the sea.
+* Fill: ``fill_land`` is an iterative 4-neighbour mean; CROCO's
+  ``Preprocessing_tools/get_missing_val.m`` is an objective analysis with
+  decorrelation scale Roa, or a nearest-neighbour fallback.
+* The default request of CROCO includes lsm
+  (``Aforc_ERA5/era5_crocotools_param.py:48``), and so does
+  ``validation/bulk_points/fetch_era5.py`` (default groups).
+
 MITgcm ``pkg/exf/exf_interp.F`` has no land handling (plain bilinear
 interpolation of the input field, 4 surrounding points, no mask test); the
 only masking is ``EXF_FILTER_RL`` on the model grid after interpolation
 (``exf_set_fld.F:236-237, 293-294``), so land values of the input do reach
-coastal ocean points unless the user prepares sea-filled files.  The CROCO
-tree at ``~/pyOCEAN_refs/croco`` does not include croco_tools (the
-``fillmask`` preprocessing, which fills land by iterative extrapolation of
-sea values) nor ERA5 scripts, so what CROCO does with ERA5 land was not
-checked here.
+coastal ocean points unless the user prepares sea-filled files.
 
 ERA5's own evaporation ``e`` is deliberately not used: evaporation is
 computed by the bulk formula so that latent heat and freshwater fluxes are
@@ -156,23 +167,28 @@ class ERA5Source(ForcingSource):
     accumulation_seconds : float
         Accumulation period of ssrd, strd and tp [s]; 3600 for hourly ERA5.
     lsm : str, Path, xr.DataArray or None
-        ERA5 land-sea mask (fraction of land, 0-1; lsm > 0.5 is land) as an
-        ERA5 NetCDF file or a DataArray with latitude/longitude (or lat/lon)
-        and optionally a single time.  If None, an ``lsm`` variable inside
-        ``paths`` is used when present.  With a mask the land values are set
-        to NaN before ``fill_land``; with none a ``UserWarning`` says that
-        coastal cells may see land values.
+        ERA5 land-sea mask (fraction of land, 0-1) as an ERA5 NetCDF file or
+        a DataArray with latitude/longitude (or lat/lon) and optionally a
+        single time.  If None, an ``lsm`` variable inside ``paths`` is used
+        when present.  With a mask, all eight fields are set to NaN where
+        lsm > ``lsm_threshold`` before ``fill_land``; with none a
+        ``UserWarning`` says that coastal cells may see land values.
+    lsm_threshold : float
+        A cell is land where lsm > lsm_threshold [fraction, 0-1]; 0.0 (default)
+        is CROCO's rule (any non-zero land fraction, ``make_ERA5.m:78-81``),
+        0.5 keeps the cells that are mostly sea.
     """
 
     kind = "atmosphere"
 
     def __init__(self, paths: list[str | Path], accumulation_seconds: float = 3600.0,
-                 lsm: str | Path | xr.DataArray | None = None) -> None:
+                 lsm: str | Path | xr.DataArray | None = None, lsm_threshold: float = 0.0) -> None:
         if not paths:
             raise ValueError("ERA5Source needs at least one file in paths")
         self.paths = [Path(p) for p in paths]
         self.accumulation_seconds = accumulation_seconds
         self.lsm = lsm
+        self.lsm_threshold = float(lsm_threshold)
 
     # ------------------------------------------------------------------
     def open(self, t0: datetime, t1: datetime, bbox: BBox) -> xr.Dataset:
@@ -201,7 +217,7 @@ class ERA5Source(ForcingSource):
             land = self._land_mask(out, in_file)
             if land is None:
                 warnings.warn("ERA5Source: no land-sea mask (lsm) given: ERA5 carries real values over land, so "
-                              "ocean cells within one ERA5 cell of the coast may see land t2m, q2m and u10. "
+                              "ocean cells within one ERA5 cell of the coast may see land values of every field. "
                               "Pass lsm=... (CDS variable 'land_sea_mask') to mask them.", UserWarning,
                               stacklevel=3)
             else:
@@ -216,7 +232,7 @@ class ERA5Source(ForcingSource):
     # ------------------------------------------------------------------
     def _land_mask(self, out: xr.Dataset, in_file: xr.DataArray | None) -> xr.DataArray | None:
         """
-        Boolean land mask (lsm > 0.5) on the lat/lon points of ``out``, or None.
+        Boolean land mask (lsm > ``lsm_threshold``) on the lat/lon points of ``out``, or None.
 
         The mask comes from the ``lsm`` argument (path or DataArray) or else from an ``lsm`` variable of the
         ERA5 files.  A time axis is reduced to its first record (the field is invariant).  The mask is matched
@@ -238,7 +254,7 @@ class ERA5Source(ForcingSource):
         if m.isnull().any():
             raise ValueError("ERA5 lsm does not cover the lon/lat points of the data (it must be the same ERA5 "
                              "grid, requested with an area that contains the forcing region)")
-        return m > 0.5
+        return m > self.lsm_threshold
 
     @staticmethod
     def _check_finite(out: xr.Dataset) -> None:

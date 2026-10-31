@@ -130,8 +130,8 @@ def read_croco(days: int = C.DAYS) -> dict:
     return _finish(r)
 
 
-def read_pyocean(tag: str, days: int = C.DAYS) -> dict:
-    o = np.load(C.RUNS / f"pyocean_{days}d" / f"{tag}.npz")
+def read_pyocean(tag: str, days: int = C.DAYS, suffix: str = "") -> dict:
+    o = np.load(C.RUNS / f"pyocean_{days}d{suffix}" / f"{tag}.npz")
     r = dict(t_snap=o["time_snap"] / 3600.0, T=o["T"], S=o["S"], u_s=o["u"][:, -1], v_s=o["v"][:, -1],
              hbl=o["hbl"], t_mean=o["time_mean"] / 3600.0, q_sw=o["q_sw"], q_lw=o["q_lw"], q_sens=o["q_sens"],
              q_lat=o["q_lat"], tau_x=o["tau_x"], tau_y=o["tau_y"], E=C.RHO0 * o["evap"], P=C.RHO0 * o["precip"],
@@ -140,7 +140,7 @@ def read_pyocean(tag: str, days: int = C.DAYS) -> dict:
     return _finish(r)
 
 
-def load_all(days: int = C.DAYS) -> dict[str, dict]:
+def load_all(days: int = C.DAYS, suffix: str = "") -> dict[str, dict]:
     out = {}
     for k, fn in (("mitgcm", lambda: read_mitgcm(days)), ("croco", lambda: read_croco(days))):
         try:
@@ -148,9 +148,9 @@ def load_all(days: int = C.DAYS) -> dict[str, dict]:
         except (FileNotFoundError, OSError, ValueError) as e:
             print(f"{k}: not read ({e})")
     for tag in C.RUNS_PYOCEAN:
-        p = C.RUNS / f"pyocean_{days}d" / f"{tag}.npz"
+        p = C.RUNS / f"pyocean_{days}d{suffix}" / f"{tag}.npz"
         if p.exists():
-            out[tag] = read_pyocean(tag, days)
+            out[tag] = read_pyocean(tag, days, suffix)
     return out
 
 
@@ -393,8 +393,9 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--days", type=int, default=C.DAYS)
     ap.add_argument("--figs", action="store_true")
+    ap.add_argument("--suffix", default="", help="pyOCEAN run folder suffix, e.g. _lsm (pyocean_<days>d_lsm/)")
     a = ap.parse_args()
-    runs = load_all(a.days)
+    runs = load_all(a.days, a.suffix)
     s = dict(np.load(C.RUNS / f"series_{a.days}d.npz"))
     print(f"## Mean fluxes over {a.days} days (relative difference from the reference)\n")
     print(table(runs))

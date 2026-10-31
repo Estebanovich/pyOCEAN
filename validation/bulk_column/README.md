@@ -231,6 +231,30 @@ diferencia entre las 25 columnas. El controlador lo marcó como posible error (a
   En una corrida regional con mezcla lateral débil convertiría perturbaciones de 1e-8 en ruido de escala de malla en
   hbl y SST.
 
+## 5b. Máscara tierra-mar de ERA5 (R7b, 2026-10-31)
+
+Sin máscara, ERA5 trae valores de tierra y la interpolación bilineal los mezcla en las celdas costeras. La práctica de
+referencia de CROCO enmascara siempre: `lsm` está en la petición por defecto (`era5_crocotools_param.py:48`), cualquier
+lsm ≠ 0 es tierra (`make_ERA5.m:78-81`) y `get_missing_val` rellena todos los campos (`interp_ERA5.m`). MITgcm `exf` no
+enmascara (`exf_set_fld.F:236-237, 293-294`). pyOCEAN ahora aplica la máscara si hay `lsm` (`lsm_threshold` = 0 por
+defecto, como CROCO) y `fetch_era5.py` la baja por defecto.
+
+- **Máscara del punto:** `era5_nwa_shelf_lsm.nc`, misma rejilla 0.25° que los datos (latitud y longitud idénticas, 21 × 29).
+  Los cuatro nodos del estencil bilineal de P (40.24 °N, 73.16 °W) valen **lsm = 0.000000 exacto**: 40.25 °N × 73.25 °W,
+  40.25 °N × 73.00 °W, 40.00 °N × 73.25 °W, 40.00 °N × 73.00 °W. Alrededor: 40.25 °N × 73.50 °W 0.0033; 40.50 °N × 73.25 °W
+  0.173; 40.50 °N × 73.00 °W 0.020; 40.50 °N × 72.75 °W 0.0002; 40.75 °N 0.37–0.55 (Long Island).
+- **Resultado:** el campo de P con la máscara (umbral 0 o 0.5) es **idéntico bit a bit** (muestreado cada 6 h, umbrales 0 y 0.5) al de sin máscara en los ocho
+  campos durante los 45 días. Las tres corridas enmascaradas (`pyocean_45d_lsm/`, `compare_45d_lsm.txt`) coinciden con las
+  originales en SST final (ly04 24.945, coare 24.889, fms 24.956 °C), Q_net medio y cada flujo: diferencia máxima horaria
+  0.0 en q_sens, q_lat, q_lw, q_sw, τ y E. Haber elegido P para que el estencil fuera todo mar (§1) ya hacía lo que hace la máscara.
+- **Titulares:** no cambian. Los números de §3 y de la fila N2b de CLAUDE.md quedan igual.
+- **Entradas de las referencias:** `forcing.py` escribe la serie de P del proveedor pyOCEAN (`cases.point_series`), no
+  la cadena `make_ERA5` de CROCO, y esa serie salió **sin máscara**. Esto difiere del preprocesado estándar de CROCO
+  (que enmascara y rellena con `get_missing_val`), pero como la serie enmascarada es idéntica, no hay efecto numérico: clase
+  (c) (elección de arnés) sin consecuencia en este punto. MITgcm no enmascara de todos modos. Ninguna referencia se re-corrió.
+- **Cuál configuración coincide mejor:** ninguna; las dos son la misma. La máscara importa en puntos costeros (40.5 °N y
+  más al norte aquí), no en P.
+
 ## 6. Qué debe mejorar pyOCEAN
 
 1. **Comparar el KPP de pyOCEAN con MOM6/CVMix en esta columna ERA5** (MOM6 `single_column` con los flujos de MITgcm

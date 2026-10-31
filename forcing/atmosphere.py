@@ -22,9 +22,11 @@ For a record k of the source (on its own lon/lat grid):
    iterative 4-neighbour mean (HYCOM-tools ``landfill``, croco_tools
    ``fillmask``).  It acts only where the source is NaN over land: WRF is
    masked with LANDMASK, ERA5 only if a land-sea mask ``lsm`` is given
-   (``era5_atmosphere(..., lsm=...)``).  ERA5 carries real values over
-   land, so without ``lsm`` model cells within one ERA5 cell of the coast
-   are interpolated from land t2m, q2m and u10 (a warning is given);
+   (``era5_atmosphere(..., lsm=...)``; land = lsm > ``lsm_threshold``,
+   default 0 as CROCO ``make_ERA5.m:78-81``; all eight ERA5 fields u10, v10,
+   t2m, d2m, msl, ssrd, strd and tp are masked).  ERA5 carries real values
+   over land, so without ``lsm`` model cells within one ERA5 cell of the
+   coast are interpolated from land values (a warning is given);
 2. bilinear interpolation to the T points, ``forcing.interp.to_model_grid``
    (Press et al. 2007, eq. 3.6.5).
 
@@ -217,7 +219,8 @@ class AtmosphereProvider:
 
 def era5_atmosphere(paths: list[str | Path], grid: xr.Dataset, origin: np.datetime64,
                     t0: datetime, t1: datetime, bbox: BBox | None = None,
-                    lsm: str | Path | xr.DataArray | None = None) -> AtmosphereProvider:
+                    lsm: str | Path | xr.DataArray | None = None,
+                    lsm_threshold: float = 0.0) -> AtmosphereProvider:
     """
     Atmosphere provider from hourly ERA5 single-level files.
 
@@ -241,13 +244,20 @@ def era5_atmosphere(paths: list[str | Path], grid: xr.Dataset, origin: np.dateti
         Region to read; default ``BBox.from_grid(grid)`` (1° margin).
     lsm : str, Path, xr.DataArray or None
         ERA5 land-sea mask (CDS variable ``land_sea_mask``, named ``lsm`` in the file; a path or a DataArray on
-        the same grid as the data).  Where lsm > 0.5 the ERA5 fields are set to NaN before the sea-over-land
-        fill, as WRF does with LANDMASK, so coastal ocean cells see only ocean values.  An ``lsm`` variable
+        the same grid as the data).  Where lsm > ``lsm_threshold`` all eight ERA5 fields (u10, v10, t2m, d2m,
+        msl, ssrd, strd, tp) are set to NaN before the sea-over-land fill, so coastal ocean cells see only
+        ocean values.  The mask is applied automatically whenever one is available; an ``lsm`` variable
         inside ``paths`` is used if this is None.  Without any mask the fields are used as delivered (they
-        hold land values) and a ``UserWarning`` says so.
+        hold land values) and a ``UserWarning`` says so.  Reference practice: CROCO croco_tools masks every
+        field with any lsm != 0 (``Aforc_ERA5/make_ERA5.m:78-81``, ``interp_ERA5.m``) and fills it with
+        ``Preprocessing_tools/get_missing_val.m`` (objective analysis with decorrelation scale Roa, or a
+        nearest-neighbour fallback; ours: iterative 4-neighbour mean); MITgcm ``exf_set_fld.F:236-237,
+        293-294`` does no land masking.
+    lsm_threshold : float
+        Land where lsm > lsm_threshold [0-1]; default 0.0 (CROCO), 0.5 keeps mostly-sea coastal cells.
     """
     bbox = BBox.from_grid(grid) if bbox is None else bbox
-    ds = ERA5Source(paths, lsm=lsm).load(t0, t1, bbox)
+    ds = ERA5Source(paths, lsm=lsm, lsm_threshold=lsm_threshold).load(t0, t1, bbox)
     return AtmosphereProvider(ds, grid, origin, window=(np.datetime64(t0, "ns"), np.datetime64(t1, "ns")))
 
 

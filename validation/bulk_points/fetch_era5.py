@@ -71,7 +71,8 @@ GROUPS: dict[str, list[str]] = {
         "surface_thermal_radiation_downwards",
         "total_precipitation",
     ],
-    # invariant land-sea mask (N2b final review I1): opt-in with --groups lsm, one file per box; pass it as
+    # invariant land-sea mask (N2b R7/R7b), part of the default groups as in CROCO's request
+    # (croco_tools Aforc_ERA5/era5_crocotools_param.py:48); one file per box; pass it as
     # ERA5Source(paths, lsm=path) / era5_atmosphere(..., lsm=path)
     "lsm": ["land_sea_mask"],
     "mean": [
@@ -123,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--east", type=float, default=-68.0)
     p.add_argument("--tag", default="nwa_shelf", help="file-name tag of the box")
     p.add_argument("--outdir", type=Path, default=DEFAULT_OUTDIR)
-    p.add_argument("--groups", nargs="+", default=["instant", "accum"], choices=list(GROUPS))
+    p.add_argument("--groups", nargs="+", default=["instant", "accum", "lsm"], choices=list(GROUPS))
     a = p.parse_args(argv)
 
     import cdsapi  # imported here so --help works without credentials

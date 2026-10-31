@@ -215,11 +215,19 @@ for _ in range(n_steps):
 - **ERA5 land-sea mask.** ERA5 carries real values over land (t2m, d2m, u10, ...), not NaN, so the sea-over-land fill
     has nothing to fill and ocean cells within one ERA5 cell (~28 km) of the coast are interpolated partly from land
     values. Pass `lsm=` (path to an ERA5 `land_sea_mask` file, or an `xr.DataArray`; an `lsm` variable inside the
-    ERA5 files is also used) to `era5_atmosphere` or `ERA5Source`: where lsm > 0.5 the fields become NaN before the
-    fill, as WRF does with LANDMASK. Without it the default stays unmasked and a `UserWarning` is given. Request the
-    mask from CDS once per box (`reanalysis-era5-single-levels`, `product_type` reanalysis, `variable`
-    `land_sea_mask`, one day and hour, same `area` and `data_format` netcdf as the forcing), or run
-    `validation/bulk_points/fetch_era5.py --groups lsm`.
+    ERA5 files is also used) to `era5_atmosphere` or `ERA5Source`. The mask is applied automatically whenever one is
+    available; without it a `UserWarning` is given and the fields are used as delivered.
+    - *Rule:* land is `lsm > lsm_threshold`, default `lsm_threshold=0.0` (any land fraction counts). This is CROCO's rule
+      (croco_tools `Aforc_ERA5/make_ERA5.m:78-81`, `mask(mask ~= 0) = 1`); `lsm_threshold=0.5` keeps the cells that are
+      mostly sea.
+    - *Variables:* all eight fields the adapter reads are masked (u10, v10, t2m, d2m, msl, ssrd, strd, tp), not only
+      t2m, q2m and u10; the masked cells are NaN and `fill_land` (iterative 4-neighbour mean) fills them from the sea.
+      CROCO applies `get_missing_val` to every field too (`interp_ERA5.m`), with an objective analysis (decorrelation
+      scale Roa) or a nearest-neighbour fallback instead of our mean. MITgcm `exf` does no masking
+      (`exf_set_fld.F:236-237, 293-294`).
+    - *Download:* CROCO's request includes lsm (`era5_crocotools_param.py:48`) and so does
+      `validation/bulk_points/fetch_era5.py` (default groups; `--groups lsm` alone fetches only the mask, one day and
+      hour, same `area`).
 - **Options of `BulkFluxes`.** `scheme` (`'ncar'` default, `'ncar_ly04'`, `'coare'`, `'kara'`), `h_sfc` = 1 m, `h_uv_sfc`
     (None = `h_sfc`, 0 = top layer), `relative_wind` = True, `albedo` = 0.066, `emissivity` = 0.97, heights `z_u`, `z_t`,
     `z_q` = 10, 2, 2 m. All are listed in the [configuration reference](configuration-reference.md#surface_fluxes-bulk-surface-fluxes-n2b).

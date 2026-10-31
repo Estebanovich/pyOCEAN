@@ -62,6 +62,8 @@ import numpy as np
 
 RUNS = Path("/Volumes/ESTEBAN_MIT/pyOCEAN_runs/bulk_column")
 ERA5_DIR = Path("/Volumes/ESTEBAN_MIT/pyOCEAN_runs/forcing/era5")
+#: ERA5 land-sea mask of the same box (fetch_era5.py --groups lsm); used by ``atmosphere(lsm=True)`` (R7b)
+LSM_PATH = ERA5_DIR / "era5_nwa_shelf_lsm.nc"
 
 # ------------------------------------------------------------------------------------------------ point and column
 LAT, LON = 40.24, -73.16          # [°N], [°E]
@@ -159,11 +161,13 @@ def grid():
     return hg
 
 
-def atmosphere(days: int = DAYS):
-    """``forcing.atmosphere.era5_atmosphere`` at P for ``period(days)`` (model time 0 = START)."""
+def atmosphere(days: int = DAYS, lsm: bool = False, lsm_threshold: float = 0.0):
+    """``forcing.atmosphere.era5_atmosphere`` at P for ``period(days)`` (model time 0 = START); with ``lsm`` the
+    ERA5 land-sea mask ``LSM_PATH`` is applied (land = lsm > lsm_threshold, CROCO's rule by default)."""
     from forcing.atmosphere import era5_atmosphere
     t0, t1 = period(days)
-    return era5_atmosphere(era5_paths(days), grid(), np.datetime64(START, "ns"), t0, t1)
+    return era5_atmosphere(era5_paths(days), grid(), np.datetime64(START, "ns"), t0, t1,
+                           lsm=LSM_PATH if lsm else None, lsm_threshold=lsm_threshold)
 
 
 def point_series(days: int = DAYS, atm=None) -> dict[str, np.ndarray]:

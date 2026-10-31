@@ -356,8 +356,10 @@ class TestERA5Land:
         from forcing.atmosphere import era5_atmosphere
         grid = create_spherical_grid(nx=12, ny=10, dlon=0.25, dlat=0.25, lon0=-96.0, lat0=19.0)
         lsm = kw.pop("lsm", None)
+        thr = kw.pop("lsm_threshold", 0.0)
         paths = _land_files(tmp_path, **kw)
-        prov = era5_atmosphere(paths, grid, T_START, T0, T1, bbox=BBox.from_grid(grid, pad=0.5), lsm=lsm)
+        prov = era5_atmosphere(paths, grid, T_START, T0, T1, bbox=BBox.from_grid(grid, pad=0.5), lsm=lsm,
+                               lsm_threshold=thr)
         return prov(2 * 3600.0)
 
     def test_coastal_cells_get_ocean_values_with_the_mask(self, tmp_path):
@@ -367,6 +369,21 @@ class TestERA5Land:
             out = self._t2m(tmp_path, lsm=_lsm_array())
         np.testing.assert_allclose(out["t2m"], 298.0, atol=1e-9)
         np.testing.assert_allclose(out["u10"], 7.0, atol=1e-9)
+
+    def test_threshold_default_is_croco_any_nonzero_lsm_is_land(self, tmp_path):
+        # a cell with lsm 0.2 is masked by default (CROCO make_ERA5.m:78-81: lsm != 0 is land) ...
+        out = self._t2m(tmp_path, lsm=0.2 * _lsm_array())
+        np.testing.assert_allclose(out["t2m"], 298.0, atol=1e-9)
+
+    def test_threshold_is_configurable(self, tmp_path):
+        # ... and is not masked with lsm_threshold=0.5, so the warm land values reach the coastal cells
+        out = self._t2m(tmp_path, lsm=0.2 * _lsm_array(), lsm_threshold=0.5)
+        assert out["t2m"].max() > 310.0
+
+    def test_threshold_reaches_the_source(self, tmp_path):
+        paths = _land_files(tmp_path)
+        src = ERA5Source(paths, lsm=0.2 * _lsm_array(), lsm_threshold=0.5)
+        assert src.lsm_threshold == 0.5 and ERA5Source(paths).lsm_threshold == 0.0
 
     def test_mask_from_a_netcdf_file(self, tmp_path):
         (tmp_path / "m").mkdir()

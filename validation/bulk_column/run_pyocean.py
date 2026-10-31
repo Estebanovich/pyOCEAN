@@ -36,8 +36,8 @@ STEPS_PER_HOUR = int(round(3600.0 / C.DT))
 FLUXES = ("q_sens", "q_lat", "q_lw", "q_sw", "evap", "precip", "fw", "tau_x", "tau_y", "sst_bulk")
 
 
-def out_path(tag: str, days: int):
-    return C.RUNS / f"pyocean_{days}d" / f"{tag}.npz"
+def out_path(tag: str, days: int, suffix: str = ""):
+    return C.RUNS / f"pyocean_{days}d{suffix}" / f"{tag}.npz"
 
 
 def _snap(model, st) -> dict:
@@ -74,7 +74,7 @@ def _prescribed(ref: str, days: int):
     return at
 
 
-def run(tag: str, days: int = C.DAYS, save: bool = True, atm=None) -> dict:
+def run(tag: str, days: int = C.DAYS, save: bool = True, atm=None, suffix: str = "") -> dict:
     warnings.simplefilter("ignore")
     cfg = C.RUNS_PYOCEAN[tag]
     model, st = C.build_pyocean(cfg, days, atm=atm)
@@ -110,7 +110,7 @@ def run(tag: str, days: int = C.DAYS, save: bool = True, atm=None) -> dict:
     out.update(spread=float(np.max(spread)), spread_hourly=np.array(spread), wall=wall, n_steps=n, s_per_step=wall / n,
                days=days)
     if save:
-        p = out_path(tag, days)
+        p = out_path(tag, days, suffix)
         p.parent.mkdir(parents=True, exist_ok=True)
         np.savez(p, **out)
     return out
@@ -121,11 +121,13 @@ def main() -> None:
     ap.add_argument("tag", nargs="?", choices=tuple(C.RUNS_PYOCEAN))
     ap.add_argument("--days", type=int, default=C.DAYS)
     ap.add_argument("--all", action="store_true", help="the four bulk runs (cases.BULK_RUNS)")
+    ap.add_argument("--lsm", action="store_true", help="apply the ERA5 land-sea mask (R7b); output in pyocean_<days>d_lsm/")
+    ap.add_argument("--lsm-threshold", type=float, default=0.0, help="land where lsm > this (CROCO: 0)")
     a = ap.parse_args()
     tags = list(C.BULK_RUNS) if a.all else [a.tag]
-    atm = C.atmosphere(a.days)
+    atm = C.atmosphere(a.days, lsm=a.lsm, lsm_threshold=a.lsm_threshold)
     for tag in tags:
-        out = run(tag, a.days, atm=atm)
+        out = run(tag, a.days, atm=atm, suffix="_lsm" if a.lsm else "")
         print(f"{tag}: {out['n_steps']} steps, {out['wall']:.0f} s wall ({1e3 * out['s_per_step']:.1f} ms/step), "
               f"final SST {out['T'][-1, -1]:.3f} °C, 5x5 spread {out['spread']:.1e}", flush=True)
 
