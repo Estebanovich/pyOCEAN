@@ -1,0 +1,65 @@
+title:
+        pyOCEAN N2b task 7 ERA5 column (validation/bulk_column)
+time_stepping: NTIMES   dt[sec]  NDTFAST  NINFO
+               32400     120      30      720
+S-coord: THETA_S,   THETA_B,    Hc (m)
+           0.0d0      0.0d0     1.0d16
+grid:  filename
+                          filegrid
+forcing: filename
+                          fileforc
+bulk_forcing: filename
+                          croco_blk.nc
+climatology: filename
+                          fileclim
+boundary: filename
+                          filebound
+initial: NRREC  filename
+          0
+                          fileini
+restart:          NRST, NRPFRST / filename
+                   32400    -1
+                          scm_rst.nc
+history: LDEFHIS, NWRT, NRPFHIS / filename
+            T      30     0
+                          scm_his.nc
+averages: NTSAVG, NAVG, NRPFAVG / filename
+            1      30     0
+                          scm_avg.nc
+
+primary_history_fields: zeta UBAR VBAR  U  V   wrtT(1:NT)
+                          T    T   T   T  T    30*T
+auxiliary_history_fields:   rho Omega  W  Akv  Akt  Aks  bvf Visc3d Diff3d  HBL HBBL Bostr Bustr Bvstr Wstr Ustr Vstr Shfl Swfl rsw rlw lat sen  Bhfl Bwfl Hm
+                             F   F     F   T    T    T    F   F      F       T   F    F     F     F     F    T    T    T    T    T   T   T   T    10*F
+gls_history_fields:   TKE  GLS  Lscale
+                      F     F    F
+
+primary_averages: zeta UBAR VBAR  U  V   wrtT(1:NT)
+                   T    T    T    T  T   30*T
+auxiliary_averages: rho Omega  W  Akv  Akt  Aks  bvf Visc3d Diff3d HBL HBBL Bostr Bustr Bvstr Wstr Ustr Vstr Shfl Swfl rsw rlw lat sen  Bhfl Bwfl Hm
+                     F   F     F   F    F    F    F   F      F      T   F    F     F     F     F    T    T    T    T    T   T   T   T    10*F
+gls_averages:   Akk Akp  TKE  GLS  Lscale
+                  F   F    F     F    F
+rho0:
+      1025.d0
+
+lin_EOS_cff:  R0 [86kg/m3], T0 [Celsius], S0 [PSU], TCOEF [1/Celsius], SCOEF [1/PSU]
+              25.           15.            31.5       0.205              0.76875
+
+lateral_visc:   VISC2,    VISC4    [m^2/sec for all]
+                 0.       0.
+
+tracer_diff2: TNU2(1:NT)           [m^2/sec for all]
+               30*0.d0
+
+tracer_diff4: TNU4(1:NT)           [m^4/sec for all]
+               30*0.d11
+
+vertical_mixing: Akv_bak, Akt_bak [m^2/sec]
+                    0.d0   0.d0  0.d0
+
+bottom_drag:     RDRG [m/s],  RDRG2,  Zob [m],  Cdb_min, Cdb_max
+                 0.      0.    1.d-3     1.d-4    1.d-1
+
+gamma2:
+                 1.d0

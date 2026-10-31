@@ -1,0 +1,65 @@
+# MITgcm column of pyOCEAN N2b task 7 (validation/bulk_column/cases.py holds every shared value;
+# tests/test_bulk_column.py checks this file against it).
+# 1 x 1 periodic column, 36 x 1 m, linear EOS, KPP, exf LY04 bulk formulae.
+ &PARM01
+ tRef = 36*15.0,
+ sRef = 36*31.5,
+ eosType = 'LINEAR',
+ tAlpha = 2.0E-4,
+ sBeta  = 7.5E-4,
+ rhoConst = 1025.0,
+ rhoNil   = 1025.0,
+ rhoConstFresh = 1000.0,
+ HeatCapacity_Cp = 3985.0,
+ gravity = 9.81,
+ f0 = 9.421258E-5,
+ beta = 0.0,
+ selectCoriMap = 0,
+ viscAh = 0.0,
+ viscAr = 0.0,
+ diffKhT = 0.0,
+ diffKrT = 0.0,
+ diffKhS = 0.0,
+ diffKrS = 0.0,
+ no_slip_sides = .FALSE.,
+ no_slip_bottom = .FALSE.,
+ zRoughBot = 1.0E-3,
+ rigidLid = .FALSE.,
+ implicitFreeSurface = .TRUE.,
+ implicitDiffusion = .TRUE.,
+ implicitViscosity = .TRUE.,
+ useRealFreshWaterFlux = .FALSE.,
+ convertFW2Salt = -1.0,
+ staggerTimeStep = .TRUE.,
+ readBinaryPrec = 64,
+ writeBinaryPrec = 64,
+ &
+
+ &PARM02
+ cg2dMaxIters = 1000,
+ cg2dTargetResidual = 1.E-13,
+ &
+
+ &PARM03
+ startTime = 0.0,
+ nTimeSteps = 32400,
+ deltaT = 120.0,
+ abEps = 0.1,
+ pChkptFreq = 0.0,
+ chkptFreq = 0.0,
+ dumpFreq = 0.0,
+ monitorFreq = 86400.0,
+ &
+
+ &PARM04
+ usingCartesianGrid = .TRUE.,
+ dXspacing = 2000.0,
+ dYspacing = 2000.0,
+ delR = 36*1.0,
+ &
+
+ &PARM05
+ bathyFile = 'bathy.bin',
+ hydrogThetaFile = 'theta_init.bin',
+ hydrogSaltFile = 'salt_init.bin',
+ &

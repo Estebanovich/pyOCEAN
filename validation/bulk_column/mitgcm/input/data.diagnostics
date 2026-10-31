@@ -1,0 +1,14 @@
+# hourly means of the surface fluxes and KPP hbl, hourly snapshots (frequency < 0) of the profiles
+ &DIAGNOSTICS_LIST
+ fields(1:11,1) = 'EXFhs   ','EXFhl   ','EXFlwnet','EXFswnet','EXFtaux ','EXFtauy ',
+                  'EXFevap ','EXFpreci','EXFqnet ','KPPhbl  ','oceQnet ',
+ fileName(1) = 'fluxDiag',
+ frequency(1) = 3600.0,
+ fields(1:4,2) = 'THETA   ','SALT    ','UVEL    ','VVEL    ',
+ fileName(2) = 'profDiag',
+ frequency(2) = -3600.0,
+ timePhase(2) = 0.0,
+ &
+
+ &DIAG_STATIS_PARMS
+ &

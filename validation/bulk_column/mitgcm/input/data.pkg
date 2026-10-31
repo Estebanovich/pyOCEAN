@@ -1,0 +1,6 @@
+ &PACKAGES
+ useKPP = .TRUE.,
+ useEXF = .TRUE.,
+ useCAL = .TRUE.,
+ useDiagnostics = .TRUE.,
+ &

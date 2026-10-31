@@ -1,0 +1,16 @@
+# KPP for the surface boundary layer only, as pyOCEAN 'kpp' (CVMix) and CROCO LMD_SKPP:
+# no interior shear (difm0, difs0, dift0) or convective (dif*con) mixing, no background (viscAr = diffKr = 0),
+# no Ekman / Monin-Obukhov limit of hbl in stable forcing (CVMix/MOM6 default, pyOCEAN KPPParams).
+ &KPP_PARM01
+ KPPmixingMaps = .FALSE.,
+ KPPwriteState = .FALSE.,
+ KPPuseSWfrac3D = .TRUE.,
+ LimitHblStable = .FALSE.,
+ Ricr = 0.3,
+ difm0 = 0.0,
+ difs0 = 0.0,
+ dift0 = 0.0,
+ difmcon = 0.0,
+ difscon = 0.0,
+ diftcon = 0.0,
+ &

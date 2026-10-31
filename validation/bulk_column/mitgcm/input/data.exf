@@ -1,0 +1,39 @@
+# exf with ALLOW_BULK_LARGEYEAGER04 + EXF_CALC_ATMRHO + EXF_LWDOWN_WITH_EMISSIVITY (code/EXF_OPTIONS.h made by
+# run_mitgcm.sh): the LY04 bulk formulae that pyOCEAN 'ncar_ly04' (forcing/bulk.py::bulk_ncar) follows.
+# hq = ht (exf_readparms.F:1044).  Hourly ERA5 at the point (cases.point_series), records on the hour from
+# 2017-07-01 00:00, linear in time.
+ &EXF_NML_01
+ useAtmWind = .TRUE.,
+ useRelativeWind = .TRUE.,
+ useExfCheckRange = .FALSE.,
+ exf_iprec = 64,
+ hu = 10.0,
+ ht = 2.0,
+ exf_albedo = 0.066,
+ ocean_emissivity = 0.97,
+ &
+
+ &EXF_NML_02
+ uwindfile     = 'uwind.bin',
+ vwindfile     = 'vwind.bin',
+ atempfile     = 'atemp.bin',
+ aqhfile       = 'aqh.bin',
+ apressurefile = 'apressure.bin',
+ swdownfile    = 'swdown.bin',
+ lwdownfile    = 'lwdown.bin',
+ precipfile    = 'precip.bin',
+ uwindstartdate1 = 20170701, uwindstartdate2 = 000000, uwindperiod = 3600.0,
+ vwindstartdate1 = 20170701, vwindstartdate2 = 000000, vwindperiod = 3600.0,
+ atempstartdate1 = 20170701, atempstartdate2 = 000000, atempperiod = 3600.0,
+ aqhstartdate1 = 20170701, aqhstartdate2 = 000000, aqhperiod = 3600.0,
+ apressurestartdate1 = 20170701, apressurestartdate2 = 000000, apressureperiod = 3600.0,
+ swdownstartdate1 = 20170701, swdownstartdate2 = 000000, swdownperiod = 3600.0,
+ lwdownstartdate1 = 20170701, lwdownstartdate2 = 000000, lwdownperiod = 3600.0,
+ precipstartdate1 = 20170701, precipstartdate2 = 000000, precipperiod = 3600.0,
+ &
+
+ &EXF_NML_03
+ &
+
+ &EXF_NML_04
+ &
