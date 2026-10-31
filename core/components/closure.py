@@ -142,6 +142,12 @@ class Closure:
     update_phase = "implicit"     # phase whose driver calls ``update``: 'implicit' (4, GLS) or 'tracers' (7, KPP)
     restart_prefix = ""           # file-variable prefix of the restart state (``core.restart``)
 
+    @property
+    def reads_velocity(self) -> bool:
+        """Whether ``update`` reads u, v; False lets the driver pass None instead of building the centred
+        velocities (cost fix of 2026-10-31).  A stateless closure's ``update`` does nothing, so = ``stateful``."""
+        return self.stateful
+
     def viscosity(self, st) -> tuple[np.ndarray, np.ndarray] | None:
         """ν at the interfaces of the u- and v-faces, (N+1, ny, nx+1) and (N+1, ny+1, nx) [m² s⁻¹], from the
         current closure state; None: the viscosity solver uses its own ν (constant, parabolic or none)."""
@@ -1198,6 +1204,11 @@ class BBLAddedClosure(Closure):
         return self.base.restart_prefix
 
     @property
+    def reads_velocity(self) -> bool:
+        """The BBL part reads only h, ρ, u*_b and the drag work: u, v only for the wrapped closure."""
+        return self.base.reads_velocity
+
+    @property
     def per(self):
         return self._per
 
@@ -1263,19 +1274,19 @@ class BBLAddedClosure(Closure):
         n = self.n
         m = self.kd.shape[1]
         energy = np.zeros(m) if bbl_energy is None else np.asarray(bbl_energy, float).reshape(m)
-        hh = np.asarray(h, float).reshape(n, m)
-        wet = np.flatnonzero(hh.sum(axis=0) > 0.0)
-        kd = np.zeros((n + 1, m))
-        if wet.size and rho is not None:
-            dz = np.ascontiguousarray(hh[:, wet])
-            rw = np.ascontiguousarray(np.asarray(rho, float).reshape(n, m)[:, wet])
+        if rho is None:
+            kd = np.zeros((n + 1, m))
+        else:
+            # the whole grid goes to the kernel, which skips dry and land columns (Σh ≤ h_massless) before reading
+            # ρ: no gather/scatter of the wet columns (cost fix of 2026-10-31; same Kd bit for bit)
+            dz = np.asarray(h, float).reshape(n, m)
             p = self.bbl_params
-            ustar = np.sqrt(np.asarray(ustar2_bot, float).reshape(m)[wet])
-            tke = p.bbl_effic * energy[wet]                            # TKE_col = BBL_EFFIC · E (SD:1709)
+            ustar = np.sqrt(np.asarray(ustar2_bot, float).reshape(m))
+            tke = p.bbl_effic * energy                                 # TKE_col = BBL_EFFIC · E (SD:1709)
             numba.set_num_threads(threads._THREADS[0])
             # N² from the merged densities inside (final review I1; = buoyancy_frequency2 without thin layers)
-            kd[:, wet] = lotw_bbl_columns(dz, rw, ustar, self.absf[wet], tke, thin_layer_threshold(dz), p,
-                                          rho0=self.rho0, g=self.g)
+            kd = lotw_bbl_columns(dz, np.asarray(rho, float).reshape(n, m), ustar, self.absf, tke,
+                                  thin_layer_threshold(dz), p, rho0=self.rho0, g=self.g)
         kd[0] = 0.0                                                    # no flux through the bed or the surface
         kd[n] = 0.0
         self.kd = kd

@@ -371,10 +371,10 @@ def lotw_bbl_columns_numpy(dz: np.ndarray, rho: np.ndarray, ustar: np.ndarray, a
 
 
 @njit(cache=True)
-def _lotw_column_nb(dz, n2, nz, ustar, absf, tke, n2_min, i_max_decay, von_karman, kd_max, kd):
+def _lotw_column_nb(dz, n2, nz, ustar, absf, tke, n2_min, i_max_decay, von_karman, kd_max, kd, dz_above):
     """
     ``lotw_bbl_column`` on the merged column dz (nz,), n2 (nz+1,) (k = 0 at the bed), Kd written to kd (nz+1,)
-    (zeroed by the caller).  Line-by-line copy of the oracle (SD:1606-1789) in model (bottom-up) indices:
+    (zeroed by the caller); dz_above (≥ nz+1,) is scratch.  Line-by-line copy of the oracle (SD:1606-1789) in model (bottom-up) indices:
     MOM6 index K ↔ model interface nz + 1 − K, layer k ↔ model layer nz − k.
     """
     if not (ustar > 0.0):
@@ -385,7 +385,6 @@ def _lotw_column_nb(dz, n2, nz, ustar, absf, tke, n2_min, i_max_decay, von_karma
         idecay = absf / ustar
     tke_remaining = tke                                 # SD:1709-1711
     # dz_above[K] (MOM6) = DZ_SUBROUNDOFF + Σ of the layers above interface K, summed from the surface down
-    dz_above = np.empty(nz + 1)                         # model interface index
     dz_above[nz] = DZ_SUBROUNDOFF
     for i in range(nz - 1, -1, -1):
         dz_above[i] = dz_above[i + 1] + dz[i]
@@ -418,104 +417,130 @@ def _lotw_column_nb(dz, n2, nz, ustar, absf, tke, n2_min, i_max_decay, von_karma
         kd[i] = kd_wall                                 # SD:1782, 1785
 
 
+COL_BLOCK: int = 64  # columns per thread task of ``_columns_nb`` (scratch arrays allocated once per block)
+
+
 @njit(cache=True, parallel=True)
 def _columns_nb(dz, rho, ustar, absf, tke, h_thin, h_massless, n2_min, i_max_decay, von_karman, kd_max, kd_out,
-                rho0, g):
-    """Thin-layer merge + ``_lotw_column_nb`` of every column of dz (N, M), one column per thread task."""
+                rho0, g, bad):
+    """
+    Thin-layer merge + ``_lotw_column_nb`` of every column of dz (N, M), COL_BLOCK columns per thread task.  The
+    scratch arrays are allocated once per block and cleared per column (same arithmetic as one allocation per
+    column; cost fix of 2026-10-31).  Dry columns (Σdz ≤ h_massless) are skipped before ρ is read; a wet column
+    with a non-finite ρ is flagged in bad (M,) and left at Kd = 0 (the caller raises).
+    """
     n, mcol = dz.shape
-    for j in prange(mcol):
-        dry = 0.0
-        for k in range(n):
-            dry += dz[k, j]
-        if dry <= h_massless:
-            continue
-        # ``core.components.closure.active_layers``
+    nblk = (mcol + COL_BLOCK - 1) // COL_BLOCK
+    for b in prange(nblk):
         act = np.zeros(n, np.bool_)
-        kt = -1
-        for k in range(n):
-            if dz[k, j] >= h_thin[j]:
-                act[k] = True
-                kt = k
-        if 0 <= kt < n - 1:
-            top = 0.0
-            for k in range(n):
-                if k > kt:
-                    top += dz[k, j]
-            if top >= h_massless:
-                act[kt + 1] = True
-        if kt < 0:
-            continue
-        # ``kappa_shear._merge_map``
         lay = np.empty(n, np.int64)
-        nxt = -1
-        for k in range(n - 1, -1, -1):
-            if act[k]:
-                nxt = k
-            lay[k] = nxt
-        prv = -1
         rank = np.empty(n, np.int64)
-        r = -1
-        for k in range(n):
-            if act[k]:
-                prv = k
-                r += 1
-            rank[k] = r
-            if lay[k] < 0:
-                lay[k] = prv
-        for k in range(n):
-            lay[k] = rank[lay[k]]
-        c = r + 1
-        if c < 2:
-            continue
-        hc = np.zeros(c)
-        for k in range(n):
-            hc[lay[k]] += dz[k, j]
+        hc = np.zeros(n)
         kc = np.empty(n + 1, np.int64)
         kf = np.empty(n + 1)
-        d_in = 0.0
-        for i in range(n):
-            kc[i] = lay[i]
-            if i == 0 or lay[i] != lay[i - 1]:
-                kf[i] = 0.0
-                d_in = dz[i, j]
-            else:
-                kf[i] = d_in / hc[lay[i]]
-                d_in = d_in + dz[i, j]
-        kc[n] = lay[n - 1]
-        kf[n] = 1.0
-        # N² from the merged densities (``_merged_n2``)
-        rref = np.zeros(c)
-        has = np.zeros(c, np.bool_)
-        asum = np.zeros(c)
-        for k in range(n):
-            if dz[k, j] > 0.0:
-                q = lay[k]
-                if not has[q]:
-                    rref[q] = rho[k, j]
-                    has[q] = True
-                asum[q] += dz[k, j] * (rho[k, j] - rref[q])
-        rc = np.empty(c)
-        for q in range(c):
-            rc[q] = rref[q] + asum[q] / hc[q]
-        n2c = np.zeros(c + 1)
-        for q in range(1, c):
-            n2c[q] = (g / rho0) * (rc[q - 1] - rc[q]) / (0.5 * (hc[q - 1] + hc[q]))
-        kd_c = np.zeros(c + 1)
-        _lotw_column_nb(hc, n2c, c, ustar[j], absf[j], tke[j], n2_min, i_max_decay, von_karman, kd_max, kd_c)
-        for i in range(n + 1):
-            q = kc[i]
-            q1 = q + 1
-            if q1 > c:
-                q1 = c
-            lo = kd_c[q]
-            hi = kd_c[q1]
-            f = kf[i]
-            if f == 0.0:
-                kd_out[i, j] = lo
-            elif f == 1.0:
-                kd_out[i, j] = hi
-            else:
-                kd_out[i, j] = (1.0 - f) * lo + f * hi
+        rref = np.zeros(n)
+        has = np.zeros(n, np.bool_)
+        asum = np.zeros(n)
+        rc = np.empty(n)
+        n2c = np.zeros(n + 1)
+        kd_c = np.zeros(n + 1)
+        dz_above = np.empty(n + 1)
+        for j in range(b * COL_BLOCK, min(mcol, (b + 1) * COL_BLOCK)):
+            dry = 0.0
+            for k in range(n):
+                dry += dz[k, j]
+            if dry <= h_massless:
+                continue
+            finite = True
+            for k in range(n):
+                if not math.isfinite(rho[k, j]):
+                    finite = False
+            if not finite:
+                bad[j] = 1
+                continue
+            # ``core.components.closure.active_layers``
+            act[:] = False
+            kt = -1
+            for k in range(n):
+                if dz[k, j] >= h_thin[j]:
+                    act[k] = True
+                    kt = k
+            if 0 <= kt < n - 1:
+                top = 0.0
+                for k in range(n):
+                    if k > kt:
+                        top += dz[k, j]
+                if top >= h_massless:
+                    act[kt + 1] = True
+            if kt < 0:
+                continue
+            # ``kappa_shear._merge_map``
+            nxt = -1
+            for k in range(n - 1, -1, -1):
+                if act[k]:
+                    nxt = k
+                lay[k] = nxt
+            prv = -1
+            r = -1
+            for k in range(n):
+                if act[k]:
+                    prv = k
+                    r += 1
+                rank[k] = r
+                if lay[k] < 0:
+                    lay[k] = prv
+            for k in range(n):
+                lay[k] = rank[lay[k]]
+            c = r + 1
+            if c < 2:
+                continue
+            hc[:c] = 0.0
+            for k in range(n):
+                hc[lay[k]] += dz[k, j]
+            d_in = 0.0
+            for i in range(n):
+                kc[i] = lay[i]
+                if i == 0 or lay[i] != lay[i - 1]:
+                    kf[i] = 0.0
+                    d_in = dz[i, j]
+                else:
+                    kf[i] = d_in / hc[lay[i]]
+                    d_in = d_in + dz[i, j]
+            kc[n] = lay[n - 1]
+            kf[n] = 1.0
+            # N² from the merged densities (``_merged_n2``)
+            rref[:c] = 0.0
+            has[:c] = False
+            asum[:c] = 0.0
+            for k in range(n):
+                if dz[k, j] > 0.0:
+                    q = lay[k]
+                    if not has[q]:
+                        rref[q] = rho[k, j]
+                        has[q] = True
+                    asum[q] += dz[k, j] * (rho[k, j] - rref[q])
+            for q in range(c):
+                rc[q] = rref[q] + asum[q] / hc[q]
+            n2c[:c + 1] = 0.0
+            for q in range(1, c):
+                n2c[q] = (g / rho0) * (rc[q - 1] - rc[q]) / (0.5 * (hc[q - 1] + hc[q]))
+            kd_c[:c + 1] = 0.0
+            _lotw_column_nb(hc, n2c, c, ustar[j], absf[j], tke[j], n2_min, i_max_decay, von_karman, kd_max, kd_c,
+                            dz_above)
+            for i in range(n + 1):
+                q = kc[i]
+                q1 = q + 1
+                if q1 > c:
+                    q1 = c
+                lo = kd_c[q]
+                hi = kd_c[q1]
+                f = kf[i]
+                if f == 0.0:
+                    kd_out[i, j] = lo
+                elif f == 1.0:
+                    kd_out[i, j] = hi
+                else:
+                    kd_out[i, j] = (1.0 - f) * lo + f * hi
 
 
 def lotw_bbl_columns(dz: np.ndarray, rho: np.ndarray, ustar: np.ndarray, absf: np.ndarray, tke: np.ndarray,
@@ -536,8 +561,6 @@ def lotw_bbl_columns(dz: np.ndarray, rho: np.ndarray, ustar: np.ndarray, absf: n
     rho = np.ascontiguousarray(rho, dtype=float)
     if rho.shape != (n, m):
         raise ValueError(f"lotw_bbl_columns: rho must have shape {(n, m)}, got {rho.shape}")
-    if not np.isfinite(rho).all():
-        raise ValueError("lotw_bbl_columns: rho must be finite")
     cols = []
     for name, x in (("ustar", ustar), ("absf", absf), ("tke", tke), ("h_thin", h_thin)):
         arr = np.asarray(x, float)
@@ -551,6 +574,9 @@ def lotw_bbl_columns(dz: np.ndarray, rho: np.ndarray, ustar: np.ndarray, absf: n
     n2_min = OMEGA * OMEGA if p.use_omega else 0.0                       # SD:1666-1667
     i_max_decay = 1.0 / p.max_decay if p.max_decay > 0.0 else 0.0       # SD:2441-2442
     kd = np.zeros((n + 1, m))
+    bad = np.zeros(m, np.int8)
     _columns_nb(dz, rho, ustar, absf, tke, h_thin, float(h_massless), float(n2_min), float(i_max_decay),
-                float(p.von_karman), float(p.kd_max), kd, float(rho0), float(g))
+                float(p.von_karman), float(p.kd_max), kd, float(rho0), float(g), bad)
+    if bad.any():                                                       # ρ is read only in wet columns
+        raise ValueError(f"lotw_bbl_columns: rho must be finite in the wet columns ({int(bad.sum())} are not)")
     return kd

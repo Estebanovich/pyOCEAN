@@ -337,9 +337,11 @@ class Driver:
         sal = m.salinity
         S = C[lay["S"]] if sal else None
         rho = m._eos.density(C[0], S)
-        u, v = ctx.u_new, ctx.v_new
-        uc = 0.5 * (u[:, :, :-1] + u[:, :, 1:])
-        vc = 0.5 * (v[:, :-1, :] + v[:, 1:, :])
+        uc = vc = None                                                 # BBL mixing on a constant closure
+        if cl.reads_velocity:
+            u, v = ctx.u_new, ctx.v_new
+            uc = 0.5 * (u[:, :, :-1] + u[:, :, 1:])
+            vc = 0.5 * (v[:, :-1, :] + v[:, 1:, :])
         fw = getattr(ctx.fluxes, "fw", None) if sal else None
         bflux = None
         if ctx.bflux is not None or fw is not None:

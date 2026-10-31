@@ -235,6 +235,28 @@ def test_columns_refuse_non_finite_inputs() -> None:
         lotw_bbl_columns(dz, rhob, **ok)
 
 
+def test_dry_columns_ignore_rho() -> None:
+    """The kernel takes the whole model grid (no gather of the wet columns, cost fix of 2026-10-31): ρ of a dry or
+    land column (Σdz ≤ h_massless) is never read, so a NaN there gives Kd = 0 and leaves the wet columns bit for
+    bit; a NaN in a wet column still raises (task 3 review M2)."""
+    import pytest
+    dz = np.full((10, 4), 5.0)
+    dz[:, 1] = 0.0                                                 # land
+    dz[:, 3] = 5.0e-5                                              # Σdz = 0.5 mm: dry (≤ h_massless)
+    rho = 1025.0 - 5.0e-3 * np.arange(10)[:, None] * np.ones(4)
+    ok = dict(ustar=np.full(4, 0.01), absf=np.full(4, 1e-4), tke=np.full(4, 1e-6), h_thin=thin_layer_threshold(dz))
+    ref = lotw_bbl_columns(dz, rho, **ok)
+    rhob = rho.copy()
+    rhob[:, 1] = np.nan
+    rhob[3, 3] = np.inf
+    kd = lotw_bbl_columns(dz, rhob, **ok)
+    np.testing.assert_array_equal(kd, ref)
+    assert np.all(kd[:, [1, 3]] == 0.0)
+    rhob[2, 2] = np.nan
+    with pytest.raises(ValueError, match="rho"):
+        lotw_bbl_columns(dz, rhob, **ok)
+
+
 def test_thin_layers_from_densities_do_not_change_kd() -> None:
     """Final review I1: starting from layer densities (``BBLAddedClosure.update``), 1 mm layers split off the bottom
     of layers 2 and 5 of a 20 × 10 m stratified column, with the density of their parent layer, leave Kd_BBL at the

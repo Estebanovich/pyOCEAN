@@ -215,6 +215,26 @@ def test_kpp_base_adds():
     assert cl.obl_depth is cl.base.obl_depth                           # helpers read KPP through the wrapper
 
 
+
+@pytest.mark.parametrize("kw, reads", [(dict(), False), (dict(shear_mixing="jackson"), True),
+                                       (dict(closure="kpp"), True)])
+def test_velocity_only_for_closures_that_read_it(kw, reads):
+    """Cost fix of 2026-10-31: the phase-7 driver builds the centred u, v only for a closure that reads them; the
+    BBL mixing does not, so over the constant closure update gets u = v = None (and the run is unchanged)."""
+    m = _model("zstar", bbl_mixing="lotw", **kw)
+    cl = m._closure
+    assert cl.reads_velocity is reads
+    seen = []
+    orig = cl.update
+
+    def spy(u, v, *a, **k):
+        seen.append(u is None and v is None)
+        return orig(u, v, *a, **k)
+    cl.update = spy
+    _run(m, 2, U=0.3)
+    assert seen and all(s is (not reads) for s in seen)
+    assert cl.kd_bbl.max() > 1e-4
+
 # ---------------------------------------------------------------- pre-flight
 def test_preflight_refuses_all_at_once():
     hg = create_cartesian_grid(nx=2, ny=2, dx=1000.0, dy=1000.0, f0=1e-4)

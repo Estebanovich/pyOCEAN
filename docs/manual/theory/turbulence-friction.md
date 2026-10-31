@@ -627,9 +627,8 @@ MOM6 takes the velocities at the start of the step; pyOCEAN those after the impl
   non-hydrostatic truth −8.75e-3, digitized), class with the most tracer at x′ = −300 km −17…−16 → −14…−13e-3 m s⁻²,
   but plume transport at x′ = −300 km 19.0 → 18.0 Sv (truth 20.6, digitized; open); no CFL truncations and no limiter
   events (32 before the fix). z\*: −9.04 → −8.76; σ: −11.39 → −10.18.
-* **Cost** per step (`scripts/bbl_cost.py`): DOME 10 km 1.027×; BayIW cut z\* 1.071× (above the spec's 1.05: with a
-  constant closure and no shear mixing the scheme switches on the density/N² phase — hypothesis, the profile supports
-  it).
+* **Cost** per step (`scripts/bbl_cost.py`, after the cost fix of 2026-10-31): DOME 10 km 1.003×; BayIW cut z\* 1.038×
+  (spec limit 1.05; it was 1.071×, mostly NumPy copies of the wet columns around the kernel, not the scheme).
 
 ## Options and defaults
 
@@ -701,7 +700,7 @@ See [Validation: wetting and drying](../validation/wetting-drying.md) for the TI
     constant $\nu_v$ (0.5 m² s⁻¹ in DOME) the shear stays above $Ri_c$ and the scheme is inactive.
 
 * Drag-driven BBL mixing: in DOME's hybrid run it lightens the plume but lowers the downstream plume transport
-    (open); the BayIW cost is 1.071× per step (spec limit 1.05); $K_{d,BBL}$ is not in the CF/Zarr output; LOTW
+    (open); $K_{d,BBL}$ is not in the CF/Zarr output; LOTW
     distributes the energy differently from Legg's single-layer form (A.2), a class (c) difference in the DOME
     comparison.
 
