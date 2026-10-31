@@ -311,14 +311,15 @@ Cada cambio se atribuye con el control: (operador) = de la corrida base al contr
 
 ### Costo de la mezcla por cizalla de Jackson et al. (2008) (`shear_mixing='jackson'`)
 
-`scripts/shear_cost.py`: mediana de s/paso de 50 pasos tras 10 de calentamiento, 5 hilos, cada configuración en su propio proceso y alternando sin/con (2 rondas); `shear_mixing` se pasa al constructor. El script verifica que el término esté activo (κ_shear máximo > 0) y mide el `update` del cierre aparte.
+`scripts/shear_cost.py`: mediana de s/paso de 50 pasos tras 10 de calentamiento, 5 hilos, cada configuración en su propio proceso y alternando sin/con (3 rondas); `shear_mixing='jackson'` (Pr = 1) se pasa al constructor. El script verifica que el término esté activo (κ_shear máximo > 0, `update` llamado en los 50 pasos), mide el `update` del cierre aparte y suma las resoluciones implícitas verticales (`vertical_implicit`, ν y κ). Los dos casos ya llevan en su línea base lo que los distingue (BayIW cut z\*: `validation/bayiw_cut/cut.py::build_model("2layer", "bay", "zstar", 120.0)`; DOME 10 km híbrida: `kv_low` ν_v = 1e-4 y Smagorinsky 0.15), de modo que la razón aísla el efecto de Jackson.
 
-| Caso | sin Jackson [s/paso] | con Jackson [s/paso] | razón | `update` del cierre |
-|------|------|------|------|------|
-| BayIW cut z\*, Δt 120 s | 0.337 | 0.437 | **1.295** | 81.7 ms (18.7 % del paso) |
-| DOME 10 km híbrida, `kv_low` (ν_v = 1e-4) + Smagorinsky 0.15, Δt 600 s | 0.114 | 0.130 | **1.138** | 7.7 ms (5.9 %) |
+| Caso | sin Jackson [s/paso] | con Jackson [s/paso] | razón mín / mediana / máx (3 rondas) | `update` del cierre | resoluciones implícitas |
+|------|------|------|------|------|------|
+| BayIW cut z\*, Δt 120 s | 0.335 | 0.428 | 1.270 / **1.275** / 1.280 | 81.0 ms (18.9 % del paso) | 12.8 → 12.9 ms |
+| DOME 10 km híbrida, `kv_low` + Smagorinsky 0.15, Δt 600 s | 0.117 | 0.128 | 1.046 / **1.096** / 1.157 | 7.6 ms (6.0 %) | 1.7 → 3.1 ms |
 
-- La mediana de las dos rondas queda bajo el límite de 1.30 del criterio 7 en ambos casos, pero BayIW por poco: 1.314 en la primera ronda y 1.275 en la segunda (ruido de ±3 %). El `update` explica ≈ 80 % del aumento en BayIW (82 de ≈ 99 ms); el resto es la resolución implícita con ν y κ no uniformes.
+- **1.30 es el umbral del spec (criterio 7) para perfilar, no un límite de aprobación.** BayIW queda justo debajo (mediana 1.275). Una primera medición de 2 rondas dio 1.314 y 1.275 (mediana 1.295), así que el umbral se tocó en una ronda; por eso se perfiló.
+- **Perfil parcial.** El `update` del cierre (el kernel de columna de Jackson) explica ≈ 82 % del aumento en BayIW (81.0 de ≈ 92 ms) y ≈ 65 % en DOME (7.6 de ≈ 11.7 ms). Las resoluciones implícitas verticales no cambian en BayIW (12.8 → 12.9 ms) y suben 1.4 ms en DOME (ν no uniforme). **[Hipótesis]** los ≈ 11 ms restantes de BayIW (y ≈ 2.7 ms de DOME) son trabajo del controlador alrededor del `update` (densidad de capa, promedios a los centros, ν_shear en las caras); no se midieron por separado.
 - κ_shear máximo: 1.1e-2 m²/s (BayIW) y 0.50 m²/s (DOME).
 - Humo (`scripts/n1_smoke.py` contra `main`): 9/9 hashes idénticos con la opción apagada (por defecto).
 

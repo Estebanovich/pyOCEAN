@@ -10,7 +10,7 @@ Median wall time per step of 50 steps after 10 warm-up steps, 5 threads, without
   the ``kv_low`` variant) and Smagorinsky C = 0.15, Δt 600 s — the case that motivated the scheme.
 
 The script checks that the term is active (max κ_shear > 0 after the timed steps) and times the closure ``update``
-(wrapped on the instance) to print its share of the step.  Each (case, mode) runs in its own process
+(wrapped on the instance) to print its share of the step, and the implicit vertical solves (``vertical_implicit``, ν and κ) per step.  Each (case, mode) runs in its own process
 (``--one``), and the two modes alternate (off, on, off, on) to expose order effects.
 
     python -I scripts/shear_cost.py [--cases bayiw_cut_zstar dome_10km_hybrid_kvlow_smag] [--rounds 2]
@@ -64,6 +64,18 @@ def measure(name: str, shear: bool) -> dict:
     """Median s/step, the median time of the closure ``update`` per step and max κ_shear for one configuration."""
     from core.dynamics import sigma_baroclinic as sb
     sb.set_threads(5)
+    solves = []                                                    # implicit vertical solves (ν and κ), all callers
+    import core.dynamics.sigma_baroclinic as sbm
+    import core.dynamics.sigma_wd as swd
+    import core.model.driver as drv
+    vi = swd.vertical_implicit
+
+    def timed_vi(*a, **k):
+        t0 = time.perf_counter()
+        out = vi(*a, **k)
+        solves.append(time.perf_counter() - t0)
+        return out
+    swd.vertical_implicit = drv.vertical_implicit = sbm.vertical_implicit = timed_vi
     m, st, step = CASES[name](dict(shear_mixing="jackson", shear_prandtl=1.0) if shear else {})
     clo = m._closure
     acc = []
@@ -78,6 +90,7 @@ def measure(name: str, shear: bool) -> dict:
     for n in range(NWARM):
         st = step(m, st, n)
     acc.clear()
+    solves.clear()
     t = []
     for n in range(NWARM, NWARM + NMEAS):
         t0 = time.perf_counter()
@@ -85,15 +98,17 @@ def measure(name: str, shear: bool) -> dict:
         t.append(time.perf_counter() - t0)
     kmax = float(np.max(clo.kd_shear)) if shear else 0.0
     if shear:
+        assert len(acc) >= NMEAS, f"{name}: the wrapped closure update ran {len(acc)} times in {NMEAS} steps"
         assert kmax > 0.0, f"{name}: shear mixing is on but max κ_shear = 0 (term not active)"
         assert type(clo).__name__ == "ShearAddedClosure", type(clo).__name__
-    return dict(step=float(np.median(t)), update=float(np.median(acc)) if acc else 0.0, kmax=kmax, ncall=len(acc))
+    return dict(step=float(np.median(t)), update=float(np.median(acc)) if acc else 0.0, kmax=kmax, ncall=len(acc),
+                solve=float(sum(solves)) / NMEAS)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--cases", nargs="+", default=list(CASES), choices=list(CASES))
-    ap.add_argument("--rounds", type=int, default=2)
+    ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--one", nargs=2, metavar=("CASE", "MODE"), help="internal: one configuration, JSON on stdout")
     a = ap.parse_args()
     warnings.simplefilter("ignore")
@@ -109,12 +124,17 @@ def main() -> None:
                 res[mode].append(json.loads(out.split("RESULT ", 1)[1]))
                 r = res[mode][-1]
                 print(f"  {name} {mode:3s} {r['step']:.4f} s/step  update {r['update'] * 1e3:7.2f} ms"
-                      f"  kmax {r['kmax']:.3e}", flush=True)
+                      f"  solves {r['solve'] * 1e3:6.2f} ms  kmax {r['kmax']:.3e}", flush=True)
+        ratios = [on["step"] / off["step"] for on, off in zip(res["on"], res["off"])]
         t0 = np.median([r["step"] for r in res["off"]])
         t1 = np.median([r["step"] for r in res["on"]])
         u1 = np.median([r["update"] for r in res["on"]])
-        print(f"{name:30s} off {t0:.4f}  on {t1:.4f} s/step  ratio {t1 / t0:.3f}  "
-              f"update(on) {u1 * 1e3:.1f} ms = {100 * u1 / t1:.1f} % of the step", flush=True)
+        v0 = np.median([r["solve"] for r in res["off"]])
+        v1 = np.median([r["solve"] for r in res["on"]])
+        print(f"{name:30s} off {t0:.4f}  on {t1:.4f} s/step  ratio min/median/max "
+              f"{min(ratios):.3f}/{np.median(ratios):.3f}/{max(ratios):.3f}  "
+              f"update(on) {u1 * 1e3:.1f} ms = {100 * u1 / t1:.1f} % of the step;  implicit vertical solves "
+              f"{v0 * 1e3:.1f} -> {v1 * 1e3:.1f} ms per step", flush=True)
 
 
 if __name__ == "__main__":
