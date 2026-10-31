@@ -346,11 +346,15 @@ validation: [Air–sea fluxes](../theory/air-sea-fluxes.md#validation).
 
 ## Known limitations
 
+- The ERA5 reader opens files with `h5netcdf` (netCDF4 for NetCDF3). Before 2026-10-31 (fixed in commit 3d50c8a) netCDF-C
+    crashed with a segmentation fault when the same ERA5 files were opened a second time while xarray still held them;
+    if you see it on an older checkout, update.
 - Atmospheric pressure forcing (inverse barometer, ∇p_a) is not applied by any model line. Heat and freshwater are
     applied by `SigmaBaroclinic` only (bulk, or prescribed `heat`/`fw`); the older lines take wind stress only.
 - WRF `PSFC` stands for `msl` (approximation above); only `'ncar'`/`'ncar_ly04'`/`'kara'` use it.
-- The bulk is validated against MITgcm and CROCO on an ERA5 column (formula ≤ 0.7 % / 0.14 %), but the coupled mean
-    fluxes differ by 14 % and the SST by 0.3 °C, which the model mixing explains
+- The bulk is validated against MITgcm and CROCO on an ERA5 column (formula ≤ 0.7 % of the mean flux vs MITgcm, ≤ 0.9 % vs CROCO
+    with its relative-wind difference), but the coupled mean fluxes differ by 14 % and the SST by 0.3 °C. Prescribed-flux
+    runs bracket that gap and point to the model's vertical mixing, class (c) [hypothesis], not proven
     ([Air–sea fluxes](../theory/air-sea-fluxes.md#validation-of-the-coupled-fluxes-n2b)); it has not been compared with
     observations yet.
 - No GFS, CMEMS, river or FES adapters yet (planned in `docs/design/forcing_architecture.md`).

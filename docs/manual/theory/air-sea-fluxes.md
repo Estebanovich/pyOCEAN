@@ -265,7 +265,7 @@ column. It is computed in the same way in σ, z\* and hybrid, so a horizontally 
 SST in z\* and σ (measured identical; hybrid within the bounds derived in `tests/test_surface_fluxes_model.py`). MOM6
 takes the current from the first layer (`HMIX_UV_SFC_PROP` = 0); pyOCEAN averages it over the same 1 m, because a
 200 m top layer must not decide the relative wind. `h_uv_sfc=0` gives MOM6's choice. The mean is restricted to the layers
-a wet column needs to reach 1 m, which makes it cheap (8.5 ms per step on BayIW 560×352) and bit for bit equal to the
+a wet column needs to reach 1 m, which makes it cheap (8.5 ms per step on the BayIW cut, 198×159×50) and bit for bit equal to the
 full formula.
 
 ### The schemes
@@ -328,10 +328,14 @@ content changes by the flux to ≤ 1e-13 of the change in σ, z\* and hybrid, wi
 - **Conservation, restart, cost.** Heat ≤ 1e-13 of the change, volume and salt 1e-13, S and T variance budgets closed to
   1e-12 with bulk on; restart bit for bit; 1 = 5 threads; cost 1.020 of the step on BayIW cut z\* (limit 1.05).
 - **Column against MITgcm and CROCO** (`validation/bulk_column/README.md`): 45 days of an ERA5 point on the New Jersey
-  shelf with KPP in the three models. With the same state the formulae agree within 0.7 % (MITgcm `exf`) and 0.14 %
-  (CROCO). The coupled mean $Q_{net}$ differs by +14 % and −14 % and the final SST by −0.30 °C and +0.32 °C, which the
-  runs with prescribed fluxes attribute to the vertical mixing (KPP and interior background), class (c) [hypothesis]; the
-  criterion of 2 % and 0.2 °C is therefore explained, not met.
+  shelf with KPP in the three models. With the same state the formulae agree within 0.71 % of the mean flux with MITgcm `exf` (largest: $Q_S$; $Q_{net}$
+  0.45 %), and with CROCO within 0.22 % when CROCO's coupling is imitated (absolute wind, $h_{sfc}$ = 0; $Q_{net}$
+  0.14 %). With the default relative wind, `'coare'` differs from CROCO by 0.73 % ($Q_{net}$), 0.86 % ($Q_L$) and
+  1.2 % ($Q_S$), and 2.7 % in $|\tau|$, which is the wind definition (class c). The coupled mean $Q_{net}$ differs by +14 % and
+  −14 % and the final SST by −0.30 °C and +0.32 °C. The runs with prescribed fluxes bracket the SST gap (−1.26 °C
+  with MITgcm's fluxes, +0.94 °C with CROCO's), which points to the vertical mixing (KPP and interior background), class
+  (c) **[hypothesis]**: it is not proven, because pyOCEAN's KPP has not been compared with MOM6/CVMix in this column.
+  The criterion of 2 % and 0.2 °C is not met.
 
 ## Prescribed heat flux in the σ/ALE model (N3)
 
@@ -429,7 +433,9 @@ See also [Forcing and column checks](../validation/components.md).
 
 - Since N2b the bulk formulae are coupled to `SigmaBaroclinic` (section above). The coupled run is not yet judged against
     observations (project 4 of the regional chain), and in the ERA5 column the mean fluxes and SST differ from MITgcm
-    and CROCO by 14 % and 0.3 °C, explained by the vertical mixing, not by the bulk formula.
+    and CROCO by 14 % and 0.3 °C. The formula at the same state differs far less (≤ 0.9 %, apart from the wind
+    definition), and prescribed-flux runs bracket the gap, so the vertical mixing (KPP, interior background) is the
+    suspect, class (c) **[hypothesis]**, not proven.
 - COARE 3.0 exists only as CROCO's port (`'coare'`, with its quirks copied on purpose); the planned `bulk_coare30`
     (levelling-off stable functions) is not separate. `bulk_ncar` (`'ncar_ly04'`) is unreliable in weak wind with
     strongly stable air and has no fixed point for warm dry air (see the note above); `'ncar'` in the FMS form does not

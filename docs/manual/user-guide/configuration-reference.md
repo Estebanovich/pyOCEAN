@@ -132,7 +132,7 @@ The shortwave profile uses the model's `jerlov` and `cp`; there is no SST or SSS
 | Method | Signature | Returns |
 |---|---|---|
 | ``initial_state`` (`:1190`) | `(eta, T, h_src=None)` | resting `SigmaState`; sets `rho_ref` if `"auto"`, `T_ext`, `h_ext` |
-| ``step`` (`:2084`) | `(st, tau_x=None, tau_y=None, fw=None, heat=None)`, τ [N m⁻²] at u-/v-faces; none of the forcing arguments with `surface_fluxes` | new `SigmaState` |
+| ``step`` (`:1805`) | `(st, tau_x=None, tau_y=None, fw=None, heat=None)`, τ [N m⁻²] at u-/v-faces; none of the forcing arguments with `surface_fluxes` | new `SigmaState` |
 | ``layer_heights`` (`:1267`) | `(eta, h=None)` | layer-centre heights (N, ny, nx) [m], z = 0 at rest |
 | ``layer_volumes`` (`:1289`) | `(eta, h=None)` | layer volumes [m³] |
 | ``density`` (`:1285`) | `(T)` | ρ [kg m⁻³] |
