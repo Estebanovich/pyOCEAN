@@ -40,6 +40,7 @@ Los tests de pytest (`tests/test_vertical_vs_mom6.py`) se saltan cuando falta un
 |---|---|---|---|
 | `remap_driver` | `MOM_remapping::remapping_core_h` (`initialize_remapping` con `boundary_extrapolation=.false.`, `om4_remap_via_sub_cells=.false.`, `answer_date=99991231`, `h_neglect=1e-30`, `h_neglect_edge=1e-10`) | `remap.remap_column` | 1e-11 |
 | `regrid_driver` | `coord_zlike::build_zstar_column`, `coord_sigma::build_sigma_column` (min_thickness 1e-3), `regrid_interp::build_and_interpolate_grid` (`P1M_H2`, sin extrapolación, `answer_date=99991231`) | `regrid.zstar_column`, `regrid.sigma_column`, `regrid._p1m_h2_positions` | 1e-10 (z\*, σ), 1e-9 (P1M) |
+| `kappa_shear_driver` | `MOM_kappa_shear::kappa_shear_column` (privada, extraída; `nzc = nz`, EOS lineal en T, Boussinesq, valores por defecto) | `physics.mixing.kappa_shear.kappa_shear_column` | 1e-10 × max de la columna (κ y Q) |
 
 Las columnas de prueba se generan en `columns.py`:
 - semilla 2026;
@@ -218,3 +219,96 @@ un defecto de HYCOM1. Vienen de dos rasgos de hybgen:
 No hace falta portar hybgen. Para el Plan B, la regla híbrida necesita objetivos más ligeros
 que el agua superficial en las capas de arriba (estilo OM4), o grosores máximos
 (`max_h_top`), para que la capa de mezcla quede resuelta en z.
+
+## Mezcla por cizalla de Jackson et al. (2008) (`kappa_shear_column` de MOM6)
+
+Compara el oráculo NumPy `physics/mixing/kappa_shear.py` (Jackson, tarea 1) con la rutina
+de columna de MOM6 compilada (`MOM_kappa_shear.F90`, git 0e9a561).
+
+**Driver.** `kappa_shear_column`, `calculate_projected_state` y `find_kappa_tke` son
+privadas (`MOM_kappa_shear.F90:866-2069`). `build_reference.sh` las copia tal cual a
+`~/pyOCEAN_refs/build/column/kappa_shear_column_mom6.F90`, junto con el tipo
+`Kappa_shear_CS` (`:36-128`, hecho público) y las líneas `use` del módulo (`:8-21`). En la
+copia se insertan cuatro contadores enteros, que no cambian ninguna operación de punto flotante:
+- iteraciones de Newton (tras `:1825`);
+- eventos de la rampa de truncamiento de Picard (tras `:1802` y `:1817`);
+- abortos de Newton (tras `:2035`);
+- iteraciones κ–Q (tras `:1701`).
+
+`kappa_shear_driver.F90` repite la preparación de `Calculate_kappa_shear` (`:299-327`):
+- sin capas sin masa, así que `nzc = nz`;
+- κ inicial = `KD_SEED_KAPPA_SHEAR` (`:325`);
+- Boussinesq, escalas de unidades 1, sin presión superficial;
+- `Kappa_shear_CS` con los valores de `JacksonParams()` (= valores por defecto de MOM6),
+  `KAPPA_SHEAR_ITER_BUG = False`, `VEL_UNDERFLOW = 0`, `USE_RESTRICTIVE_TOLERANCE_CHECK = False`,
+  `KD_TRUNC_KAPPA_SHEAR = 0.01 κ0`.
+
+**Flotabilidad.** `tv%T` no está asociado, así que MOM6 usa `dbuoy_dT = −g/ρ₀` y
+`dbuoy_dS = 0` (`:1148-1149`); sin temperatura, MOM6 mismo pasa la densidad como "T"
+(`:307-310`). Con `g = ρ₀ = 1` y `T = −b`, `dbuoy_dT·(T(k−1) − T(k)) = b(k−1) − b(k)` sin
+redondeo: es una EOS lineal en T, y la diferencia de flotabilidad es la del oráculo.
+
+**Compilación.** El driver se compila con `-ffp-contract=off`. gfortran contrae `a*b + c` en
+FMA por defecto en arm64, y NumPy no lo hace.
+
+**Casos** (`columns.kappa_shear_cases`):
+
+| # | Columna | Δt (s) | κ0 (m² s⁻¹) |
+|---|---|---|---|
+| 1 | capa de cizalla tanh, Ri_min 0.1, N0 = 0.01 s⁻¹, d = 5 m, 100 × 2 m | 600 | 1e-7 |
+| 2 | chorro de fondo tipo overflow: u máx 0.6 m/s a 100 m del fondo, v que gira, interfaz densa (Δb 1e-3 m s⁻²) a 130 m, N² de fondo 1e-6, 70 capas de 2 a 10 m (κ llega al fondo: rama no-slip) | 600 | 1e-7 |
+| 3 | subcrítica en toda la columna (Ri = 4) | 600 | 1e-7 |
+| 4 | capa de cizalla del caso 1 | 3600 | 1e-7 |
+| 5 | cizalla uniforme, Ri = 0.22, 30 × 1.67 m (Newton) | 60 | 1e-7 |
+| 6 | cizalla uniforme, Ri = 0.15, 30 × 6.67 m (Newton) | 3600 | 1e-7 |
+| 7–18 | 12 columnas aleatorias (semilla 2008): N = 8–60, dz 0.5–15 m, cizalla aleatoria, N² ≥ 0 con ruido, f² ≤ 2e-8 | 300 / 1800 / 7200 | 1e-7 / 1e-6 / 1e-5 |
+
+**Resultados.** Se da max |Δκ| / max κ y max |ΔQ| por columna.
+
+| Caso | max κ (m² s⁻¹) | Δκ sin FMA | ΔQ sin FMA | Δκ/max κ con FMA | Newton / rampa / abortos / iteraciones (MOM6) |
+|---|---|---|---|---|---|
+| 1 capa de cizalla, 600 s | 2.54e-2 | 0 | 0 | 2.7e-16 | 0 / 9 / 5 / 56 |
+| 2 chorro de fondo | 0.987 | 0 | 0 | 2.5e-15 | 0 / 25 / 18 / 206 |
+| 3 subcrítica | 0 | 0 | 0 | 0 | 0 / 0 / 0 / 0 |
+| 4 capa de cizalla, 3600 s | 4.29e-3 | 0 | 0 | 3.0e-16 | 0 / 5 / 5 / 45 |
+| 5 cizalla uniforme, Ri 0.22 | 0.121 | 0 | 0 | 2.0e-15 | 4 / 0 / 1 / 10 |
+| 6 cizalla uniforme, Ri 0.15 | 0.936 | 0 | 0 | 2.1e-13 | 2 / 49 / 12 / 293 |
+| 7–18 aleatorias | 1.3e-3 – 7.6e-2 | 0 | ≤ 2.6e-26 m² s⁻² | ≤ 1.1e-13 | 0 / 2–135 / 3–18 / 19–198 |
+
+Sin FMA, el oráculo reproduce MOM6 bit a bit, salvo un 2.6e-26 m² s⁻² en Q de una columna
+aleatoria. Con la contracción FMA (compilación de prueba, no guardada), la diferencia sube a
+≤ 2.1e-13 relativa, sin cambiar ninguna decisión discreta.
+
+**Tolerancia del test.** |Δκ| ≤ 1e-10 max κ y |ΔQ| ≤ 1e-10 max Q, por columna. El esquema
+itera hasta `KAPPA_SHEAR_TOL_ERR = 0.1` y tiene ramas discretas:
+- truncamiento en κ_trunc;
+- reducción del subpaso a la mitad;
+- cambio a Newton.
+
+Un error de traducción, o una rama tomada de otra forma, da diferencias ≥ 1e-3 de κ. Por
+ejemplo, cambiar `FRI_CURVATURE` de −0.97 a −0.9701 da de 7e-5 a 2e-3 relativo. 1e-10 está
+muy por encima del redondeo (también con FMA) y nueve órdenes por debajo de la tolerancia
+del esquema. El test también exige `n_newton > 0` en los casos 5 y 6, κ ≡ 0 en el caso 3
+y al menos un evento de rampa.
+
+**Rama de Newton.** La tarea 1 encontró que, en el oráculo, Newton no se usaba nunca
+(0 de 7303 iteraciones). Aquí, MOM6 compilado lo confirma en las columnas con mezcla
+localizada (casos 1–4 y 7–18: 0 iteraciones de Newton). La causa es la prueba de
+convergencia (`:2003-2021`):
+- `do_Newton` se pone en `.true.` antes del bucle;
+- la primera interfaz con |Δκ| > 0.2 κ̄ marca `abort_Newton`, aunque la iteración fuera de Picard;
+- eso baja `Newton_err` de 0.2 a 0.1 = `tol_err`, y ya no se cambia a Newton en esa llamada.
+
+Una interfaz con κ = 0 vuelve a empezar en Q = Q_min = 1e-20 (`:1673-1677`), y su Q cambia en
+órdenes de magnitud en la primera iteración. Por eso, Newton solo se alcanza en llamadas con
+arranque caliente (corrector o subpasos posteriores, con `K_Q` del paso anterior) en una
+columna turbulenta en todas sus interfaces interiores. Un barrido de 432 columnas de cizalla
+uniforme lo confirma: Newton aparece en 26, todas con κ > 0 en toda la columna. Los casos 5
+y 6 lo activan (4 y 2 iteraciones de Newton), y ahí el oráculo coincide bit a bit. La rama
+de Newton con la derivada corregida (`:1860-1866`) y la rampa de truncamiento de Picard
+(`:1801-1803`, `:1816-1818`) quedan cubiertas.
+
+**Clasificación.** No queda ninguna diferencia que clasificar: el oráculo coincide con MOM6
+al redondeo. Que MOM6 aborte Newton en la primera iteración de casi toda llamada es un
+rasgo de MOM6, clase (d) como posible defecto de la referencia: hace más iteraciones de
+Picard, pero no cambia el resultado convergido. El oráculo lo reproduce a propósito.

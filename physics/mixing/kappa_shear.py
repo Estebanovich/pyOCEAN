@@ -21,7 +21,8 @@ follows Hallberg (2000) [verificar].
 Physics (interface quantities: diffusivity κ [m² s⁻¹], turbulent kinetic energy
 per unit mass Q [m² s⁻²], N² and S² [s⁻²])
 ------------------------------------------------------------------------
-1. **Source of κ** (JHL eq. 9; MOM_kappa_shear.F90:1646-1652), local
+1. **Source of κ** (right-hand side of JHL eq. 10, with F(Ri) of JHL §4a,
+   which is unnumbered; MOM_kappa_shear.F90:1646-1652), local
    gradient Richardson number Ri = N²/S²:
 
        K_src = 2 γ |S| (Ri_c S² − N²) / (Ri_c S² + F_c N²)   if N² < Ri_c S²,
@@ -29,7 +30,7 @@ per unit mass Q [m² s⁻²], N² and S² [s⁻²])
 
    i.e. 2γ|S| F(Ri), F = (Ri_c − Ri)/(Ri_c + F_c Ri), with γ = ``shearmix_rate``,
    Ri_c = ``ri_crit``, F_c = ``fri_curvature``.
-2. **κ equation** (JHL eq. 8; :1783-1803), elliptic with κ = 0 at the surface
+2. **κ equation** (JHL eq. 10; :1775-1823), elliptic with κ = 0 at the surface
    and the bed:
 
        κ / L_d² − ∂²κ/∂z² = K_src,
@@ -37,7 +38,7 @@ per unit mass Q [m² s⁻²], N² and S² [s⁻²])
        1/L_bdry² = (1/d_top + 1/d_bot)² / LZ_RESCALE²   (:1039-1049),
 
    d_top, d_bot = distances [m] from the interface to the surface and the bed.
-3. **Steady TKE equation** (JHL eq. 7 with MOM6's decay; :1709-1773), Q = q0 at
+3. **Steady TKE equation** (JHL eq. 11 with MOM6's decay; :1709-1773), Q = q0 at
    the surface and Q = Q_min at the bed:
 
        0 = ∂_z[(κ + κ0) ∂_z Q] + (κ + κ0) S² − κ N² − (Q − q0) √(c_N² N² + c_S² S²),
@@ -52,7 +53,13 @@ per unit mass Q [m² s⁻²], N² and S² [s⁻²])
    |Δκ| ≤ ``tol_err`` (κ0 + κ) everywhere.  κ below ``kappa_trunc`` is set to 0
    and κ between 1× and 2× ``kappa_trunc`` is ramped as 2(κ − κ_trunc).
    The corrected Newton derivative is used (``KAPPA_SHEAR_ITER_BUG`` = False:
-   dκ/dQ with dz_Int, :1860-1866).
+   dκ/dQ with dz_Int, :1860-1866).  As written in MOM6 (:2003-2021), the first
+   iteration of a solve aborts Newton (and halves ``Newton_err`` to ``tol_err``)
+   unless every interface changes by ≤ 20 %; an interface with κ = 0 restarts at
+   Q_min (its Q then changes by orders of magnitude), so in practice Newton is
+   reached only in warm-started solves of a column turbulent on every interior
+   interface (task 2: matched against compiled MOM6, see
+   ``validation/mom6_column/README.md``).
 5. **Integration over Δt** (``kappa_shear_column``, :1052-1374):
    * one implicit step of κ0 diffusion of u, v, b over Δt before any gradient
      (:1052-1088; no-slip u, v at the bed, insulating b); κ0 is **not** part of
@@ -175,7 +182,8 @@ class JacksonParams:
 def _k_source(n2: float, s2: float, p: JacksonParams) -> float:
     """
     Shear source of κ, K_src = 2γ|S| (Ri_c S² − N²)/(Ri_c S² + F_c N²) [s⁻¹]
-    (JHL eq. 9; MOM_kappa_shear.F90:1646-1652), for N² < Ri_c S² only.
+    (JHL eq. 10 with F(Ri) of JHL §4a; MOM_kappa_shear.F90:1646-1652), for
+    N² < Ri_c S² only.
     """
     rc = p.ri_crit
     return (2.0 * p.shearmix_rate * np.sqrt(s2)) * \
@@ -280,9 +288,10 @@ def _projected_state(kappa: np.ndarray, u0: np.ndarray, v0: np.ndarray, b0: np.n
 def _find_kappa_tke(n2: np.ndarray, s2: np.ndarray, kappa_in: np.ndarray, idz: np.ndarray,
                     h_int: np.ndarray, dz_int: np.ndarray, i_l2_bdry: np.ndarray,
                     f2: float, nz: int, p: JacksonParams, kappa0: float,
-                    kappa_trunc: float, k_q: np.ndarray):
+                    kappa_trunc: float, k_q: np.ndarray
+                    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Consistent κ [m² s⁻¹] and Q [m² s⁻²] for fixed N², S² (JHL eqs. 7–9).
+    Consistent κ [m² s⁻¹] and Q [m² s⁻²] for fixed N², S² (JHL eqs. 10–11).
 
     Port of ``find_kappa_tke`` (MOM_kappa_shear.F90:1701-2041): Picard
     iterations of the steady TKE equation (tridiagonal, :1709-1773) and the κ

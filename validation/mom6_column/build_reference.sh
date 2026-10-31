@@ -29,9 +29,38 @@ HYB=$REF/build/column/hybgen_column_mom6.F90
       "$REF/MOM6/src/ALE/MOM_hybgen_regrid.F90"
   echo "end module hybgen_column_mom6"
 } > "$HYB"
-for d in remap_driver regrid_driver hybgen_driver; do
+# Jackson et al. (2008) shear mixing: kappa_shear_column, calculate_projected_state and
+# find_kappa_tke are private in MOM_kappa_shear.F90 (:866-2069).  Extract them verbatim with the
+# Kappa_shear_CS type (:36-128, made public) and the module's use lines (:8-21).  Four integer
+# counters are inserted (they change no arithmetic): Newton iterations (after :1825), Picard
+# truncation-ramp events (after :1802 and :1817), Newton aborts (after :2035) and κ–Q iterations
+# (after :1701).
+KS_SRC=$REF/MOM6/src/parameterizations/vertical/MOM_kappa_shear.F90
+KSM=$REF/build/column/kappa_shear_column_mom6.F90
+{
+  echo "module kappa_shear_column_mom6"
+  sed -n '8,21p' "$KS_SRC"
+  echo "implicit none ; private"
+  echo "#include <MOM_memory.h>"
+  echo "public :: kappa_shear_column"
+  echo "integer, public :: ks_n_newton = 0, ks_n_ramp = 0, ks_n_abort = 0, ks_n_iter = 0"
+  awk '/^type, public :: Kappa_shear_CS ; private/{on=1} on{sub(/ ; private$/, ""); print} /^end type Kappa_shear_CS/{on=0}' "$KS_SRC"
+  echo "contains"
+  awk '/^subroutine kappa_shear_column\(/{on=1}
+       on{print}
+       on && /^ *else ! do_Newton is \.true\./{print "      ks_n_newton = ks_n_newton + 1"}
+       on && /kappa\(K\) = 2\.0 \* \(kappa\(K\) - /{print "          ks_n_ramp = ks_n_ramp + 1"}
+       on && /Newton_err = 0\.5\*Newton_err/{print "      ks_n_abort = ks_n_abort + 1"}
+       on && /^  do itt=1,CS%max_RiNo_it/{print "    ks_n_iter = ks_n_iter + 1"}
+       /^end subroutine find_kappa_tke/{on=0}' "$KS_SRC"
+  echo "end module kappa_shear_column_mom6"
+} > "$KSM"
+for d in remap_driver regrid_driver hybgen_driver kappa_shear_driver; do
   [ -f "$HERE/$d.F90" ] || continue
   EXTRA=""; [ "$d" = hybgen_driver ] && EXTRA="$HYB"
+  # kappa_shear: preprocess MOM_memory.h; no FMA contraction, so the comparison with NumPy can
+  # reach round-off (gfortran contracts a*b+c by default on arm64)
+  [ "$d" = kappa_shear_driver ] && EXTRA="-ffp-contract=off -I$REF/MOM6/config_src/memory/dynamic_symmetric -I$REF/MOM6/src/framework $KSM"
   mpif90 -O2 -fdefault-real-8 -fdefault-double-8 -I"$B" -I"$DEPS/include" -J"$REF/build/column" \
          $EXTRA "$HERE/$d.F90" $OBJS "$DEPS/lib/libFMS.a" "$DEPS/lib/libgsw.a" "$DEPS/lib/libcvmix.a" \
          $(nf-config --flibs) $(nc-config --libs) -o "$REF/build/column/$d"
