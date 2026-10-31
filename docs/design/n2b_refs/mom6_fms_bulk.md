@@ -7,20 +7,25 @@ Marca **[verificar]** = no comprobado en código local.
 
 MOM6 no calcula bulk. En la configuración acoplada GFDL (OM4, regionales tipo NWA12) el cálculo lo hace
 el **modelo de hielo SIS2** (componente "ICE" del acoplador) con `surface_flux_mod` de **FMScoupler**
-(`ncar_ocean_fluxes`). Ni FMScoupler ni SIS2 ni `ice_param` están en disco:
+(`ncar_ocean_fluxes`). FMScoupler e `ice_param` no venían con MOM6-examples; desde N2b tarea 1 (2026-10-31) están clonados de
+GitHub fuera del repo: `~/pyOCEAN_refs/FMScoupler` (NOAA-GFDL, **tag 2025.02, git 5b700a4**, la versión de FMS 2025.02; el FMS local es
+2025.02.01) e `~/pyOCEAN_refs/ice_param` (git 1d19a57, 2024-06-12; sin tags 2025). Rutas de esta sección y la 2: `FMScoupler/shared/surface_flux.F90`,
+`ice_param/{ocean_albedo,ocean_rough}.F90`. Antes de clonarlos:
 
 - `MOM6-examples/src/{coupler,FMS,FMS1,FMS2,ice_param,SIS2,atmos_null,...}` son submódulos **vacíos** (0 ficheros).
 - `FMS/exchange/` solo contiene `xgrid.F90` y `stock_constants.F90`; no hay `surface_flux*.F90`,
   `ocean_albedo*.F90` ni `ocean_rough*.F90` (grep sobre FMS, MOM6, MOM6-examples).
-- `FMS/monin_obukhov/` existe (otra rutina, no usada por `ncar_ocean_flux=.true.` [verificar]).
+- `FMS/monin_obukhov/` existe. `surface_flux_1d` llama siempre a `mo_drag` (`surface_flux.F90:386-388`), pero sobre agua
+  `ncar_ocean_fluxes` sobrescribe `cd_m, cd_t, cd_q, u_star, b_star` (`:401-405`): ni `monin_obukhov_nml neutral` ni la rugosidad
+  Beljaars de `ocean_rough_nml` cambian los flujos oceánicos (la rugosidad solo entra en `iter_monin_obukhov_ocean`, apagado, `:390-399`).
 - `MITgcm/pkg/atm_phys/surface_flux_mod.F90` es un modelo atmosférico, no es lo que usa MOM6.
 
 Lo que sí hay en disco y está verificado: la interfaz MOM6<->coupler (`config_src/drivers/FMS_cap/`), el
 estado superficial (`src/core/MOM.F90`), la aplicación de flujos (`MOM_forcing_type.F90`,
 `MOM_diabatic_aux.F90`), la óptica (`MOM_opacity.F90`), `data_override` y `time_interp` de FMS, y los
 ficheros de configuración OM4_025 (`input.nml`, `data_table`, `MOM_input`, `*_parameter_doc.all`).
-Todo lo del algoritmo bulk (sec. 2) es de memoria o deducido de namelists: [verificar] contra
-`NOAA-GFDL/FMScoupler`, `full/surface_flux.F90` (`ncar_ocean_fluxes`).
+El algoritmo bulk (sec. 2) está ahora leído en `FMScoupler/shared/surface_flux.F90` (no `full/`), portado a
+`forcing/bulk.py::bulk_ncar_fms` e igual bit a bit al compilado sobre 250 puntos (`validation/bulk_points/`).
 
 Existe además un camino solo-oceánico: `config_src/drivers/solo_driver/MOM_surface_forcing.F90`. No hace
 bulk tampoco; lee flujos ya formados (stress, buoy, restoring) por `data_override`/archivos.
@@ -71,22 +76,40 @@ Alturas y entradas, verificado en `OM4_025.JRA/data_table` y `OM4_025/data_table
 preparación (p. ej. ERA5 2 m -> 10 m) es responsabilidad del conjunto de forzamiento (CORE ya está normalizado a 10 m).
 Interpolación espacial `bilinear` (`bicubic` en u,v).
 
-Del código de `ncar_ocean_fluxes` (de memoria, es la rutina de CESM/`shr_flux_atmOcn` de Large & Yeager 2004 adaptada por GFDL):
-[verificar] todos los puntos siguientes.
-- Coeficiente neutro C_dN10 = (2.7/U10 + 0.142 + U10/13.09)·1e-3; C_eN = 34.6e-3 √C_dN;
-  C_hN = (18.0 estable | 32.7 inestable)·1e-3 √C_dN (LY04 eqs 6a-c).
-- Corrección de estabilidad con ψ_m, ψ_h de LY04 (Paulson inestable, −5ζ estable), ζ de u*, b*; **2 iteraciones** (`n_itts = 2`).
-- Viento relativo a la corriente: `u_atm - u_surf` (el `u_surf` del sec. 1) [verificar].
-- Humedad de saturación: `sat_vapor_pres` (tabla respecto a líquido, `sat_vapor_pres_nml construct_table_wrt_liq = .true.`,
-  verificado en input.nml) y factor **0.98** (Raoult) por `raoult_sat_vap = .true.`.
-- Constantes FMS verificadas en `FMS/constants/gfdl_constants.fh`: `RDGAS = 287.04`, `RVGAS = 461.5`,
-  `KAPPA = 2/7`, `CP_AIR = RDGAS/KAPPA = 1004.64`, `HLV = 2.5e6`, `HLF = 3.34e5`, `STEFAN = 5.6734e-8`.
-  Densidad del aire: gas ideal con T_v [verificar].
-- Gustiness: la tabla `gust = 1e-4` entra en el viento efectivo [verificar si se suma en cuadratura o es `gust_min`]. Es distinto de
-  `GUST_CONST` de MOM6 (sec. abajo), que solo afecta a u* para mezcla.
-- Salidas del bulk al acoplador: `u_flux, v_flux` (stress sobre el océano), `t_flux` (sensible, positivo hacia arriba),
-  `q_flux` (evaporación, kg m-2 s-1, positivo hacia arriba), más derivadas implícitas
-  (`dhdt=80, dedt=2e-6, drdt=10` en data_table) [verificar su uso].
+Del código (`FMScoupler/shared/surface_flux.F90`, tag 2025.02; verificado y compilado, `validation/bulk_points/`):
+- **Rutinas**: `surface_flux_1d` (`:216-500`) prepara el estado y forma los flujos; con `ncar_ocean_flux = .true.` llama a
+  `ncar_ocean_fluxes` (`:774-897`, todo a la altura `z_atm`); con `ncar_ocean_flux_multilevel = .true.` a
+  `ncar_ocean_fluxes_multilevel` (`:905-1044`, R. Dussin 2020, alturas `bulk_zu/zt/zq` de la namelist, `:185-187`, `:407-415`), que
+  además lleva T y q de z_t, z_q a z_u (LY04 9b-c) y los devuelve para los flujos. OM4 usa el de un nivel. Con z_t = z_q = z_u ambos
+  dan lo mismo bit a bit. `ncar_ocean_flux_orig` conserva el error histórico (C_h, C_e elevados al cuadrado, `:835-836`); OM4 usa el
+  corregido (`:889-890`, "Jul2007 bugfix").
+- **Coeficientes**: C_dN = (2.7/U₁₀ + 0.142 + **0.0764** U₁₀)/10³ (`:849`; LY04 imprime U/13.09, CESM usa 0.0764); C_eN = 34.6 √C_dN/10³;
+  C_hN = (18.0 estable | 32.7 inestable) √C_dN/10³ (`:851-853`). Primera estimación con U₁₀ = U y estabilidad por el signo de T_a − SST.
+- **Iteraciones**: `n_itts = 2` (`:784`, `:936`), sin tolerancia.
+- **ψ y ζ**: ζ = κ b* z/u*², b* = g (T*/T_v + q*/(q + 1/0.608)) con T_v = T(1 + 0.608 q) (`:845`, `:863-864`); recorte |ζ| ≤ 10 (`:865`,
+  "undocumented NCAR"); X² = max(√|1 − 16ζ|, 1) (`:866-867`); ψ_m = ψ_h = −5ζ estable, Paulson inestable (`:870-876`). Estable si ζ > 0
+  (un nivel, `:870`) o ζ ≥ 0 (multinivel, `:994`); en ζ = 0 da lo mismo. La C_hN de la iteración usa `sign(0.5, ζ)` ⇒ ζ = 0 cuenta como estable (`:882`).
+- **Viento mínimo**: U = max(W, 0.5 m/s) **solo en los coeficientes** (`:846`); los flujos usan W sin piso (`:423-425`). U₁₀ no tiene piso (`:878`).
+- **Ráfagas**: W = √(Δu² + Δv² + gust²) (`:378`), `gust` del data_table (OM4: constante 1e-4 m/s, campo sin fichero con factor 1e-4);
+  `gust_min = 0` por defecto (`:171`, `:367-374`), `alt_gustiness = .false.` (`:164`). Efecto ≤ 5e-7 relativo a 0.1 m/s.
+- **Viento relativo**: Δu = u_surf − u_atm (`:349-350`), con u_surf de MOM6 (capa 1, sec. 1).
+- **Humedad de saturación**: `escomp` = `lookup_es` (FMS `sat_vapor_pres.F90:273-278`), la tabla **TABLE** de −160 a 100 °C cada 0.1 K
+  (`:759-761`, `:823`) con interpolación cuadrática (`sat_vapor_pres_k.inc:1518-1554`); TABLE es Goff–Gratch sobre agua por encima de
+  273.16 K, sobre hielo por debajo de 253.16 K y mezcla lineal entre ambas (`sat_vapor_pres_k.inc:216-289`): a −1.8 °C da 0.16 % menos
+  que sobre agua. `construct_table_wrt_liq = .true.` (OM4) solo construye TABLE2 para `lookup_es2` y **no** cambia este cálculo.
+  q_sat = ε e/(p_surf − (1 − ε) e), ε = R_d/R_v (`:320`), × 0.98 con `raoult_sat_vap` (`:331`).
+- **Temperatura del aire**: θ_a = T_a (p_surf/p_atm)^κ (`:341`, `:344`); en OM4 p_bot = p_surf = psl (data_table), así que θ_a = T_a
+  (sin corrección Γz).
+- **Densidad del aire**: ρ = p_atm/(R_d T_v), T_v = T_a(1 + d608 q), d608 = (1 − ε)/ε = 0.6078 (`:343`, `:428`); dentro de la
+  iteración el T_v usa 0.608 (`:845`).
+- **Constantes** (`FMS/constants/gfdl_constants.fh`): `GRAV = 9.80`, `VONKARM = 0.40`, `RDGAS = 287.04`, `RVGAS = 461.5`,
+  `KAPPA = 2/7`, `CP_AIR = RDGAS/KAPPA = 1004.64`, `HLV = 2.5e6`, `HLF = 3.34e5`, `STEFAN = 5.6734e-8`, `TFREEZE = 273.16`.
+- Gustiness de MOM6: `GUST_CONST` (sec. abajo) es otra cosa; solo afecta a u* para mezcla.
+- **Salidas** (`:423-461`): `flux_u = ρ C_d W (u_surf − u_atm)` (stress **sobre el aire**; sobre el océano es −flux_u),
+  `flux_t = c_p ρ C_h W (T_s − θ_a)` y `flux_q = ρ C_e W (q_s − q_a)` positivos hacia arriba, `flux_r = σ T_s⁴` (ε = 1, `:454-455`),
+  `u_star` = √C_d U con la C_d del paso anterior de la iteración (`:859-860`). Las derivadas `dhdt_surf`, `dedt_surf`, `drdt_surf`
+  (`:433-456`) son para el acoplamiento implícito con la atmósfera; los valores `"ICE" dhdt=80, dedt=2e-6, drdt=10` del data_table
+  (OM4_025/data_table:18-20) no los lee `surface_flux.F90` [verificar su uso en el acoplador o SIS2].
 
 Conversión en MOM6 (verificada, `FMS_cap/MOM_surface_forcing_gfdl.F90`):
 - `fluxes%sens = - t_flux` (líneas 560-561); `fluxes%evap = - q_flux` (496-497);
@@ -104,10 +127,13 @@ Conversión en MOM6 (verificada, `FMS_cap/MOM_surface_forcing_gfdl.F90`):
   directo y difuso iguales. SIS2 añade ciclo diurno sintético (`ADD_DIURNAL_SW = True`, `SIS_parameter_doc.all:68`) porque estos campos son
   diarios en OM4; `DT_RADIATION = 3600`.
 - **Albedo oceánico**: se aplica **en el modelo de hielo/acoplador**, no en MOM6 (MOM recibe SW ya neto: `fluxes%sw = vis_dir + vis_dif + nir_dir + nir_dif`,
-  `MOM_surface_forcing_gfdl.F90:583-608`). `ocean_albedo_option = 2` (`input.nml`) y `DO_SUN_ANGLE_FOR_ALB = False` (SIS doc.all:70). Esquema y
-  valores de la opción 2 [verificar] (código `ocean_albedo` ausente; no asumir que sea Large-Yeager).
+  `MOM_surface_forcing_gfdl.F90:583-608`). `ocean_albedo_option = 2` (`input.nml`) y `DO_SUN_ANGLE_FOR_ALB = False` (SIS doc.all:70).
+  Opción 2 (`ice_param/ocean_albedo.F90:56-58`, "GFDL Climate Dynamics Group in 80s and 90s, source not currently documented"): albedo
+  función solo de la latitud, igual en las cuatro bandas (`:362-367`), interpolado linealmente cada 10° en la tabla `albedo_mcm`
+  (`:153-154`, `:501-510`): 0.206, 0.161, 0.110, 0.097, 0.089, 0.076, 0.068, 0.063, 0.060 (10°S–10°N), de 90°S al ecuador, y simétrico; no es Large–Yeager.
 - **LW**: `fluxes%LW = lw_flux` del hielo (líneas 554-557), neta hacia el océano ("typically negative", MOM_forcing_type.F90:106). El cálculo
-  `ε(LW↓ − σT_s⁴)` se hace en SIS2 con `T_s = t_surf` (SST potencial, K) [verificar emisividad y exactitud, p. ej. 0.97 vs 1].
+  `ε(LW↓ − σT_s⁴)` se hace en SIS2 con `T_s = t_surf` (SST potencial, K). `surface_flux_1d` calcula `flux_r = σ T_s⁴` con ε = 1
+  (`surface_flux.F90:454-455`); qué emisividad usa SIS2 al formar la LW neta del océano queda [verificar] (SIS2 no está en disco).
 - **Penetración de SW en MOM6** (verificado): `OPACITY_SCHEME = "MANIZZA_05"`, `VAR_PEN_SW = True`, `CHL_FROM_FILE` (SeaWiFS climatología),
   `PEN_SW_NBANDS = 3` (MOM_parameter_doc.all:2306-2309, 2475-2509). `MOM_opacity.F90:352-380`: banda 1 azul = `BLUE_FRAC_SW (0.5)·SW_vis`, banda 2 roja = `(1−0.5)·SW_vis`,
   banda 3 NIR = `SW_nir`. Opacidades `a = c1 + c2·Chl^p`: azul (0.0232, 0.074, p=0.674), rojo (0.225, 0.037, p=0.629), NIR (2.86, 0.0) m-1
@@ -155,7 +181,7 @@ Conversión en MOM6 (verificada, `FMS_cap/MOM_surface_forcing_gfdl.F90`):
 | Ajuste | Valor OM4_025 / JRA | Fuente |
 |---|---|---|
 | bulk | NCAR (`ncar_ocean_flux`), Raoult 0.98 | `input.nml:114-115` |
-| rugosidad | Beljaars (`ocean_rough_nml`), MO `neutral=.true.` | `input.nml` [verificar uso] |
+| rugosidad | Beljaars (`ocean_rough_nml`), MO `neutral=.true.`: sin efecto sobre agua | `input.nml`; `surface_flux.F90:384-405` |
 | alturas | z_bot = 10 m, todo a 10 m | `data_table` |
 | albedo | `ocean_albedo_option = 2` | `input.nml:103-105` |
 | SW bandas | 0.285 vis dir, 0.285 vis dif, 0.215 nir dir, 0.215 nir dif | `OM4_025.JRA/data_table` |
@@ -170,30 +196,34 @@ Conversión en MOM6 (verificada, `FMS_cap/MOM_surface_forcing_gfdl.F90`):
 
 No hay ejemplo regional (NWA12) en disco: solo OM4_*, Baltic_OM4_* (misma configuración de flujos) y `ocean_only/` (flujos de archivo).
 
-## 7. Comparación con `bulk_ncar` de pyOCEAN (`forcing/bulk.py:236-432`)
+## 7. Comparación con `bulk_ncar` de pyOCEAN (`forcing/bulk.py::bulk_ncar`)
 
-Mismo linaje (Large & Yeager 2004, ecs. 4-10, 2 iteraciones, clip |ζ|<=10 en pyOCEAN). La comparación de FMS es **de memoria** salvo donde se indica:
+Mismo linaje (Large & Yeager 2004, ecs. 4-10, 2 iteraciones, |ζ| ≤ 10). Verificado en N2b tarea 1 con la rutina compilada:
+`forcing/bulk.py::bulk_ncar_fms` es el port de FMS (= compilado bit a bit, `tests/test_bulk_fms.py`); las diferencias de
+`bulk_ncar` medidas sobre los 250 puntos de `validation/bulk_points/points.py` (todo a 10 m; max|Δ|/max|FMS|, cada una sola) están en
+`validation/bulk_points/README.md` y `points.LY04_VS_FMS_MAX_REL`. Todas son (c), elecciones entre formas publicadas:
 
-| Aspecto | FMS/MOM6 (OM4) | pyOCEAN `bulk_ncar` | Diferencia |
+| Aspecto | FMS/MOM6 (OM4) | pyOCEAN `bulk_ncar` | Efecto |
 |---|---|---|---|
-| Fórmulas C_dN, C_eN, C_hN | LY04 6a-c [verificar] | idénticas (`cd_neutral_ly04`, 34.6e-3, 18.0/32.7e-3) | ninguna esperada |
-| Iteraciones | 2 [verificar] | `n_iter=2` | igual |
-| Alturas | todo a 10 m (data_table verificado) | `z_u=10`, `z_t=2` por defecto, con corrección de θ,q de z_t a z_u (9b,9c) | usar `z_t=10` para igualar; con 2 m ERA5 pyOCEAN corrige perfil, FMS no |
-| Temp. del aire | pasada a potencial vía presión [verificar] | θ = T + Γ z_t (Γ=0.0098) | diferencia pequeña a 10 m |
-| Viento relativo | u_atm − u_surf (u_surf capa 1) | `u_ocean`, `v_ocean`; sin gust | usar capa 1 (HMIX_UV=0); FMS añade `gust` [verificar] y velocidad mínima [verificar] |
-| Mínimo de viento | [verificar] | `u_min=0.5` | |
-| q_sat | tabla `sat_vapor_pres` sobre líquido × 0.98 | LY04 eq. 5 `640380/ρ exp(−5107.4/T)` × 0.98 | forma funcional distinta (hasta ~1 % en q_s) |
-| cp_air | 1004.64 (RDGAS/KAPPA, verificado) | 1000.5 (LY04) | −0.4 % en el flujo sensible |
-| L_v | 2.5e6 (verificado) | 2.5e6 | igual |
-| ρ_aire | gas ideal con T_v [verificar] | gas ideal con T_v 0.608 | similar |
+| Fórmulas C_dN, C_eN, C_hN | LY04 6a-c con pendiente 0.0764 (`:849`) | 1/13.09 | τ 7e-5 |
+| Iteraciones | 2 (`:784`) | `n_iter=2` | igual |
+| Alturas | `ncar_ocean_fluxes` todo a `z_atm` (OM4: 10 m); multinivel opcional con 9b-c | `z_u=10`, `z_t=2` por defecto, corrección 9b-c | igual con alturas iguales |
+| Temp. del aire | θ_a = T_a (p_atm = p_surf) | θ = T + 0.0098 z_t | Q_S 1.0e-2 |
+| Viento en los flujos | W sin piso; 0.5 m/s solo en coeficientes | max(W, 0.5) también en los flujos | Q_S 3.8e-2, Q_L 4.8e-2 (W = 0.1 m/s) |
+| Piso de U₁₀N | no | 0.5 m/s | Q_L 3.6e-4 |
+| Ráfagas | √(W² + gust²), gust 1e-4 m/s en OM4 | no | ≤ 5e-7 |
+| q_sat | tabla FMS Goff–Gratch (mezcla con hielo < 0.01 °C) × 0.98 | LY04 eq. 5 × 0.98 | q_s +0.04 … +2.2 %; Q_L 5.8e-2 |
+| cp_air | 1004.64 | 1000.5 | Q_S 4.1e-3 |
+| g | 9.80 | 9.81 | ≤ 4e-5 |
+| ρ_aire | p/(R_d T(1 + 0.6078 q)) | p/(R_d θ(1 + 0.608 q)) | ≤ 5e-6 |
+| L_v | 2.5e6 | 2.5e6 | igual |
 | SST en el bulk | temperatura potencial (promedio 1 m) | SST dado por el llamador | alinear con sec. 1 |
 | Signos | sens=−t_flux, evap=−q_flux (MOM) | positivo hacia el océano | mismo convenio final |
-| Albedo | opción 2, fuera de MOM6 [verificar] | `radiative_fluxes`: 0.066 o `albedo_large_yeager` | revisar valor FMS |
-| LW | neta del hielo [verificar emisividad] | ε(LW↓−σT⁴), ε=0.97 | verificar ε FMS |
+| Albedo | opción 2: tabla por latitud (sec. 3), fuera de MOM6 | `radiative_fluxes`: 0.066 o `albedo_large_yeager` | revisar en la tarea de radiación |
+| LW | σT⁴ con ε = 1 en `surface_flux`; neta de SIS2 [verificar ε] | ε(LW↓−σT⁴), ε=0.97 | |
 
-Conclusión: `bulk_ncar` reproduce la misma familia (LY04/CESM); las diferencias conocidas son `cp_air`, `q_sat`, alturas/ajuste 2->10 m,
-gustiness y viento mínimo. No se puede afirmar igualdad bit a bit sin `surface_flux.F90`. `bulk_kara` (HYCOM flxflg=6) es otro
-algoritmo y no aplica a MOM6.
+Conclusión: con las nueve diferencias activadas una a una, un modelo escalonado reproduce `bulk_ncar` desde FMS a 6e-16, así que la lista
+es completa. `bulk_kara` (HYCOM flxflg=6) es otro algoritmo y no aplica a MOM6.
 
 ## 8. Implicaciones para N2b
 
@@ -205,10 +235,10 @@ algoritmo y no aplica a MOM6.
 5. Restoring de S: opcional, como sal flux, con tope ±5 y balance neto cero; OFF por defecto para regionales con OBC.
 
 ## [verificar] resumen
-- Todo `ncar_ocean_fluxes` (n_itts, ψ, clips, viento mínimo, gust, T potencial, ρ_aire): fuente `FMScoupler/full/surface_flux.F90`.
-- `ocean_albedo_option = 2` (esquema y valor), `ocean_rough_nml` Beljaars y `monin_obukhov_nml neutral` (si afectan a `ncar_ocean_flux`).
-- Emisividad y fórmula del LW saliente en SIS2; promedio temporal de SST/u_surf en el paso de acoplamiento.
-- Uso de `dhdt, dedt, drdt` (flujo implícito) en data_table.
-- `gust = 1e-4` de data_table: cómo entra en el viento efectivo.
+Resuelto en N2b tarea 1 (2026-10-31, FMScoupler 2025.02 e ice_param leídos y `surface_flux.F90` compilado): todo `ncar_ocean_fluxes`
+(iteraciones, ψ, recortes, viento mínimo, ráfagas, T potencial, ρ_aire, q_sat), `ocean_albedo_option = 2`, `ocean_rough_nml`/`monin_obukhov_nml`
+(sin efecto sobre agua) y cómo entra `gust`. Queda:
+- Emisividad de la LW neta en SIS2; promedio temporal de SST/u_surf en el paso de acoplamiento (SIS2 y `coupler_main` no leídos).
+- Uso de `dhdt, dedt, drdt` (flujo implícito) del data_table en el acoplador.
 - Posible uso inconsistente de `depth(i)` vs `depth(I)` en `MOM.F90:4345` con `HMIX_UV_SFC_PROP > 0`.
 - Si `useRiverHeatContent` se activa en OM4 y el tratamiento exacto del calor del runoff.
