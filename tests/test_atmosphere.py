@@ -226,10 +226,11 @@ def test_era5_conversions_by_hand():
         assert out[name] == pytest.approx(float(k0[name]), rel=1e-6, abs=1e-6), name
 
 
-#: Measured on the real files (2017-07, whole 38–43 °N × 75–68 °W box, July files
-#: only): relative difference of the July mean of the centred rates against the
-#: ERA5 mean fluxes, (ours − ERA5)/ERA5.
-MEASURED_JULY_REL_DIFF = {"sw_down": 3.48e-4, "lw_down": -4.39e-5}
+#: Measured on the real files (2017-07, whole 38–43 °N × 75–68 °W box): relative
+#: difference of the July mean of the centred rates against the ERA5 mean fluxes,
+#: (ours − ERA5)/ERA5, with July + August on disk (the last July record centred
+#: with 2017-08-01 00:00).  July files alone: sw +3.48e-4, lw −4.39e-5.
+MEASURED_JULY_REL_DIFF = {"sw_down": -3.64e-5, "lw_down": -4.53e-5}
 
 
 @needs_era5
