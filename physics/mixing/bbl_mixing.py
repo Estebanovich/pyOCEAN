@@ -86,6 +86,9 @@ Decisions of this port (Claude, 2026-10-30; see the task-1 report)
 
 Conventions of this module
 --------------------------
+* ``lotw_bbl_columns`` (Numba, threads over columns) and its NumPy oracle
+  ``lotw_bbl_columns_numpy`` apply the thin-layer merge of the ALE closures
+  (section "Columns with thin-layer merge" below) and then the column scheme.
 * ``lotw_bbl_column`` takes model arrays: layers k = 0 (bed) … N−1 (surface),
   interfaces 0 (bed) … N (surface).
 * Internally the arrays follow MOM6: **1-based, top-down** (layer 1 = surface,
@@ -99,6 +102,7 @@ import math
 from dataclasses import dataclass
 
 import numpy as np
+from numba import njit, prange
 
 from core.grid.horizontal import OMEGA
 
@@ -203,7 +207,8 @@ def lotw_bbl_column(dz: np.ndarray, n2: np.ndarray, ustar: float, absf: float,
     ustar_d = ustar * total_depth                       # SD:1721
     h_bot = 0.0
     z_bot = 0.0
-    kd_lower = 0.0                                      # SD:1724
+    # MOM6's Kd_lower (SD:1724, 1784) only builds the layer diffusivity Kd_lay; the
+    # oracle returns interface Kd only, so it is not carried (task-1 review, F841).
 
     for K in range(nz, 1, -1):                          # SD:1728
         k = K
@@ -238,7 +243,267 @@ def lotw_bbl_column(dz: np.ndarray, n2: np.ndarray, ustar: float, absf: float,
 
         tke_remaining = tke_remaining - tke_consumed    # SD:1779
         kd_m[K] = kd_wall                               # SD:1782, 1785
-        kd_lower = kd_wall                              # SD:1784 (Kd_lay only)
 
     kd[:] = kd_m[1:nz + 2][::-1]
+    return kd
+
+
+# ------------------------------------------------------------------------ Columns with thin-layer merge (BBL task 3)
+# A layer thinner than h_thin (``core.components.closure.thin_layer_threshold``) is merged before the column scheme,
+# exactly as for GLS and Jackson (``core.components.closure.active_layers`` + ``kappa_shear._merge_map``): it joins
+# the nearest open layer above it (k' ≥ k), else the nearest below (a top thin stack < h_massless); the merged
+# thickness is the sum of the members.  Why: a 1 mm layer gives dz_int ≈ 0.5 mm at its interfaces, so the mixing
+# work Kd dz_int N² is nearly zero there and, with N² ≤ 0 and no Ω² floor, an interface takes KD_MAX (SD:1769-1772);
+# MOM6's interface list in a vanished-layer column has the same problem, which its hybrid/layer configurations meet
+# by ``KAPPA_SHEAR_ELIM_MASSLESS``-style clusters only in the shear scheme (MOM_kappa_shear.F90:254-307).
+#
+# * N² of the merged column is taken at the **surviving** interfaces: merged interface q < c is the bottom of the
+#   lowest member of merged layer q, and q = c is the surface.  N² at interfaces inside a merged layer is not used
+#   (it is the N² across a 1 mm layer, the noisy quantity the merge removes).  N² is not recomputed from the merged
+#   densities: the caller's N² at those model interfaces is kept, so a column with no thin layer is bit for bit the
+#   unmerged ``lotw_bbl_column``.
+# * Kd back on the model interfaces: an interface at the bottom of a merged layer takes that merged interface's Kd;
+#   an interface inside a merged layer takes the linear interpolation in height between the merged interfaces below
+#   and above (weights kf of ``_merge_map``, as Jackson's κ), so the bed interface 0 stays 0 and bed thin layers get
+#   values between 0 and the first merged interior Kd.
+# * A dry column (Σdz ≤ h_massless), a column with no thick layer or with fewer than two merged layers (no interior
+#   interface) gives Kd = 0.  u* = 0 gives 0 (``lotw_bbl_column``).
+#
+# The Numba column ``_lotw_column_nb`` is a line-by-line copy of ``lotw_bbl_column`` (same operation order, ``x*x``,
+# math.exp), so ``lotw_bbl_columns`` is bit for bit with ``lotw_bbl_columns_numpy`` at any thread count
+# (tests/test_bbl_mixing.py::test_numba_matches_numpy_oracle, ::test_threads_bit_for_bit).
+
+H_MASSLESS: float = 1.0e-3  # [m] dry-column limit / least total of a surface thin cluster (= closure.H_MASSLESS)
+
+
+def _surviving_n2(n2c_model: np.ndarray, kc: np.ndarray, kf: np.ndarray, c: int) -> np.ndarray:
+    """N² (c+1,) of the merged column from the model N² (N+1,) at the surviving interfaces (kf = 0, and the top)."""
+    n = n2c_model.shape[0] - 1
+    out = np.zeros(c + 1)
+    for i in range(n):
+        if kf[i] == 0.0:
+            out[kc[i]] = n2c_model[i]
+    out[c] = n2c_model[n]
+    return out
+
+
+def lotw_bbl_columns_numpy(dz: np.ndarray, n2: np.ndarray, ustar: np.ndarray, absf: np.ndarray, tke: np.ndarray,
+                           h_thin: np.ndarray, p: BBLParams = BBLParams(),
+                           h_massless: float = H_MASSLESS) -> np.ndarray:
+    """
+    Energy-limited law-of-the-wall BBL Kd of M columns with thin-layer merging — the **NumPy oracle** of
+    ``lotw_bbl_columns`` (merge of the section header, then ``lotw_bbl_column`` per merged column).
+
+    Parameters
+    ----------
+    dz : (N, M) layer thicknesses [m] ≥ 0, k = 0 at the bed.
+    n2 : (N+1, M) N² [s⁻²] at the model interfaces, 0 = bed.
+    ustar, absf, tke : (M,) u* [m s⁻¹], |f| [s⁻¹], TKE_col = BBL_EFFIC × drag energy loss [m³ s⁻³].
+    h_thin : (M,) thin-layer threshold [m] (``core.components.closure.thin_layer_threshold``).
+    p : BBLParams; h_massless : [m] dry-column limit and least total of a surface thin cluster.
+
+    Returns
+    -------
+    kd : (N+1, M) BBL diffusivity [m² s⁻¹] at the model interfaces (0 = bed).
+    """
+    from core.components.closure import active_layers     # lazy: closure will import this module (task 4)
+    from physics.mixing.kappa_shear import _merge_map
+
+    dz = np.asarray(dz, float)
+    n2 = np.asarray(n2, float)
+    n, m = dz.shape
+    ustar, absf, tke, h_thin = (np.broadcast_to(np.asarray(x, float), (m,)) for x in (ustar, absf, tke, h_thin))
+    kd = np.zeros((n + 1, m))
+    act = active_layers(dz, h_thin, h_massless)
+    for j in range(m):
+        dzc = dz[:, j]
+        dry = 0.0
+        for k in range(n):
+            dry += dzc[k]
+        if dry <= h_massless or not act[:, j].any():
+            continue
+        lay, kc, kf, c = _merge_map(dzc, act[:, j])
+        if c < 2:
+            continue
+        hc = np.zeros(c)
+        for k in range(n):
+            hc[lay[k]] += dzc[k]
+        n2c = _surviving_n2(n2[:, j], kc, kf, c)
+        kd_c = lotw_bbl_column(hc, n2c, float(ustar[j]), float(absf[j]), float(tke[j]), p)
+        for i in range(n + 1):
+            lo, hi = kd_c[kc[i]], kd_c[min(kc[i] + 1, c)]
+            f = kf[i]
+            if f == 0.0:
+                kd[i, j] = lo
+            elif f == 1.0:
+                kd[i, j] = hi
+            else:
+                kd[i, j] = (1.0 - f) * lo + f * hi
+    return kd
+
+
+@njit(cache=True)
+def _lotw_column_nb(dz, n2, nz, ustar, absf, tke, n2_min, i_max_decay, von_karman, kd_max, kd):
+    """
+    ``lotw_bbl_column`` on the merged column dz (nz,), n2 (nz+1,) (k = 0 at the bed), Kd written to kd (nz+1,)
+    (zeroed by the caller).  Line-by-line copy of the oracle (SD:1606-1789) in model (bottom-up) indices:
+    MOM6 index K ↔ model interface nz + 1 − K, layer k ↔ model layer nz − k.
+    """
+    if not (ustar > 0.0):
+        return
+    ustar2 = ustar * ustar                              # SD:1685
+    idecay = i_max_decay                                # SD:1699-1700
+    if (ustar > 0.0) and (absf > i_max_decay * ustar):
+        idecay = absf / ustar
+    tke_remaining = tke                                 # SD:1709-1711
+    # dz_above[K] (MOM6) = DZ_SUBROUNDOFF + Σ of the layers above interface K, summed from the surface down
+    dz_above = np.empty(nz + 1)                         # model interface index
+    dz_above[nz] = DZ_SUBROUNDOFF
+    for i in range(nz - 1, -1, -1):
+        dz_above[i] = dz_above[i + 1] + dz[i]
+    total_depth = dz_above[0]
+    ustar_d = ustar * total_depth                       # SD:1721
+    h_bot = 0.0
+    z_bot = 0.0
+    for i in range(1, nz):                              # SD:1728: K = nz … 2  ↔  model interface i = 1 … nz−1
+        dz_int = 0.5 * (dz[i] + dz[i - 1])              # SD:1729: 0.5*(dz(k-1) + dz(k)), k-1 above = model i
+        tke_remaining = math.exp(-idecay * dz[i - 1]) * tke_remaining   # SD:1741
+        z_bot = z_bot + dz[i - 1]                       # SD:1743
+        h_bot = h_bot + dz[i - 1]                       # SD:1744
+        d_minus_z = dz_above[i]                         # SD:1746
+        if ustar_d + absf * (h_bot * d_minus_z) == 0.0:   # SD:1753-1758
+            kd_wall = 0.0
+        else:
+            kd_wall = ((von_karman * ustar2) * (z_bot * d_minus_z)) \
+                / (ustar_d + absf * (h_bot * d_minus_z))
+        tke_kd_wall = kd_wall * dz_int * max(n2[i], n2_min)   # SD:1762
+        if tke_kd_wall > 0.0:                           # SD:1765-1775
+            tke_consumed = min(tke_kd_wall, tke_remaining)
+            kd_wall = (tke_consumed / tke_kd_wall) * kd_wall
+        else:
+            if tke_remaining > 0.0:
+                kd_wall = kd_max
+            else:
+                kd_wall = 0.0
+            tke_consumed = 0.0
+        tke_remaining = tke_remaining - tke_consumed    # SD:1779
+        kd[i] = kd_wall                                 # SD:1782, 1785
+
+
+@njit(cache=True, parallel=True)
+def _columns_nb(dz, n2, ustar, absf, tke, h_thin, h_massless, n2_min, i_max_decay, von_karman, kd_max, kd_out):
+    """Thin-layer merge + ``_lotw_column_nb`` of every column of dz (N, M), one column per thread task."""
+    n, mcol = dz.shape
+    for j in prange(mcol):
+        dry = 0.0
+        for k in range(n):
+            dry += dz[k, j]
+        if dry <= h_massless:
+            continue
+        # ``core.components.closure.active_layers``
+        act = np.zeros(n, np.bool_)
+        kt = -1
+        for k in range(n):
+            if dz[k, j] >= h_thin[j]:
+                act[k] = True
+                kt = k
+        if 0 <= kt < n - 1:
+            top = 0.0
+            for k in range(n):
+                if k > kt:
+                    top += dz[k, j]
+            if top >= h_massless:
+                act[kt + 1] = True
+        if kt < 0:
+            continue
+        # ``kappa_shear._merge_map``
+        lay = np.empty(n, np.int64)
+        nxt = -1
+        for k in range(n - 1, -1, -1):
+            if act[k]:
+                nxt = k
+            lay[k] = nxt
+        prv = -1
+        rank = np.empty(n, np.int64)
+        r = -1
+        for k in range(n):
+            if act[k]:
+                prv = k
+                r += 1
+            rank[k] = r
+            if lay[k] < 0:
+                lay[k] = prv
+        for k in range(n):
+            lay[k] = rank[lay[k]]
+        c = r + 1
+        if c < 2:
+            continue
+        hc = np.zeros(c)
+        for k in range(n):
+            hc[lay[k]] += dz[k, j]
+        kc = np.empty(n + 1, np.int64)
+        kf = np.empty(n + 1)
+        d_in = 0.0
+        for i in range(n):
+            kc[i] = lay[i]
+            if i == 0 or lay[i] != lay[i - 1]:
+                kf[i] = 0.0
+                d_in = dz[i, j]
+            else:
+                kf[i] = d_in / hc[lay[i]]
+                d_in = d_in + dz[i, j]
+        kc[n] = lay[n - 1]
+        kf[n] = 1.0
+        # N² at the surviving interfaces (``_surviving_n2``)
+        n2c = np.zeros(c + 1)
+        for i in range(n):
+            if kf[i] == 0.0:
+                n2c[kc[i]] = n2[i, j]
+        n2c[c] = n2[n, j]
+        kd_c = np.zeros(c + 1)
+        _lotw_column_nb(hc, n2c, c, ustar[j], absf[j], tke[j], n2_min, i_max_decay, von_karman, kd_max, kd_c)
+        for i in range(n + 1):
+            q = kc[i]
+            q1 = q + 1
+            if q1 > c:
+                q1 = c
+            lo = kd_c[q]
+            hi = kd_c[q1]
+            f = kf[i]
+            if f == 0.0:
+                kd_out[i, j] = lo
+            elif f == 1.0:
+                kd_out[i, j] = hi
+            else:
+                kd_out[i, j] = (1.0 - f) * lo + f * hi
+
+
+def lotw_bbl_columns(dz: np.ndarray, n2: np.ndarray, ustar: np.ndarray, absf: np.ndarray, tke: np.ndarray,
+                     h_thin: np.ndarray, p: BBLParams = BBLParams(), h_massless: float = H_MASSLESS) -> np.ndarray:
+    """
+    Energy-limited law-of-the-wall BBL Kd [m² s⁻¹] of M columns with thin-layer merging, compiled (Numba, threads
+    over the columns); bit for bit with ``lotw_bbl_columns_numpy`` (same arguments and return: dz (N, M) with
+    k = 0 at the bed, n2 (N+1, M), ustar/absf/tke/h_thin (M,) or scalars; Kd (N+1, M) at the model interfaces).
+    """
+    dz = np.ascontiguousarray(dz, dtype=float)
+    if dz.ndim != 2:
+        raise ValueError("lotw_bbl_columns: dz must be (N, M)")
+    n, m = dz.shape
+    if not np.isfinite(dz).all() or (dz < 0.0).any():
+        raise ValueError("lotw_bbl_columns: dz must be finite and >= 0 (dry columns: zero thicknesses)")
+    n2 = np.ascontiguousarray(n2, dtype=float)
+    if n2.shape != (n + 1, m):
+        raise ValueError(f"lotw_bbl_columns: n2 must have shape {(n + 1, m)}, got {n2.shape}")
+    cols = []
+    for name, x in (("ustar", ustar), ("absf", absf), ("tke", tke), ("h_thin", h_thin)):
+        arr = np.asarray(x, float)
+        if arr.ndim != 0 and arr.shape != (m,):
+            raise ValueError(f"lotw_bbl_columns: {name} must be a scalar or have shape ({m},), got {arr.shape}")
+        cols.append(np.ascontiguousarray(np.broadcast_to(arr, (m,))))
+    ustar, absf, tke, h_thin = cols
+    n2_min = OMEGA * OMEGA if p.use_omega else 0.0                       # SD:1666-1667
+    i_max_decay = 1.0 / p.max_decay if p.max_decay > 0.0 else 0.0       # SD:2441-2442
+    kd = np.zeros((n + 1, m))
+    _columns_nb(dz, n2, ustar, absf, tke, h_thin, float(h_massless), float(n2_min), float(i_max_decay),
+                float(p.von_karman), float(p.kd_max), kd)
     return kd
