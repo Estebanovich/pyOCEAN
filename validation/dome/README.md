@@ -309,6 +309,19 @@ Cada cambio se atribuye con el control: (operador) = de la corrida base al contr
 3. **Mezcla por cizalla con ν_v bajo (b).** `kv_low` termina, pero la cuenca profunda se acelera sin freno vertical hasta el umbral de truncamiento. Una mezcla por Ri (Jackson et al. 2008) es lo que usa el DOME de MOM6 con su ν_v bajo.
 4. **Estudio (c): por qué el operador de tensor pesado por grosor baja max\|u\|** (punto 2): 5.52 → 3.56 m/s en caras gruesas sin término de Smagorinsky.
 
+### Costo de la mezcla por cizalla de Jackson et al. (2008) (`shear_mixing='jackson'`)
+
+`scripts/shear_cost.py`: mediana de s/paso de 50 pasos tras 10 de calentamiento, 5 hilos, cada configuración en su propio proceso y alternando sin/con (2 rondas); `shear_mixing` se pasa al constructor. El script verifica que el término esté activo (κ_shear máximo > 0) y mide el `update` del cierre aparte.
+
+| Caso | sin Jackson [s/paso] | con Jackson [s/paso] | razón | `update` del cierre |
+|------|------|------|------|------|
+| BayIW cut z\*, Δt 120 s | 0.337 | 0.437 | **1.295** | 81.7 ms (18.7 % del paso) |
+| DOME 10 km híbrida, `kv_low` (ν_v = 1e-4) + Smagorinsky 0.15, Δt 600 s | 0.114 | 0.130 | **1.138** | 7.7 ms (5.9 %) |
+
+- La mediana de las dos rondas queda bajo el límite de 1.30 del criterio 7 en ambos casos, pero BayIW por poco: 1.314 en la primera ronda y 1.275 en la segunda (ruido de ±3 %). El `update` explica ≈ 80 % del aumento en BayIW (82 de ≈ 99 ms); el resto es la resolución implícita con ν y κ no uniformes.
+- κ_shear máximo: 1.1e-2 m²/s (BayIW) y 0.50 m²/s (DOME).
+- Humo (`scripts/n1_smoke.py` contra `main`): 9/9 hashes idénticos con la opción apagada (por defecto).
+
 ## Referencias
 
 - Legg, S., Hallberg, R. W., Girton, J. B. (2006). Comparison of entrainment in overflows simulated by z-coordinate, isopycnal and non-hydrostatic models. *Ocean Modell.* 11, 69–97. [10.1016/j.ocemod.2004.11.006](https://doi.org/10.1016/j.ocemod.2004.11.006)

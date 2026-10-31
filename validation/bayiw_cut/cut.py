@@ -168,12 +168,13 @@ def full_run_dir(case: str, bay: str) -> Path:
     return bayiw.CASES[case]["dir"] / ("run_expand" if bay == "bay" else "run_expand_nobay")
 
 
-def build_model(case: str, bay: str, coord: str = "zstar", dt: float = 120.0, boundary_state=None):
+def build_model(case: str, bay: str, coord: str = "zstar", dt: float = 120.0, boundary_state=None, **model_kwargs):
     """
     pyOCEAN on MITgcm's interior of the cut (spec §1.2): z* on the 50 delR levels or hybrid with 25 layers
     (N_LIGHT light targets); west/east/south open with Flather + Orlanski 0.45 + 30-cell u′ sponge (phase 1),
     or with ``boundary_state`` (phase 2, 'radiating' toward Esteban's full run); initial state from the MITgcm
-    levels.  Returns (model, initial state, wind (nrec, 159, 198)).
+    levels.  ``model_kwargs``: extra ``SigmaBaroclinic`` arguments (e.g. ``shear_mixing``).
+    Returns (model, initial state, wind (nrec, 159, 198)).
     """
     from core.dynamics.sigma_baroclinic import SigmaBaroclinic
     from core.grid.horizontal import create_cartesian_grid_stretched
@@ -195,7 +196,7 @@ def build_model(case: str, bay: str, coord: str = "zstar", dt: float = 120.0, bo
                         vertical_coordinate="ale", regrid=coord, regrid_params=params,
                         open_boundaries=("west", "east", "south"), orlanski_cmax=0.45, sponge_cells=30,
                         sponge_tau=(1200.0, 60.0), sponge_tracer=False, mix_diagnostic=False,
-                        open_boundary_state=boundary_state)
+                        open_boundary_state=boundary_state, **model_kwargs)
     h_src, T_src = bayiw.mitgcm_source(d["H"], d["T"])
     st = m.initial_state(np.zeros(d["H"].shape), T_src, h_src=h_src)
     return m, st, d["wind"]

@@ -59,10 +59,11 @@ def closure_kwargs(case: cases.Case, closure: str, nu_v: float | None = None) ->
 
 
 def build(case: cases.Case, coord: str, dt: float | None = None, nu_v: float | None = None,
-          closure: str = "constant", smag: float = 0.0):
+          closure: str = "constant", smag: float = 0.0, **model_kwargs):
     """The ALE model of ``case`` in ``coord`` ∈ {'zstar', 'sigma', 'hybrid'} with the vertical ``closure``
     ∈ {'constant', 'gls'} and its resting initial state.
-    ``smag`` is the Smagorinsky coefficient C (0 = off; the background ν_h = ``case.nu_h`` is its floor)."""
+    ``smag`` is the Smagorinsky coefficient C (0 = off; the background ν_h = ``case.nu_h`` is its floor).
+    ``model_kwargs`` are extra ``SigmaBaroclinic`` arguments (e.g. ``shear_mixing='jackson'``, scripts/shear_cost.py)."""
     hg = create_cartesian_grid(nx=case.nx, ny=case.ny, dx=case.dx, dy=case.dx, f0=case.f0)
     nz = case.nz
     dz = np.full(nz, cases.HMAX / nz)                                  # 25 × 144 m (Legg's MITgcm levels)
@@ -87,7 +88,7 @@ def build(case: cases.Case, coord: str, dt: float | None = None, nu_v: float | N
                         open_boundary_state=state, sponge_rate=cases.sponge_rate(case),
                         sponge_T=cases.T_ambient(0.5 * (zs[1:] + zs[:-1])), sponge_zw=zs,
                         bottom_drag="quadratic", cd=case.cd, hbbl=case.hbbl,
-                        smagorinsky=float(smag), **closure_kwargs(case, closure, nu_v))
+                        smagorinsky=float(smag), **closure_kwargs(case, closure, nu_v), **model_kwargs)
     eta = np.zeros((case.ny, case.nx))
     if coord == "hybrid":                                             # T on 10-m levels as the source (MOM6 Z_INIT)
         zf = np.arange(0.0, cases.HMAX + 10.0, 10.0)[:, None, None]
