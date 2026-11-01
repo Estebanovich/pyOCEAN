@@ -41,6 +41,7 @@ Los tests de pytest (`tests/test_vertical_vs_mom6.py`) se saltan cuando falta un
 | `remap_driver` | `MOM_remapping::remapping_core_h` (`initialize_remapping` con `boundary_extrapolation=.false.`, `om4_remap_via_sub_cells=.false.`, `answer_date=99991231`, `h_neglect=1e-30`, `h_neglect_edge=1e-10`) | `remap.remap_column` | 1e-11 |
 | `regrid_driver` | `coord_zlike::build_zstar_column`, `coord_sigma::build_sigma_column` (min_thickness 1e-3), `regrid_interp::build_and_interpolate_grid` (`P1M_H2`, sin extrapolación, `answer_date=99991231`) | `regrid.zstar_column`, `regrid.sigma_column`, `regrid._p1m_h2_positions` | 1e-10 (z\*, σ), 1e-9 (P1M) |
 | `kappa_shear_driver` | `MOM_kappa_shear::kappa_shear_column` (privada, extraída; `nzc = nz`, EOS lineal en T, Boussinesq, valores por defecto) | `physics.mixing.kappa_shear.kappa_shear_column` | 1e-10 × max de la columna (κ y Q) |
+| `kappa_shear_driver eos` | la misma rutina con `tv%T` asociado y WRIGHT_FULL o ROQUET_RHO: MOM6 proyecta T y S con `dbuoy_dT`, `dbuoy_dS` fijos por columna (`:1126-1136, 1493-1503`) | `kappa_shear_column(..., T=, S=, eos=)` (proyección de dos trazadores) | 1e-10 × max de la columna; medido: bit a bit |
 | `bbl_driver lotw` | `MOM_set_diffusivity::add_LOTW_BBL_diffusivity` (extraída con `set_diffusivity_CS`; Boussinesq, valores OM4) | `physics.mixing.bbl_mixing.lotw_bbl_column` | 1e-10 × max Kd de la columna |
 | `bbl_driver tke` | `MOM_set_diffusivity::set_BBL_TKE` (extraída) | factor contra C_d\|U\|³ y √C_d\|U\| | 1e-12 relativo |
 | `bbl_driver n2` | `MOM_set_diffusivity::find_N2` (extraída, con el N²_bot de fondo) y, encadenado, `lotw` | `bbl_mixing._merged_n2[_local]` + `n2_bottom_bulk`; Kd de `lotw_bbl_columns` | 1e-9 × max N² / max Kd |
@@ -322,6 +323,52 @@ de Newton con la derivada corregida (`:1860-1866`) y la rampa de truncamiento de
 al redondeo. Que MOM6 aborte Newton en la primera iteración de casi toda llamada es un
 rasgo de MOM6, clase (d) como posible defecto de la referencia: hace más iteraciones de
 Picard, pero no cambia el resultado convergido. El oráculo lo reproduce a propósito.
+
+### EOS no lineal: proyección de dos trazadores (`kappa_shear_driver eos`, 2026-11-01)
+
+Con una EOS no lineal, MOM6 lleva T y S por separado a través de cada
+`calculate_projected_state` y forma N² con coeficientes `dbuoy_dT`, `dbuoy_dS` fijos por
+columna, calculados una vez con la columna tras el paso de κ0 (`:1052-1088`, `:1126-1136`,
+llamada Boussinesq `:1134-1136`; N² `:1493-1503`). pyOCEAN lo porta desde el 2026-11-01
+(`_projected_state_ts`, `_buoyancy_coefficients` y sus copias Numba); antes llevaba una sola
+flotabilidad referida localmente y solo el N² inicial era el de MOM6.
+
+**Driver.** `kappa_shear_driver eos in.txt out.txt`. Por caso: `nz dt f2 kappa0 form rho0 g`,
+las dos líneas de parámetros y luego dz, u, v, T, S (superficie primero); `form` 4 =
+WRIGHT_FULL, 7 = ROQUET_RHO (`EOS_manual_init`, como `eos_driver`). `tv%T` apunta a un arreglo
+ficticio (kappa_shear_column solo pregunta `associated(tv%T)`, `:1023`) y `tv%eqn_of_state` a
+la EOS, así que MOM6 mismo calcula los coeficientes y proyecta T y S. Boussinesq, escalas 1,
+`GV%H_to_RZ = ρ₀`, `GV%g_Earth = GV%g_Earth_Z_T2 = g` (gR0 = ρ₀ g, g_R0 = g/ρ₀, `:1008-1009`);
+ρ₀ = 1035, g = 9.81; sin presión superficial. El `calculate_density_derivs` 1-D no necesita
+malla (no hay `EOS_domain`). La salida es la del modo lineal. El modo lineal no cambia (mismos
+argumentos, misma salida).
+
+**Casos** (`columns.kappa_shear_eos_cases`; cada uno con WRIGHT_FULL en θ, S_P y con
+ROQUET_RHO en Θ, S_A = 35.16504/35 S_P): capa de cizalla tanh (Ri_min ≈ 0.1) sobre una
+termoclina-haloclina de 200 m, Δt 600 y 3600 s; chorro de fondo tipo overflow en una columna de
+2000 m (pluma fría y salada, presiones ~2e7 Pa); cizalla uniforme Ri ≤ 0.22 (Δt 60 s, Newton) y
+Ri ≤ 0.15 (Δt 3600 s); haloclina polar fría (T −1.5 a 1 °C, α pequeño); 8 columnas aleatorias
+(semilla 20261101, N = 8–50, dz 0.5–15 m, T y S como caminatas aleatorias).
+
+**Resultados.** Bit a bit en κ y Q en las 28 columnas (14 × 2 EOS), con el driver compilado con
+`-ffp-contract=off`. Contadores de MOM6: Newton 3 iteraciones en los dos casos Ri 0.22; la rampa
+de truncamiento en 26 de 28 columnas (1–130 eventos); 9–308 iteraciones κ–Q; el oráculo da
+≥ 2 subpasos en 22 de 28 columnas (hasta 13). A diferencia del caso lineal 6, la cizalla
+uniforme Ri 0.15 con T y S no entra en Newton en MOM6 (50–63 eventos de rampa): otra rama de
+Picard, la misma en los dos códigos. max κ: 4.2e-3 (capa de cizalla, 3600 s) a 1.21 m² s⁻¹
+(cizalla uniforme Ri 0.15). Test: `tests/test_vertical_vs_mom6.py::
+test_kappa_shear_nonlinear_eos_matches_mom6`, tolerancia 1e-10 × max de la columna como el lineal.
+
+**Efecto del cambio** (`kappa_shear_eos_effect.py`): columnas WOA23 de la Corriente del Golfo
+(0–2800 m, capas de 5/25/50 m) con una capa de cizalla de Ri_min 0.05, 0.1 o 0.2 a 30–1000 m
+(18 columnas por EOS), κ0 = 1e-6, f a 40 °N. max |Δκ| / max κ por columna entre la proyección de
+una flotabilidad (antes) y la de dos trazadores (ahora): mediana 2e-4 (600 s) y 2.6–4.4e-4
+(3600 s), máximo 2.0e-2 (600 s) y 3.0e-2 (3600 s), ambos en la capa de 30 m con Ri 0.05, donde
+la mezcla dentro del paso es mayor; cambio de Σκ de la columna: mediana 4e-5 – 1.2e-4. La
+diferencia es de segundo orden: producto de la variación de los coeficientes a lo largo de la
+columna (∝ contraste de T, S) y del cambio de los gradientes por la mezcla
+(`tests/test_kappa_shear.py::test_nonlinear_projection_differs_at_second_order`: ×4 al reducir
+el contraste a la mitad, ×2 al reducir Δt a la mitad).
 
 ## Mezcla BBL por arrastre (`add_LOTW_BBL_diffusivity` y `set_BBL_TKE` de MOM6)
 

@@ -198,6 +198,129 @@ def read_kappa_shear_results(path: Path) -> list[dict]:
     return out
 
 
+# Jackson shear mixing with a nonlinear EOS (two-tracer projection, 2026-11-01): MOM6 carries T and S
+# through calculate_projected_state with dbuoy_dT, dbuoy_dS fixed per column (MOM_kappa_shear.F90:1126-1136,
+# 1493-1503); ``kappa_shear_driver eos``.  Columns bed first; T, S in the EOS convention (θ, S_P for
+# wright_full; Θ, S_A for teos10).
+KAPPA_SHEAR_EOS_FORMS = {"wright_full": 4, "teos10": 7}      # MOM_EOS.F90:161-168 (teos10 = ROQUET_RHO)
+SA_SP = 35.16504 / 35.0                                      # S_A / S_P (TEOS-10 reference composition)
+
+
+def _scaled_shear(T: np.ndarray, S: np.ndarray, dz: np.ndarray, eos: str, ri: float, profile: np.ndarray,
+                  rho0: float, g: float) -> np.ndarray:
+    """u = s · profile with s chosen so that the largest locally referenced N² of (T, S) has Ri = ri when the
+    shear is d(profile)/dz = 1 (uniform-shear Newton cases): s = √(max N² / ri)."""
+    from physics.eos.stratification import interface_pressure, n2_local
+    n2 = n2_local(T[:, None], S[:, None], dz[:, None], interface_pressure(dz[:, None], g, rho0), eos,
+                  rho0=rho0, g=g)
+    return np.sqrt(n2.max() / ri) * profile
+
+
+def kappa_shear_eos_cases() -> list[dict]:
+    """
+    Columns of the nonlinear-EOS Jackson comparison, each for ``wright_full`` and ``teos10`` (ρ₀ 1035, g 9.81).
+
+    1. tanh shear layer (Ri_min ≈ 0.1 at the centre) on a 200 m thermocline-halocline (2 m layers), Δt 600 s;
+    2. the same with Δt 3600 s (more sub-steps);
+    3. overflow bottom jet: 2000 m column (stretched layers, 4 m at the bed to 120 m at the top), cold salty
+       plume 60 m thick under a warmer fresher interior, u max 0.6 m s⁻¹ 40 m above the bed (pressures ~2e7 Pa);
+    4–5. uniform shear on 30 layers, Ri ≤ 0.22 (50 m, Δt 60 s) and Ri ≤ 0.15 (200 m, Δt 3600 s), T and S
+       both stratified: every interior interface turbulent; MOM6 enters its Newton branch in the first (3
+       iterations with either EOS), not in the second (unlike its linear counterpart: the T, S column takes
+       another branch of the Picard iteration, 63 / 50 truncation-ramp events);
+    6. cold fresh polar column (T −1.5 … 1 °C, salinity-stratified halocline, α small and pressure-dependent)
+       with a shear layer in the halocline;
+    7–14. seeded random columns (N = 8–50, dz 0.5–15 m, T and S random walks, random shear, Δt ∈
+       {300, 1800, 7200} s, κ0 ∈ {1e-7, 1e-6, 1e-5}).
+    """
+    from physics.eos.stratification import interface_pressure, n2_local
+    rho0, g = 1035.0, 9.81
+    base = []
+    # 1–2. shear layer on a thermocline
+    dz = np.full(100, 2.0)
+    zc = np.cumsum(dz) - 0.5 * dz
+    T = 8.0 + 0.05 * zc
+    S = 34.6 + 0.002 * zc                    # saltier upward (destabilising) but T dominates
+    d, ri_min = 5.0, 0.1
+    for eos in KAPPA_SHEAR_EOS_FORMS:
+        Te, Se = T, (S * SA_SP if eos == "teos10" else S)
+        n2 = n2_local(Te[:, None], Se[:, None], dz[:, None], interface_pressure(dz[:, None], g, rho0), eos,
+                      rho0=rho0, g=g)
+        n0 = float(np.sqrt(n2[49, 0]))
+        s_max = n0 / np.sqrt(ri_min)
+        u = s_max * d * np.tanh((zc - 100.0) / d)
+        for dt in (600.0, 3600.0):
+            base.append(dict(name=f"{eos} shear layer dt={dt:g}", eos=eos, dz=dz, u=u, v=np.zeros_like(u),
+                             T=Te, S=Se, f2=1.0e-8, dt=dt, kappa0=1.0e-7, rho0=rho0, g=g))
+    # 3. overflow bottom jet, deep column
+    dz = np.geomspace(4.0, 120.0, 40)
+    dz = dz * (2000.0 / dz.sum())
+    zc = np.cumsum(dz) - 0.5 * dz
+    plume = 0.5 * (1.0 - np.tanh((zc - 60.0) / 10.0))
+    T = 3.0 + 0.004 * zc - 1.5 * plume
+    S = 34.95 - 0.0002 * zc + 0.08 * plume
+    u = 0.6 * np.exp(-((zc - 40.0) / 30.0) ** 2) * (1.0 - np.exp(-zc / 8.0))
+    v = 0.25 * u * np.cos(zc / 50.0)
+    for eos in KAPPA_SHEAR_EOS_FORMS:
+        base.append(dict(name=f"{eos} deep bottom jet", eos=eos, dz=dz, u=u, v=v, T=T,
+                         S=S * SA_SP if eos == "teos10" else S, f2=1.0e-8, dt=600.0, kappa0=1.0e-7,
+                         rho0=rho0, g=g))
+    # 4–5. Newton cases: uniform shear, Ri ≤ ri at every interface
+    for n, depth, ri, dt, tag in ((30, 50.0, 0.22, 60.0, " (Newton)"), (30, 200.0, 0.15, 3600.0, "")):
+        dz = np.full(n, depth / n)
+        zc = np.cumsum(dz) - 0.5 * dz
+        T = 10.0 + 0.04 * zc
+        S = 35.2 - 0.003 * zc
+        for eos in KAPPA_SHEAR_EOS_FORMS:
+            Se = S * SA_SP if eos == "teos10" else S
+            u = _scaled_shear(T, Se, dz, eos, ri, zc, rho0, g)
+            base.append(dict(name=f"{eos} uniform shear Ri {ri} dt={dt:g}{tag}", eos=eos, dz=dz, u=u,
+                             v=np.zeros(n), T=T, S=Se, f2=1.0e-8, dt=dt, kappa0=1.0e-7, rho0=rho0, g=g))
+    # 6. cold fresh polar column, salinity-stratified
+    dz = np.full(60, 2.5)
+    zc = np.cumsum(dz) - 0.5 * dz
+    T = -1.5 + 2.5 * 0.5 * (1.0 + np.tanh((zc - 75.0) / 20.0))
+    S = 34.5 - 2.0 * 0.5 * (1.0 + np.tanh((zc - 100.0) / 15.0))
+    u = 0.4 * np.tanh((zc - 100.0) / 6.0)
+    for eos in KAPPA_SHEAR_EOS_FORMS:
+        base.append(dict(name=f"{eos} polar halocline", eos=eos, dz=dz, u=u, v=0.3 * u, T=T,
+                         S=S * SA_SP if eos == "teos10" else S, f2=1.9e-8, dt=1800.0, kappa0=1.0e-6,
+                         rho0=rho0, g=g))
+    # 7–14. random columns
+    rng = np.random.default_rng(20261101)
+    for i in range(8):
+        n = int(rng.integers(8, 51))
+        dz = rng.uniform(0.5, 15.0, n)
+        T = 4.0 + np.cumsum(np.abs(rng.normal(0.02, 0.04, n)) * dz)
+        S = 34.0 + np.cumsum(rng.normal(0.0, 0.002, n) * dz)
+        u = np.cumsum(rng.normal(0.0, 0.03, n))
+        v = np.cumsum(rng.normal(0.0, 0.03, n))
+        f2 = float(rng.uniform(0.0, 2e-8))
+        dt = float(rng.choice([300.0, 1800.0, 7200.0]))
+        kappa0 = float(rng.choice([1e-7, 1e-6, 1e-5]))
+        for eos in KAPPA_SHEAR_EOS_FORMS:
+            base.append(dict(name=f"{eos} random {i}", eos=eos, dz=dz, u=u, v=v, T=T,
+                             S=S * SA_SP if eos == "teos10" else S, f2=f2, dt=dt, kappa0=kappa0, rho0=rho0, g=g))
+    return base
+
+
+def write_kappa_shear_eos_cases(path: Path, cases: list[dict], params=None) -> None:
+    """Write the cases for ``kappa_shear_driver eos`` (surface first); ``params`` = JacksonParams."""
+    if params is None:
+        from physics.mixing.kappa_shear import JacksonParams
+        params = JacksonParams()
+    reals = " ".join(f"{getattr(params, f):.17e}" for f in KAPPA_SHEAR_PARAM_FIELDS)
+    with open(path, "w") as f:
+        f.write(f"{len(cases)}\n")
+        for c in cases:
+            f.write(f"{len(c['dz'])} {c['dt']:.17e} {c['f2']:.17e} {c['kappa0']:.17e} "
+                    f"{KAPPA_SHEAR_EOS_FORMS[c['eos']]} {c['rho0']:.17e} {c['g']:.17e}\n")
+            f.write(reals + "\n")
+            f.write(f"{params.max_rino_it} {params.max_ks_it}\n")
+            for key in ("dz", "u", "v", "T", "S"):
+                f.write(" ".join(f"{x:.17e}" for x in np.asarray(c[key])[::-1]) + "\n")
+
+
 # --------------------------------------------------------------------------------------------
 # Drag-driven BBL mixing (MOM6 add_LOTW_BBL_diffusivity and set_BBL_TKE vs
 # physics/mixing/bbl_mixing.py)

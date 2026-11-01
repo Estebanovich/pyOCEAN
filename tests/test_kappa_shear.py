@@ -274,3 +274,129 @@ def test_columns_input_validation() -> None:
         dzb[2, 1] = bad
         with pytest.raises(ValueError, match="dz must be finite"):
             kappa_shear_columns(u, u, b, dzb, ok, 600.0, KAPPA0, ok, JacksonParams())
+
+
+# ------------------------------------------------------------------ nonlinear EOS: two-tracer projection
+RHO0_NL, G_NL = 1035.0, 9.81
+
+
+def _ts_column(eps: float):
+    """Smooth 200 m thermocline-halocline (2 m layers) with T, S contrasts scaled by ``eps`` about the
+    mid-depth values (13 °C, 34.8), and a tanh shear layer of Ri_min 0.1 at mid-depth (wright_full N²)."""
+    from physics.eos.stratification import interface_pressure, n2_local
+
+    dz, zc = _column()
+    T = 13.0 + eps * 0.05 * (zc - 100.0)
+    S = 34.8 + eps * 0.002 * (zc - 100.0)
+    n2 = n2_local(T[:, None], S[:, None], dz[:, None], interface_pressure(dz[:, None], G_NL, RHO0_NL), "wright_full",
+                  rho0=RHO0_NL, g=G_NL)
+    u = np.sqrt(n2[49, 0] / 0.1) * 5.0 * np.tanh((zc - 100.0) / 5.0)
+    return dz, T, S, u
+
+
+def _projected_n2(eos: str, eps: float, dt: float) -> tuple[np.ndarray, np.ndarray]:
+    """N² after one projection of the ``_ts_column`` with a Gaussian κ (1e-2 m² s⁻¹ at mid-depth): the two-tracer
+    projection (``_projected_state_ts`` with the fixed coefficients) and the former one-buoyancy projection
+    (``_projected_state`` of the locally referenced buoyancy ``_local_buoyancy``), 1-based top-down."""
+    from physics.eos.stratification import eos_code
+    from physics.mixing import kappa_shear as ks
+
+    dz, T, S, _ = _ts_column(eps)
+    nz = dz.size
+    code = eos_code(eos)
+    hb = np.zeros(nz)
+    ks._local_buoyancy(T.copy(), S.copy(), dz.copy(), nz, code, RHO0_NL, G_NL, hb)
+
+    def td(x):
+        return np.concatenate([[0.0], x[::-1], [0.0]])
+    hl, tt, ss, bb = td(dz), td(T), td(S), td(hb)
+    idz = np.zeros(nz + 2)
+    idz[1] = 2.0 / hl[1]
+    idz[2:nz + 1] = 2.0 / (hl[1:nz] + hl[2:nz + 1])
+    idz[nz + 1] = 2.0 / hl[nz]
+    depth = np.concatenate([[0.0], np.cumsum(dz[::-1])])        # interface K = 1 … nz+1
+    kap = np.zeros(nz + 2)
+    kap[1:] = 1e-2 * np.exp(-((depth - 100.0) / 10.0) ** 2)
+    db_t, db_s = np.zeros(nz + 2), np.zeros(nz + 2)
+    ks._buoyancy_coefficients(tt, ss, hl, nz, code, RHO0_NL, G_NL, db_t, db_s)
+    z = np.zeros(nz + 2)
+    n2_new, n2_old, s2 = np.zeros(nz + 2), np.zeros(nz + 2), np.zeros(nz + 2)
+    ks._projected_state_ts(kap, z, z, tt, ss, dt, nz, hl, idz, db_t, db_s, z.copy(), z.copy(), z.copy(), z.copy(),
+                           n2_new, s2)
+    ks._projected_state(kap, z, z, bb, dt, nz, hl, idz, z.copy(), z.copy(), z.copy(), n2_old, s2)
+    return n2_new, n2_old
+
+
+def test_nonlinear_projection_differs_at_second_order() -> None:
+    """
+    The two-tracer projection (MOM6, MOM_kappa_shear.F90:1379-1506 with fixed dbuoy_dT, dbuoy_dS) against the
+    former one-buoyancy projection of the locally referenced buoyancy: the same N² without mixing (dt = 0, to
+    round-off of the running sum), and a difference that is the product of two small quantities, the variation
+    of the coefficients along the column (∝ the T, S contrast ε) and the change of the T, S gradients by the
+    mixing (∝ ε and ∝ the mixing κ dt): halving ε divides it by ≈ 4 (measured 4.2–4.4), halving dt by ≈ 2
+    (measured 1.85).  Then the full scheme: κ of the smooth column changes (the port is real) but by ≤ 1e-3
+    relative (measured 6e-5 at ε = 0.25; the discrete sub-step branches make larger contrasts noisy).
+    """
+    from physics.eos.stratification import eos_code
+    from physics.mixing import kappa_shear as ks
+
+    for eos in ("wright_full", "teos10"):
+        n2n, n2o = _projected_n2(eos, 1.0, 0.0)
+        assert np.abs(n2n - n2o).max() <= 1e-13 * n2n.max()
+        d = {(e, dt): np.abs(np.subtract(*_projected_n2(eos, e, dt))).max()
+             for e in (1.0, 0.5, 0.25) for dt in (300.0, 600.0)}
+        assert d[(1.0, 600.0)] > 1e-4 * _projected_n2(eos, 1.0, 600.0)[0].max()     # a real difference
+        for e in (1.0, 0.5):
+            assert 3.0 < d[(e, 600.0)] / d[(e / 2, 600.0)] < 5.5                    # second order in ε
+            assert 1.6 < d[(e, 600.0)] / d[(e, 300.0)] < 2.1                         # first order in the mixing
+        dz, T, S, u = _ts_column(0.25)
+        k_new, q_new = kappa_shear_column(u, 0.0 * u, None, dz, 1e-8, 600.0, KAPPA0, JacksonParams(), T=T, S=S,
+                                          eos=eos, rho0=RHO0_NL, g=G_NL)
+        hb = np.zeros(dz.size)
+        ks._local_buoyancy(T.copy(), S.copy(), dz.copy(), dz.size, eos_code(eos), RHO0_NL, G_NL, hb)
+        k_old, q_old = kappa_shear_column(u, 0.0 * u, hb, dz, 1e-8, 600.0, KAPPA0, JacksonParams())
+        assert k_new.max() > 1e-3
+        assert not np.array_equal(k_new, k_old)
+        assert np.abs(k_new - k_old).max() <= 1e-3 * k_new.max()
+        assert np.abs(q_new - q_old).max() <= 1e-3 * q_new.max()
+
+
+def _random_ts_columns(m: int, seed: int):
+    """Random columns (as ``_random_columns``) with T, S in place of b: T warming upward, S random walk."""
+    u, v, b, dz, f2 = _random_columns(m, seed=seed)
+    rng = np.random.default_rng(seed + 1)
+    n = dz.shape[0]
+    T = 4.0 + np.cumsum(np.abs(rng.normal(0.02, 0.04, (n, m))) * np.maximum(dz, 0.5), axis=0)
+    S = 34.5 + np.cumsum(rng.normal(0.0, 0.002, (n, m)) * np.maximum(dz, 0.5), axis=0)
+    # shear strong enough for Ri < 1/4 somewhere (N² ≈ 2e-3 × 0.03 ≈ 6e-5 s⁻²)
+    return 3.0 * u, 3.0 * v, b, dz, f2, T, S
+
+
+def test_nonlinear_numba_matches_numpy_and_threads() -> None:
+    """Two-tracer path: the Numba kernel bit for bit with the NumPy oracle (thin-layer merging included) and with
+    1 and 5 threads, for both nonlinear EOS."""
+    import numba
+
+    from core.components.closure import thin_layer_threshold
+    from physics.mixing.kappa_shear import kappa_shear_columns, kappa_shear_columns_numpy
+
+    u, v, b, dz, f2, T, S = _random_ts_columns(60, seed=23)
+    h_thin = thin_layer_threshold(dz)
+    p = JacksonParams()
+    old = numba.get_num_threads()
+    for eos in ("wright_full", "teos10"):
+        kw = dict(T=T, S=S, eos=eos, rho0=RHO0_NL, g=G_NL)
+        k_np, q_np = kappa_shear_columns_numpy(u, v, b, dz, f2, 600.0, KAPPA0, h_thin, p, **kw)
+        try:
+            numba.set_num_threads(1)
+            k1, q1 = kappa_shear_columns(u, v, b, dz, f2, 600.0, KAPPA0, h_thin, p, **kw)
+            numba.set_num_threads(min(5, numba.config.NUMBA_NUM_THREADS))
+            k5, q5 = kappa_shear_columns(u, v, b, dz, f2, 600.0, KAPPA0, h_thin, p, **kw)
+        finally:
+            numba.set_num_threads(old)
+        assert np.array_equal(k1, k_np) and np.array_equal(q1, q_np)
+        assert np.array_equal(k1, k5) and np.array_equal(q1, q5)
+        assert (k_np.max(axis=0) > 0.0).sum() >= 20
+        # b is not used on the nonlinear path
+        k_b, _ = kappa_shear_columns(u, v, np.full_like(b, np.nan), dz, f2, 600.0, KAPPA0, h_thin, p, **kw)
+        assert np.array_equal(k_b, k1)

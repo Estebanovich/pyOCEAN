@@ -363,6 +363,13 @@ specific-volume derivatives (`MOM_kappa_shear.F90:1137-1146`; KPP `:1431-1433`).
 NWA12 runs ePBL + Jackson kappa_shear + double diffusion, no KPP, no LOTW BBL
 (NWA12 doc `:1806, 1981, 1968, 1869, 1913`).
 
+kappa_shear computes dbuoy_dT, dbuoy_dS **once per column**, from T and S after the κ0 step
+(`MOM_kappa_shear.F90:1052-1088`, `:1126-1136`), and keeps them fixed while it carries T and S
+separately through every `calculate_projected_state` of the sub-steps (`:1379-1506`, N² `:1493-1503`).
+pyOCEAN ports this two-tracer path since 2026-11-01 (before: one locally referenced buoyancy, MOM6's N²
+only at the start; second-order difference); equal to compiled MOM6 bit for bit
+(`tests/test_vertical_vs_mom6.py::test_kappa_shear_nonlinear_eos_matches_mom6`).
+
 **Spec decision 8 — bottom N² of the BBL (checked in task 6, 2026-10-31; reclassified after the task-6
 review).** MOM6 builds `N2_int` in `find_N2` (called at `MOM_set_diffusivity.F90:481`) and, before
 `add_LOTW_BBL_diffusivity` receives it (`:671`, used through max(N2_int, N2_min) at `:1762`), overwrites the

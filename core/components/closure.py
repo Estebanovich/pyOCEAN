@@ -1015,10 +1015,11 @@ class ShearAddedClosure(Closure):
     the whole domain between no solve and the implicit solve whenever κ_shear becomes zero or non-zero anywhere;
     the two differ only at round-off level, and the switch is what keeps zero shear = base bit for bit.
 
-    Nonlinear EOS (``update(..., dens=...)``, TEOS-10 in the 3-D core, task 6; spec goal C): the column buoyancy is
-    MOM6's locally referenced one (jumps dbuoy_dT ΔT + dbuoy_dS ΔS at the interface pressure of the merged column,
-    MOM_kappa_shear.F90:1128-1136; ``kappa_shear_columns`` with T, S, module docstring of
-    ``physics.mixing.kappa_shear``), so the initial N² is MOM6's; ``dens`` is passed on to the base.
+    Nonlinear EOS (``update(..., dens=...)``, TEOS-10 in the 3-D core, task 6; spec goal C): T and S of the merged
+    column are carried separately through the sub-steps with MOM6's fixed interface coefficients dbuoy_dT, dbuoy_dS
+    (MOM_kappa_shear.F90:1126-1136, 1493-1503; ``kappa_shear_columns`` with T, S, module docstring of
+    ``physics.mixing.kappa_shear``; two-tracer port of 2026-11-01), so κ is MOM6's bit for bit on a column;
+    ``dens`` is passed on to the base.
     """
     stateful = True
     update_phase = "tracers"
@@ -1149,7 +1150,7 @@ class ShearAddedClosure(Closure):
             uw = np.asarray(u, float).reshape(n, m)[:, wet]
             vw = np.asarray(v, float).reshape(n, m)[:, wet]
             eos_kw = {}
-            if nonlinear(dens):                                        # locally referenced buoyancy (class docstring)
+            if nonlinear(dens):                                        # T, S two-tracer path (class docstring)
                 eos_kw = dict(T=np.asarray(dens.T, float).reshape(n, m)[:, wet],
                               S=np.asarray(dens.S, float).reshape(n, m)[:, wet], eos=dens.eos, rho0=self.rho0,
                               g=self.g)

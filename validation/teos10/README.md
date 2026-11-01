@@ -285,8 +285,12 @@ interfaz inicial. Volúmenes de cabbeling: agua con ρ(T, S, 0) mayor que la de 
    de MOM6 compilado; cifras de DOME en `validation/dome/README.md`). Antes (`find_N2`, `MOM_set_diffusivity.F90:1202-1258`;
    clase (a)); efecto medido en Kd ≤ 1.6 % en columnas
    suaves, 2–37 % aleatorias, 100 % en una; `docs/design/teos10_refs/mom6_eos.md` §5).
-8. **Proyección de dos trazadores de Jackson** (MOM6 proyecta T y S por separado dentro de los subpasos; aquí solo el
-   N² inicial es igual a MOM6, diferencia de segundo orden, (c)).
+8. ~~**Proyección de dos trazadores de Jackson**~~ Portada el 2026-11-01: con una EOS no lineal, T y S se mezclan por
+   separado en los subpasos con los coeficientes dbuoy_dT, dbuoy_dS fijos por columna, como MOM6
+   (`MOM_kappa_shear.F90:1126-1136, 1493-1503`); igual bit a bit a MOM6 compilado en 28 columnas (WRIGHT_FULL y
+   ROQUET_RHO, `tests/test_vertical_vs_mom6.py::test_kappa_shear_nonlinear_eos_matches_mom6`). Antes solo el N²
+   inicial era el de MOM6 (diferencia de segundo orden, (c)); efecto del cambio en columnas WOA23 con capas de
+   cizalla: mediana 2e-4, máximo 3 % del κ máximo de la columna (`validation/mom6_column/kappa_shear_eos_effect.py`).
 9. ~~**Comprobar la cota de ajuste de Roquet contra el artículo**~~ Hecho el 2026-11-01: `ROQUET_FIT_MAX` = 1.1 × 5.355e-2
    kg m⁻³ es coherente con la Tabla 2 de Roquet et al. 2015 (cubo completo 1.83 ± 27.45e-3 kg m⁻³).
 

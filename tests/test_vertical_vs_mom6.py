@@ -101,6 +101,55 @@ def test_kappa_shear_matches_mom6(tmp_path):
     assert sum(r["n_ramp"] for r in ref) > 0                 # Picard truncation ramp exercised
 
 
+@needs("kappa_shear_driver")
+def test_kappa_shear_nonlinear_eos_matches_mom6(tmp_path, monkeypatch):
+    """
+    Jackson et al. (2008) shear mixing with a nonlinear EOS: the NumPy oracle's two-tracer path
+    (``kappa_shear_column`` with T, S, eos) against MOM6's kappa_shear_column with tv%T associated
+    and tv%eqn_of_state = WRIGHT_FULL or ROQUET_RHO (``kappa_shear_driver eos``): MOM6 itself
+    carries T and Sal through calculate_projected_state and builds dbuoy_dT, dbuoy_dS once per
+    column (MOM_kappa_shear.F90:1126-1136, 1493-1503).  14 columns × 2 EOS
+    (``columns.kappa_shear_eos_cases``), ρ₀ 1035, g 9.81, Boussinesq, JacksonParams() defaults.
+
+    Tolerance as the linear test, |Δκ| ≤ 1e-10 max κ and |ΔQ| ≤ 1e-10 max Q per column (observed:
+    bit for bit in every column with the driver built with -ffp-contract=off).  The comparison
+    covers MOM6's Newton branch (uniform shear Ri 0.22, 3 iterations), the Picard truncation ramp
+    (26 of 28 columns), mixing in every column, and several sub-steps per Δt in at least half of
+    them (counted here as calls of ``_find_kappa_tke``: 1 + 2 per sub-step that mixes; measured
+    ≥ 2 sub-steps in 22 of 28, up to 13).
+    """
+    from physics.mixing import kappa_shear as ks
+    cases = columns.kappa_shear_eos_cases()
+    columns.write_kappa_shear_eos_cases(tmp_path / "in.txt", cases)
+    subprocess.run([str(BUILD / "kappa_shear_driver"), "eos", str(tmp_path / "in.txt"), str(tmp_path / "out.txt")],
+                   check=True, capture_output=True)
+    ref = columns.read_kappa_shear_results(tmp_path / "out.txt")
+    assert len(ref) == len(cases)
+    calls = [0]
+    real = ks._find_kappa_tke
+
+    def counting(*a, **k):
+        calls[0] += 1
+        return real(*a, **k)
+    monkeypatch.setattr(ks, "_find_kappa_tke", counting)
+    p = JacksonParams()
+    n_multi = 0
+    for c, r in zip(cases, ref):
+        calls[0] = 0
+        kappa, tke = kappa_shear_column(c["u"], c["v"], None, c["dz"], c["f2"], c["dt"], c["kappa0"], p,
+                                        T=c["T"], S=c["S"], eos=c["eos"], rho0=c["rho0"], g=c["g"])
+        assert r["kappa"].max() > 0.0, c["name"]
+        np.testing.assert_allclose(kappa, r["kappa"], rtol=0.0, atol=1e-10 * r["kappa"].max(),
+                                   err_msg=f"kappa, {c['name']}")
+        np.testing.assert_allclose(tke, r["tke"], rtol=0.0, atol=1e-10 * r["tke"].max(),
+                                   err_msg=f"TKE, {c['name']}")
+        if "(Newton)" in c["name"]:
+            assert r["n_newton"] > 0, f"MOM6 did not enter Newton in {c['name']}"
+        n_multi += calls[0] >= 5                              # ≥ 2 sub-steps
+    assert sum(r["n_ramp"] for r in ref) > 0
+    assert n_multi >= len(cases) // 2
+
+
 from physics.mixing.bbl_mixing import BBLParams, lotw_bbl_column  # noqa: E402
 
 

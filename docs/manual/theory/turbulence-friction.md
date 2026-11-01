@@ -515,17 +515,20 @@ large. As MOM6 (`kappa_shear_column`, `:1052-1374`, after Hallberg 2000 [verific
   index through the regrid (MOM6 `REMAP_AUXILIARY_VARS = False`).
 * **Dry and land columns:** $\kappa=\nu=0$ and the column stays still bit for bit (N3 fix M1).
 * **Kernel:** `physics/mixing/kappa_shear.py`, a Numba kernel threaded over columns, bit for bit with its NumPy oracle,
-  the same with 1 and 5 threads; the oracle equals compiled MOM6 bit for bit on 18 columns
-  (`validation/mom6_column/README.md`). Off by default: with `shear_mixing=None` the step is unchanged in the order of
+  the same with 1 and 5 threads; the oracle equals compiled MOM6 bit for bit on 18 columns with the linear EOS and on
+  28 with a nonlinear one (`validation/mom6_column/README.md`). Off by default: with `shear_mixing=None` the step is unchanged in the order of
   operations (33 goldens and 9 smoke runs bit for bit).
 
 ### Validation and cost
 
 * **Column vs MOM6** (`tests/test_vertical_vs_mom6.py::test_kappa_shear_matches_mom6`, `validation/mom6_column/README.md`): 18 columns (shear layer,
   overflow-like bottom jet, subcritical, Newton cases, 12 random), relative tolerance 1e-10; the result is 0 without
-  FMA contraction.
-* **Column properties** (`tests/test_kappa_shear.py`, 11 tests): $\kappa$ = 0 where $Ri\ge Ri_c$ and at the surface and bed;
-  thin-layer merge; bounded Δt-average; Numba = oracle and 1 = 5 threads bit for bit. **Model** (`tests/test_shear_model.py`,
+  FMA contraction.  Nonlinear EOS (`test_kappa_shear_nonlinear_eos_matches_mom6`, since 2026-11-01): 14 columns × 2 EOS
+  (WRIGHT_FULL, ROQUET_RHO; thermocline shear layer, 2000 m bottom jet, Newton case, polar halocline, random), MOM6
+  carrying T and S itself: bit for bit.
+* **Column properties** (`tests/test_kappa_shear.py`, 13 tests): $\kappa$ = 0 where $Ri\ge Ri_c$ and at the surface and bed;
+  thin-layer merge; bounded Δt-average; Numba = oracle and 1 = 5 threads bit for bit (linear and nonlinear EOS);
+  the nonlinear two-tracer projection differs from the former one-buoyancy projection at second order. **Model** (`tests/test_shear_model.py`,
   21 tests): off = bit for bit, zero shear = base, restart bit for bit (σ and ALE), pre-flight, dry columns, KPP base.
 * **DOME 10 km** (`validation/dome/README.md`, Legg et al. 2006 Case 1): in the hybrid with $\nu_v$ = 1e-4 + Smagorinsky
   0.15, Jackson moves every metric against Legg's non-hydrostatic truth toward it (the path against Legg's 10-km isopycnal improves at x′ = −300 and −500 km but moves away at −200 km, 11 → 21 km): final buoyancy −17.91e-3 → −12.84e-3 m s⁻²
@@ -694,9 +697,9 @@ See [Validation: wetting and drying](../validation/wetting-drying.md) for the TI
 * The pressure gradient and the implicit friction are split (fractional step): the friction does not see the
     pressure increment of the same step (first order in $\Delta t$; `validation/tidal_flat/README.md`, item 7).
 * GLS has no advection of $k$, $\varepsilon$.
-* Jackson shear mixing: no convective adjustment ($N^2$ clipped at 0; neither has the constant closure); buoyancy is
-    mixed as one tracer inside the solver (exact for a linear EOS in T, a local linearisation for TEOS-10); no
-    vertex mode; $\kappa_{shear}$, $\nu_{shear}$ are in the variable registry but not in the CF/Zarr output; with a large
+* Jackson shear mixing: no convective adjustment ($N^2$ clipped at 0; neither has the constant closure); with the linear
+    EOS buoyancy is mixed as one tracer inside the solver (exact), with a nonlinear EOS T and S are mixed separately
+    with MOM6's fixed interface coefficients (= MOM6, since 2026-11-01); no vertex mode; $\kappa_{shear}$, $\nu_{shear}$ are in the variable registry but not in the CF/Zarr output; with a large
     constant $\nu_v$ (0.5 m² s⁻¹ in DOME) the shear stays above $Ri_c$ and the scheme is inactive.
 
 * Drag-driven BBL mixing: in DOME's hybrid run it lightens the plume but lowers the downstream plume transport

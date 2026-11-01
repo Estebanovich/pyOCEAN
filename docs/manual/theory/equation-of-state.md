@@ -139,9 +139,13 @@ both EOS (`tests/test_eos_closures.py`). The thermobaric column has $N^2 > 0$ at
         2026-11-01; it now applies it (`n2_bottom_bulk`, equal to compiled MOM6 `find_N2`), with any EOS. Effect
         before the fix (`validation/mom6_column/bbl_n2bot_effect.py`, `mom6_eos.md` §5): ≤ 1.6 % in smooth columns,
         2–37 % in random columns, and 100 % in one column where the energy runs out at a different interface.
-    - **Jackson, class (c).** With a nonlinear EOS, Jackson matches MOM6 only at the starting N². MOM6 projects T and
-        S separately inside the sub-steps; pyOCEAN does not port that projection, so the sub-step N² differs at
-        second order.
+    - **Jackson two-tracer projection, ported on 2026-11-01.** With a nonlinear EOS, MOM6 carries T and S
+        separately through the sub-steps of `kappa_shear` with interface coefficients dbuoy_dT, dbuoy_dS fixed per
+        column (`MOM_kappa_shear.F90:1126-1136, 1493-1503`). pyOCEAN carried one locally referenced buoyancy until
+        2026-11-01 (MOM6's N² only at the start of the step, second-order difference inside the sub-steps); it now
+        ports MOM6's T, S path and equals compiled MOM6 bit for bit on 28 columns (WRIGHT_FULL and ROQUET_RHO,
+        `tests/test_vertical_vs_mom6.py`). Effect of the change on WOA23 Gulf Stream columns with shear layers:
+        median 2e-4, at most 3 % of the column maximum of κ (`validation/mom6_column/kappa_shear_eos_effect.py`).
 
 ## Hybrid regrid
 

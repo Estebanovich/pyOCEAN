@@ -78,13 +78,13 @@ per unit mass Q [m² s⁻²], N² and S² [s⁻²])
 
 Decisions of this port (Claude, 2026-10-30; see the task-1 report)
 ------------------------------------------------------------------
-* **Buoyancy as one tracer.**  MOM6 carries T and S and multiplies their
-  interface differences by ∂b/∂T, ∂b/∂S from the EOS at the interface T, S and
-  pressure (:1121-1147).  Here the caller passes b = −g(ρ − ρ₀)/ρ₀ [m s⁻²] of each
-  layer and b is mixed as the only tracer, N² = (b_above − b_below)/Δz.  This is
-  exact for a linear EOS in T only (DOME, Ilicak, the task-2 comparison, where
-  MOM6's ∂b/∂T is constant), and the local linearisation for a nonlinear EOS
-  (TEOS-10): the mixing inside the solver then moves b instead of (T, S).
+* **Buoyancy as one tracer with the linear EOS.**  MOM6 carries T and S and
+  multiplies their interface differences by ∂b/∂T, ∂b/∂S from the EOS at the
+  interface T, S and pressure (:1126-1147).  With the linear EOS the caller passes
+  b = −g(ρ − ρ₀)/ρ₀ [m s⁻²] of each layer and b is mixed as the only tracer,
+  N² = (b_above − b_below)/Δz: exact, since the coefficients are constant (DOME,
+  Ilicak, the task-2 comparison).  A nonlinear EOS takes MOM6's T, S path (section
+  "Nonlinear EOS" below).
 * Boussinesq, heights in m (H = Z, dz_h_Int = 1); no surface pressure (it only
   enters the EOS derivatives).  f² is one scalar per column.
 * MOM6 options not exposed in ``JacksonParams`` take MOM6's defaults:
@@ -111,19 +111,37 @@ Conventions of this module
   active range, and loop indices left after ``exit``) are kept with the same
   persistence; arrays that MOM6 leaves uninitialised start at zero.
 
-Nonlinear EOS (TEOS-10 in the 3-D core, task 6)
------------------------------------------------
-MOM6 carries T and S through ``calculate_projected_state`` and forms N² from the fixed interface coefficients
-dbuoy_dT, dbuoy_dS of the locally referenced density (MOM_kappa_shear.F90:1128-1136, 1496-1500).  This port carries
-one buoyancy b (exact for the linear EOS, whose coefficients are constant).  With a nonlinear EOS the column drivers
-(``kappa_shear_columns`` and its oracle, ``eos`` given) build a **locally referenced buoyancy** of the merged
-column instead of −g(ρ − ρ₀)/ρ₀: b_0 = 0, b_q = b_q−1 + Δb_q with Δb_q MOM6's jump dbuoy_dT ΔT + dbuoy_dS ΔS at the
-merged interface (``physics.eos.stratification.buoyancy_jump_elem``; merged T, S = Σ h·x / Σ h, p = Σ g ρ₀ hc
-from the surface; ``_local_buoyancy``).  The initial N² of the column (the dt = 0 projection) is then MOM6's to
-the round-off of the running sum; inside the sub-stepping the projected Δb of a diffused b differs from
-dbuoy_dT ΔT′ + dbuoy_dS ΔS′ of the separately diffused T′, S′ by the change of the coefficients between interfaces
-times the change of the gradients (second order; class (c), a port of the two-tracer projection is left for a
-later task).
+Nonlinear EOS: two-tracer projection (TEOS-10 in the 3-D core task 6; two-tracer port 2026-11-01)
+--------------------------------------------------------------------------------------------------
+With a nonlinear EOS (``eos`` = 'wright_full' or 'teos10' given to ``kappa_shear_column`` or to the column
+drivers ``kappa_shear_columns`` / ``kappa_shear_columns_numpy``) the port follows MOM6's temperature path
+exactly instead of carrying b:
+
+* the κ0 step mixes T and S as two insulating tracers (MOM_kappa_shear.F90:1052-1088);
+* once per call, from the column after that step, the **fixed interface coefficients** (:1126-1136, Boussinesq
+  call :1134-1136, surface pressure 0)
+
+      p_1 = 0,  p_K = p_{K−1} + g ρ₀ h_{k−1}                                                      [Pa]
+      dbuoy_dX_K = (−g/ρ₀) ∂ρ/∂X(½(T_{k−1} + T_k), ½(S_{k−1} + S_k), p_K)   (X = T, S)
+
+  (``_buoyancy_coefficients``; ∂ρ/∂X of ``physics.eos.stratification.drho_code``, scale as
+  ``calculate_density_derivs(..., scale=-g_R0)``, MOM_EOS.F90:823-829);
+* every ``calculate_projected_state`` mixes T and S separately and forms
+  N²_K = max(0, (dbuoy_dT_K ΔT + dbuoy_dS ΔS)/Δz_K) with those coefficients (:1379-1506, N² :1493-1503;
+  ``_projected_state_ts``).
+
+T, S of the merged column are Σ h·x / Σ h (thin layers merged as for the linear path).  The result equals compiled
+MOM6 (WRIGHT_FULL and ROQUET_RHO) **bit for bit** on 28 columns (``tests/test_vertical_vs_mom6.py::
+test_kappa_shear_nonlinear_eos_matches_mom6``, ``validation/mom6_column/README.md``).  The linear path (``eos``
+None) is untouched: one tracer b, no S solve, bit for bit as before.
+
+Before 2026-11-01 the nonlinear path carried one locally referenced buoyancy (b_0 = 0, b_q = b_q−1 + dbuoy_dT ΔT
++ dbuoy_dS ΔS, ``_local_buoyancy``, kept for the comparison tests): equal to MOM6 at the starting N² and different
+inside the sub-steps by the change of the coefficients between interfaces times the change of the T, S gradients
+by the mixing (second order: ×4 per halving of the T, S contrast, ×2 per halving of the mixing;
+``tests/test_kappa_shear.py::test_nonlinear_projection_differs_at_second_order``).  On WOA23 Gulf Stream columns
+with Ri_min 0.05–0.2 shear layers the change in κ was median 2e-4, at most 3 % of the column maximum
+(``validation/mom6_column/kappa_shear_eos_effect.py``).
 """
 
 from __future__ import annotations
@@ -133,7 +151,7 @@ from dataclasses import dataclass, fields
 import numpy as np
 from numba import njit, prange
 
-from physics.eos.stratification import buoyancy_jump_elem, eos_code
+from physics.eos.stratification import buoyancy_jump_elem, drho_code, eos_code
 
 # A negligible fractional change in TKE [nondim] (MOM_kappa_shear.F90:1605).
 ROUNDOFF: float = 1.0e-16
@@ -308,6 +326,130 @@ def _projected_state(kappa: np.ndarray, u0: np.ndarray, v0: np.ndarray, b0: np.n
         n2[k] = max(0.0, i_dz_int[k] * (b[k - 1] - b[k]))
     if ke < nz:
         n2[ke + 1] = max(0.0, i_dz_int[ke + 1] * (b[ke] - b0[ke + 1]))
+
+
+def _projected_state_ts(kappa: np.ndarray, u0: np.ndarray, v0: np.ndarray, t0: np.ndarray, s0: np.ndarray,
+                        dt: float, nz: int, dz: np.ndarray, i_dz_int: np.ndarray, dbuoy_dt: np.ndarray,
+                        dbuoy_ds: np.ndarray, u: np.ndarray, v: np.ndarray, t: np.ndarray, sal: np.ndarray,
+                        n2: np.ndarray, s2: np.ndarray,
+                        ks_int: int | None = None, ke_int: int | None = None) -> None:
+    """
+    ``_projected_state`` for a nonlinear EOS: T and S are mixed as two tracers (insulating) and N² is formed with
+    the fixed interface coefficients of the column, as MOM6 ``calculate_projected_state`` with temperature
+    (MOM_kappa_shear.F90:1379-1506; T, Sal lines :1431-1450 and :1472-1473, N² :1493-1503):
+
+        N²_K = max(0, (dbuoy_dT_K (T_{k−1} − T_k) + dbuoy_dS_K (S_{k−1} − S_k)) / Δz_K)          [s⁻²]
+
+    dbuoy_dt, dbuoy_ds : (nz + 2,) [m s⁻² °C⁻¹], [m s⁻² (PSU or g kg⁻¹)⁻¹], set once per call of
+    ``kappa_shear_column`` (MOM_kappa_shear.F90:1126-1136), used at the interfaces 2 … nz only.
+    T [°C], S [PSU or g kg⁻¹] in the EOS convention; the rest as ``_projected_state`` (1-based, top-down).
+    The u, v lines are those of ``_projected_state`` (same operation order).
+    """
+    ks, ke = 1, nz
+    if ks_int is not None:
+        ks = max(ks_int - 1, 1)
+    if ke_int is not None:
+        ke = min(ke_int, nz)
+    if ks > ke:
+        return
+    u0 = u0.copy()
+    v0 = v0.copy()
+    t0 = t0.copy()
+    s0 = s0.copy()
+
+    if dt > 0.0:
+        c1 = np.zeros(nz + 2)
+        a_b = dt * (kappa[ks + 1] * i_dz_int[ks + 1])
+        b1 = 1.0 / (dz[ks] + a_b)
+        c1[ks + 1] = a_b * b1
+        d1 = dz[ks] * b1  # = 1 - c1
+        u[ks] = (b1 * dz[ks]) * u0[ks]
+        v[ks] = (b1 * dz[ks]) * v0[ks]
+        t[ks] = (b1 * dz[ks]) * t0[ks]
+        sal[ks] = (b1 * dz[ks]) * s0[ks]
+        for k in range(ks + 1, ke):
+            a_a = a_b
+            a_b = dt * (kappa[k + 1] * i_dz_int[k + 1])
+            bd1 = dz[k] + d1 * a_a
+            b1 = 1.0 / (bd1 + a_b)
+            c1[k + 1] = a_b * b1
+            d1 = bd1 * b1
+            u[k] = b1 * (dz[k] * u0[k] + a_a * u[k - 1])
+            v[k] = b1 * (dz[k] * v0[k] + a_a * v[k - 1])
+            t[k] = b1 * (dz[k] * t0[k] + a_a * t[k - 1])
+            sal[k] = b1 * (dz[k] * s0[k] + a_a * sal[k - 1])
+        # Insulating T and S, or mixing simply stopping (:1445-1450).
+        a_a = a_b
+        b1 = 1.0 / (dz[ke] + d1 * a_a)
+        t[ke] = b1 * (dz[ke] * t0[ke] + a_a * t[ke - 1])
+        sal[ke] = b1 * (dz[ke] * s0[ke] + a_a * sal[ke - 1])
+        # No-slip u, v when the mixing reaches the bed (:1452-1463).
+        if ke == nz:
+            a_b = dt * (kappa[nz + 1] * i_dz_int[nz + 1])
+            b1nz_0 = 1.0 / ((dz[nz] + d1 * a_a) + a_b)
+        else:
+            b1nz_0 = b1
+        u[ke] = b1nz_0 * (dz[ke] * u0[ke] + a_a * u[ke - 1])
+        v[ke] = b1nz_0 * (dz[ke] * v0[ke] + a_a * v[ke - 1])
+        for k in range(ke - 1, ks - 1, -1):
+            u[k] = u[k] + c1[k + 1] * u[k + 1]
+            v[k] = v[k] + c1[k + 1] * v[k + 1]
+            t[k] = t[k] + c1[k + 1] * t[k + 1]
+            sal[k] = sal[k] + c1[k + 1] * sal[k + 1]
+    else:
+        u[1:nz + 1] = u0[1:nz + 1]
+        v[1:nz + 1] = v0[1:nz + 1]
+        t[1:nz + 1] = t0[1:nz + 1]
+        sal[1:nz + 1] = s0[1:nz + 1]
+
+    # Squared shear (:1483-1491), as ``_projected_state``.
+    s2[1] = 0.0
+    s2[nz + 1] = 0.0
+    if ks > 1:
+        s2[ks] = ((u[ks] - u0[ks - 1]) * (u[ks] - u0[ks - 1]) + (v[ks] - v0[ks - 1]) * (v[ks] - v0[ks - 1])) \
+            * (i_dz_int[ks] * i_dz_int[ks])
+    for k in range(ks + 1, ke + 1):
+        s2[k] = ((u[k] - u[k - 1]) * (u[k] - u[k - 1]) + (v[k] - v[k - 1]) * (v[k] - v[k - 1])) \
+            * (i_dz_int[k] * i_dz_int[k])
+    if ke < nz:
+        s2[ke + 1] = ((u0[ke + 1] - u[ke]) * (u0[ke + 1] - u[ke]) + (v0[ke + 1] - v[ke]) * (v0[ke + 1] - v[ke])) \
+            * (i_dz_int[ke + 1] * i_dz_int[ke + 1])
+
+    # N² from the fixed coefficients, no convection (:1493-1503).
+    n2[1] = 0.0
+    n2[nz + 1] = 0.0
+    if ks > 1:
+        n2[ks] = max(0.0, i_dz_int[ks] * (dbuoy_dt[ks] * (t0[ks - 1] - t[ks]) + dbuoy_ds[ks] * (s0[ks - 1] - sal[ks])))
+    for k in range(ks + 1, ke + 1):
+        n2[k] = max(0.0, i_dz_int[k] * (dbuoy_dt[k] * (t[k - 1] - t[k]) + dbuoy_ds[k] * (sal[k - 1] - sal[k])))
+    if ke < nz:
+        n2[ke + 1] = max(0.0, i_dz_int[ke + 1] * (dbuoy_dt[ke + 1] * (t[ke] - t0[ke + 1])
+                                                  + dbuoy_ds[ke + 1] * (sal[ke] - s0[ke + 1])))
+
+
+def _buoyancy_coefficients(tt: np.ndarray, ss: np.ndarray, hlay: np.ndarray, nz: int, code: int, rho0: float,
+                           g: float, dbuoy_dt: np.ndarray, dbuoy_ds: np.ndarray) -> None:
+    """
+    Fixed interface coefficients of a column (in place, interfaces 2 … nz; 1-based, top-down), MOM6
+    MOM_kappa_shear.F90:1126-1136 (Boussinesq path :1134-1136) with surface pressure 0:
+
+        p_1 = 0,  p_K = p_{K−1} + g ρ₀ h_{k−1}                                                  [Pa]
+        dbuoy_dX_K = (−g/ρ₀) ∂ρ/∂X(½(T_{k−1} + T_k), ½(S_{k−1} + S_k), p_K)
+
+    with ∂ρ/∂X of the EOS ``code`` (``physics.eos.stratification.drho_code``) and the scale as
+    ``calculate_density_derivs(..., scale=-g_R0)`` (MOM_EOS.F90:823-829).  tt, ss : the column after the κ0
+    step [°C, PSU or g kg⁻¹]; hlay [m].
+    """
+    gr0 = rho0 * g                                   # GV%H_to_RZ * GV%g_Earth (:1008)
+    sc = -(g / rho0)                                 # scale = -g_R0, g_R0 = g_Earth_Z_T2 / Rho0 (:1009)
+    pres = 0.0                                       # pressure(1) = surface_pres = 0
+    for kk in range(2, nz + 1):
+        pres = pres + gr0 * hlay[kk - 1]
+        t_int = 0.5 * (tt[kk - 1] + tt[kk])
+        s_int = 0.5 * (ss[kk - 1] + ss[kk])
+        d_t, d_s = drho_code(t_int, s_int, pres, code)
+        dbuoy_dt[kk] = sc * d_t
+        dbuoy_ds[kk] = sc * d_s
 
 
 def _find_kappa_tke(n2: np.ndarray, s2: np.ndarray, kappa_in: np.ndarray, idz: np.ndarray,
@@ -661,9 +803,10 @@ def _find_kappa_tke(n2: np.ndarray, s2: np.ndarray, kappa_in: np.ndarray, idz: n
     return tke, kappa, kappa_src_out, local_src
 
 
-def kappa_shear_column(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: np.ndarray,
+def kappa_shear_column(u: np.ndarray, v: np.ndarray, b: np.ndarray | None, dz: np.ndarray,
                        f2: float, dt: float, kappa0: float,
-                       p: JacksonParams) -> tuple[np.ndarray, np.ndarray]:
+                       p: JacksonParams, T: np.ndarray | None = None, S: np.ndarray | None = None,
+                       eos=None, rho0: float = 1000.0, g: float = 9.81) -> tuple[np.ndarray, np.ndarray]:
     """
     Δt-averaged shear-driven diffusivity κ and TKE Q of one column
     (Jackson et al. 2008; port of MOM6 ``kappa_shear_column``,
@@ -672,8 +815,15 @@ def kappa_shear_column(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: np.ndarr
     Parameters
     ----------
     u, v : (N,) velocity at the layer centres [m s⁻¹], k = 0 at the bed.
-    b : (N,) buoyancy −g(ρ − ρ₀)/ρ₀ of each layer [m s⁻²] (one tracer in place
-        of MOM6's T, S; see the module docstring).
+    b : (N,) buoyancy −g(ρ − ρ₀)/ρ₀ of each layer [m s⁻²] (linear EOS: one tracer
+        in place of MOM6's T, S; see the module docstring).  Not used (may be None)
+        with a nonlinear ``eos``.
+    T, S, eos, rho0, g : nonlinear EOS (module docstring, "Nonlinear EOS"): T, S (N,)
+        in the EOS convention [°C, PSU or g kg⁻¹], ``eos`` a nonlinear EOS component or
+        name ('wright_full', 'teos10'), ρ₀ [kg m⁻³] and g [m s⁻²] of the interface
+        pressure and of g/ρ₀.  T and S are carried separately through the sub-steps with
+        MOM6's fixed interface coefficients dbuoy_dT, dbuoy_dS.  ``eos`` None or linear:
+        the one-tracer path with b, unchanged.
     dz : (N,) layer thicknesses [m], all > 0 (no thin-layer merging here).
     f2 : f² of the column [s⁻²].
     dt : time step over which κ is averaged [s].
@@ -689,14 +839,24 @@ def kappa_shear_column(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: np.ndarr
         κ averaged over dt [m² s⁻¹] (0 at the bed and the surface) and
         Q averaged over dt [m² s⁻²].
     """
+    code = 0 if eos is None else eos_code(eos)
+    nl = code != 0
     u = np.asarray(u, dtype=float)
     v = np.asarray(v, dtype=float)
-    b = np.asarray(b, dtype=float)
     dz = np.asarray(dz, dtype=float)
+    if nl:
+        if T is None or S is None:
+            raise ValueError("kappa_shear_column: a nonlinear eos needs T and S")
+        T = np.asarray(T, dtype=float)
+        S = np.asarray(S, dtype=float)
+        tracers = (("u", u), ("v", v), ("T", T), ("S", S))
+    else:
+        b = np.asarray(b, dtype=float)
+        tracers = (("u", u), ("v", v), ("b", b))
     if dz.ndim != 1 or dz.size < 2:
         raise ValueError("kappa_shear_column: dz must be (N,) with N >= 2")
     nz = dz.size
-    for name, arr in (("u", u), ("v", v), ("b", b)):
+    for name, arr in tracers:
         if arr.shape != dz.shape:
             raise ValueError(f"kappa_shear_column: {name} must have shape {dz.shape}, got {arr.shape}")
     if not np.all(dz > 0.0):
@@ -716,7 +876,12 @@ def kappa_shear_column(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: np.ndarr
     hlay = top_down(dz)                      # h = dz in the Boussinesq form [m]
     u0xdz = top_down(u) * hlay
     v0xdz = top_down(v) * hlay
-    b0xdz = top_down(b) * hlay
+    if nl:
+        t0xdz = top_down(T) * hlay
+        s0xdz = top_down(S) * hlay
+        b0xdz = np.zeros(n1)
+    else:
+        b0xdz = top_down(b) * hlay
 
     ri_crit = p.ri_crit
     k0dt = dt * kappa0                       # [m²]
@@ -749,16 +914,23 @@ def kappa_shear_column(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: np.ndarr
 
     # One step of background κ0 diffusion of u, v, b (:1052-1088): no-slip
     # u, v at the bed, insulating b.
+    # Nonlinear EOS: T and S take the lines of b (insulating), as MOM6's T, Sal (:1052-1088).
     uu = np.zeros(n1)
     vv = np.zeros(n1)
     bb = np.zeros(n1)
+    tt = np.zeros(n1)
+    ss = np.zeros(n1)
     a1 = np.zeros(n1)
     c1 = np.zeros(n1)
     a1[2] = k0dt * i_dz_int[2]
     b1 = 1.0 / (hlay[1] + a1[2])
     uu[1] = b1 * u0xdz[1]
     vv[1] = b1 * v0xdz[1]
-    bb[1] = b1 * b0xdz[1]
+    if nl:
+        tt[1] = b1 * t0xdz[1]
+        ss[1] = b1 * s0xdz[1]
+    else:
+        bb[1] = b1 * b0xdz[1]
     c1[2] = a1[2] * b1
     d1 = hlay[1] * b1
     for kk in range(2, nz):
@@ -767,18 +939,30 @@ def kappa_shear_column(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: np.ndarr
         b1 = 1.0 / (bd1 + a1[kk + 1])
         uu[kk] = b1 * (u0xdz[kk] + a1[kk] * uu[kk - 1])
         vv[kk] = b1 * (v0xdz[kk] + a1[kk] * vv[kk - 1])
-        bb[kk] = b1 * (b0xdz[kk] + a1[kk] * bb[kk - 1])
+        if nl:
+            tt[kk] = b1 * (t0xdz[kk] + a1[kk] * tt[kk - 1])
+            ss[kk] = b1 * (s0xdz[kk] + a1[kk] * ss[kk - 1])
+        else:
+            bb[kk] = b1 * (b0xdz[kk] + a1[kk] * bb[kk - 1])
         c1[kk + 1] = a1[kk + 1] * b1
         d1 = bd1 * b1
     b1 = 1.0 / ((hlay[nz] + d1 * a1[nz]) + k0dt * i_dz_int[nz + 1])
     uu[nz] = b1 * (u0xdz[nz] + a1[nz] * uu[nz - 1])
     vv[nz] = b1 * (v0xdz[nz] + a1[nz] * vv[nz - 1])
     b1 = 1.0 / (hlay[nz] + d1 * a1[nz])
-    bb[nz] = b1 * (b0xdz[nz] + a1[nz] * bb[nz - 1])
+    if nl:
+        tt[nz] = b1 * (t0xdz[nz] + a1[nz] * tt[nz - 1])
+        ss[nz] = b1 * (s0xdz[nz] + a1[nz] * ss[nz - 1])
+    else:
+        bb[nz] = b1 * (b0xdz[nz] + a1[nz] * bb[nz - 1])
     for kk in range(nz - 1, 0, -1):
         uu[kk] = uu[kk] + c1[kk + 1] * uu[kk + 1]
         vv[kk] = vv[kk] + c1[kk + 1] * vv[kk + 1]
-        bb[kk] = bb[kk] + c1[kk + 1] * bb[kk + 1]
+        if nl:
+            tt[kk] = tt[kk] + c1[kk + 1] * tt[kk + 1]
+            ss[kk] = ss[kk] + c1[kk + 1] * ss[kk + 1]
+        else:
+            bb[kk] = bb[kk] + c1[kk + 1] * bb[kk + 1]
 
     # Interface cells: harmonic-mean split of each layer (:1091-1109).  Thin
     # layers give thin interface cells; Σ h_Int = column thickness; the top and
@@ -795,12 +979,27 @@ def kappa_shear_column(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: np.ndarr
     h_int[nz + 1] = 0.0
     dz_int = h_int
 
+    # Nonlinear EOS: fixed interface coefficients from the column after the κ0 step (:1126-1136).
+    dbuoy_dt = np.zeros(n1)
+    dbuoy_ds = np.zeros(n1)
+    if nl:
+        _buoyancy_coefficients(tt, ss, hlay, nz, code, float(rho0), float(g), dbuoy_dt, dbuoy_ds)
+
+    def project(kap: np.ndarray, dtp: float, ou: np.ndarray, ov: np.ndarray, ob: np.ndarray, ot: np.ndarray,
+                os_: np.ndarray, ks: int | None = None, ke: int | None = None) -> None:
+        """calculate_projected_state of the solver's column (uu, vv and bb, or tt and ss) into ou, ov, ob | ot, os_."""
+        if nl:
+            _projected_state_ts(kap, uu, vv, tt, ss, dtp, nz, hlay, i_dz_int, dbuoy_dt, dbuoy_ds,
+                                ou, ov, ot, os_, n2, s2, ks, ke)
+        else:
+            _projected_state(kap, uu, vv, bb, dtp, nz, hlay, i_dz_int, ou, ov, ob, n2, s2, ks, ke)
+
     # Initial N², S² (:1167-1172, calculate_projected_state with dt = 0).
     n2 = np.zeros(n1)
     s2 = np.zeros(n1)
     kappa = np.zeros(n1)
     kappa[1:nz + 2] = p.kd_seed               # seed κ = KD_SEED_KAPPA_SHEAR (:325)
-    _projected_state(kappa, uu, vv, bb, 0.0, nz, hlay, i_dz_int, uu, vv, bb, n2, s2)
+    project(kappa, 0.0, uu, vv, bb, tt, ss)
 
     # ---- Sub-steps over dt (:1179-1374)
     dt_rem = dt
@@ -814,6 +1013,8 @@ def kappa_shear_column(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: np.ndarr
     u_test = np.zeros(n1)
     v_test = np.zeros(n1)
     b_test = np.zeros(n1)
+    t_test = np.zeros(n1)
+    s_test = np.zeros(n1)
     kappa_mid = np.zeros(n1)
     tol_max = np.zeros(n1)
     tol_min = np.zeros(n1)
@@ -862,8 +1063,7 @@ def kappa_shear_column(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: np.ndarr
             valid_dt = False
             # Halving, fewer times as the sub-steps run out (:1232-1266).
             for _ in range((p.max_ks_it + 1 - itt) // 2):
-                _projected_state(kappa_out, uu, vv, bb, 0.5 * dt_test, nz, hlay, i_dz_int,
-                                 u_test, v_test, b_test, n2, s2, ks_kappa, ke_kappa)
+                project(kappa_out, 0.5 * dt_test, u_test, v_test, b_test, t_test, s_test, ks_kappa, ke_kappa)
                 valid_dt = valid_step(ks_kappa, ke_kappa, kappa_src, 1.0 / dt_test)
                 if valid_dt:
                     break
@@ -872,8 +1072,8 @@ def kappa_shear_column(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: np.ndarr
             if dt_test < dt_rem and valid_dt:
                 dt_inc = 0.5 * dt_test
                 for _ in range(DT_REFINEMENTS):
-                    _projected_state(kappa_out, uu, vv, bb, 0.5 * (dt_test + dt_inc), nz, hlay,
-                                     i_dz_int, u_test, v_test, b_test, n2, s2, ks_kappa, ke_kappa)
+                    project(kappa_out, 0.5 * (dt_test + dt_inc), u_test, v_test, b_test, t_test, s_test,
+                            ks_kappa, ke_kappa)
                     valid_dt = valid_step(ks_kappa, ke_kappa, kappa_src, 1.0 / (dt_test + dt_inc))
                     if valid_dt:
                         dt_test = dt_test + dt_inc
@@ -891,8 +1091,7 @@ def kappa_shear_column(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: np.ndarr
             tke_avg[1:nz + 2] += dt_wt * tke[1:nz + 2]
         else:
             # Predictor (:1316-1336).
-            _projected_state(kappa_out, uu, vv, bb, dt_now, nz, hlay, i_dz_int,
-                             u_test, v_test, b_test, n2, s2, ks_kappa, ke_kappa)
+            project(kappa_out, dt_now, u_test, v_test, b_test, t_test, s_test, ks_kappa, ke_kappa)
             k_q_tmp = k_q.copy()
             tke_pred, kappa_pred, _, _ = _find_kappa_tke(
                 n2, s2, kappa_out, idz, h_int, dz_int, i_l2_bdry, f2, nz, p, kappa0, kappa_trunc, k_q_tmp)
@@ -904,8 +1103,7 @@ def kappa_shear_column(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: np.ndarr
                 if kappa_mid[kk] > 0.0:
                     ke_kappa = kk
             # Corrector (:1338-1346).
-            _projected_state(kappa_mid, uu, vv, bb, dt_now, nz, hlay, i_dz_int,
-                             u_test, v_test, b_test, n2, s2, ks_kappa, ke_kappa)
+            project(kappa_mid, dt_now, u_test, v_test, b_test, t_test, s_test, ks_kappa, ke_kappa)
             tke_pred, kappa_pred, _, _ = _find_kappa_tke(
                 n2, s2, kappa_out, idz, h_int, dz_int, i_l2_bdry, f2, nz, p, kappa0, kappa_trunc, k_q)
             # Time average (:1348-1357).
@@ -918,8 +1116,7 @@ def kappa_shear_column(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: np.ndarr
 
         if dt_rem > 0.0:
             # Mix the solver's column state with κ_mid over dt_now (:1361-1368).
-            _projected_state(kappa_mid, uu, vv, bb, dt_now, nz, hlay, i_dz_int,
-                             uu, vv, bb, n2, s2)
+            project(kappa_mid, dt_now, uu, vv, bb, tt, ss)
         if dt_rem <= 0.0:
             break
 
@@ -1023,9 +1220,9 @@ def kappa_shear_columns_numpy(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: n
     f2 : (M,) f² [s⁻²]; dt : averaging step [s]; kappa0 : κ0 [m² s⁻¹] (``kappa_shear_column``).
     h_thin : (M,) thin-layer threshold [m] (``core.components.closure.thin_layer_threshold``).
     p : JacksonParams; h_massless : [m] dry-column limit and least total of a surface thin cluster.
-    T, S, eos, rho0, g : nonlinear EOS (module docstring): T, S (N, M) in the EOS convention, ``eos`` a nonlinear
-        EOS component, ρ₀ [kg m⁻³] and g [m s⁻²] of the interface pressure and of g/ρ₀; ``b`` is then not used.
-        ``eos`` None (linear EOS): b as before.
+    T, S, eos, rho0, g : nonlinear EOS (module docstring, two-tracer projection): T, S (N, M) in the EOS
+        convention, ``eos`` a nonlinear EOS component or name, ρ₀ [kg m⁻³] and g [m s⁻²] of the interface pressure
+        and of g/ρ₀; ``b`` is then not used.  ``eos`` None (linear EOS): b as before.
 
     Returns
     -------
@@ -1077,8 +1274,10 @@ def kappa_shear_columns_numpy(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: n
                 ht[q] = ht[q] / hc[q]
                 hs[q] = hs[q] / hc[q]
         if code != 0:
-            _local_buoyancy(ht, hs, hc, c, code, float(rho0), float(g), hb)
-        kap_c, tke_c = kappa_shear_column(hu, hv, hb, hc, float(f2[j]), dt, kappa0, p)
+            kap_c, tke_c = kappa_shear_column(hu, hv, None, hc, float(f2[j]), dt, kappa0, p, T=ht, S=hs, eos=eos,
+                                              rho0=float(rho0), g=float(g))
+        else:
+            kap_c, tke_c = kappa_shear_column(hu, hv, hb, hc, float(f2[j]), dt, kappa0, p)
         for i in range(n + 1):
             lo_k, hi_k = kap_c[kc[i]], kap_c[min(kc[i] + 1, c)]
             lo_q, hi_q = tke_c[kc[i]], tke_c[min(kc[i] + 1, c)]
@@ -1175,6 +1374,115 @@ def _projected_state_nb(kappa, u0in, v0in, b0in, dt, nz, dz, i_dz_int, u, v, b, 
         n2[k] = max(0.0, i_dz_int[k] * (b[k - 1] - b[k]))
     if ke < nz:
         n2[ke + 1] = max(0.0, i_dz_int[ke + 1] * (b[ke] - b0[ke + 1]))
+
+
+@njit(cache=True)
+def _projected_state_ts_nb(kappa, u0in, v0in, t0in, s0in, dt, nz, dz, i_dz_int, dbuoy_dt, dbuoy_ds, u, v, t, sal,
+                           n2, s2, ks_int, ke_int):
+    """``_projected_state_ts`` (MOM_kappa_shear.F90:1379-1506 with T and S); ks_int, ke_int = −1 stand for None."""
+    ks, ke = 1, nz
+    if ks_int >= 0:
+        ks = max(ks_int - 1, 1)
+    if ke_int >= 0:
+        ke = min(ke_int, nz)
+    if ks > ke:
+        return
+    u0 = u0in.copy()
+    v0 = v0in.copy()
+    t0 = t0in.copy()
+    s0 = s0in.copy()
+
+    if dt > 0.0:
+        c1 = np.zeros(nz + 2)
+        a_b = dt * (kappa[ks + 1] * i_dz_int[ks + 1])
+        b1 = 1.0 / (dz[ks] + a_b)
+        c1[ks + 1] = a_b * b1
+        d1 = dz[ks] * b1
+        u[ks] = (b1 * dz[ks]) * u0[ks]
+        v[ks] = (b1 * dz[ks]) * v0[ks]
+        t[ks] = (b1 * dz[ks]) * t0[ks]
+        sal[ks] = (b1 * dz[ks]) * s0[ks]
+        for k in range(ks + 1, ke):
+            a_a = a_b
+            a_b = dt * (kappa[k + 1] * i_dz_int[k + 1])
+            bd1 = dz[k] + d1 * a_a
+            b1 = 1.0 / (bd1 + a_b)
+            c1[k + 1] = a_b * b1
+            d1 = bd1 * b1
+            u[k] = b1 * (dz[k] * u0[k] + a_a * u[k - 1])
+            v[k] = b1 * (dz[k] * v0[k] + a_a * v[k - 1])
+            t[k] = b1 * (dz[k] * t0[k] + a_a * t[k - 1])
+            sal[k] = b1 * (dz[k] * s0[k] + a_a * sal[k - 1])
+        a_a = a_b
+        b1 = 1.0 / (dz[ke] + d1 * a_a)
+        t[ke] = b1 * (dz[ke] * t0[ke] + a_a * t[ke - 1])
+        sal[ke] = b1 * (dz[ke] * s0[ke] + a_a * sal[ke - 1])
+        if ke == nz:
+            a_b = dt * (kappa[nz + 1] * i_dz_int[nz + 1])
+            b1nz_0 = 1.0 / ((dz[nz] + d1 * a_a) + a_b)
+        else:
+            b1nz_0 = b1
+        u[ke] = b1nz_0 * (dz[ke] * u0[ke] + a_a * u[ke - 1])
+        v[ke] = b1nz_0 * (dz[ke] * v0[ke] + a_a * v[ke - 1])
+        for k in range(ke - 1, ks - 1, -1):
+            u[k] = u[k] + c1[k + 1] * u[k + 1]
+            v[k] = v[k] + c1[k + 1] * v[k + 1]
+            t[k] = t[k] + c1[k + 1] * t[k + 1]
+            sal[k] = sal[k] + c1[k + 1] * sal[k + 1]
+    else:
+        for k in range(1, nz + 1):
+            u[k] = u0[k]
+            v[k] = v0[k]
+            t[k] = t0[k]
+            sal[k] = s0[k]
+
+    s2[1] = 0.0
+    s2[nz + 1] = 0.0
+    if ks > 1:
+        s2[ks] = ((u[ks] - u0[ks - 1]) * (u[ks] - u0[ks - 1]) + (v[ks] - v0[ks - 1]) * (v[ks] - v0[ks - 1])) \
+            * (i_dz_int[ks] * i_dz_int[ks])
+    for k in range(ks + 1, ke + 1):
+        s2[k] = ((u[k] - u[k - 1]) * (u[k] - u[k - 1]) + (v[k] - v[k - 1]) * (v[k] - v[k - 1])) \
+            * (i_dz_int[k] * i_dz_int[k])
+    if ke < nz:
+        s2[ke + 1] = ((u0[ke + 1] - u[ke]) * (u0[ke + 1] - u[ke]) + (v0[ke + 1] - v[ke]) * (v0[ke + 1] - v[ke])) \
+            * (i_dz_int[ke + 1] * i_dz_int[ke + 1])
+
+    n2[1] = 0.0
+    n2[nz + 1] = 0.0
+    if ks > 1:
+        n2[ks] = max(0.0, i_dz_int[ks] * (dbuoy_dt[ks] * (t0[ks - 1] - t[ks]) + dbuoy_ds[ks] * (s0[ks - 1] - sal[ks])))
+    for k in range(ks + 1, ke + 1):
+        n2[k] = max(0.0, i_dz_int[k] * (dbuoy_dt[k] * (t[k - 1] - t[k]) + dbuoy_ds[k] * (sal[k - 1] - sal[k])))
+    if ke < nz:
+        n2[ke + 1] = max(0.0, i_dz_int[ke + 1] * (dbuoy_dt[ke + 1] * (t[ke] - t0[ke + 1])
+                                                  + dbuoy_ds[ke + 1] * (sal[ke] - s0[ke + 1])))
+
+
+@njit(cache=True)
+def _buoyancy_coefficients_nb(tt, ss, hlay, nz, code, rho0, g, dbuoy_dt, dbuoy_ds):
+    """``_buoyancy_coefficients`` (MOM_kappa_shear.F90:1126-1136)."""
+    gr0 = rho0 * g
+    sc = -(g / rho0)
+    pres = 0.0
+    for kk in range(2, nz + 1):
+        pres = pres + gr0 * hlay[kk - 1]
+        t_int = 0.5 * (tt[kk - 1] + tt[kk])
+        s_int = 0.5 * (ss[kk - 1] + ss[kk])
+        d_t, d_s = drho_code(t_int, s_int, pres, code)
+        dbuoy_dt[kk] = sc * d_t
+        dbuoy_ds[kk] = sc * d_s
+
+
+@njit(cache=True)
+def _project_nb(nl, kappa, uu, vv, bb, tt, ss, dt, nz, hlay, i_dz_int, dbuoy_dt, dbuoy_ds, u, v, b, t, sal, n2, s2,
+                ks_int, ke_int):
+    """``project`` of ``kappa_shear_column``: the one-buoyancy (linear EOS) or the T, S projection."""
+    if nl:
+        _projected_state_ts_nb(kappa, uu, vv, tt, ss, dt, nz, hlay, i_dz_int, dbuoy_dt, dbuoy_ds, u, v, t, sal,
+                               n2, s2, ks_int, ke_int)
+    else:
+        _projected_state_nb(kappa, uu, vv, bb, dt, nz, hlay, i_dz_int, u, v, b, n2, s2, ks_int, ke_int)
 
 
 @njit(cache=True)
@@ -1516,23 +1824,33 @@ def _valid_step_nb(ks_kappa, ke_kappa, kappa_src, idtt, nz, n2, s2, tol_max, tol
 
 
 @njit(cache=True)
-def _kappa_shear_column_nb(u, v, b, dz, f2, dt, kappa0, prm, kappa_out_m, tke_out_m, j, kc, kf, c):
+def _kappa_shear_column_nb(u, v, b, tem, sal, dz, f2, dt, kappa0, prm, kappa_out_m, tke_out_m, j, kc, kf, c, code,
+                           rho0, g):
     """
     ``kappa_shear_column`` (MOM_kappa_shear.F90:866-1374) on the merged column u, v, b, dz (c,) (bed first), same
     operation order; the result is written to column j of kappa_out_m, tke_out_m (N+1, M) through kc, kf.
+    ``code`` > 0 (nonlinear EOS): T, S = tem, sal (c,) with MOM6's fixed interface coefficients, b not used.
     """
     nz = c
     n1 = nz + 2
+    nl = code != 0
+    nt = n1 if nl else 1                   # T, S work arrays only with a nonlinear EOS
     hlay = np.zeros(n1)
     u0xdz = np.zeros(n1)
     v0xdz = np.zeros(n1)
     b0xdz = np.zeros(n1)
+    t0xdz = np.zeros(nt)
+    s0xdz = np.zeros(nt)
     for k in range(nz):
         hlay[nz - k] = dz[k]
     for k in range(nz):
         u0xdz[nz - k] = u[k] * hlay[nz - k]
         v0xdz[nz - k] = v[k] * hlay[nz - k]
-        b0xdz[nz - k] = b[k] * hlay[nz - k]
+        if nl:
+            t0xdz[nz - k] = tem[k] * hlay[nz - k]
+            s0xdz[nz - k] = sal[k] * hlay[nz - k]
+        else:
+            b0xdz[nz - k] = b[k] * hlay[nz - k]
 
     max_ks_it = int(prm[_MAX_KS_IT])
     tol_err = prm[_TOL_ERR]
@@ -1566,13 +1884,19 @@ def _kappa_shear_column_nb(u, v, b, dz, f2, dt, kappa0, prm, kappa_out_m, tke_ou
     uu = np.zeros(n1)
     vv = np.zeros(n1)
     bb = np.zeros(n1)
+    tt = np.zeros(nt)
+    ss = np.zeros(nt)
     a1 = np.zeros(n1)
     c1 = np.zeros(n1)
     a1[2] = k0dt * i_dz_int[2]
     b1 = 1.0 / (hlay[1] + a1[2])
     uu[1] = b1 * u0xdz[1]
     vv[1] = b1 * v0xdz[1]
-    bb[1] = b1 * b0xdz[1]
+    if nl:
+        tt[1] = b1 * t0xdz[1]
+        ss[1] = b1 * s0xdz[1]
+    else:
+        bb[1] = b1 * b0xdz[1]
     c1[2] = a1[2] * b1
     d1 = hlay[1] * b1
     for kk in range(2, nz):
@@ -1581,18 +1905,30 @@ def _kappa_shear_column_nb(u, v, b, dz, f2, dt, kappa0, prm, kappa_out_m, tke_ou
         b1 = 1.0 / (bd1 + a1[kk + 1])
         uu[kk] = b1 * (u0xdz[kk] + a1[kk] * uu[kk - 1])
         vv[kk] = b1 * (v0xdz[kk] + a1[kk] * vv[kk - 1])
-        bb[kk] = b1 * (b0xdz[kk] + a1[kk] * bb[kk - 1])
+        if nl:
+            tt[kk] = b1 * (t0xdz[kk] + a1[kk] * tt[kk - 1])
+            ss[kk] = b1 * (s0xdz[kk] + a1[kk] * ss[kk - 1])
+        else:
+            bb[kk] = b1 * (b0xdz[kk] + a1[kk] * bb[kk - 1])
         c1[kk + 1] = a1[kk + 1] * b1
         d1 = bd1 * b1
     b1 = 1.0 / ((hlay[nz] + d1 * a1[nz]) + k0dt * i_dz_int[nz + 1])
     uu[nz] = b1 * (u0xdz[nz] + a1[nz] * uu[nz - 1])
     vv[nz] = b1 * (v0xdz[nz] + a1[nz] * vv[nz - 1])
     b1 = 1.0 / (hlay[nz] + d1 * a1[nz])
-    bb[nz] = b1 * (b0xdz[nz] + a1[nz] * bb[nz - 1])
+    if nl:
+        tt[nz] = b1 * (t0xdz[nz] + a1[nz] * tt[nz - 1])
+        ss[nz] = b1 * (s0xdz[nz] + a1[nz] * ss[nz - 1])
+    else:
+        bb[nz] = b1 * (b0xdz[nz] + a1[nz] * bb[nz - 1])
     for kk in range(nz - 1, 0, -1):
         uu[kk] = uu[kk] + c1[kk + 1] * uu[kk + 1]
         vv[kk] = vv[kk] + c1[kk + 1] * vv[kk + 1]
-        bb[kk] = bb[kk] + c1[kk + 1] * bb[kk + 1]
+        if nl:
+            tt[kk] = tt[kk] + c1[kk + 1] * tt[kk + 1]
+            ss[kk] = ss[kk] + c1[kk + 1] * ss[kk + 1]
+        else:
+            bb[kk] = bb[kk] + c1[kk + 1] * bb[kk + 1]
 
     h_int = np.zeros(n1)
     h_int[2] = hlay[1]
@@ -1606,12 +1942,18 @@ def _kappa_shear_column_nb(u, v, b, dz, f2, dt, kappa0, prm, kappa_out_m, tke_ou
     h_int[nz + 1] = 0.0
     dz_int = h_int
 
+    dbuoy_dt = np.zeros(nt)
+    dbuoy_ds = np.zeros(nt)
+    if nl:
+        _buoyancy_coefficients_nb(tt, ss, hlay, nz, code, rho0, g, dbuoy_dt, dbuoy_ds)
+
     n2 = np.zeros(n1)
     s2 = np.zeros(n1)
     kappa = np.zeros(n1)
     for k in range(1, nz + 2):
         kappa[k] = prm[_KD_SEED]
-    _projected_state_nb(kappa, uu, vv, bb, 0.0, nz, hlay, i_dz_int, uu, vv, bb, n2, s2, -1, -1)
+    _project_nb(nl, kappa, uu, vv, bb, tt, ss, 0.0, nz, hlay, i_dz_int, dbuoy_dt, dbuoy_ds,
+                uu, vv, bb, tt, ss, n2, s2, -1, -1)
 
     dt_rem = dt
     k_q = np.zeros(n1)
@@ -1624,6 +1966,8 @@ def _kappa_shear_column_nb(u, v, b, dz, f2, dt, kappa0, prm, kappa_out_m, tke_ou
     u_test = np.zeros(n1)
     v_test = np.zeros(n1)
     b_test = np.zeros(n1)
+    t_test = np.zeros(nt)
+    s_test = np.zeros(nt)
     kappa_mid = np.zeros(n1)
     tol_max = np.zeros(n1)
     tol_min = np.zeros(n1)
@@ -1655,8 +1999,8 @@ def _kappa_shear_column_nb(u, v, b, dz, f2, dt, kappa0, prm, kappa_out_m, tke_ou
                 tol_chg[kk] = tol2 * local_src_avg[kk]
             valid_dt = False
             for _ in range((max_ks_it + 1 - itt) // 2):
-                _projected_state_nb(kappa_out, uu, vv, bb, 0.5 * dt_test, nz, hlay, i_dz_int,
-                                    u_test, v_test, b_test, n2, s2, ks_kappa, ke_kappa)
+                _project_nb(nl, kappa_out, uu, vv, bb, tt, ss, 0.5 * dt_test, nz, hlay, i_dz_int, dbuoy_dt,
+                            dbuoy_ds, u_test, v_test, b_test, t_test, s_test, n2, s2, ks_kappa, ke_kappa)
                 valid_dt = _valid_step_nb(ks_kappa, ke_kappa, kappa_src, 1.0 / dt_test, nz, n2, s2,
                                           tol_max, tol_min, tol_chg, prm)
                 if valid_dt:
@@ -1665,8 +2009,9 @@ def _kappa_shear_column_nb(u, v, b, dz, f2, dt, kappa0, prm, kappa_out_m, tke_ou
             if dt_test < dt_rem and valid_dt:
                 dt_inc = 0.5 * dt_test
                 for _ in range(DT_REFINEMENTS):
-                    _projected_state_nb(kappa_out, uu, vv, bb, 0.5 * (dt_test + dt_inc), nz, hlay,
-                                        i_dz_int, u_test, v_test, b_test, n2, s2, ks_kappa, ke_kappa)
+                    _project_nb(nl, kappa_out, uu, vv, bb, tt, ss, 0.5 * (dt_test + dt_inc), nz, hlay, i_dz_int,
+                                dbuoy_dt, dbuoy_ds, u_test, v_test, b_test, t_test, s_test, n2, s2, ks_kappa,
+                                ke_kappa)
                     valid_dt = _valid_step_nb(ks_kappa, ke_kappa, kappa_src, 1.0 / (dt_test + dt_inc), nz,
                                               n2, s2, tol_max, tol_min, tol_chg, prm)
                     if valid_dt:
@@ -1685,8 +2030,8 @@ def _kappa_shear_column_nb(u, v, b, dz, f2, dt, kappa0, prm, kappa_out_m, tke_ou
             for kk in range(1, nz + 2):
                 tke_avg[kk] += dt_wt * tke[kk]
         else:
-            _projected_state_nb(kappa_out, uu, vv, bb, dt_now, nz, hlay, i_dz_int,
-                                u_test, v_test, b_test, n2, s2, ks_kappa, ke_kappa)
+            _project_nb(nl, kappa_out, uu, vv, bb, tt, ss, dt_now, nz, hlay, i_dz_int, dbuoy_dt, dbuoy_ds,
+                        u_test, v_test, b_test, t_test, s_test, n2, s2, ks_kappa, ke_kappa)
             k_q_tmp = k_q.copy()
             tke_pred, kappa_pred, _a, _b = _find_kappa_tke_nb(
                 n2, s2, kappa_out, idz, h_int, dz_int, i_l2_bdry, f2, nz, prm, kappa0, kappa_trunc, k_q_tmp)
@@ -1697,8 +2042,8 @@ def _kappa_shear_column_nb(u, v, b, dz, f2, dt, kappa0, prm, kappa_out_m, tke_ou
                     ks_kappa = kk
                 if kappa_mid[kk] > 0.0:
                     ke_kappa = kk
-            _projected_state_nb(kappa_mid, uu, vv, bb, dt_now, nz, hlay, i_dz_int,
-                                u_test, v_test, b_test, n2, s2, ks_kappa, ke_kappa)
+            _project_nb(nl, kappa_mid, uu, vv, bb, tt, ss, dt_now, nz, hlay, i_dz_int, dbuoy_dt, dbuoy_ds,
+                        u_test, v_test, b_test, t_test, s_test, n2, s2, ks_kappa, ke_kappa)
             tke_pred, kappa_pred, _a, _b = _find_kappa_tke_nb(
                 n2, s2, kappa_out, idz, h_int, dz_int, i_l2_bdry, f2, nz, prm, kappa0, kappa_trunc, k_q)
             dt_wt = dt_now / dt
@@ -1710,8 +2055,8 @@ def _kappa_shear_column_nb(u, v, b, dz, f2, dt, kappa0, prm, kappa_out_m, tke_ou
             kappa = kappa_pred.copy()
 
         if dt_rem > 0.0:
-            _projected_state_nb(kappa_mid, uu, vv, bb, dt_now, nz, hlay, i_dz_int,
-                                uu, vv, bb, n2, s2, -1, -1)
+            _project_nb(nl, kappa_mid, uu, vv, bb, tt, ss, dt_now, nz, hlay, i_dz_int, dbuoy_dt, dbuoy_ds,
+                        uu, vv, bb, tt, ss, n2, s2, -1, -1)
         if dt_rem <= 0.0:
             break
 
@@ -1737,9 +2082,11 @@ def _kappa_shear_column_nb(u, v, b, dz, f2, dt, kappa0, prm, kappa_out_m, tke_ou
 @njit(cache=True)
 def _local_buoyancy(ht, hs, hc, c, code, rho0, g, hb):
     """
-    Locally referenced buoyancy hb (c,) [m s⁻²] of a merged column (module docstring) from its T, S (c,) and
-    thicknesses hc (c,) [m], merged layer 0 at the bed: hb_0 = 0, hb_q = hb_q−1 + Δb at the interface between q−1
-    and q (``buoyancy_jump_elem``), at the pressure Σ_{q' ≥ q} g ρ₀ hc_q' [Pa] summed from the surface.
+    Locally referenced buoyancy hb (c,) [m s⁻²] of a merged column from its T, S (c,) and thicknesses hc (c,) [m],
+    merged layer 0 at the bed: hb_0 = 0, hb_q = hb_q−1 + Δb at the interface between q−1 and q
+    (``buoyancy_jump_elem``), at the pressure Σ_{q' ≥ q} g ρ₀ hc_q' [Pa] summed from the surface.  The one-tracer
+    approximation of the nonlinear path used before 2026-11-01 (module docstring); no longer called by the
+    solver, kept for the tests that compare it with the two-tracer projection.
     """
     gr0 = g * rho0
     g_rho0 = g / rho0
@@ -1756,7 +2103,7 @@ def _local_buoyancy(ht, hs, hc, c, code, rho0, g, hb):
 @njit(cache=True, parallel=True)
 def _columns_nb(u, v, b, dz, f2, dt, kappa0, h_thin, prm, h_massless, kappa_out, tke_out, tem, sal, code, rho0, g):
     """Thin-layer merge + ``_kappa_shear_column_nb`` of every column of dz (N, M), one column per thread task;
-    ``code`` > 0 (nonlinear EOS): the locally referenced buoyancy of ``tem``, ``sal`` (``_local_buoyancy``)."""
+    ``code`` > 0 (nonlinear EOS): the merged ``tem``, ``sal`` go to the two-tracer projection, ``b`` is not used."""
     n, mcol = dz.shape
     for j in prange(mcol):
         dry = 0.0
@@ -1843,9 +2190,8 @@ def _columns_nb(u, v, b, dz, f2, dt, kappa0, h_thin, prm, h_massless, kappa_out,
             else:
                 ht[q] = ht[q] / hc[q]
                 hs[q] = hs[q] / hc[q]
-        if code != 0:
-            _local_buoyancy(ht, hs, hc, c, code, rho0, g, hb)
-        _kappa_shear_column_nb(hu, hv, hb, hc, f2[j], dt, kappa0, prm, kappa_out, tke_out, j, kc, kf, c)
+        _kappa_shear_column_nb(hu, hv, hb, ht, hs, hc, f2[j], dt, kappa0, prm, kappa_out, tke_out, j, kc, kf, c,
+                               code, rho0, g)
 
 
 def kappa_shear_columns(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: np.ndarray, f2: np.ndarray, dt: float,
