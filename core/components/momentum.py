@@ -65,15 +65,53 @@ def _flux_advection(u, v, Qx, Qy, Fz, V, wet_u, wet_v, lim: float = 0.0) -> tupl
     return au, av
 
 
-def _coriolis(u: np.ndarray, v: np.ndarray, fq: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """The energy-conserving C-grid Coriolis terms of ``Momentum.coriolis`` (interior faces; edge faces 0)."""
+def _coriolis(u: np.ndarray, v: np.ndarray, fq: np.ndarray, dx_u: np.ndarray | None = None,
+              dy_u: np.ndarray | None = None, dx_v: np.ndarray | None = None,
+              dy_v: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """
+    The energy-conserving C-grid Coriolis terms of ``Momentum.coriolis`` (interior faces; edge faces 0).
+
+    Without metrics (a grid whose face lengths equal the centre distances, Δx_v = Δx_u and Δy_u = Δy_v, e.g. a
+    uniform Cartesian grid) the unweighted mean ¼ Σ f_q v.  With metrics, the Sadourny (1975) energy form of MOM6
+    with a uniform thickness (MOM_CoriolisAdv.F90:818-823, 1071-1076):
+
+        C_u = ¼/Δx_u Σ₄ f_q (v Δx_v),        C_v = −¼/Δy_v Σ₄ f_q (u Δy_u)
+
+    so that Σ A_u u C_u + Σ A_v v C_v = 0 with A_u = Δx_u Δy_u, A_v = Δx_v Δy_v (MOM6 areaCu, areaCv) on any
+    orthogonal grid, and the discrete geostrophic state is steady (tests/test_curvilinear_invariance.py).
+    """
     cu = np.zeros_like(u)
     cv = np.zeros_like(v)
-    cu[..., 1:-1] = 0.25 * (fq[:-1, 1:-1] * (v[:, :-1, :-1] + v[:, :-1, 1:])
-                            + fq[1:, 1:-1] * (v[:, 1:, :-1] + v[:, 1:, 1:]))
-    cv[:, 1:-1, :] = -0.25 * (fq[1:-1, :-1] * (u[:, :-1, :-1] + u[:, 1:, :-1])
-                              + fq[1:-1, 1:] * (u[:, :-1, 1:] + u[:, 1:, 1:]))
+    if dx_u is None:
+        cu[..., 1:-1] = 0.25 * (fq[:-1, 1:-1] * (v[:, :-1, :-1] + v[:, :-1, 1:])
+                                + fq[1:, 1:-1] * (v[:, 1:, :-1] + v[:, 1:, 1:]))
+        cv[:, 1:-1, :] = -0.25 * (fq[1:-1, :-1] * (u[:, :-1, :-1] + u[:, 1:, :-1])
+                                  + fq[1:-1, 1:] * (u[:, :-1, 1:] + u[:, 1:, 1:]))
+        return cu, cv
+    vt = v * dx_v[None]                                                 # v Δx_v (per unit thickness)
+    ut = u * dy_u[None]                                                 # u Δy_u
+    cu[..., 1:-1] = 0.25 * ((fq[1:, 1:-1] * (vt[:, 1:, 1:] + vt[:, 1:, :-1]))
+                            + (fq[:-1, 1:-1] * (vt[:, :-1, :-1] + vt[:, :-1, 1:]))) / dx_u[None, :, 1:-1]
+    cv[:, 1:-1, :] = -0.25 * ((fq[1:-1, 1:] * (ut[:, 1:, 1:] + ut[:, :-1, 1:]))
+                              + (fq[1:-1, :-1] * (ut[:, :-1, :-1] + ut[:, 1:, :-1]))) / dy_v[None, 1:-1, :]
     return cu, cv
+
+
+def coriolis_metrics(hg) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    """
+    (Δx_u, Δy_u, Δx_v, Δy_v) for the metric-weighted Coriolis of ``_coriolis``, or None when every face length
+    equals the centre distance across the neighbouring faces (Δx_v[J, i] = Δx_u[j, I] and Δy_u[j, I] = Δy_v[J, i]
+    for the four (u, v) pairs of each corner), where the weights are exactly 1 and the unweighted form is used,
+    bit for bit as before (uniform Cartesian grids).  Stretched, spherical and curvilinear grids get the weights
+    (metric audit, docs/design/regional_refs/metric_audit.md).
+    """
+    dx_u, dy_u, dx_v, dy_v = (np.asarray(hg[k].values, float) for k in ("dx_u", "dy_u", "dx_v", "dy_v"))
+    same = True
+    for a in (dx_v[:-1], dx_v[1:]):                                     # the v-faces south and north of row j
+        same &= bool(np.array_equal(a, dx_u[:, :-1]) and np.array_equal(a, dx_u[:, 1:]))
+    for a in (dy_u[:, :-1], dy_u[:, 1:]):                               # the u-faces west and east of column i
+        same &= bool(np.array_equal(a, dy_v[:-1]) and np.array_equal(a, dy_v[1:]))
+    return None if same else (dx_u, dy_u, dx_v, dy_v)
 
 
 class Momentum:
@@ -105,6 +143,7 @@ class Momentum:
         self.open_u = np.zeros((ny, nx + 1), bool) if open_u is None else np.asarray(open_u, bool)
         self.open_v = np.zeros((ny + 1, nx), bool) if open_v is None else np.asarray(open_v, bool)
         self._smag_geom = None
+        self._cor_metrics = coriolis_metrics(hg)                        # None: unweighted (uniform grid)
         self.last_nu_t: np.ndarray | None = None
         self.last_n_limited = 0
 
@@ -117,13 +156,19 @@ class Momentum:
     def coriolis(self, u: np.ndarray, v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """
         Energy-conserving C-grid Coriolis terms (+f v̄ at u-faces, −f ū at v-faces):
-        every adjacent (u, v) pair shares one cell corner q and is weighted by ¼ f_q,
-        so the operator is antisymmetric and does no work (Sadourny 1975; Arakawa &
-        Lamb 1977).  u (N, ny, nx+1), v (N, ny+1, nx).
+        every adjacent (u, v) pair shares one cell corner q and is weighted by ¼ f_q (times the face-length ratio
+        Δx_v/Δx_u or Δy_u/Δy_v on a non-uniform grid, ``_coriolis``), so the operator is antisymmetric and does no
+        work (Sadourny 1975; Arakawa & Lamb 1977; MOM_CoriolisAdv.F90:818-823).  u (N, ny, nx+1), v (N, ny+1, nx).
         """
+        met = self._cor_metrics
         if self.per:
-            return self.per.apply(_coriolis, (u, v, self.fq), ("u", "v", "q"), ("u", "v"), 1)
-        return _coriolis(u, v, self.fq)
+            if met is None:
+                return self.per.apply(_coriolis, (u, v, self.fq), ("u", "v", "q"), ("u", "v"), 1)
+            return self.per.apply(_coriolis, (u, v, self.fq) + met, ("u", "v", "q", "u", "u", "v", "v"),
+                                  ("u", "v"), 1)
+        if met is None:
+            return _coriolis(u, v, self.fq)
+        return _coriolis(u, v, self.fq, *met)
 
     def _padded_vi_geometry(self) -> dict:
         """Vector-invariant geometry with periodic halos of 2 (corner area and mask rebuilt on the padded grid)."""
@@ -132,7 +177,8 @@ class Momentum:
             out = {k: p.pad(g[k], kind, H) for k, kind in (("dx_u", "u"), ("dy_v", "v"), ("area_t", "c"),
                                                            ("area_u", "u"), ("area_v", "v"))}
             out["active"] = p.pad(self.fs.active, "c", H)
-            out["area_q"] = vi.corner_area(out["dx_u"], out["dy_v"])
+            out["area_q"] = (p.pad(g["area_q"], "q", H) if "area_q" in self.hg     # the grid's areaBu, wrapped
+                             else vi.corner_area(out["dx_u"], out["dy_v"]))
             out["mask_q"] = vi.corner_mask(out["active"])
             out["fq"] = p.pad(self.fq, "q", H)
             self._vi_pad = out

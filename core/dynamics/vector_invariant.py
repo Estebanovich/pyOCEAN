@@ -37,6 +37,18 @@ def corner_area(dx_u: np.ndarray, dy_v: np.ndarray) -> np.ndarray:
     return 0.5 * (dxp[:-1] + dxp[1:]) * 0.5 * (dyp[:, :-1] + dyp[:, 1:])
 
 
+def grid_corner_area(hg) -> np.ndarray:
+    """
+    Area of the corner (q) cells [m²] used by the vorticity ζ = circulation/A_q: the grid's ``area_q`` when it has
+    one (MOM6 areaBu, four supergrid sub-cells, ``core.grid.supergrid``; MOM_CoriolisAdv.F90:605-608 divides by
+    G%IareaBu), else ``corner_area`` of Δx_u and Δy_v (grids of ``core.grid.horizontal``, which carry no corner
+    metrics; equal to areaBu in the interior of a stretched Cartesian grid, and bit for bit as before).
+    """
+    if "area_q" in hg:
+        return np.asarray(hg["area_q"].values, float)
+    return corner_area(np.asarray(hg["dx_u"].values, float), np.asarray(hg["dy_v"].values, float))
+
+
 def vorticity_q_numpy(u: np.ndarray, v: np.ndarray, dx_u: np.ndarray, dy_v: np.ndarray, area_q: np.ndarray,
                 mask_q: np.ndarray) -> np.ndarray:
     """

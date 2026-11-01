@@ -1510,7 +1510,7 @@ class SigmaBaroclinic:
         self.h_thin_bed, self.init_iterations = float(h_thin_bed), int(init_iterations)
         g = {k: np.asarray(self.hg[k].values, float) for k in ("dx_u", "dy_v", "area_t", "area_u", "area_v",
                                                                "dx_t", "dy_t")}
-        g["area_q"] = vi.corner_area(g["dx_u"], g["dy_v"])
+        g["area_q"] = vi.grid_corner_area(self.hg)                     # MOM6 areaBu (supergrid) or Δx_u Δy_v
         g["mask_q"] = vi.corner_mask(act)
         self._vi = g                                                    # geometry of the vector-invariant terms
 

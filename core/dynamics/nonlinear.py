@@ -104,8 +104,10 @@ def _spacings_u(h_grid: xr.Dataset) -> tuple[np.ndarray, np.ndarray, np.ndarray,
     hw[:, 1:] = dx_t                                   # u[i-1] → u[i] spans cell i-1
     he[:, :-1] = dx_t                                  # u[i] → u[i+1] spans cell i
     hs, hn = np.full((ny, nxu), np.nan), np.full((ny, nxu), np.nan)
-    hs[1:] = 0.5 * (dy_u[:-1] + dy_u[1:])
-    hn[:-1] = 0.5 * (dy_u[:-1] + dy_u[1:])
+    # u[j-1] → u[j] crosses corner row j: MOM6 dyBu when the grid has it (supergrid), else the mean of the two Δy_u
+    dyq = h_grid["dy_q"].values[1:-1] if "dy_q" in h_grid else 0.5 * (dy_u[:-1] + dy_u[1:])
+    hs[1:] = dyq
+    hn[:-1] = dyq
     return hw, he, hs, hn
 
 
@@ -114,8 +116,10 @@ def _spacings_v(h_grid: xr.Dataset) -> tuple[np.ndarray, np.ndarray, np.ndarray,
     dx_v, dy_t = h_grid["dx_v"].values, h_grid["dy_t"].values
     nyv, nx = dx_v.shape
     hw, he = np.full((nyv, nx), np.nan), np.full((nyv, nx), np.nan)
-    hw[:, 1:] = 0.5 * (dx_v[:, :-1] + dx_v[:, 1:])
-    he[:, :-1] = 0.5 * (dx_v[:, :-1] + dx_v[:, 1:])
+    # v[i-1] → v[i] crosses corner column i: MOM6 dxBu when the grid has it, else the mean of the two Δx_v
+    dxq = h_grid["dx_q"].values[:, 1:-1] if "dx_q" in h_grid else 0.5 * (dx_v[:, :-1] + dx_v[:, 1:])
+    hw[:, 1:] = dxq
+    he[:, :-1] = dxq
     hs, hn = np.full((nyv, nx), np.nan), np.full((nyv, nx), np.nan)
     hs[1:] = dy_t                                      # v[j-1] → v[j] spans cell j-1
     hn[:-1] = dy_t

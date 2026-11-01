@@ -77,22 +77,29 @@ def smag_geometry(hg: xr.Dataset) -> dict[str, np.ndarray]:
 
     Keys: dx_t, dy_t, area_t (ny, nx); dx_u, dy_u, area_u (ny, nx+1); dx_v, dy_v, area_v (ny+1, nx);
     dx_q, dy_q, area_q (ny+1, nx+1) [m, m²]; delta2_t, delta2_q = 2 Δx² Δy²/(Δx² + Δy²) [m²]
-    (MOM_hor_visc.F90:3382, 3403); inv_lap_t, inv_lap_q = 1/(1/Δx² + 1/Δy²) [m²].  The grid has no corner
-    spacings, so Δx_q is the mean of the two Δx_v next to the corner in i and Δy_q the mean of the two Δy_u
-    next to it in j (the single neighbour at the domain edge).  Extra keys hold precomputed ratios and
-    reciprocals used by the kernels (dy_dx_t, dx_dy_t, dy_dx_q, dx_dy_q, idx_u, idy_u, idx_v, idy_v,
-    dx2_t, dy2_t, dx2_q, dy2_q, iarea_u, iarea_v), as MOM6 does (MOM_hor_visc.F90:3319-3341).
+    (MOM_hor_visc.F90:3382, 3403); inv_lap_t, inv_lap_q = 1/(1/Δx² + 1/Δy²) [m²].  The corner spacings are the
+    grid's ``dx_q``, ``dy_q``, ``area_q`` when it has them (MOM6 dxBu, dyBu, areaBu from a supergrid,
+    MOM_hor_visc.F90:3319, 3327; ``core.grid.supergrid``); a grid without them (``core.grid.horizontal``) gets
+    Δx_q as the mean of the two Δx_v next to the corner in i and Δy_q the mean of the two Δy_u next to it in j (the
+    single neighbour at the domain edge), equal to dxBu, dyBu in the interior of a stretched Cartesian grid.
+    Extra keys hold precomputed ratios and reciprocals used by the kernels (dy_dx_t, dx_dy_t, dy_dx_q, dx_dy_q,
+    idx_u, idy_u, idx_v, idy_v, dx2_t, dy2_t, dx2_q, dy2_q, iarea_u, iarea_v), as MOM6 does
+    (MOM_hor_visc.F90:3319-3341).
     """
     g = {k: np.ascontiguousarray(hg[k].values, dtype=float)
          for k in ("dx_t", "dy_t", "area_t", "dx_u", "dy_u", "area_u", "dx_v", "dy_v", "area_v")}
-    dx_v, dy_u = g["dx_v"], g["dy_u"]
-    dx_q = np.empty((dx_v.shape[0], dx_v.shape[1] + 1))
-    dx_q[:, 1:-1] = 0.5 * (dx_v[:, :-1] + dx_v[:, 1:])
-    dx_q[:, 0], dx_q[:, -1] = dx_v[:, 0], dx_v[:, -1]
-    dy_q = np.empty((dy_u.shape[0] + 1, dy_u.shape[1]))
-    dy_q[1:-1] = 0.5 * (dy_u[:-1] + dy_u[1:])
-    dy_q[0], dy_q[-1] = dy_u[0], dy_u[-1]
-    g["dx_q"], g["dy_q"], g["area_q"] = dx_q, dy_q, dx_q * dy_q
+    if all(k in hg for k in ("dx_q", "dy_q", "area_q")):              # supergrid: MOM6 dxBu, dyBu, areaBu
+        for k in ("dx_q", "dy_q", "area_q"):
+            g[k] = np.ascontiguousarray(hg[k].values, dtype=float)
+    else:                                                              # grids without corner metrics
+        dx_v, dy_u = g["dx_v"], g["dy_u"]
+        dx_q = np.empty((dx_v.shape[0], dx_v.shape[1] + 1))
+        dx_q[:, 1:-1] = 0.5 * (dx_v[:, :-1] + dx_v[:, 1:])
+        dx_q[:, 0], dx_q[:, -1] = dx_v[:, 0], dx_v[:, -1]
+        dy_q = np.empty((dy_u.shape[0] + 1, dy_u.shape[1]))
+        dy_q[1:-1] = 0.5 * (dy_u[:-1] + dy_u[1:])
+        dy_q[0], dy_q[-1] = dy_u[0], dy_u[-1]
+        g["dx_q"], g["dy_q"], g["area_q"] = dx_q, dy_q, dx_q * dy_q
     for p in ("t", "q"):
         dx2, dy2 = g[f"dx_{p}"] ** 2, g[f"dy_{p}"] ** 2
         g[f"dx2_{p}"], g[f"dy2_{p}"] = dx2, dy2
