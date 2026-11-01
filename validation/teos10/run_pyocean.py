@@ -3,7 +3,7 @@
 Production runs of the TEOS-10 validation (Task 9 of docs/superpowers/plans/2026-10-31-teos10-3d.md; spec criteria
 4 and 5; case definitions in ``validation/teos10/cases.py``).  One run at a time on the 5 performance cores.
 
-    python -m validation.teos10.run_pyocean rest seamount wright_full zstar [--rho-ref none]
+    python -m validation.teos10.run_pyocean rest seamount wright_full zstar [N_LAYERS] [--rho-ref none]
     python -m validation.teos10.run_pyocean cabbeling teos10
     python -m validation.teos10.run_pyocean thermobaric teos10 4000
     python -m validation.teos10.run_pyocean --all            # every run of RUN_LIST, one after the other
@@ -40,8 +40,9 @@ RUN_LIST: list[tuple] = (
 def build(spec: tuple, fast: bool = False) -> C.Case:
     """The case of a ``RUN_LIST`` entry."""
     if spec[0] == "rest":
-        _, kind, eos, coord, ref = spec
-        return C.rest_case(kind, eos, coord, rho_ref=None if ref == "none" else "auto", fast=fast)
+        _, kind, eos, coord, ref, *nl = spec
+        return C.rest_case(kind, eos, coord, rho_ref=None if ref == "none" else "auto", fast=fast,
+                           n_layers=int(nl[0]) if nl else None)
     if spec[0] == "cabbeling":
         return C.cabbeling_case(spec[1], fast=fast)
     if spec[0] == "thermobaric":
@@ -100,7 +101,7 @@ def run(spec: tuple, fast: bool = False, save: bool = True, record_hours: float 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("case", nargs="*", help="rest KIND EOS COORD | cabbeling EOS | thermobaric EOS DEPTH")
+    ap.add_argument("case", nargs="*", help="rest KIND EOS COORD [N_LAYERS] | cabbeling EOS | thermobaric EOS DEPTH")
     ap.add_argument("--rho-ref", default="auto", choices=("auto", "none"), help="rest only")
     ap.add_argument("--all", action="store_true", help="every run of RUN_LIST, one at a time")
     ap.add_argument("--fast", action="store_true", help="the coarse 1-day versions of the tests")
@@ -110,7 +111,7 @@ def main() -> None:
     if a.all:
         specs = RUN_LIST
     elif a.case and a.case[0] == "rest":
-        specs = [tuple(a.case) + (a.rho_ref,)]
+        specs = [tuple(a.case[:4]) + (a.rho_ref,) + tuple(a.case[4:])]
     elif a.case and a.case[0] == "thermobaric":
         specs = [(a.case[0], a.case[1], float(a.case[2]))]
     else:

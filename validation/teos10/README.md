@@ -136,12 +136,18 @@ interfaz inicial. Volúmenes de cabbeling: agua con ρ(T, S, 0) mayor que la de 
   conocido de z\* en la montaña, 0.08 cm/s en CLAUDE.md con el perfil analítico) y 2e-10 m s⁻¹ en el escalón.
   En el híbrido son 0.10–0.12 m s⁻¹ en la montaña y 1.4–1.7e-4 m s⁻¹ en el escalón, iguales en las tres EOS
   (sección 3, diferencia 1).
-- **Criterio 4, termobaricidad a redondeo: cumplido donde la columna es igual al perfil.** PGF inicial en z\*: en
-  las caras entre celdas completas 2e-18 (`wright_full`), 5e-17 (`teos10`), 4e-16 (lineal) m s⁻²; escalón
-  1e-16–4e-15. El residuo 1.4e-7 m s⁻² de la montaña está solo junto a celdas parciales de fondo, y es el mismo con
-  la lineal (1.9e-7): es la interpolación del perfil de referencia en 400 clases (el centro de una celda parcial
-  cae entre los nodos), no la EOS. En el híbrido el residuo (2e-5 m s⁻²) no es de redondeo, pero es el mismo con la
-  lineal (diferencia 1).
+- **Criterio 4, fuerza cero a redondeo con el perfil sin variación horizontal: NO cumplido** (sí la parte del
+  cociente 2×). El spec la pide en z\* y en híbrido, también sobre la montaña y el escalón. Medido, PGF inicial:
+  - z\*, caras entre celdas completas: 2e-18 (`wright_full`), 5e-17 (`teos10`), 4e-16 (lineal) m s⁻², a redondeo;
+    escalón 1e-16–4e-15, a redondeo;
+  - z\*, montaña, junto a celdas parciales de fondo: 1.4e-7 m s⁻² (lineal 1.9e-7), que deja 2.6e-4 m s⁻¹ a los
+    10 días: interpolación del perfil de referencia en 400 clases (el centro de una celda parcial cae entre los
+    nodos), clase (c), independiente de la EOS;
+  - híbrido: 2e-5 m s⁻² en la montaña y 3e-6 en el escalón, iguales con la lineal: truncamiento de las capas
+    gruesas, (c), baja 51× de 20 a 50 capas (diferencia 1).
+
+  El residuo no es termobárico (es igual con la lineal), pero no es de redondeo: abierto, sección 3 diferencias 1 y
+  3, sección 4 puntos 1 y 2.
 - **Criterio 4, modo MOM6 (`rho_ref=None`), sin límite:** montaña z\* 4.2–4.6 cm/s, híbrido 23–26 cm/s; escalón z\*
   2.1 mm/s, híbrido 6.5–7.4 mm/s; las no lineales 0.89–1.14× la lineal. **No se corrió MOM6 en el mismo caso**
   (pendiente; el plan no lo incluía en esta tarea).
@@ -167,17 +173,40 @@ interfaz inicial. Volúmenes de cabbeling: agua con ρ(T, S, 0) mayor que la de 
     onda larga y calor latente en la superficie más caliente).
   - **c_p:** 3991.87 frente a 3985 (+0.17 %): con el mismo flujo, el calentamiento es 0.17 % menor; sobre los
     +3 °C de la SST (22.0 → 25.0 °C) son ~−0.005 °C, un orden menos que el efecto de α.
-  - **`teos10` − `wright_full`:** Roquet frente a Wright y Θ frente a θ (el calor entra a Θ con c_p⁰ exacto; θ con
-    el mismo c_p no es exactamente contenido de calor): −0.009 °C, la escala de la diferencia Θ − θ en superficie.
+  - **`teos10` − `wright_full` (−0.009 °C):** sobre todo el c_p. El contenido de calor de verdad es c_p⁰ Θ
+    (potential enthalpy), y dθ = (c_p⁰ / c_p(S, θ, 0)) dΘ. `teos10` recibe el flujo en Θ con c_p⁰ y lo convierte a θ
+    exacto; `wright_full` lo pone directamente en θ con c_p⁰ = 3991.87, mientras que el c_p real en la superficie
+    de esta corrida es 4016.4–4019.4 J kg⁻¹ K⁻¹ (`gsw.cp_t_exact`, media 4017.7; media de la columna 4009.8). Así
+    `wright_full` calienta θ un 0.65 % de más: sobre los +3.05 °C de la SST (21.998 → 25.05) son +0.020 °C, y la
+    estimación sin realimentación da `teos10` − `wright_full` ≈ −0.020 °C. La SST más caliente de `wright_full`
+    pierde más calor: el flujo neto integrado es 3.073e8 J m⁻² (`wright_full`) frente a 3.084e8 (`teos10`), 1.1e6
+    J m⁻² de diferencia ≈ 0.0075 °C sobre los 36 m, lo que lleva la estimación a ≈ −0.012 °C frente a −0.009
+    medido. El resto (~0.003 °C) es Roquet frente a Wright en α y en la capa límite [hipótesis, no separado]. (La
+    diferencia Θ − θ en sí, 0.114 °C a 22 °C y 0.131 °C a 25 °C con S_P 31.5, no es la escala: la SST se compara en
+    θ en las dos.) Esto es una elección de NWA12/MOM6 (θ con c_p constante), clase (c) frente a TEOS-10.
 
 ## 3. Diferencias clasificadas
 
-1. **Corrientes del híbrido sobre la montaña (0.1 m s⁻¹ con perfil; 0.23 sin él): (c) elección numérica.** Las capas
-   gruesas (hasta 2500 m) cortadas por la topografía llevan la media de capa de un perfil curvo; la reconstrucción
-   PLM de T − T_ref no reproduce la curvatura, así que la integral de ρ de una capa cortada difiere de la de sus
-   vecinas. Es el mismo con la lineal (1.06–1.13× de diferencia) y no cambia con un perfil de referencia fino
-   (2.92e-5 frente a 2.99e-5 m s⁻² en la versión rápida): no es la EOS ni el perfil. z\* (capas de 225 m planas)
-   da 2.6e-4 m s⁻¹.
+1. **Corrientes del híbrido sobre la montaña (0.1 m s⁻¹ con perfil; 0.23 sin él): (c) error de truncamiento de
+   capas gruesas, comprobado con la resolución.** Las capas gruesas (hasta 2500 m) cortadas por la topografía llevan
+   la media de capa de un perfil curvo; la reconstrucción PLM de T − T_ref no reproduce la curvatura, así que la
+   integral de ρ de una capa cortada difiere de la de sus vecinas. Es el mismo con la lineal (1.06–1.13×) y no
+   cambia con un perfil de referencia fino (2.92e-5 frente a 2.99e-5 m s⁻² en la versión rápida). Prueba de
+   resolución (misma montaña, `wright_full`, `rho_ref="auto"`, 10 días; pisos y objetivos siguen a N,
+   `run_pyocean rest seamount wright_full hybrid N`):
+
+   | N capas | max\|PGF\| t=0 [m s⁻²] | max\|u\| 10 d [m s⁻¹] | max\|u\| 1 d |
+   |---|---|---|---|
+   | 10 | 2.3e-5 | 0.64 | 0.29 |
+   | 20 | 2.4e-5 | 0.108 | 0.049 |
+   | 30 | 5.5e-6 | 9.5e-3 | 6.4e-3 |
+   | 50 | 3.2e-6 | 2.1e-3 | 1.6e-3 |
+   | 50, lineal | 3.9e-6 | 2.9e-3 | 2.5e-3 |
+   | z\* 20 / 50 | 1.4e-7 / 4.8e-8 | 2.6e-4 / 1.4e-4 | 1.7e-4 / 1.3e-4 |
+
+   Baja 51× de 20 a 50 capas (más rápido que N⁻²; el PGF inicial baja como N⁻²·²), como un error de truncamiento
+   de la reconstrucción, sin truncaciones CFL; con 50 capas el híbrido queda 15× sobre z\* y la no lineal 0.73× la
+   lineal. No apunta a un error de la inicialización ni del PGF del híbrido; se mantiene (c).
 2. **Objetivos del híbrido elegidos por separado en cada EOS: (c) configuración del caso, corregido en el caso.** Con
    objetivos equiespaciados en la densidad de cada EOS, la versión rápida del escalón dio 4.8× (`wright_full`) frente
    a la lineal: las capas iniciales eran distintas (una capa de 1 m en el borde del escalón con `wright_full`). Con
@@ -191,13 +220,15 @@ interfaz inicial. Volúmenes de cabbeling: agua con ρ(T, S, 0) mayor que la de 
 5. **Inversión termobárica por GLS en una columna 1-D: (b) física ausente por diseño (hidrostático).** Sin
    movimiento (max\|u\| = 0): la convección es la mezcla del cierre con N² < 0, no plumas resueltas.
 6. **Criterio 4 modo MOM6 sin la corrida de MOM6: pendiente** (no es diferencia; falta la referencia).
+7. **Fuerza cero a redondeo del criterio 4 no alcanzada** en z\* sobre la montaña (celdas parciales, diferencia 3,
+   (c)) ni en el híbrido (diferencia 1): abierto, independiente de la EOS.
 
 ## 4. Qué debe mejorar pyOCEAN
 
 1. **Reconstrucción de mayor orden de T y S en el gradiente de presión del híbrido** (PPM, como la opción
-   `RECONSTRUCT_FOR_PRESSURE`/PPM de MOM6 [verificar el nombre del parámetro]): las capas gruesas cortadas por la
-   topografía dan 0.1 m s⁻¹ espurios en la montaña con cualquier EOS (diferencia 1). Medir primero cuánto baja con
-   más capas (20 → 50) para separar resolución de esquema.
+   `RECONSTRUCT_FOR_PRESSURE`/PPM de MOM6 [verificar el nombre del parámetro]): con 20 capas las capas gruesas
+   cortadas por la topografía dan 0.1 m s⁻¹ espurios en la montaña con cualquier EOS; con 50 capas 2e-3 m s⁻¹
+   (diferencia 1). Una reconstrucción de mayor orden debería acercar el híbrido de pocas capas a z\*.
 2. **Perfil de referencia de `rho_ref="auto"` exacto en celdas parciales:** muestrear el perfil de los datos
    (h_src) en lugar de clases de los centros de capa; quitaría el residuo de 1e-7 m s⁻² (diferencia 3).
 3. **Correr MOM6 en el caso de reposo (montaña, z\* y ρ, WRIGHT_FULL)** para poner las cifras del modo

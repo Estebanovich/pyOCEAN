@@ -188,15 +188,18 @@ def _rest_geometry(kind: str, fast: bool) -> dict:
 
 
 def rest_case(kind: str, eos: str, coord: str, *, rho_ref: str | None = "auto", fast: bool = False,
-              days: float | None = None) -> Case:
+              days: float | None = None, n_layers: int | None = None) -> Case:
     """
     The WOA profile at rest over ``kind`` ('seamount' | 'bayiw_step') with ``eos`` and ``coord`` ('zstar' |
     'hybrid'), 10 days (``fast``: half the resolution and 1 day).  ``rho_ref`` 'auto' (pyOCEAN's reference
     profile, the default of real runs) or None (MOM6's method: constant RHO_PGF_REF = ρ₀ subtracted).
     Constant ν_v = 1e-4 m² s⁻¹, no horizontal viscosity or diffusion (as the seamount of the Ilicak benchmark),
-    no bed drag.
+    no bed drag.  ``n_layers`` overrides the number of layers (resolution check of the hybrid residual; the
+    floors and targets follow it).
     """
     geo = _rest_geometry(kind, fast)
+    if n_layers is not None:
+        geo["nz"] = int(n_layers)
     nx, ny, nz, H = geo["nx"], geo["ny"], geo["nz"], geo["H"]
     hmax = float(H.max())
     hg = create_cartesian_grid(nx=nx, ny=ny, dx=geo["dx"], dy=geo["dx"], f0=geo["f0"])
@@ -223,7 +226,8 @@ def rest_case(kind: str, eos: str, coord: str, *, rho_ref: str | None = "auto", 
         th, sp = profile_at(m.layer_heights(eta))
         st = m.initial_state(eta, th, S=sp, ts_kind="theta_sp")
     days = (1.0 if fast else 10.0) if days is None else days
-    return Case(f"rest_{kind}_{eos}_{coord}_{'auto' if rho_ref else 'none'}", m, st,
+    tag = "" if n_layers is None else f"_n{int(n_layers)}"
+    return Case(f"rest_{kind}_{eos}_{coord}_{'auto' if rho_ref else 'none'}{tag}", m, st,
                 int(round(days * DAY / geo["dt"])), dict(kind=kind, eos=eos, coord=coord, rho_ref=rho_ref))
 
 
