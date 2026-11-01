@@ -28,7 +28,7 @@ def _writer(path, fmt):
     H = np.full((NY, NX), 20.0)
     H[0, 0] = np.nan
     return OutputWriter(path, hg, H, n_layers=NZ, start="2026-08-01T00:00:00", fmt=fmt,
-                        title="test run")
+                        title="test run", eos="linear")
 
 
 @pytest.mark.parametrize("fmt,name", [("zarr", "out.zarr"), ("netcdf", "out.nc")])
@@ -78,7 +78,7 @@ def test_two_dimensional_fields_and_unknown_names(tmp_path):
 def test_stretched_sigma_coordinates_are_written(tmp_path):
     hg = create_cartesian_grid(nx=NX, ny=NY, dx=1000.0, dy=1000.0, f0=1e-4)
     w = OutputWriter(tmp_path / "out.nc", hg, np.full((NY, NX), 20.0), n_layers=3, fmt="netcdf",
-                     dsigma=[0.5, 0.3, 0.2])                                # bed → surface
+                     dsigma=[0.5, 0.3, 0.2], eos="linear")                  # bed → surface
     w.write(60.0, eta=np.zeros((NY, NX)))
     w.close()
     ds = xr.open_dataset(tmp_path / "out.nc")
@@ -90,7 +90,7 @@ def test_output_accepts_numbered_passive_tracers(tmp_path):
     from core.grid.horizontal import create_cartesian_grid
     from diagnostics.output import OutputWriter
     hg = create_cartesian_grid(nx=4, ny=3, dx=1.0, dy=1.0)
-    w = OutputWriter(tmp_path / "o.nc", hg, np.full((3, 4), 10.0), n_layers=2, fmt="netcdf")
+    w = OutputWriter(tmp_path / "o.nc", hg, np.full((3, 4), 10.0), n_layers=2, fmt="netcdf", eos="linear")
     w.write(0.0, tr0=np.zeros((2, 3, 4)), tr1=np.ones((2, 3, 4)))
     w.close()
     import xarray as xr

@@ -200,7 +200,9 @@ def test_output_eos_from_model(tmp_path):
     lin = _model("linear")                                                   # linear: byte-identical to eos default
     st = lin.initial_state(np.zeros((NY, NX)), T, S=S)
     for name, kw in (("a.nc", dict(model=lin)), ("b.nc", {})):
-        w = OutputWriter(tmp_path / name, _grid(), np.full((NY, NX), 50.0), n_layers=NZ, fmt="netcdf", **kw)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)                     # b.nc: the no-model warning
+            w = OutputWriter(tmp_path / name, _grid(), np.full((NY, NX), 50.0), n_layers=NZ, fmt="netcdf", **kw)
         w.write(60.0, T=st.T, S=st.S)
         w.close()
     assert (tmp_path / "a.nc").read_bytes() == (tmp_path / "b.nc").read_bytes()
@@ -239,3 +241,16 @@ def test_plot_ts_runs():
     assert ax.get_xlabel().startswith("S_A") and len(ax.collections) >= 2
     import matplotlib.pyplot as plt
     plt.close("all")
+
+
+def test_writer_without_model_or_eos_warns(tmp_path):
+    """A layered OutputWriter given neither model= nor eos= warns that T, S get the linear labels (final review I2
+    residual, 2026-11-01); eos='linear', model= and a 2-D writer (n_layers = 0) stay silent."""
+    with pytest.warns(UserWarning, match="neither model= nor eos="):
+        OutputWriter(tmp_path / "a.nc", _grid(), np.full((NY, NX), 50.0), n_layers=NZ, fmt="netcdf")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        OutputWriter(tmp_path / "b.nc", _grid(), np.full((NY, NX), 50.0), n_layers=NZ, fmt="netcdf", eos="linear")
+        OutputWriter(tmp_path / "c.nc", _grid(), np.full((NY, NX), 50.0), fmt="netcdf")
+        OutputWriter(tmp_path / "d.nc", _grid(), np.full((NY, NX), 50.0), n_layers=NZ, fmt="netcdf",
+                     model=_model("linear"))

@@ -59,7 +59,7 @@ def main() -> None:
     t_h, drpe, mix = [0.0], [0.0], [0.0]
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "lock.nc"
-        w = OutputWriter(path, hg, bathy, n_layers=NZ, dsigma=m.core.dsigma, fmt="netcdf",
+        w = OutputWriter(path, hg, bathy, n_layers=NZ, dsigma=m.core.dsigma, fmt="netcdf", model=m,
                          start="2026-01-01T00:00:00", title="lock exchange (manual figure)")
         w.write(st.time, eta=st.eta, u=st.u, v=st.v, T=st.T)
         every = int(round(3600 / DT))

@@ -29,6 +29,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import re
+import warnings
 
 import numpy as np
 import xarray as xr
@@ -70,7 +71,9 @@ class OutputWriter:
         diagnostics of the model) are not output fields: read them from the model.
     model : the model whose output is written (optional).  Its ``eos_name`` sets ``eos``, so the convention of the
         files cannot be forgotten or mismatched (final review I2); an explicit ``eos`` that contradicts it raises
-        ValueError.  Pass it for every 3-D run: ``OutputWriter(path, hg, H, n_layers=m.n, model=m)``.
+        ValueError.  Pass it for every 3-D run: ``OutputWriter(path, hg, H, n_layers=m.n, model=m)``.  A layered
+        writer (``n_layers`` > 0) given neither ``model`` nor ``eos`` warns (UserWarning) and labels T, S with the
+        linear convention; pass ``eos="linear"`` to say so explicitly.
     """
 
     def __init__(self, path: str | Path, h_grid: xr.Dataset, H: np.ndarray, n_layers: int = 0,
@@ -82,6 +85,10 @@ class OutputWriter:
             if eos is not None and eos != model.eos_name:
                 raise ValueError(f"eos={eos!r} contradicts the model's eos {model.eos_name!r}; omit eos")
             eos = model.eos_name
+        if eos is None and n_layers > 0:
+            warnings.warn("OutputWriter: neither model= nor eos= given; T and S are labelled with the linear-EOS "
+                          "convention (potential temperature, practical salinity).  Pass model=m, or eos='linear' "
+                          "if that is intended", UserWarning, stacklevel=2)
         eos = "linear" if eos is None else eos
         self.path, self.fmt, self.start = Path(path), fmt, np.datetime64(start, "s")
         self.ny, self.nx = H.shape

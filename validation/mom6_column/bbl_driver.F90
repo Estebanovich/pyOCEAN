@@ -11,9 +11,16 @@
 !!
 !! Usage: bbl_driver lotw in.txt out.txt   (add_LOTW_BBL_diffusivity, out: Kd_BBL(nz+1) per case)
 !!        bbl_driver tke  in.txt out.txt   (set_BBL_TKE, out: "ustar_BBL BBL_meanKE_loss" per case)
+!!        bbl_driver n2   in.txt out.txt   (find_N2, out: N2_int(nz+1) per case; BBL N2_bot fix,
+!!                                          2026-11-01).  Per case: "nz form rho0 g r0 drdt drds",
+!!                                          then h, T, S (nz each); form 1 LINEAR (r0, drdt, drds),
+!!                                          4 WRIGHT_FULL, 7 ROQUET_RHO (EOS_manual_init, as eos_driver).
+!!                                          T_f = T, S_f = S (no massless layers), p_surf absent,
+!!                                          no tidal mixing (h_amp = 0).
 !! Columns surface first (k = 1 at the surface), thicknesses in m, N2 in s-2.
 program bbl_driver
-  use bbl_column_mom6, only : set_diffusivity_CS, add_LOTW_BBL_diffusivity, set_BBL_TKE
+  use bbl_column_mom6, only : set_diffusivity_CS, add_LOTW_BBL_diffusivity, set_BBL_TKE, find_N2
+  use MOM_EOS, only : EOS_type, EOS_manual_init
   use MOM_grid, only : ocean_grid_type
   use MOM_verticalGrid, only : verticalGrid_type
   use MOM_unit_scaling, only : unit_scale_type
@@ -32,6 +39,12 @@ program bbl_driver
   real, dimension(:,:,:), pointer :: Kd_BBL
   real, allocatable :: h(:,:,:), u(:,:,:), v(:,:,:), N2_int(:,:), rho_bot(:), Kd_int(:,:)
   real, allocatable :: dz(:), n2(:)
+  real, allocatable, target :: Tf(:,:,:), Sf(:,:,:)
+  real, allocatable :: dRho_int(:,:), N2_lay(:,:), N2_bot(:), h_bot(:)
+  integer, allocatable :: k_bot(:)
+  type(EOS_type), target :: EOS
+  integer :: form
+  real :: rho0, grav, r0, drdt, drds
   real :: ustar, absf, meanKE, effic, max_decay, von_karm, kd_max, omega
   real :: cdrag, uvel, ubg, bbl_thick, kv_min, ustar_f, kv_bbl, cdrag_sqrt
   integer :: ncase, c, nz, use_omega, k
@@ -51,10 +64,12 @@ program bbl_driver
   G%isd = 0 ; G%ied = 2 ; G%jsd = 0 ; G%jed = 2
   G%IscB = 0 ; G%IecB = 1 ; G%JscB = 0 ; G%JecB = 1
   G%IsdB = -1 ; G%IedB = 2 ; G%JsdB = -1 ; G%JedB = 2
+  G%HI%isc = G%isc ; G%HI%iec = G%iec ; G%HI%isd = G%isd ; G%HI%ied = G%ied   ! EOS_domain (find_N2)
   allocate(G%CoriolisBu(G%IsdB:G%IedB, G%JsdB:G%JedB))
   allocate(G%mask2dCu(G%IsdB:G%IedB, G%jsd:G%jed), G%areaCu(G%IsdB:G%IedB, G%jsd:G%jed))
   allocate(G%mask2dCv(G%isd:G%ied, G%JsdB:G%JedB), G%areaCv(G%isd:G%ied, G%JsdB:G%JedB))
-  allocate(G%IareaT(G%isd:G%ied, G%jsd:G%jed))
+  allocate(G%IareaT(G%isd:G%ied, G%jsd:G%jed), G%mask2dT(G%isd:G%ied, G%jsd:G%jed))
+  G%mask2dT(:,:) = 1.0
   ! equal 1 km x 1 km cells
   G%mask2dCu(:,:) = 1.0 ; G%mask2dCv(:,:) = 1.0
   G%areaCu(:,:) = 1.0e6 ; G%areaCv(:,:) = 1.0e6 ; G%IareaT(:,:) = 1.0 / 1.0e6
@@ -69,7 +84,34 @@ program bbl_driver
   open(10, file=trim(fin), status='old') ; open(11, file=trim(fout), status='replace')
   read(10,*) ncase ; write(11,'(i6)') ncase
   do c = 1, ncase
-    if (trim(mode) == 'lotw') then
+    if (trim(mode) == 'n2') then
+      read(10,*) nz, form, rho0, grav, r0, drdt, drds
+      GV%ke = nz
+      ! Boussinesq, unit scaling 1: H_to_RZ = Rho0 (MOM_verticalGrid.F90:224), G_Rho0 = g/Rho0
+      GV%Rho0 = rho0 ; GV%H_to_RZ = rho0 ; GV%H_to_kg_m2 = rho0 ; GV%g_Earth = grav
+      GV%g_Earth_Z_T2 = grav ; GV%Angstrom_H = GV%Angstrom_Z
+      GV%H_subroundoff = 1e-20 * max(GV%Angstrom_H, GV%m_to_H*1e-17)   ! MOM_verticalGrid.F90:219
+      CS%use_tidal_mixing = .false. ; CS%dz_BBL_avg_min = 0.0
+      if (form == 1) then
+        call EOS_manual_init(EOS, form_of_EOS=form, Rho_T0_S0=r0, drho_dT=drdt, dRho_dS=drds)
+      else
+        call EOS_manual_init(EOS, form_of_EOS=form)
+      endif
+      tv%eqn_of_state => EOS
+      allocate(h(G%isd:G%ied, G%jsd:G%jed, nz), Tf(G%isd:G%ied, G%jsd:G%jed, nz))
+      allocate(Sf(G%isd:G%ied, G%jsd:G%jed, nz), dz(nz))
+      allocate(dRho_int(G%isd:G%ied, nz+1), N2_int(G%isd:G%ied, nz+1), N2_lay(G%isd:G%ied, nz))
+      allocate(N2_bot(G%isd:G%ied), rho_bot(G%isd:G%ied), h_bot(G%isd:G%ied), k_bot(G%isd:G%ied))
+      read(10,*) dz ; do k = 1, nz ; h(:,:,k) = dz(k) ; enddo
+      read(10,*) dz ; do k = 1, nz ; Tf(:,:,k) = dz(k) ; enddo
+      read(10,*) dz ; do k = 1, nz ; Sf(:,:,k) = dz(k) ; enddo
+      tv%T => Tf ; tv%S => Sf
+      call find_N2(h, tv, Tf, Sf, fluxes, 1, G, GV, US, CS, dRho_int, N2_lay, N2_int, N2_bot, rho_bot, &
+                   h_bot, k_bot)   ! find_rho_bottom writes both (MOM_interface_heights.F90:503-504)
+      write(11,'(*(es25.17))') N2_int(1,:)
+      nullify(tv%T, tv%S, tv%eqn_of_state)
+      deallocate(h, Tf, Sf, dz, dRho_int, N2_int, N2_lay, N2_bot, rho_bot, h_bot, k_bot)
+    elseif (trim(mode) == 'lotw') then
       read(10,*) nz, ustar, absf, meanKE
       read(10,*) effic, max_decay, von_karm, kd_max, omega, use_omega
       allocate(dz(nz), n2(nz+1))

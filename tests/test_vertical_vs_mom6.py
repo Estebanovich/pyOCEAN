@@ -145,6 +145,81 @@ def test_lotw_bbl_matches_mom6(tmp_path):
     assert n_kd_max == 2
 
 
+def _bbl_n2_mom6(tmp_path):
+    cases = columns.bbl_n2_cases()
+    columns.write_bbl_n2_cases(tmp_path / "n2in.txt", cases)
+    subprocess.run([str(BUILD / "bbl_driver"), "n2", str(tmp_path / "n2in.txt"), str(tmp_path / "n2out.txt")],
+                   check=True, capture_output=True)
+    ref = columns.read_bbl_n2_results(tmp_path / "n2out.txt")
+    assert len(ref) == len(cases)
+    return cases, ref
+
+
+def _bbl_n2_pyocean(c):
+    """N² of the BBL path for an unmerged column (every layer its own merged layer), bed first."""
+    from physics.mixing.bbl_mixing import _merged_n2, _merged_n2_local, n2_bottom_bulk
+    from physics.eos.stratification import eos_code
+    n = len(c["dz"])
+    lay = np.arange(n)
+    if c["eos"] == "linear":
+        n2 = _merged_n2(columns.bbl_n2_density(c), c["dz"], lay, c["dz"].copy(), n, c["rho0"], c["g"])
+    else:
+        n2 = _merged_n2_local(c["T"], c["S"], c["dz"], lay, c["dz"].copy(), n, c["rho0"], c["g"],
+                              eos_code(c["eos"]))
+    n2_bottom_bulk(n2, c["dz"], n)
+    return n2
+
+
+@needs("bbl_driver")
+def test_bbl_bottom_n2_matches_mom6_find_n2(tmp_path):
+    """
+    N² of the BBL path against MOM6 ``find_N2`` (MOM_set_diffusivity.F90:1095-1270, extracted verbatim), including
+    the bulk N²_bot that overwrites the two lowest interior interfaces (:1202-1258; class (a) fix of 2026-11-01,
+    ``docs/design/teos10_refs/mom6_eos.md`` §5).  MOM6 clips the density jumps at 0 (:1173-1176); pyOCEAN keeps the
+    signed local N² above the bottom (the BBL kernel only uses max(N², N²_min)), so the comparison is on
+    max(N², 0).  Tolerance 1e-9 relative to the column's largest N²: the linear cases take N² from ρ differences
+    (ρ ≈ 1030 against Δρ ≈ 0.01, ~1e-11 cancellation); the nonlinear ones agree to ~1e-15.
+    """
+    cases, ref = _bbl_n2_mom6(tmp_path)
+    for c, r in zip(cases, ref):
+        n2 = np.maximum(_bbl_n2_pyocean(c), 0.0)
+        assert n2.shape == r.shape, c["name"]
+        np.testing.assert_allclose(n2, r, rtol=0.0, atol=1e-9 * max(r.max(), 1e-30), err_msg=c["name"])
+        if len(c["dz"]) >= 3:
+            assert r[1] == r[2], c["name"]                     # MOM6 writes N²_bot at both
+
+
+@needs("bbl_driver")
+def test_bbl_kd_with_bottom_n2_matches_mom6(tmp_path):
+    """
+    End to end: Kd of ``lotw_bbl_columns`` (Numba) and ``lotw_bbl_columns_numpy`` on the T, S (or ρ) columns against
+    MOM6 add_LOTW_BBL_diffusivity fed with MOM6 find_N2's N2_int (the two drivers chained), with no thin layer to
+    merge (h_thin 1e-6 m).  u* 1 cm/s, |f| 1e-4 s⁻¹, TKE 2e-7 m³ s⁻³ (energy-limited), OM4 parameters.
+    Tolerance 1e-9 max Kd per column (the N² tolerance of the test above carried through).
+    """
+    from core.components.eos import make_eos
+    from physics.mixing.bbl_mixing import BBLParams, lotw_bbl_columns, lotw_bbl_columns_numpy
+    cases, ref = _bbl_n2_mom6(tmp_path)
+    lotw = [dict(name=c["name"], dz=c["dz"], n2=r, ustar=0.01, absf=1e-4, tke=2e-7, p={})
+            for c, r in zip(cases, ref)]
+    columns.write_bbl_cases(tmp_path / "in.txt", lotw)
+    subprocess.run([str(BUILD / "bbl_driver"), "lotw", str(tmp_path / "in.txt"), str(tmp_path / "out.txt")],
+                   check=True, capture_output=True)
+    kd_ref = columns.read_bbl_results(tmp_path / "out.txt")
+    for c, r in zip(cases, kd_ref):
+        dz = c["dz"][:, None]
+        kw = dict(p=BBLParams(), rho0=c["rho0"], g=c["g"])
+        if c["eos"] == "linear":
+            args = (dz, columns.bbl_n2_density(c)[:, None], 0.01, 1e-4, 2e-7, 1e-6)
+        else:
+            kw.update(T=c["T"][:, None], S=c["S"][:, None], eos=make_eos(c["eos"]))
+            args = (dz, np.zeros_like(dz), 0.01, 1e-4, 2e-7, 1e-6)
+        kd = lotw_bbl_columns(*args, **kw)[:, 0]
+        assert np.array_equal(kd, lotw_bbl_columns_numpy(*args, **kw)[:, 0]), c["name"]
+        np.testing.assert_allclose(kd, r["kd"], rtol=0.0, atol=1e-9 * max(r["kd"].max(), 1e-30),
+                                   err_msg=c["name"])
+
+
 @needs("bbl_driver")
 def test_set_bbl_tke_factor(tmp_path):
     """

@@ -15,7 +15,7 @@ import numba
 
 from core.components.closure import thin_layer_threshold
 from physics.mixing.bbl_mixing import (BBLParams, lotw_bbl_column, lotw_bbl_columns,
-                                       lotw_bbl_columns_numpy)
+                                       lotw_bbl_columns_numpy, n2_bottom_bulk)
 
 
 def _column(nz: int = 50, dz: float = 20.0, n2: float = 1.0e-6) -> tuple[np.ndarray, np.ndarray]:
@@ -297,7 +297,7 @@ def test_thin_layers_from_densities_do_not_change_kd() -> None:
 def test_no_thin_layers_bit_for_bit_with_column() -> None:
     """Final review I1: in columns without thin layers, the columns kernel from densities equals the unmerged
     ``lotw_bbl_column`` with the N² of ``buoyancy_frequency2`` bit for bit (the merged-density N² changes only
-    columns that merge)."""
+    columns that merge).  Both take MOM6's bottom N² (``n2_bottom_bulk``, fix of 2026-11-01)."""
     from physics.mixing.gls import buoyancy_frequency2
     rng = np.random.default_rng(5)
     n, m = 30, 60
@@ -305,6 +305,8 @@ def test_no_thin_layers_bit_for_bit_with_column() -> None:
     rho = 1028.0 - np.cumsum(rng.uniform(-0.05, 0.3, (n, m)), axis=0)
     n2 = np.zeros((n + 1, m))
     n2[1:n] = buoyancy_frequency2(rho, dz, 1025.0, 9.81)
+    for j in range(m):
+        n2_bottom_bulk(n2[:, j], dz[:, j], n)
     ustar, absf, tke = rng.uniform(1e-3, 3e-2, m), rng.uniform(0.0, 1.4e-4, m), rng.uniform(1e-7, 1e-4, m)
     h_thin = thin_layer_threshold(dz)
     assert np.all(dz >= h_thin)
@@ -331,3 +333,17 @@ def test_n2_bottom_overwrite_measurement_helper():
     assert out[1] == out[2] == expect
     assert np.array_equal(out[[0, 3, 4]], n2[[0, 3, 4]])
     np.testing.assert_allclose(n2_bottom_overwrite(np.full(6, 2.0), np.full(7, 3e-6)), np.full(7, 3e-6), rtol=1e-15)
+    # the model's kernel (fix of 2026-11-01) is the same operation
+    model = n2.copy()
+    n2_bottom_bulk(model, dz, 4)
+    assert np.array_equal(model, out)
+
+
+def test_n2_bottom_bulk_short_columns_unchanged():
+    """With fewer than three merged layers there is at most one interior interface: MOM6's bulk equals the local N²
+    (MOM_set_diffusivity.F90:1219-1223 add no second interface), so the kernel leaves N² as it is."""
+    for c in (1, 2):
+        n2 = np.array([0.0, -2e-5, 0.0])[: c + 1].copy()
+        before = n2.copy()
+        n2_bottom_bulk(n2, np.full(c, 5.0), c)
+        assert np.array_equal(n2, before)

@@ -1,6 +1,8 @@
 """
 Effect of MOM6's bottom N² overwrite on the LOTW BBL diffusivity (TEOS-10 in the 3-D core, task 6 review,
-spec decision 8; ``docs/design/teos10_refs/mom6_eos.md`` §5).  Measurement only: the model's BBL path is unchanged.
+spec decision 8; ``docs/design/teos10_refs/mom6_eos.md`` §5).  Measurement made before the fix: since 2026-11-01 the
+model's BBL path applies the same overwrite (``physics.mixing.bbl_mixing.n2_bottom_bulk``), so this script now
+records the size of the change the fix made.
 
 MOM6 ``find_N2`` (MOM_set_diffusivity.F90:1202-1258, called at :481) replaces N² at the two lowest interior
 interfaces with a bulk value before ``add_LOTW_BBL_diffusivity`` (:671, used at :1762).  Without tidal mixing

@@ -280,10 +280,12 @@ def lotw_bbl_column(dz: np.ndarray, n2: np.ndarray, ustar: float, absf: float,
 # * Nonlinear EOS (TEOS-10 in the 3-D core, task 6; spec goal C): N² of the merged column is MOM6's locally
 #   referenced N² (``physics.eos.stratification.n2_iface_elem``, MOM_kappa_shear.F90:1128-1136, 1496-1500, the form
 #   of MOM_set_diffusivity.F90:1160-1200) from the merged T and S (the same anomaly means as ρ above) at the merged
-#   interface pressure p = Σ g ρ₀ hc from the surface (``_merged_n2_local``).  MOM6's ``find_N2`` also overwrites
-#   N² at the bottom two interfaces with a bulk N²_bot (MOM_set_diffusivity.F90:1202-1258) before
-#   add_LOTW_BBL_diffusivity; this port does not (spec decision 8: class (a), fix deferred pending Esteban's approval
-#   because it changes linear BBL runs; effect measured in ``docs/design/teos10_refs/mom6_eos.md`` §5).
+#   interface pressure p = Σ g ρ₀ hc from the surface (``_merged_n2_local``).
+# * Bottom N² (``n2_bottom_bulk``, fix of 2026-11-01, class (a), approved by Esteban): as MOM6's ``find_N2``
+#   (MOM_set_diffusivity.F90:1202-1258) before add_LOTW_BBL_diffusivity, N² at the two lowest interior interfaces
+#   of the merged column is replaced by the bulk value of the jumps clipped at 0 over both (without tidal mixing,
+#   h_amp = 0).  Before the fix the local N² was used (``docs/design/teos10_refs/mom6_eos.md`` §5, measured
+#   effect on Kd ≤ 1.6 % in smooth columns, 2–37 % in random ones).
 # * Kd back on the model interfaces: an interface at the bottom of a merged layer takes that merged interface's Kd;
 #   an interface inside a merged layer takes the linear interpolation in height between the merged interfaces below
 #   and above (weights kf of ``_merge_map``, as Jackson's κ), so the bed interface 0 stays 0 and bed thin layers get
@@ -296,6 +298,28 @@ def lotw_bbl_column(dz: np.ndarray, n2: np.ndarray, ustar: float, absf: float,
 # (tests/test_bbl_mixing.py::test_numba_matches_numpy_oracle, ::test_threads_bit_for_bit).
 
 H_MASSLESS: float = 1.0e-3  # [m] dry-column limit / least total of a surface thin cluster (= closure.H_MASSLESS)
+
+
+@njit(cache=True)
+def n2_bottom_bulk(n2: np.ndarray, hc: np.ndarray, c: int) -> None:
+    """
+    MOM6's bottom-boundary-layer N² (``find_N2``, MOM_set_diffusivity.F90:1202-1258, h_amp = 0) in place on the
+    merged column: with c ≥ 3 layers, N² at interfaces 1 and 2 (k = 0 at the bed) becomes
+
+        N²_bot = (b_1 + b_2) / (Δz_1 + Δz_2),   b_K = max(N²_K, 0) Δz_K,   Δz_K = ½(hc_{K−1} + hc_K)
+
+    i.e. (g/ρ₀) Σ max(Δρ_K, 0) / Σ Δz_K over the bottom interface and one more (:1215-1231, the clip of
+    :1173-1176), written at both (:1251, 1253).  With c = 2 MOM6's value equals the local N² clipped at 0, and the
+    BBL kernel already uses max(N², N²_min), so nothing changes.  n2 (c+1,) [s⁻²], hc (c,) [m].
+    """
+    if c < 3:
+        return
+    dz1 = 0.5 * (hc[0] + hc[1])
+    dz2 = 0.5 * (hc[1] + hc[2])
+    b = max(n2[1], 0.0) * dz1 + max(n2[2], 0.0) * dz2
+    nb = b / (dz1 + dz2)
+    n2[1] = nb
+    n2[2] = nb
 
 
 def _merged_n2(rho: np.ndarray, dz: np.ndarray, lay: np.ndarray, hc: np.ndarray, c: int, rho0: float,
@@ -405,6 +429,7 @@ def lotw_bbl_columns_numpy(dz: np.ndarray, rho: np.ndarray, ustar: np.ndarray, a
         else:
             n2c = _merged_n2_local(np.asarray(T, float)[:, j], np.asarray(S, float)[:, j], dzc, lay, hc, c,
                                    float(rho0), float(g), code)
+        n2_bottom_bulk(n2c, hc, c)
         kd_c = lotw_bbl_column(hc, n2c, float(ustar[j]), float(absf[j]), float(tke[j]), p)
         for i in range(n + 1):
             lo, hi = kd_c[kc[i]], kd_c[min(kc[i] + 1, c)]
@@ -613,6 +638,7 @@ def _columns_nb(dz, rho, ustar, absf, tke, h_thin, h_massless, n2_min, i_max_dec
                     pq = pq + gr0 * hc[q]
                     n2c[q] = n2_iface_elem(tref[q], sref[q], tref[q - 1], sref[q - 1], hc[q], hc[q - 1], pq, code,
                                            g / rho0)
+            n2_bottom_bulk(n2c, hc, c)
             kd_c[:c + 1] = 0.0
             _lotw_column_nb(hc, n2c, c, ustar[j], absf[j], tke[j], n2_min, i_max_decay, von_karman, kd_max, kd_c,
                             dz_above)

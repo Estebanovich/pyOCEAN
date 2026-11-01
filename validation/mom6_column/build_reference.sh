@@ -58,6 +58,8 @@ KSM=$REF/build/column/kappa_shear_column_mom6.F90
 # Drag-driven BBL mixing: add_LOTW_BBL_diffusivity (:1606-1789) and set_BBL_TKE (:1947-2152)
 # of MOM_set_diffusivity.F90 need the private set_diffusivity_CS.  Extract both verbatim with
 # the CS type (:62-203, made public) and the module's use lines (:8-45); no line is changed.
+# find_N2 (:1095-1270, with the bottom N2_bot overwrite at :1202-1258) is copied the same way
+# for bbl_driver n2 (BBL N2_bot fix, 2026-11-01).
 SD_SRC=$REF/MOM6/src/parameterizations/vertical/MOM_set_diffusivity.F90
 BBM=$REF/build/column/bbl_column_mom6.F90
 {
@@ -65,11 +67,12 @@ BBM=$REF/build/column/bbl_column_mom6.F90
   sed -n '8,45p' "$SD_SRC"
   echo "implicit none ; private"
   echo "#include <MOM_memory.h>"
-  echo "public :: add_LOTW_BBL_diffusivity, set_BBL_TKE"
+  echo "public :: add_LOTW_BBL_diffusivity, set_BBL_TKE, find_N2"
   awk '/^type, public :: set_diffusivity_CS ; private/{on=1} on{sub(/ ; private$/, ""); print} /^end type set_diffusivity_CS/{on=0}' "$SD_SRC"
   echo "contains"
   awk '/^subroutine add_LOTW_BBL_diffusivity\(/{on=1} on{print} /^end subroutine add_LOTW_BBL_diffusivity/{on=0}' "$SD_SRC"
   awk '/^subroutine set_BBL_TKE\(/{on=1} on{print} /^end subroutine set_BBL_TKE/{on=0}' "$SD_SRC"
+  awk '/^subroutine find_N2\(/{on=1} on{print} /^end subroutine find_N2/{on=0}' "$SD_SRC"
   echo "end module bbl_column_mom6"
 } > "$BBM"
 # Nonlinear EOS (TEOS-10 in the 3-D core, task 1): the module-level parameter lines of

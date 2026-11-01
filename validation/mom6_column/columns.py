@@ -327,3 +327,74 @@ def read_bbl_tke_results(path: Path) -> list[dict]:
         us, ke = (float(x) for x in lines[1 + i].split())
         out.append(dict(ustar_bbl=us, mean_ke_loss=ke))
     return out
+
+
+# --------------------------------------------------------------------------- bottom N² of the BBL (find_N2)
+BBL_N2_FORMS = {"linear": 1, "wright_full": 4, "teos10": 7}     # MOM_EOS.F90:161-168 (teos10 = ROQUET_RHO)
+BBL_N2_LINEAR = dict(r0=1028.0, drdt=-0.2, drds=0.8)            # ρ = r0 + drdt T + drds S [kg m⁻³]
+
+
+def bbl_n2_cases() -> list[dict]:
+    """
+    Columns for ``bbl_driver n2`` (MOM6 ``find_N2``, MOM_set_diffusivity.F90:1095-1270, with the
+    bottom N²_bot overwrite of :1202-1258), bed first (k = 0 at the bed).  ρ₀ = 1035, g = 9.81.
+
+    1. linear, 30 × 10 m, smooth stratification: N²_bot ≈ the local N² (small change).
+    2. linear, 20 layers, the bed interface unstable (Δρ < 0, clipped to 0 in the bulk sum).
+    3. linear, 12 random layers 2–60 m, random T: the bulk differs from both local values.
+    4. wright_full, 40 layers 5–150 m to 3300 m, ocean-like θ, S_P.
+    5. teos10, the same column in Θ, S_A.
+    6. teos10, 3 layers: the smallest column with two interior interfaces.
+    7. wright_full, 2 layers: one interior interface, MOM6's bulk equals the local value.
+    8. linear, both bottom interfaces unstable: N²_bot = 0.
+    """
+    rng = np.random.default_rng(20261101)
+    cases = []
+
+    def add(name, eos, dz, T, S):
+        cases.append(dict(name=name, eos=eos, dz=np.asarray(dz, float), T=np.asarray(T, float),
+                          S=np.asarray(S, float), rho0=1035.0, g=9.81))
+
+    z = np.arange(30) * 10.0
+    add("linear smooth", "linear", np.full(30, 10.0), 4.0 + 16.0 * (1 - np.exp(-z / 120.0)), np.full(30, 35.0))
+    T = np.linspace(2.0, 18.0, 20)
+    T[0] = T[1] + 0.3
+    add("linear unstable bed interface", "linear", np.full(20, 25.0), T, np.full(20, 35.0))
+    add("linear random", "linear", rng.uniform(2.0, 60.0, 12), np.sort(rng.uniform(1.0, 20.0, 12)) +
+        rng.normal(0.0, 0.4, 12), 35.0 + rng.normal(0.0, 0.05, 12))
+    dz = np.geomspace(150.0, 5.0, 40)
+    zc = np.cumsum(dz) - 0.5 * dz                                   # height above the bed
+    T = 2.0 + 22.0 * np.exp(-(dz.sum() - zc) / 600.0)
+    S = 34.9 + 1.2 * np.exp(-(dz.sum() - zc) / 400.0)
+    add("wright_full deep", "wright_full", dz, T, S)
+    add("teos10 deep", "teos10", dz, T, S * 35.16504 / 35.0)
+    add("teos10 three layers", "teos10", [40.0, 25.0, 10.0], [3.0, 8.0, 15.0], [35.0, 35.3, 35.6])
+    add("wright_full two layers", "wright_full", [80.0, 20.0], [4.0, 12.0], [34.9, 35.2])
+    add("linear unstable bottom two", "linear", np.full(8, 20.0), [5.0, 4.8, 4.6, 6.0, 8.0, 10.0, 12.0, 14.0],
+        np.full(8, 35.0))
+    return cases
+
+
+def bbl_n2_density(c: dict) -> np.ndarray:
+    """Layer density of a linear case (``BBL_N2_LINEAR``), as MOM6's linear EOS."""
+    lin = BBL_N2_LINEAR
+    return lin["r0"] + lin["drdt"] * c["T"] + lin["drds"] * c["S"]
+
+
+def write_bbl_n2_cases(path: Path, cases: list[dict]) -> None:
+    """Write the cases for ``bbl_driver n2`` (surface first)."""
+    lin = BBL_N2_LINEAR
+    with open(path, "w") as f:
+        f.write(f"{len(cases)}\n")
+        for c in cases:
+            f.write(f"{len(c['dz'])} {BBL_N2_FORMS[c['eos']]} {c['rho0']:.17e} {c['g']:.17e} "
+                    f"{lin['r0']:.17e} {lin['drdt']:.17e} {lin['drds']:.17e}\n")
+            for x in (c["dz"], c["T"], c["S"]):
+                f.write(" ".join(f"{v:.17e}" for v in x[::-1]) + "\n")
+
+
+def read_bbl_n2_results(path: Path) -> list[np.ndarray]:
+    """MOM6 N2_int (nz+1,) [s⁻²] of each case, bed first."""
+    lines = [ln for ln in Path(path).read_text().split("\n") if ln.strip()]
+    n = int(lines[0])
+    return [np.array(lines[1 + i].split(), float)[::-1] for i in range(n)]
