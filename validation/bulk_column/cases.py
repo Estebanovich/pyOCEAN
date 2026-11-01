@@ -225,9 +225,14 @@ BULK_RUNS = ("ly04", "coare", "coare_croco", "fms")
 CROCO_NU_BG, CROCO_KAPPA_BG = 1.0e-4, 1.0e-5
 
 
-def build_pyocean(run: Run, days: int = DAYS, atm=None):
+def build_pyocean(run: Run, days: int = DAYS, atm=None, eos: str = "linear"):
     """(model, state) of a pyOCEAN run: σ, KPP, salinity, bulk fluxes from ERA5 at P (or no bulk component for
-    the prescribed-flux runs, which ``run_pyocean`` forces with the reference's hourly fluxes)."""
+    the prescribed-flux runs, which ``run_pyocean`` forces with the reference's hourly fluxes).
+
+    ``eos`` (TEOS-10 in 3-D, task 9, spec criterion 10): 'linear' (default, the shared linear EOS above, bit for
+    bit as before), 'wright_full' or 'teos10' with the same ρ₀ = 1025 and the EOS's default c_p
+    (3991.86795711963 J kg⁻¹ K⁻¹, spec goal F); the WOA θ, S_P enter with ``ts_kind="theta_sp"`` (a ``teos10``
+    model converts them to Θ, S_A once)."""
     from core.components.surface_fluxes import BulkFluxes
     from core.dynamics.sigma_baroclinic import SigmaBaroclinic
     from physics.mixing.kpp_cvmix import KPPParams
@@ -241,6 +246,10 @@ def build_pyocean(run: Run, days: int = DAYS, atm=None):
     kw = dict(rho0=RHO0, t_coef=RHO0 * ALPHA, t_ref=T_REF, salinity=True, s_coef=RHO0 * BETA, s_ref=S_REF,
               closure="kpp", kpp_params=kpp, z0=Z0, g=G, cp=CP, jerlov=JERLOV, theta=0.6, d_min=0.05,
               periodic=("x", "y"), surface_fluxes=bulk, ah=run.h_mix, kh=run.h_mix)
+    if eos != "linear":
+        for k in ("t_coef", "t_ref", "s_coef", "s_ref", "cp"):
+            del kw[k]
+        kw["eos"] = eos
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         model = SigmaBaroclinic(hg, np.full((NXY, NXY), DEPTH), dt=DT, n_layers=N, **kw)

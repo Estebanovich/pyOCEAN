@@ -20,6 +20,11 @@ Output ``RUNS/pyocean_<days>d/<tag>.npz`` (never into the repo):
   spread (max over the run of the 5 × 5 spread of T, S, u, v: the column must stay 1-D), spread_hourly (nt, 4),
   wall time.
 
+``--eos wright_full|teos10`` (TEOS-10 in 3-D, task 9, spec criterion 10): the same run with a nonlinear EOS
+(``cases.build_pyocean``), output in ``pyocean_<days>d_<eos>/``; these files also hold ``theta`` and ``SP``
+(nt, N), the profiles in θ [°C] and S_P (equal to T, S for 'wright_full'; converted from Θ, S_A with gsw for
+'teos10').  The default 'linear' writes exactly the keys above.
+
 Set OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 MKL_NUM_THREADS=1 (CLAUDE.md).
 """
 from __future__ import annotations
@@ -74,10 +79,10 @@ def _prescribed(ref: str, days: int):
     return at
 
 
-def run(tag: str, days: int = C.DAYS, save: bool = True, atm=None, suffix: str = "") -> dict:
+def run(tag: str, days: int = C.DAYS, save: bool = True, atm=None, suffix: str = "", eos: str = "linear") -> dict:
     warnings.simplefilter("ignore")
     cfg = C.RUNS_PYOCEAN[tag]
-    model, st = C.build_pyocean(cfg, days, atm=atm)
+    model, st = C.build_pyocean(cfg, days, atm=atm, eos=eos)
     forcing = _prescribed(cfg.prescribed, days) if cfg.prescribed else None
     n = C.n_steps(days)
     snaps = [dict(time=0.0, **_snap(model, st))]
@@ -107,6 +112,9 @@ def run(tag: str, days: int = C.DAYS, save: bool = True, atm=None, suffix: str =
     out["time_snap"] = np.array([s["time"] for s in snaps])
     out.update({k: np.array([m[k] for m in means]) for k in FLUXES})
     out["time_mean"] = np.array([m["time"] for m in means])
+    if eos != "linear":
+        from physics.eos.convert import from_model_ts
+        out["theta"], out["SP"] = from_model_ts(out["T"], out["S"], model._eos.ts_kind)
     out.update(spread=float(np.max(spread)), spread_hourly=np.array(spread), wall=wall, n_steps=n, s_per_step=wall / n,
                days=days)
     if save:
@@ -123,13 +131,17 @@ def main() -> None:
     ap.add_argument("--all", action="store_true", help="the four bulk runs (cases.BULK_RUNS)")
     ap.add_argument("--lsm", action="store_true", help="apply the ERA5 land-sea mask (R7b); output in pyocean_<days>d_lsm/")
     ap.add_argument("--lsm-threshold", type=float, default=0.0, help="land where lsm > this (CROCO: 0)")
+    ap.add_argument("--eos", default="linear", choices=("linear", "wright_full", "teos10"),
+                    help="equation of state (default linear); nonlinear output in pyocean_<days>d_<eos>/")
     a = ap.parse_args()
     tags = list(C.BULK_RUNS) if a.all else [a.tag]
     atm = C.atmosphere(a.days, lsm=a.lsm, lsm_threshold=a.lsm_threshold)
     for tag in tags:
-        out = run(tag, a.days, atm=atm, suffix="_lsm" if a.lsm else "")
+        suffix = ("_lsm" if a.lsm else "") + ("" if a.eos == "linear" else f"_{a.eos}")
+        out = run(tag, a.days, atm=atm, suffix=suffix, eos=a.eos)
+        sst = out["theta"][-1, -1] if "theta" in out else out["T"][-1, -1]
         print(f"{tag}: {out['n_steps']} steps, {out['wall']:.0f} s wall ({1e3 * out['s_per_step']:.1f} ms/step), "
-              f"final SST {out['T'][-1, -1]:.3f} °C, 5x5 spread {out['spread']:.1e}", flush=True)
+              f"final SST {sst:.3f} °C (θ), 5x5 spread {out['spread']:.1e}", flush=True)
 
 
 if __name__ == "__main__":
