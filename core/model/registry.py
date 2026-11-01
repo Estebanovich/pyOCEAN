@@ -94,6 +94,10 @@ _SPECS = [
             "sea-level pressure p_a of the last step (msl of the bulk atmosphere at tⁿ + Δt/2), applied as "
             "−∇p_a/ρ₀ and as the inverse barometer at 'radiating' edges (atm_pressure, regional chain Task 6; an "
             "attribute of the model, not a SigmaState field)"),
+    VarSpec("runoff", ("y", "x"), "t", "m s-1", None, "diagnostic",
+            "river runoff Q/A_t of the last step at tⁿ + Δt/2 [volume flux, positive into the ocean], added to the "
+            "real freshwater flux fw (runoff, regional chain Task 8; an attribute of the model, not a SigmaState "
+            "field; MOM6 lrunoff/ρ₀ in kg m-2 s-1 / 1000)"),
     VarSpec("closure.akt", ("kw", "y", "x"), "w", "m2 s-1", None, "component_state",
             "eddy tracer diffusivity (stratified GLS k-ε, gls_stratified; N2a task 8c)"),
 ]

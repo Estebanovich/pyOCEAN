@@ -108,6 +108,7 @@ from core.components.open_boundary import CONFIG as _OB_CONFIG, OpenBoundary, co
 from core.components.bottom_drag import LogLawBedDrag, QuadraticBedDrag
 from core.components.boundary_tides import BoundaryTides, TidalPotential, bind_copy
 from core.components.atm_pressure import AtmosphericPressure
+from core.components.runoff import Runoff
 from core.components.closure import BBLAddedClosure, ShearAddedClosure, find_closure, make_closure
 from physics.mixing.kpp_cvmix import KPPParams
 from physics.mixing.kappa_shear import JacksonParams
@@ -124,6 +125,9 @@ from core.model.preflight import preflight
 from core.model.periodic import Periodic, periodic_grid
 from core.components.time_stepper import AB3, AB3Momentum, _ab3_kernel, ab3_combine  # noqa: F401  (re-exported)
 from core.model.threads import _THREADS, set_threads  # noqa: F401  (one shared list; re-exported)
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from forcing.sources.glofas import RiverInput
 
 G = 9.81
 REMAP_SCHEMES = {"pcm": rm.PCM, "plm": rm.PLM, "ppm_h4": rm.PPM_H4}
@@ -1198,6 +1202,12 @@ class SigmaBaroclinic:
     atm_pressure_ref : p̄_a [Pa] of the inverse barometer; None (default): the area mean over the wet cells at
         each step (a uniform p_a then does nothing); a number (e.g. 1e5 as SIS2) lets a uniform p_a change move
         the domain's mean level through the open edges
+    runoff : river runoff (regional chain Task 8, ``core.components.runoff``), a
+        ``forcing.sources.glofas.RiverInput`` (e.g. from ``glofas_mouths``): Q/A_t of each river cell at tⁿ + Δt/2
+        (linear between daily records) is added to the real freshwater flux fw of the step (N2a path: a volume
+        source, the water entering the top layer with S = 0 and the layer's T, as MOM6 lrunoff in NWA12), together
+        with the bulk P − E or a prescribed ``step(fw=...)``.  Needs ``salinity=True``.  Model time t is the date
+        ``runoff.origin + t``.  None (default): bit for bit
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, n_layers: int = 10,
@@ -1230,7 +1240,7 @@ class SigmaBaroclinic:
                  pgf_mass_weight: str = "vanished", p_ref: float = 2e7, ts_kind: str = "theta_sp",
                  boundary_tides: BoundaryTides | None = None, tidal_potential: bool | TidalPotential = False,
                  sal_beta: float = 0.0, sal_flather: bool = False, atm_pressure: bool = False,
-                 atm_pressure_ref: float | None = None) -> None:
+                 atm_pressure_ref: float | None = None, runoff: RiverInput | None = None) -> None:
         _args = {k: v for k, v in locals().items() if k != "self"}
         raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
         # equation of state (TEOS-10 in 3-D, Task 4): ρ₀ of the EOS before anything that uses it is built
@@ -1443,6 +1453,11 @@ class SigmaBaroclinic:
                               AtmosphericPressure(self.fs, self.area, self.rho0,
                                                   edges=tuple(e for e in self.open if self.obc_mode[e] == "radiating"),
                                                   p_ref=atm_pressure_ref))
+        # river runoff (regional chain Task 8): Q/A_t added to fw at tⁿ + Δt/2 by the driver; ``runoff`` is the
+        # field of the last step [m s⁻¹] (registry diagnostic), ``river_input`` the RiverInput
+        self.river_input = runoff
+        self._runoff = None if runoff is None else Runoff(runoff, self.area)
+        self.runoff = None
         self.n_below_freezing = 0                                       # wet cell-layers with T < freezing point, last
                                                                         # step (counted, never corrected; TEOS-10 task 7)
         self._driver = Driver(self)

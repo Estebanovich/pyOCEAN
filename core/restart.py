@@ -22,6 +22,8 @@ SCHISM #140).  For ``SigmaBaroclinic`` that is:
   constituents, reference and nodal dates, ramp and edges, and the scalar SAL ``sal_beta``/``sal_flather``, are
   checked (the harmonic constants themselves are not); the atmospheric pressure (``atm_pressure``, Task 6) has
   no state either: the flag, the reference ``atm_pressure_ref`` and the edges of its inverse barometer are checked;
+  river runoff (``runoff``, Task 8) has none either: the river set (count and a hash of the cells) and the time
+  origin are checked;
 * the lagged-LU CG preconditioner of the free surface (the matrix it factorised and the refactor
   flag): CG stops at an iterate that depends on it;
 * ALE (``vertical_coordinate='ale'``, Plan D): the layer thicknesses h, the exterior profile kept in z
@@ -133,6 +135,8 @@ def _config(model: SigmaBaroclinic) -> dict:
         cfg.update(tides_edges=",".join(bt.edges))
     ap = getattr(model, "_atm_pressure", None)                # atmospheric pressure (Task 6): no state, the config
     cfg.update(ap.config() if ap is not None else dict(atm_pressure="none"))
+    ro = getattr(model, "_runoff", None)                      # river runoff (Task 8): no state, the river set
+    cfg.update(ro.config() if ro is not None else dict(runoff="none"))
     tp = getattr(model, "_tidal_potential", None)
     cfg.update(tidal_potential="none" if tp is None else "on")
     if tp is not None:
@@ -172,7 +176,8 @@ _CONFIG_DEFAULTS = {"salinity": 0, "s_coef": 0.0, "s_ref": 35.0, "sponge_S": "no
                     "eos": "linear", "p_ref": 2e7, "pgf_mass_weight": "vanished",           # before TEOS-10 in 3-D
                     "boundary_tides": "none", "sal_beta": 0.0, "sal_flather": 0,            # before tides in 3-D
                     "tidal_potential": "none",
-                    "atm_pressure": "none"}                                                 # before p_a forcing
+                    "atm_pressure": "none",                                                 # before p_a forcing
+                    "runoff": "none"}                                                       # before river runoff
 
 # configuration entries not checked when a file lacks them: files written before TEOS-10 in 3-D did not store c_p,
 # which could be any value the run passed

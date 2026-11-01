@@ -162,6 +162,8 @@ class Driver:
         self.last_bflux: dict | None = None
         if getattr(model, "_surface_fluxes", None) is not None:      # bulk fluxes (N2b task 4): see _step_bulk
             self.step = self._step_bulk
+        elif getattr(model, "_runoff", None) is not None:            # river runoff alone (regional chain Task 8)
+            self.step = self._step_runoff
 
     # ------------------------------------------------------------------ driver
     def _step_bulk(self, st, tau_x=None, tau_y=None, fw=None, heat=None):
@@ -173,7 +175,24 @@ class Driver:
         """
         m = self.m
         tau_x, tau_y, fw, heat = m._surface_fluxes.forcing(st, st.time + m.dt / 2)
+        if getattr(m, "_runoff", None) is not None:                  # river runoff with the bulk P − E (Task 8)
+            fw = self._add_runoff(st, fw)
         return Driver.step(self, st, tau_x, tau_y, fw, heat)
+
+    def _step_runoff(self, st, tau_x=None, tau_y=None, fw=None, heat=None):
+        """
+        ``step`` with river runoff and no bulk fluxes (regional chain Task 8, ``core.components.runoff``): Q/A_t at
+        tⁿ + Δt/2 is added to the prescribed ``fw`` (or is the whole fw).  Bound in place of ``step`` at
+        construction, so the default path runs no new line.
+        """
+        return Driver.step(self, st, tau_x, tau_y, self._add_runoff(st, fw), heat)
+
+    def _add_runoff(self, st, fw):
+        """fw + Q/A_t of the river cells at tⁿ + Δt/2; the runoff field is kept as ``m.runoff`` (diagnostic)."""
+        m = self.m
+        out = m._runoff.add(fw, st.time + m.dt / 2)
+        m.runoff = m._runoff.last
+        return out
 
     def step(self, st, tau_x=None, tau_y=None, fw=None, heat=None):
         """

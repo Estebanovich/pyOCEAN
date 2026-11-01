@@ -353,6 +353,13 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
         for msg in bulk_errors(sf, sal):
             err("surface_fluxes", msg)
     _atm_pressure_issues(a, given, sf, err, warn)
+    ro = a.get("runoff")                                       # river runoff (regional chain Task 8)
+    if ro is not None:
+        from core.components.runoff import runoff_errors
+        for msg in runoff_errors(ro, a.get("bathy")):
+            err("runoff", msg)
+        if not sal:
+            err("salinity", "runoff needs salinity=True (river water enters with S = 0, the real freshwater path)")
     if a["sponge_rate"] is None and ({"sponge_T", "sponge_zw", "sponge_tr", "sponge_S"} & given):
         warn("interior_sponge", "sponge_T / sponge_zw / sponge_tr / sponge_S are ignored without sponge_rate")
     return out
