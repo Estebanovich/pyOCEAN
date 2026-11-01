@@ -126,17 +126,19 @@ def _extrapolate_slope(h_l, h_c, u_l, u_c):  # pragma: no cover
 
 
 @njit
-def _plm_edges(h, Q, Qt, Qb):  # pragma: no cover
+def _plm_edges(h, Q, Qt, Qb, slp):  # pragma: no cover
     """
     Top and bottom edge values of Q in each layer of a SURFACE-FIRST column, ALE_PLM_edge_values
     with bdry_extrap = True (ALE/MOM_ALE.F90:1561-1593).  One layer: PCM (MOM6 needs ≥ 2).
+    ``slp`` (n,) is scratch (the caller's per-row buffer, so no allocation per column).
     """
     n = h.size
     if n == 1:
         Qt[0] = Q[0]
         Qb[0] = Q[0]
         return
-    slp = np.zeros(n)
+    slp[0] = 0.0
+    slp[n - 1] = 0.0
     for k in range(1, n - 1):
         slp[k] = _plm_slope_wa(h[k - 1], h[k], h[k + 1], H_NEGLECT, Q[k - 1], Q[k], Q[k + 1])
     for k in range(1, n - 1):
@@ -183,11 +185,12 @@ def _point(eos, T, S, p, z, rho_ref, profile, zr, Tr, Sr, lo):  # pragma: no cov
 
 
 @njit(parallel=True)
-def _columns(H, hs, Ts, Ss, eos, rho0, rho_ref, g, profile, zr, Tr, Sr,
+def _columns(H, hs, Ts, Ss, active, eos, rho0, rho_ref, g, profile, zr, Tr, Sr,
              e, Tt, Tb, St, Sb, dpa, intz):  # pragma: no cover
     """
     Column pass, surface first (k = 0 at the surface): interfaces e (N+1, ny, nx) [m], PLM edges of
     T, S (or T′, S′) and the layer integrals dpa [Pa] and ∫∫dpa [Pa m] (MOM_density_integrals.F90:590-640).
+    Inactive columns (``active`` False) get dpa = ∫∫dpa = 0 without EOS calls: ``_faces`` never reads them.
     """
     n, ny, nx = hs.shape
     GxRho = g * rho0
@@ -197,6 +200,7 @@ def _columns(H, hs, Ts, Ss, eos, rho0, rho_ref, g, profile, zr, Tr, Sr,
         q2 = np.empty(n)
         qt = np.empty(n)
         qb = np.empty(n)
+        slp = np.empty(n)
         r = np.empty(5)
         for i in range(nx):
             lo = zr.size - 2                                 # profile index hint, walked down the column
@@ -216,14 +220,19 @@ def _columns(H, hs, Ts, Ss, eos, rho0, rho_ref, g, profile, zr, Tr, Sr,
                 for k in range(n):
                     q[k] = Ts[k, j, i]
                     q2[k] = Ss[k, j, i]
-            _plm_edges(hc, q, qt, qb)
+            _plm_edges(hc, q, qt, qb, slp)
             for k in range(n):
                 Tt[k, j, i] = qt[k]
                 Tb[k, j, i] = qb[k]
-            _plm_edges(hc, q2, qt, qb)
+            _plm_edges(hc, q2, qt, qb, slp)
             for k in range(n):
                 St[k, j, i] = qt[k]
                 Sb[k, j, i] = qb[k]
+            if not active[j, i]:
+                for k in range(n):
+                    dpa[k, j, i] = 0.0
+                    intz[k, j, i] = 0.0
+                continue
             for k in range(n):
                 dz = e[k, j, i] - e[k + 1, j, i]
                 for m in range(5):
@@ -440,7 +449,7 @@ def fv_pgf_nonlinear(h: np.ndarray, H: np.ndarray, eta: np.ndarray, T: np.ndarra
     n, ny, nx = hs.shape
     e = np.empty((n + 1, ny, nx))
     Tt, Tb, St, Sb, dpa, intz = (np.empty((n, ny, nx)) for _ in range(6))
-    _columns(a["H"], hs, a["Ts"], a["Ss"], a["eos"], float(rho0), float(rho_pgf_ref), float(g), a["profile"],
+    _columns(a["H"], hs, a["Ts"], a["Ss"], a["active"], a["eos"], float(rho0), float(rho_pgf_ref), float(g), a["profile"],
              a["zr"], a["Tr"], a["Sr"], e, Tt, Tb, St, Sb, dpa, intz)
     rest = (a["eos"], float(rho0), float(rho_pgf_ref), float(g), a["profile"], a["zr"], a["Tr"], a["Sr"],
             a["mw_toggle"], a["nv_toggle"], float(h_vanished))
