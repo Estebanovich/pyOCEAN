@@ -33,10 +33,11 @@ class ALECoordinate:
     per = NONE                       # periodic axes (core.model.periodic), set by the model
 
     def __init__(self, *, H: np.ndarray, active: np.ndarray, n_layers: int, rule: str, params: dict, remap_code,
-                 h_thin_bed: float, max_truncations: int, vi_geom: dict, eos) -> None:
+                 h_thin_bed: float, max_truncations: int, vi_geom: dict, eos, p_ref: float = 2e7) -> None:
         self.H, self.active, self.n_layers = H, active, n_layers
         self.regrid_rule, self.regrid_params, self.remap_code = rule, params, remap_code
         self.h_thin_bed, self.max_truncations, self.vi_geom, self.eos = h_thin_bed, max_truncations, vi_geom, eos
+        self.p_ref = float(p_ref)        # reference pressure of the hybrid potential density [Pa] (nonlinear EOS)
         self._tt_cache: tuple = ()
 
     def check(self, ctx: BuildContext) -> list[Issue]:
@@ -76,6 +77,23 @@ class ALECoordinate:
         h_new = self.regrid(eta, h_src, T, wet, S)
         return h_new, [rm.remap_columns(h_src, f, h_new, self.remap_code, wet) for f in fields]
 
+    def regrid_density(self, T: np.ndarray, S: np.ndarray | None = None) -> np.ndarray:
+        """
+        Layer density the hybrid rule follows the isopycnals of [kg m⁻³], (k, j, i) with k = 0 at the bed.
+        Linear EOS: ρ(T, S) (Vallis 2006 eq. 1.156), unchanged.  Nonlinear EOS: the potential density
+        ρ(T, S, p_ref) at the reference pressure p_ref (2e7 Pa = σ₂ + 1000, the HYCOM/MOM6 choice, so the
+        compressibility of seawater does not move the isopycnal targets with depth), forced monotonic in each
+        column: HYCOM1 evaluates the density at the reference pressure ``p_col`` (MOM_regridding.F90:2058-2059,
+        P_Ref + compressibility_fraction (p − P_Ref), fraction 0 → P_Ref) and then, working upward from the bed,
+        ``rho_col(k) = min(rho_col(k), rho_col(k+1))`` with k = 1 at the top (coord_hycom.F90:214-219, MOM6
+        git 0e9a561): the profile is non-decreasing towards the bed, "monotonic although not necessarily single
+        valued".  Here k = 0 is the bed, so the rule is a running minimum from k = 0 upward.
+        """
+        if self.eos.linear:
+            return self.eos.density(T, S)
+        rho = self.eos.potential_density(T, S, self.p_ref)
+        return np.fmin.accumulate(rho, axis=0)                       # ρ_k = min(ρ_k, ρ_{k−1}), the layer below
+
     def regrid(self, eta: np.ndarray, h: np.ndarray, T: np.ndarray, wet: np.ndarray | None = None,
                S: np.ndarray | None = None) -> np.ndarray:
         """
@@ -86,7 +104,7 @@ class ALECoordinate:
         H = np.nan_to_num(np.asarray(self.H, float))
         if wet is None:
             wet = self.active & (H + eta > 0) & (h.sum(axis=0) > 0)
-        rho = self.eos.density(T, S) if self.regrid_rule == "hybrid" else None
+        rho = self.regrid_density(T, S) if self.regrid_rule == "hybrid" else None
         numba.set_num_threads(threads._THREADS[0])                                 # parallel regrid kernel
         zw = rg.regrid_columns(self.regrid_rule, H, eta, h, rho, self.regrid_params, wet)
         return np.where(wet[None], np.diff(zw, axis=0), h)

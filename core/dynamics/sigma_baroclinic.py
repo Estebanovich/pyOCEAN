@@ -1337,7 +1337,7 @@ class SigmaBaroclinic:
         self._vertical = (ALECoordinate(H=self.H, active=self.fs.active, n_layers=n_layers, rule=self.regrid_rule,
                                         params=self.regrid_params, remap_code=self.remap_code,
                                         h_thin_bed=self.h_thin_bed, max_truncations=self.max_truncations,
-                                        vi_geom=self._vi, eos=self._eos) if self.ale else None)
+                                        vi_geom=self._vi, eos=self._eos, p_ref=self.p_ref) if self.ale else None)
         self._momentum = Momentum(form="vector_invariant" if self.ale and self.momentum == "vector_invariant" else "flux",
                                   adv=adv, ah=ah, ke_scheme=self.ke_scheme, ale=self.ale, dt=dt, hg=h_grid, fq=self._fq,
                                   fs=self.fs, ds=self.ds, vi_geom=getattr(self, "_vi", None),
@@ -1628,8 +1628,8 @@ class SigmaBaroclinic:
             # one regrid on the source levels themselves, as MOM6 (regridding_main on the data, :2928); iterating
             # on the model grid (regrid there, remap from the source) oscillates around a sharp jump (BayIW
             # two-layer with a full-depth z* floor: 24–348 mixed layers depending on the pass count)
-            rho_src = self.density(np.where(wet[None], T_src, self.t_ref),
-                                   None if S_src is None else np.where(wet[None], S_src, self.s_ref))
+            rho_src = self._vertical.regrid_density(np.where(wet[None], T_src, self.t_ref),
+                                                    None if S_src is None else np.where(wet[None], S_src, self.s_ref))
             zw = rg.regrid_columns("hybrid", H, eta, h_src, rho_src, self.regrid_params, wet, n_out=self.n)
             zw_src = -H[None] + np.concatenate([np.zeros((1,) + H.shape), np.cumsum(h_src, axis=0)])
             tgt = np.asarray(self.regrid_params["rho_target"], float)

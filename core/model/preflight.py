@@ -29,7 +29,7 @@ BBL_SCHEMES = ("lotw",)
 EOS_NAMES = ("linear", "wright_full", "teos10")
 PGF_MASS_WEIGHTS = ("vanished", "full", "none")
 LINEAR_EOS_ONLY = ("t_coef", "t_ref", "s_coef", "s_ref")   # coefficients of ρ₀ − α (T − T₀) + β (S − S₀)
-SIGMA2_RANGE = (1000.0, 1060.0)    # [kg m⁻³] plausible potential densities at p_ref = 2e7 Pa (σ₂ + 1000)
+SIGMA2_RANGE = (1020.0, 1045.0)    # [kg m⁻³] ocean potential densities at p_ref = 2e7 Pa (σ₂ + 1000 ≈ 1030–1038)
 
 # arguments that only the ALE coordinate uses (ignored, with a warning, in σ)
 ALE_ONLY = ("regrid", "regrid_params", "remap_scheme", "h_thin_bed", "init_iterations", "max_truncations",
