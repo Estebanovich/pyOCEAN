@@ -217,29 +217,33 @@ From `validation/teos10/README.md` (WOA23 Gulf Stream profile, 39.5 °N 70.5 °W
 
 Measured with `scripts/eos_cost.py`: BayIW cut z\*, 50 layers, Δt 120 s, 5 threads, the three EOS alternated in
 separate processes, 3 rounds. The ratio per step against the linear EOS is in the table below. Most of the extra
-time is in the explicit-momentum phase, which holds the nonlinear finite-volume pressure gradient: 35 EOS
-evaluations per cell and layer, MOM6's method as is (Esteban's decision 4). Optimisation is left for later, with
-this breakdown as the starting point.
+time is in the explicit-momentum phase, which holds the nonlinear finite-volume pressure gradient: with the T/S
+reference profile about 70 EOS evaluations per cell and layer, MOM6's method as is (Esteban's decision 4).
 
 | EOS | s/step (median of 3 rounds) | ratio to linear (min/median/max) | criterion 11 (≤ 2.5×) |
 |---|---|---|---|
-| `linear` | 0.389 | 1 | — |
-| `wright_full` | 0.738 | 1.896 / 1.897 / 1.898 | met |
-| `teos10` | 1.226 | 3.139 / 3.157 / 3.170 | **not met** |
+| `linear` | 0.390 | 1 | — |
+| `wright_full` | 0.534 | 1.364 / 1.369 / 1.375 | met |
+| `teos10` | 0.729 | 1.866 / 1.872 / 1.873 | met |
 
 | Phase (mean ms per step) | linear | wright_full | teos10 |
 |---|---|---|---|
-| explicit momentum (PGF) | 63.6 | 394.5 (+330.9) | 878.7 (+815.1) |
-| tracers | 121.9 | 142.4 (+20.5) | 146.2 (+24.3) |
-| vertical coordinate | 26.4 | 25.9 | 29.2 (+2.8) |
-| all other phases | 171.1 | 168.8 | 168.3 |
-| sum | 383.0 | 731.5 | 1222.4 |
+| explicit momentum (PGF) | 64.3 | 190.5 (+126.2) | 377.6 (+313.3) |
+| tracers | 123.0 | 143.6 (+20.7) | 148.6 (+25.6) |
+| vertical coordinate | 26.6 | 25.8 | 29.5 (+2.8) |
+| all other phases | 170.5 | 167.6 | 168.8 |
+| sum | 384.3 | 527.5 | 724.4 |
 
-95–97 % of the extra time is in the pressure gradient. `teos10` costs 2.5× more there than `wright_full` because one
-evaluation of the Roquet polynomial anomaly costs 5.4× a Wright evaluation: 14.7 ns against 2.7 ns per
-`rho_anom_elem` call, one thread, 2e6 random points. The polynomial has 52 + 6 terms against Wright's rational
-fit of about 15. The `teos10` overshoot is class (c): it comes from MOM6's method used as is (decision 4) with
-the more expensive EOS. Candidates for later work are fewer evaluations per face or a cheaper anomaly form.
+These figures follow three exact optimisations of 2026-11-01. Every result is unchanged bit for bit. Before them
+`teos10` cost 3.16× and `wright_full` 1.90×.
+
+1. The scalar EOS kernels are inlined (`inline="always"`). Before, the Roquet polynomial was called out of line
+   at every point, and one evaluation fell from 13.7 to 5.3 ns (`scripts/eos_microbench.py`).
+2. In the profile mode, one walked index into the reference profile serves T_ref and S_ref at each point. Before,
+   each point ran two bisections.
+3. The column pass makes no allocation per column and no EOS calls in inactive columns.
+
+The remaining extra time is the EOS arithmetic itself.
 
 ## References
 
