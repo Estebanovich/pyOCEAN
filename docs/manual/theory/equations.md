@@ -253,8 +253,12 @@ Coriolis term ([Momentum](momentum.md)).
 
 === "Stratified core (σ and ALE)"
 
-    Linear in temperature only (`SigmaBaroclinic.density`, `core/dynamics/sigma_baroclinic.py:1285`;
-    "as CROCO `lin_EOS_cff`", module docstring):
+    Three equations of state since the TEOS-10 in 3-D project (2026-11-01): `eos="linear"` (default, below),
+    `"wright_full"` (Wright 1997 on θ, S_P, MOM6 `WRIGHT_FULL`) and `"teos10"` (Roquet et al. 2015 on Θ, S_A,
+    MOM6 `ROQUET_RHO`). The nonlinear ones and every consumer (pressure gradient, closures, hybrid regrid,
+    surface heat, inputs and outputs) are described in [Equation of state](equation-of-state.md). The default is
+    linear (`SigmaBaroclinic.density`, `core/dynamics/sigma_baroclinic.py:1285`; "as CROCO `lin_EOS_cff`", module
+    docstring); with `salinity=True` it adds $+\beta(S - S_0)$ (`s_coef`, `s_ref`):
 
     $$
     \rho = \rho_0 - \alpha\,(T - T_0),
@@ -293,7 +297,7 @@ Coriolis term ([Momentum](momentum.md)).
 | Constant | Value | Where |
 |---|---|---|
 | $g$ | 9.81 m s⁻² | `G` in `core/dynamics/sigma_baroclinic.py:101`, `sigma_wd.py:48`, `wetting_drying.py`, `physics/eos/__init__.py:55`; argument `g` of `SigmaBaroclinic` |
-| $\rho_0$ (stratified core) | 1000 kg m⁻³ (default of `rho0`) | `SigmaBaroclinic.__init__`, `core/dynamics/sigma_baroclinic.py:1005` |
+| $\rho_0$ (stratified core) | 1000 kg m⁻³ (default of `rho0` with `eos="linear"`; 1035 with a nonlinear EOS) | `SigmaBaroclinic.__init__`, `core/dynamics/sigma_baroclinic.py:1005` |
 | $\rho_0$ (legacy z model) | 1025 kg m⁻³ | `RHO_0` in `physics/eos/__init__.py:56` and `core/dynamics/momentum.py` |
 | $\Omega$ | 7.2921e-5 rad s⁻¹ | `OMEGA`, `core/grid/horizontal.py:41` |
 | $R$ | 6.371e6 m | `R_EARTH`, `core/grid/horizontal.py:40` |
@@ -414,7 +418,8 @@ MITgcm (CLAUDE.md, Build Status Phase 2).
 
 ## Known limitations
 
-- One active tracer (T), linear EOS in the stratified core; no salinity, no nonlinear EOS there.
+- ~~One active tracer (T), linear EOS in the stratified core~~: salinity since N2a; nonlinear EOS (`wright_full`,
+    `teos10`) since 2026-11-01 ([Equation of state](equation-of-state.md)).
 - No surface heat or freshwater flux in the stratified core; volume is closed except through open
     boundaries.
 - Bed drag in ALE only over the bottom `hbbl` metres (N3); open-edge faces take a zero cross component.

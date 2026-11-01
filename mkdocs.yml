@@ -71,6 +71,7 @@ nav:
       - Vertical coordinates and ALE: theory/vertical-ale.md
       - Momentum equations: theory/momentum.md
       - Pressure gradient: theory/pressure-gradient.md
+      - Equation of state: theory/equation-of-state.md
       - Free surface and time stepping: theory/free-surface-time-stepping.md
       - Tracer transport and spurious mixing: theory/tracers.md
       - Turbulence closures and bottom friction: theory/turbulence-friction.md

@@ -20,10 +20,28 @@ columns, v-faces ny + 1 rows; "σ" means `vertical_coordinate="sigma_eulerian"`,
 | `bathy` | array `(ny, nx)` | required | m | rest depth, positive down | > 0 water; ≤ 0 floodable land; NaN wall | active cells `np.isfinite(bathy)` (`:1065`) |
 | `dt` | float | required | s | time step | > 0 | baroclinic and barotropic share one Δt (θ-implicit free surface) |
 | `n_layers` | int | 10 | — | number of layers N | ≥ 1 | ALE: also the target grid size |
-| `rho0` | float | 1000.0 | kg m⁻³ | Boussinesq reference density ρ₀ | > 0 | divides τ and the PGF |
-| `t_coef` | float | 0.2 | kg m⁻³ °C⁻¹ | α of the linear EOS ρ = ρ₀ − α(T − T₀) | any (0: passive T) | ``density`` (`:1285`) |
+| `rho0` | float or None | None → 1000 with `eos="linear"`, 1035 (MOM6 `RHO_0`) with `"wright_full"`/`"teos10"` | kg m⁻³ | Boussinesq reference density ρ₀ | > 0; nonlinear EOS: warning outside 1000–1050 | divides τ and the PGF; with a nonlinear EOS also sets the EOS pressure p = −g ρ₀ z. See [Equation of state](#equation-of-state) |
+| `t_coef` | float | 0.2 | kg m⁻³ °C⁻¹ | α of the linear EOS ρ = ρ₀ − α(T − T₀) | any (0: passive T) | ``density`` (`:1285`); linear EOS only (pre-flight error with a nonlinear `eos`, as `t_ref`, `s_coef`, `s_ref`) |
 | `t_ref` | float | 0.0 | °C | T₀ of the EOS | any | also T of dry columns in `initial_state(h_src=...)` |
 | `g` | float | 9.81 | m s⁻² | gravity | > 0 | |
+
+### Equation of state
+
+Added by the TEOS-10 in 3-D project (2026-11-01). Theory: [Equation of state](../theory/equation-of-state.md).
+All defaults keep a linear run bit for bit as before.
+
+| Name | Type | Default | Units | Meaning | Valid values | Notes |
+|---|---|---|---|---|---|---|
+| `eos` | str | `"linear"` | — | equation of state of the 3-D model (`core/components/eos.py`, `make_eos`) | `"linear"` (ρ₀ − α(T − T₀) + β(S − S₀)), `"wright_full"` (Wright 1997 on θ, S_P = MOM6 `WRIGHT_FULL`, the EOS of NWA12), `"teos10"` (Roquet et al. 2015 on Θ, S_A = MOM6 `ROQUET_RHO`, not MOM6's 75-term `TEOS10`) | a nonlinear EOS needs `salinity=True` and refuses `t_coef`, `t_ref`, `s_coef`, `s_ref` (pre-flight errors). Prognostic variables are those of the EOS (θ/S_P or Θ/S_A); nothing is converted inside the step. Bit for bit with compiled MOM6 (ρ, ∂ρ/∂T, ∂ρ/∂S, pressure gradient, closure N²). Cost per step on BayIW cut z\* in the theory page |
+| `cp` | float or None | None → 3985 with `"linear"`, 3991.86795711963 (TEOS-10 c_p⁰, MOM6 default `C_P`) with a nonlinear EOS | J kg⁻¹ K⁻¹ | heat capacity of the surface heat flux (prescribed `heat` and bulk) | > 0 | exact for Θ with `teos10` (heat content c_p⁰ Σ VΘ); the NWA12 case passes 3992.0. Stored and checked by the restart |
+| `rho_pgf_ref` | float or None | None → ρ₀ | kg m⁻³ | constant subtracted inside the nonlinear finite-volume PGF when there is no reference profile (`rho_ref=None`; MOM6 `RHO_PGF_REF`) | finite, > 0 | ignored, with a warning, with `eos="linear"`; unused with `rho_ref="auto"` (the profile is subtracted instead) |
+| `pgf_mass_weight` | str | `"vanished"` | — | bed mass weighting of the `pgf="fv"` pressure gradient | `"vanished"` (only next to vanished layers, as before), `"full"` (MOM6 `MASS_WEIGHT_IN_PGF_VANISHED_ONLY = False`, the NWA12 setting; nonlinear EOS only), `"none"` | warning if set with `pgf` other than `"fv"`; checked by the restart |
+| `p_ref` | float | 2e7 | Pa | reference pressure of the potential density followed by the hybrid regrid with a nonlinear EOS (σ₂ + 1000 at 2e7) | finite, ≥ 0 | the column density is forced monotonic (running minimum from the bed up, MOM6 `coord_hycom.F90:214-219`); `rho_target` must then lie in 1020–1045 kg m⁻³ (pre-flight). Checked by the restart |
+| `ts_kind` | str | `"theta_sp"` | — | convention of the T and S given to the **constructor**: the open-boundary exterior (`OBData.T`, `OBData.S` of `open_boundary_state`) and the sponge profiles `sponge_T`, `sponge_S` | `"theta_sp"` (θ, S_P), `"ct_sa"` (Θ [°C], S_A [g kg⁻¹]) | converted once to the EOS convention when received (S_A = (35.16504/35) S_P, no δS_A, as MOM6). A `teos10` model given Θ/S_A must be told `ts_kind="ct_sa"`, or the data are converted twice. `initial_state` has its own `ts_kind` argument with the same rule; `forcing.ocean_init` takes `eos_ts_kind` |
+
+`rho_ref="auto"` with a nonlinear EOS keeps the horizontal-mean initial profiles T_ref(z), S_ref(z)
+(`TSReferenceProfile`) instead of a density profile; `rho_ref` as a function is a pre-flight error with a nonlinear
+EOS. With σ-layers, a nonlinear EOS and `rho_ref=None`, pre-flight warns (the compressibility enters the σ anomaly).
 
 ### Vertical mixing and bed
 
@@ -131,7 +149,7 @@ The shortwave profile uses the model's `jerlov` and `cp`; there is no SST or SSS
 
 | Method | Signature | Returns |
 |---|---|---|
-| ``initial_state`` (`:1190`) | `(eta, T, h_src=None)` | resting `SigmaState`; sets `rho_ref` if `"auto"`, `T_ext`, `h_ext` |
+| ``initial_state`` (`:1190`) | `(eta, T, h_src=None, tr=None, S=None, ts_kind="theta_sp")` | resting `SigmaState`; sets `rho_ref` if `"auto"` (with a nonlinear EOS the T/S profile), `T_ext`, `h_ext`; converts T, S given in `ts_kind` to the EOS convention |
 | ``step`` (`:1805`) | `(st, tau_x=None, tau_y=None, fw=None, heat=None)`, τ [N m⁻²] at u-/v-faces; none of the forcing arguments with `surface_fluxes` | new `SigmaState` |
 | ``layer_heights`` (`:1267`) | `(eta, h=None)` | layer-centre heights (N, ny, nx) [m], z = 0 at rest |
 | ``layer_volumes`` (`:1289`) | `(eta, h=None)` | layer volumes [m³] |
@@ -295,6 +313,7 @@ Grouped by where they are raised. The message text is the code's.
 | `unknown bbl_mixing=… (valid: None, 'lotw')` / `bbl_mixing=… cannot be added to closure='gls'` (or `'parabolic'`) / `bbl_mixing=… needs vertical_coordinate='ale'` / `bbl_mixing=… needs a bed drag, bottom_drag='quadratic' or z0` | drag-driven BBL mixing in an unsupported configuration | `core/model/preflight.py:318-332` |
 | `bbl_params must be a physics.mixing.bbl_mixing.BBLParams` / `bbl_params.<field>=…: must be a finite number …` / `bbl_params.use_omega=…: must be True or False` | invalid `bbl_params` (one message per field) | `core/model/preflight.py:79-101`, `:333-338` |
 | `unknown regrid rule …` / `unknown remap_scheme …` | ALE only | `:1145`, `:1147` |
+| `unknown eos …` / `eos=… needs salinity=True` / `t_coef=… does not apply with eos=…` (also `t_ref`, `s_coef`, `s_ref`) / `rho_ref as a function cannot be used with eos=…` / `regrid_params['rho_target'] … is outside the plausible range 1020–1045` / `pgf_mass_weight='full' needs a nonlinear eos` / `unknown ts_kind …` / `p_ref=…` / `rho_pgf_ref=…` | equation-of-state rules (pre-flight, every problem reported at once; warnings for ρ₀ outside 1000–1050, σ-layers without `rho_ref`, `rho_pgf_ref` with the linear EOS) | `core/model/preflight.py` (`_eos_issues`) |
 | *(removed in N3)* `vertical_coordinate='ale' needs z0=None ...` — ALE accepts `z0` now; `z0` together with `bottom_drag='quadratic'` is an error (two bed drags) | | `core/model/preflight.py` |
 | `vertical_coordinate='ale' needs closure 'constant' or 'none' for now (GLS and the parabolic ν assume σ-layers)` | | `:1152` |
 | `regrid='zstar' needs regrid_params['dz_top']` (and `'rho_target'` for hybrid) | | `:1158` |

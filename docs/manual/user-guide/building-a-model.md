@@ -19,10 +19,10 @@ are in [Vertical coordinates and ALE](../theory/vertical-ale.md), [Momentum](../
 [Pressure gradient](../theory/pressure-gradient.md) and [Tracers](../theory/tracers.md).
 
 !!! warning "What the model does not have (yet)"
-    - **One tracer only, T, and a linear equation of state** ρ = ρ₀ − α (T − T₀)
-        (``SigmaBaroclinic.density`` (`core/dynamics/sigma_baroclinic.py:1285`)). There is no salinity in the
-        stratified model. Realistic cases use a *density-equivalent* temperature, T = T₀ + (ρ₀ − ρ)/α, as the
-        BayIW "real" case does (CLAUDE.md, Phase 2 table).
+    - ~~One tracer only, T, and a linear equation of state~~: salinity (`salinity=True`) since N2a, and the
+        nonlinear `eos="wright_full"` / `"teos10"` since 2026-11-01 ([Equation of state](../theory/equation-of-state.md)).
+        The default is still the linear EOS ρ = ρ₀ − α (T − T₀) (+ β (S − S₀) with salinity); older realistic cases
+        use a *density-equivalent* temperature, T = T₀ + (ρ₀ − ρ)/α, as the BayIW "real" case does.
     - **Surface forcing of `step`:** momentum stress (`tau_x`, `tau_y`), a prescribed freshwater flux `fw` (N2a) and a
         prescribed heat flux `heat` (N3); no bulk formulae inside the model yet (N2b).
     - **Closures (since N3, 2026-10-30):** `closure='kpp'` (CVMix/MOM6, no background diffusivity by default) and

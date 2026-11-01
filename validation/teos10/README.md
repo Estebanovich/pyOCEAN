@@ -1,4 +1,4 @@
-# TEOS-10 en el núcleo 3D: casos de validación (criterios 4, 5, 8, 9 y 10)
+# TEOS-10 en el núcleo 3D: casos de validación (criterios 4, 5, 8, 9, 10 y 11)
 
 Task 9 del plan `docs/superpowers/plans/2026-10-31-teos10-3d.md`; spec
 `docs/superpowers/specs/2026-10-31-teos10-3d-design.md`. Definiciones en `cases.py`, corridas en `run_pyocean.py`,
@@ -131,7 +131,7 @@ interfaz inicial. Volúmenes de cabbeling: agua con ρ(T, S, 0) mayor que la de 
 
 ## 2. Criterios
 
-- **Criterio 4 (reposo): cumplido.** Con `rho_ref="auto"`, `wright_full`/`teos10` quedan entre 0.59× y 1.25× de la
+- **Criterio 4 (reposo), parte del cociente 2×: cumplida** (la fuerza cero a redondeo no, punto siguiente). Con `rho_ref="auto"`, `wright_full`/`teos10` quedan entre 0.59× y 1.25× de la
   lineal equivalente en los ocho casos (límite 2×). En z\* las corrientes son 2.6e-4 m s⁻¹ en la montaña (el error
   conocido de z\* en la montaña, 0.08 cm/s en CLAUDE.md con el perfil analítico) y 2e-10 m s⁻¹ en el escalón.
   En el híbrido son 0.10–0.12 m s⁻¹ en la montaña y 1.4–1.7e-4 m s⁻¹ en el escalón, iguales en las tres EOS
@@ -150,7 +150,7 @@ interfaz inicial. Volúmenes de cabbeling: agua con ρ(T, S, 0) mayor que la de 
   3, sección 4 puntos 1 y 2.
 - **Criterio 4, modo MOM6 (`rho_ref=None`), sin límite:** montaña z\* 4.2–4.6 cm/s, híbrido 23–26 cm/s; escalón z\*
   2.1 mm/s, híbrido 6.5–7.4 mm/s; las no lineales 0.89–1.14× la lineal. **No se corrió MOM6 en el mismo caso**
-  (pendiente; el plan no lo incluía en esta tarea).
+  (aplazado a la cadena regional / NWA12, donde MOM6 corre en el mismo recorte; decisión del controlador del plan, 2026-11-01).
 - **Criterio 5a (cabbeling): cumplido.** Con `wright_full` y `teos10` aparece agua más densa que las dos fuentes en
   la primera hora, su volumen crece (0.52e9 m³ a 2 h, 1.3e9 a 6 h, el dominio a 1 día) y su altura media ponderada por
   el exceso de densidad baja hasta −147 m (H = 200 m) a las 15 h, antes de que el dominio se mezcle entero. Con la
@@ -184,6 +184,37 @@ interfaz inicial. Volúmenes de cabbeling: agua con ρ(T, S, 0) mayor que la de 
     medido. El resto (~0.003 °C) es Roquet frente a Wright en α y en la capa límite [hipótesis, no separado]. (La
     diferencia Θ − θ en sí, 0.114 °C a 22 °C y 0.131 °C a 25 °C con S_P 31.5, no es la escala: la SST se compara en
     θ en las dos.) Esto es una elección de NWA12/MOM6 (θ con c_p constante), clase (c) frente a TEOS-10.
+
+- **Criterio 11 (costo por paso): cumplido con `wright_full` (1.90×), NO cumplido con `teos10` (3.16×).**
+  `scripts/eos_cost.py` (2026-11-01; modelo de `scripts/bulk_cost.py`): BayIW cut z\*, 50 capas, Δt 120 s,
+  `salinity=True` (S = 35) en los tres modos, sin forzamiento, `rho_ref="auto"`, 5 hilos, un proceso por modo,
+  alternados (linear, wright_full, teos10) × 3 rondas, mediana de 50 pasos tras 10 de calentamiento, máquina sin
+  otra carga. Registro: `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/teos10/cost/eos_cost_2026-11-01.log`.
+
+  | EOS | s/paso (mediana) | cociente a `linear` mín/mediana/máx | ≤ 2.5× |
+  |---|---|---|---|
+  | linear | 0.389 | 1 | — |
+  | wright_full | 0.738 | 1.896 / 1.897 / 1.898 | sí |
+  | teos10 | 1.226 | 3.139 / 3.157 / 3.170 | **no** |
+
+  Desglose por fase del driver (ms por paso, mediana de las rondas; `Driver._ale_<fase>` cronometradas):
+
+  | fase | linear | wright_full | teos10 |
+  |---|---|---|---|
+  | explicit_momentum (gradiente de presión) | 63.6 | 394.5 (+330.9) | 878.7 (+815.1) |
+  | tracers | 121.9 | 142.4 (+20.5) | 146.2 (+24.3) |
+  | vertical_coordinate | 26.4 | 25.9 | 29.2 (+2.8) |
+  | las demás (prepare, time_combine, implicit_and_free_surface, boundary_velocity, layer_transport, finalize) | 171.1 | 168.8 | 168.3 |
+  | suma | 383.0 | 731.5 | 1222.4 |
+
+  El 95–97 % del exceso está en el gradiente de presión de volumen finito (las ~35 evaluaciones de la EOS por
+  celda y capa del método de MOM6, decisión 4). `teos10` cuesta 2.5× lo de `wright_full` ahí porque una
+  evaluación de la anomalía de Roquet cuesta 5.4× la de Wright (14.7 frente a 2.7 ns por llamada a
+  `rho_anom_elem`, un hilo, 2e6 puntos aleatorios; polinomio de 52 + 6 términos frente a la fracción racional de
+  ~15 coeficientes de Wright). Los +20–24 ms de `tracers` son la densidad de los cierres y la difusión sobre
+  T − T_ref, S − S_ref [hipótesis, no separado]. Clase (c): método de MOM6 tal cual con la EOS más cara; la
+  estimación previa de la spec (decisión de Claude 1: 1.5–2.5×) fue baja para Roquet. Sin optimizar en este
+  proyecto (decisión 4 de Esteban); queda en la sección 4.
 
 ## 3. Diferencias clasificadas
 
@@ -222,6 +253,8 @@ interfaz inicial. Volúmenes de cabbeling: agua con ρ(T, S, 0) mayor que la de 
 6. **Criterio 4 modo MOM6 sin la corrida de MOM6: pendiente** (no es diferencia; falta la referencia).
 7. **Fuerza cero a redondeo del criterio 4 no alcanzada** en z\* sobre la montaña (celdas parciales, diferencia 3,
    (c)) ni en el híbrido (diferencia 1): abierto, independiente de la EOS.
+8. **Costo de `teos10` 3.16× (límite 2.5×): (c)**, método de MOM6 tal cual con un polinomio 5.4× más caro por
+   evaluación que Wright (criterio 11). `wright_full` 1.90×.
 
 ## 4. Qué debe mejorar pyOCEAN
 
@@ -237,3 +270,14 @@ interfaz inicial. Volúmenes de cabbeling: agua con ρ(T, S, 0) mayor que la de 
    aparición). Candidatos: la formación de agua por cabbeling en frentes (McDougall 1987 [verificar]).
 5. **Columna bulk contra la boya 44025** con `teos10`: la diferencia lineal/no lineal (+0.1 °C) es del orden de la
    que el benchmark puede resolver; decidir con observaciones, no con el modelo (proyecto 3 de la cadena).
+6. **Costo del gradiente de presión no lineal** (criterio 11; `teos10` 3.16×, `wright_full` 1.90×): medir y
+   reducir las evaluaciones de la EOS por cara (las 5 subcolumnas × 5 puntos de Boole), o una forma de anomalía de
+   Roquet más barata (Horner de la parte que depende de p, reuso entre subcolumnas de la misma columna), siempre con
+   MOM6 como oráculo bit a bit en el modo sin perfil. Partir del desglose de `scripts/eos_cost.py`.
+7. **BBL con el N²_bot de MOM6** (`find_N2`, `MOM_set_diffusivity.F90:1202-1258`; clase (a), aplazado hasta el OK
+   de Esteban porque cambia las corridas BBL lineales y las cifras de DOME; efecto medido en Kd ≤ 1.6 % en columnas
+   suaves, 2–37 % aleatorias, 100 % en una; `docs/design/teos10_refs/mom6_eos.md` §5).
+8. **Proyección de dos trazadores de Jackson** (MOM6 proyecta T y S por separado dentro de los subpasos; aquí solo el
+   N² inicial es igual a MOM6, diferencia de segundo orden, (c)).
+9. **Comprobar la cota de ajuste de Roquet contra el artículo** (`ROQUET_FIT_MAX` = 1.1 × 5.355e-2 kg m⁻³ medido,
+   [verificar Roquet 2015]; el artículo sigue ⬜ en `docs/literature/reading_list.md`).

@@ -40,7 +40,10 @@ $$
 $$
 
 with `rho0` = $\rho_0$ (default 1000 kg m⁻³), `t_coef` = $\alpha$ (default 0.2 kg m⁻³ °C⁻¹), `t_ref` = $T_0$
-(default 0 °C). Salinity is not carried. The phase-1 z model uses `physics/eos` (linear or TEOS-10).
+(default 0 °C). Since N2a `salinity=True` adds $+\beta(S - S_0)$; since 2026-11-01 `eos="wright_full"` and
+`"teos10"` are nonlinear and pressure dependent, and `pgf="fv"` then uses MOM6's `int_density_dz_generic_plm`
+(T and S reconstructed separately, density evaluated at 5 × 5 quadrature points per face and layer), see
+[Equation of state](equation-of-state.md#pressure-gradient). The phase-1 z model uses `physics/eos` (linear or TEOS-10).
 
 ### Why σ-layers make the PGF hard
 
@@ -352,7 +355,8 @@ The PGF is the centred difference $-(p_{k,i} - p_{k,i-1})/(\rho_0\,\Delta x_u)$ 
 
 ## Known limitations
 
-- Linear EOS in $T$ only; no salinity, no TEOS-10 in the stratified model.
+- ~~Linear EOS in $T$ only~~: salinity since N2a, nonlinear EOS since 2026-11-01
+    ([Equation of state](equation-of-state.md)).
 - The reference profile is fixed in time (an evolving profile is pending, `validation/seamount/README.md`).
 - No high-order Jacobian (Shchepetkin & McWilliams 2003) and no PPM/PQM reconstruction in FV (Engwirda et al. 2017);
     both pending.

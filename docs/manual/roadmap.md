@@ -165,7 +165,7 @@ with its tests and is not extended. The agreed order is (1) unify the 3-D core, 
 | # | Piece | Source | Validation planned | Status |
 |---|---|---|---|---|
 | 1 | Generic tracer stack (T, S, passive), variance per tracer | new | Constancy and conservation per tracer; lock exchange with S | ⬜ `SigmaState` holds only T (`core/dynamics/sigma_baroclinic.py:107-122`) |
-| 2 | Linear (T, S) EOS and TEOS-10 with p ≈ −ρ₀ g z | `physics/eos` | Exact rest PGF with ρ_ref(z) of (T, S); seamount with TEOS-10 | ⬜ core EOS linear in T (`:1285`) |
+| 2 | Linear (T, S) EOS and TEOS-10 with p ≈ −ρ₀ g z | `physics/eos` | Exact rest PGF with ρ_ref(z) of (T, S); seamount with TEOS-10 | ✅ 2026-11-01: linear (T, S) since N2a; `eos="wright_full"`/`"teos10"` in the 3-D core (MOM6 FV pressure gradient bit for bit, closures, regrid, I/O); rest over the seamount 0.59–1.25× the linear EOS, zero force at round-off not met next to partial cells and in the hybrid (class c), cost per step in [Equation of state](theory/equation-of-state.md#cost) |
 | 3 | Buoyancy in GLS: B = −K_ρ N², tracer diffusivity K_t with Canuto-A stability functions | CROCO `gls_mixing.F` | Kato–Phillips against the empirical solution and GOTM/CROCO | ✅ N2a 8c (`gls_stratified=True`) |
 | 4 | Surface fluxes: Q_net, penetrating shortwave (Paulson & Simpson), E − P on S, stress from `bulk_ncar`/`bulk_kara` | `forcing/bulk.py`, `forcing/surface.py` | Exact column heat budget; convection by cooling | ⬜ the core takes wind stress only (`:2084`) |
 | 5 | KPP in σ columns (alternative to GLS) | `physics/mixing/kpp_cvmix.py`, `KPPClosure` | Kato–Phillips; thesis: KPP + internal-wave spectra | ✅ N3 (2026-10-30; vs MOM6/CVMix ≤ 0.3 %) |
@@ -224,7 +224,7 @@ Each row was checked in the code. "Class" follows the benchmark classification w
 | Limitation | Evidence | Plan |
 |---|---|---|
 | One active tracer (T); no salinity, no passive tracers | `SigmaState` (`core/dynamics/sigma_baroclinic.py:107-122`); module docstring `:57` | Unified core piece 1 |
-| EOS linear in T: ρ = ρ₀ − α (T − T₀); no TEOS-10, no thermobaricity | `SigmaBaroclinic.density` (`:1285`) | Piece 2 |
+| ~~EOS linear in T: ρ = ρ₀ − α (T − T₀); no TEOS-10, no thermobaricity~~ Resolved 2026-11-01: `eos="wright_full"`/`"teos10"` | `core/components/eos.py` | Piece 2 (done) |
 | Only wind stress at the surface: no heat, freshwater or shortwave fluxes | `SigmaBaroclinic.step(st, tau_x, tau_y)` (`:2084`) | Piece 4 |
 | ~~GLS has no buoyancy term and acts on momentum only~~ Resolved in N2a 8c: buoyancy production and κ_t for tracers | `physics/mixing/gls.py` | Piece 3 (done) |
 | ~~KPP is not available in the core~~ Resolved in N3: `closure='kpp'` in σ and ALE (`core/components/closure.py`); no interior Ri mixing | `physics/mixing/kpp_cvmix.py` | Piece 5 (done) |

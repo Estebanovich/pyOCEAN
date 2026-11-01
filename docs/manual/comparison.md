@@ -20,7 +20,7 @@ pyOCEAN has three model lines. They do not share a time step:
 - **the legacy phase-1 z-level model** (`core/state.py:60`, `core/timestepping/ab2.py`), kept as a reference
     and not extended (`docs/design/unified_core.md`).
 
-Several capabilities exist only in one line (for example TEOS-10 only in the legacy z model, tides
+Several capabilities exist only in one line (for example tides
 only in the 2-D model). The matrix says where. The plan to bring them into the core is in
 [Limitations and roadmap](roadmap.md).
 
@@ -54,7 +54,7 @@ only in the 2-D model). The matrix says where. The plan to bring them into the c
 | Pressure gradient | σ: density Jacobian (Song 1998, default), two-term, or finite volume (`pgf="fv"`, Adcroft et al. 2008); optional reference profile `rho_ref="auto"` subtracted before the integral (`_baroclinic_pgf`, `:1381`; `fv_pgf`, `core/vertical/pgf.py:165`) | Hydrostatic integral on z levels (no σ error) | Finite volume with PLM/PPM reconstruction (`ANALYTIC_FV_PGF`, `core/MOM_PressureForce.F90:103`) | Density Jacobian (Shchepetkin & McWilliams 2003) in `prsgrd.F` **[verify]** | Montgomery potential in layers **[verify]** |
 | Tracer advection | WENO5-Z (default), WENO5-JS, UP3, first-order upwind; vertical WENO in layer-index space (σ) (`_weno5_faces`, `:535`) | Many (2nd order, DST3, OS7MP flux-limited, …; `tempAdvScheme`) | PPM:H3 or PLM (`TRACER_ADVECTION_SCHEME`) | `TS_HADV_RSUP3` (REGIONAL default; with biharmonic diffusion), UP3, WENO5; `TS_VADV_SPLINES` | FCT / MPDATA **[verify]** |
 | Tracer limiter | Zalesak (1979) FCT around the three SSP-RK3 WENO5 stages, bounds over x, y and k ± 1 (`tracer_limiter="fct"`, default in ALE; `_advect_fct`, `:1850`) | Flux limiter of the chosen scheme | Monotonic PPM/PLM | WENO5 is non-oscillatory; RSUP3 is not limited | FCT **[verify]** (`mod_tsadvc.F90:877-905`) |
-| Equation of state (core) | Linear in T only, ρ = ρ₀ − α (T − T₀) (`SigmaBaroclinic.density`, `:1285`); **no salinity** in the core. TEOS-10 (`gsw`) and linear T/S exist in `physics/eos/__init__.py:63`, `:123` but only the legacy z model uses them | Linear, JMD95, MDJWF, TEOS-10 (`eosType`) | Linear, Wright, TEOS-10, others (`EQN_OF_STATE`) | Linear or `NONLIN_EOS` | σ₀/σ₂ polynomials, thermobaricity (`kapref`) |
+| Equation of state (core) | Linear (T, S) (default), Wright full (= MOM6 `WRIGHT_FULL`) and the Roquet et al. 2015 TEOS-10 polynomial (= MOM6 `ROQUET_RHO`) in the 3-D core since 2026-11-01 (`eos=`, `core/components/eos.py`; [Equation of state](theory/equation-of-state.md)); the legacy z model keeps `physics/eos` (`gsw`) | Linear, JMD95, MDJWF, TEOS-10 (`eosType`) | Linear, Wright, TEOS-10, others (`EQN_OF_STATE`) | Linear or `NONLIN_EOS` | σ₀/σ₂ polynomials, thermobaricity (`kapref`) |
 | Spurious-mixing diagnostics | Online: Burchard & Rennau (2008) numerical variance decay of T every step (`mix_num`), RPE (`diagnostics/mixing.py:52`) | Offline | Offline (budget diagnostics) | Offline | Offline |
 
 ### 1.3 Physics, boundaries and coast

@@ -251,7 +251,8 @@ What each numbered block does:
     `sys.path` and imports the two things it needs, the model class `SigmaBaroclinic` with the thread setter
     `set_threads` (`core/dynamics/sigma_baroclinic.py`), and the grid generator `create_cartesian_grid`
     (`core/grid/horizontal.py`).
-3. **Parameters.** Everything is SI. The model's equation of state is linear in temperature,
+3. **Parameters.** Everything is SI. The model's default equation of state is linear in temperature (nonlinear options:
+    [Equation of state](../theory/equation-of-state.md)),
     ρ = ρ₀ − α (T − T₀), so the two water masses are given as temperatures 5/α and 10/α °C, which makes
     Δρ = α ΔT = 5 kg m⁻³ exactly, as in the CROCO `GRAV_ADJ` case.
 4. **Horizontal grid.** `create_cartesian_grid(nx, ny, dx, dy, f0)` returns an `xarray.Dataset` with the

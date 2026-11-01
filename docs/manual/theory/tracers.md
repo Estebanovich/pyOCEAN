@@ -288,7 +288,7 @@ Details on [Idealised benchmarks](../validation/idealised.md).
 **Salinity.** With `salinity=True` the state holds $S$ (g/kg, index order $(k, j, i)$). It is advected with the same
 fluxes and scheme as $T$, diffused by `kh` and `kv`, relaxed by the sponges, remapped in ALE and saved in the restart.
 Density is $\rho(T, S)$ in every consumer: linear EOS $\rho = \rho_0[1 - \alpha(T - T_0) + \beta(S - S_0)]$
-(Vallis 2006, eq. 1.156) or TEOS-10, in the pressure gradient (the finite-volume PGF `fv_pgf_rho` works with
+(Vallis 2006, eq. 1.156) or a nonlinear EOS (`wright_full`, `teos10`; [Equation of state](equation-of-state.md)), in the pressure gradient (the finite-volume PGF `fv_pgf_rho` works with
 $\rho$, without $1/\alpha$), the stratification $N^2$ of the closure and the diagnostics.
 
 **Real freshwater flux.** Precipitation minus evaporation $fw = P - E$ [m/s, positive into the ocean] is a volume

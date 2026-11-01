@@ -21,7 +21,7 @@ All development, tests and validation runs of the repository use the **base cond
 | netCDF4 | 1.7.1.post2 | NetCDF4 engine of restarts and output |
 | zarr | 2.18.7 | Zarr output (`OutputWriter(fmt="zarr")`) |
 | pandas | 2.2.2 | tide gauges, sea-level QC, WRF adapter |
-| gsw | 3.6.19 | TEOS-10 (HYCOM z-level adapter, phase-1 EOS) |
+| gsw | 3.6.19 | TEOS-10 (HYCOM z-level adapter, phase-1 EOS, θ/S_P ↔ Θ/S_A conversions and freezing point of the 3-D `eos="teos10"`) |
 | matplotlib | 3.8.4 | figures of the validation scripts and of this manual |
 | pytest | 8.4.2 | the test suite |
 
@@ -74,7 +74,7 @@ From the import statements of `core/`, `physics/`, `numerics/`, `boundaries/`, `
 | netCDF4 | required for restarts and NetCDF output (xarray engine `"netcdf4"`) | `core/restart.py`, `diagnostics/output.py`, `diagnostics/io.py`, forcing readers |
 | zarr (< 3) | optional: only `OutputWriter(fmt="zarr")` (the default format of `OutputWriter`) | `diagnostics/output.py` through xarray |
 | pandas | optional: tide gauges, sea-level QC, WRF times | `diagnostics/tide_gauges.py`, `diagnostics/sealevel_qc.py`, `forcing/sources/wrf.py` |
-| gsw | optional: TEOS-10 | `forcing/sources/hycom_z.py` (top-level import), `physics/eos/__init__.py` (imported only for `eos="teos10"`) |
+| gsw | **required** by the 3-D core since 2026-11-01 (top-level import of `physics/eos/convert.py` by `core/dynamics/sigma_baroclinic.py` and `core/components/`), even with the linear EOS | also `forcing/sources/hycom_z.py` (top-level import), `physics/eos/__init__.py` (imported only for `eos="teos10"`) |
 | matplotlib | optional: figures | validation scripts, manual figures (no core module imports it) |
 | pytest | for the tests | `tests/` |
 | jax 0.4.35 | optional, prototypes only | `prototypes/` |
