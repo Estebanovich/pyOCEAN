@@ -25,6 +25,7 @@ import xarray as xr
 from core.grid.horizontal import (
     R_EARTH,
     create_cartesian_grid,
+    create_cartesian_grid_stretched,
     create_spherical_grid,
 )
 from core.grid.supergrid import grid_from_supergrid, supergrid_from_arrays
@@ -220,21 +221,113 @@ def test_rotated_grid_angle() -> None:
     assert np.max(np.abs(np.rad2deg(np.arctan2(vn, ue)) - 30.0)) < 0.05
 
 
-def test_non_orthogonal_raises() -> None:
-    nx, ny, d = 10, 8, 5_000.0
+def _skewed_supergrid(nx: int = 10, ny: int = 8, d: float = 5_000.0) -> xr.Dataset:
+    """Cartesian supergrid with the u node between cells (3, 4) and (3, 5)
+    moved north by 0.2 % of a cell: grid-x of both cells tilts by 2e-3 rad."""
     sg = _cartesian_supergrid(nx, ny, d)
     y = sg["y"].values.copy()
-    # Move the u node between cells (3, 4) and (3, 5) north by 2 % of a cell:
-    # grid-x of both cells tilts by ~0.02 rad while grid-y stays north.
-    y[2 * 3 + 1, 2 * 5] += 0.02 * d
+    y[2 * 3 + 1, 2 * 5] += 0.002 * d
     sg["y"] = (sg["y"].dims, y)
-    with pytest.raises(ValueError, match=r"\(j, i\) = \(3, [45]\)"):
+    return sg
+
+
+def test_non_orthogonal_raises() -> None:
+    sg = _skewed_supergrid()
+    # Without depth every cell is checked; the default max_skew is 1e-3 rad.
+    with pytest.raises(ValueError, match=r"skew 2\.0\d*e-03 rad .*\(j, i\) = \(3, [45]\)"):
         grid_from_supergrid(sg)
-    # Only wet cells are checked when a depth is given.
-    depth = np.ones((ny, nx))
+    grid_from_supergrid(sg, max_skew=5e-3)              # ruling R9
+    with pytest.raises(ValueError, match=r"\(j, i\) = \(3, [45]\)"):
+        grid_from_supergrid(sg, max_skew=1.5e-3)
+    # With depth only wet cells are checked.
+    depth = np.ones((8, 10))
     depth[3, 4:6] = 0.0
     g = grid_from_supergrid(sg, depth=depth)
     assert g["mask_t"].values[3, 4] == 0
+    depth[3, 5] = 1.0
+    with pytest.raises(ValueError, match=r"\(j, i\) = \(3, 5\)"):
+        grid_from_supergrid(sg, depth=depth)
+
+
+def test_edge_extrapolation_is_mom6_linear() -> None:
+    """Outermost-face metrics use 2 v(edge) − v(edge∓1) on the half-segments
+    (MOM_grid_initialize.F90:1139-1169; mom6_grid.md §3), rows (S, N) first,
+    then columns (W, E).  Half-segments vary nonlinearly in both directions,
+    so copying the edge value (or the parent's value) would fail."""
+    nx, ny, d = 6, 5, 1_000.0
+    sg = _cartesian_supergrid(nx, ny, d)
+    r = np.arange(2 * ny + 1)[:, None]
+    k = np.arange(2 * nx)[None, :]
+    dx = 500.0 * (1.0 + 0.03 * k**2 + 0.02 * r**1.5)
+    r2 = np.arange(2 * ny)[:, None]
+    k2 = np.arange(2 * nx + 1)[None, :]
+    dy = 500.0 * (1.0 + 0.05 * r2**2 + 0.01 * np.sqrt(k2 + 1.0))
+    a = 2.5e5 * (1.0 + 0.04 * r2**2 + 0.07 * k[:, :2 * nx] ** 2)[: 2 * ny]
+    sg["dx"] = (sg["dx"].dims, dx)
+    sg["dy"] = (sg["dy"].dims, dy)
+    sg["area"] = (sg["area"].dims, a)
+    g = grid_from_supergrid(sg)
+
+    def ext_lo(v0, v1):
+        return 2.0 * v0 - v1
+
+    # dx_u at I = 0 and I = ni: dx[2j+1, -1] and dx[2j+1, 2ni] are extrapolated
+    assert np.array_equal(g["dx_u"].values[:, 0], ext_lo(dx[1::2, 0], dx[1::2, 1]) + dx[1::2, 0])
+    assert np.array_equal(g["dx_u"].values[:, -1], dx[1::2, -1] + ext_lo(dx[1::2, -1], dx[1::2, -2]))
+    # dy_v at J = 0 and J = nj
+    assert np.array_equal(g["dy_v"].values[0], ext_lo(dy[0, 1::2], dy[1, 1::2]) + dy[0, 1::2])
+    assert np.array_equal(g["dy_v"].values[-1], dy[-1, 1::2] + ext_lo(dy[-1, 1::2], dy[-2, 1::2]))
+    # q metrics on the edges
+    assert np.array_equal(g["dx_q"].values[:, 0], ext_lo(dx[0::2, 0], dx[0::2, 1]) + dx[0::2, 0])
+    assert np.array_equal(g["dy_q"].values[-1], dy[-1, 0::2] + ext_lo(dy[-1, 0::2], dy[-2, 0::2]))
+    # area_q corner (0, 0): rows extrapolated first, then the columns
+    south = ext_lo(a[0], a[1])                       # row −1, all columns
+    corner = ext_lo(south[0], south[1])              # (−1, −1)
+    west = ext_lo(a[0, 0], a[0, 1])                  # (0, −1)
+    assert g["area_q"].values[0, 0] == (corner + a[0, 0]) + (west + south[0])
+    # area_q on the south edge, I = 1: sub-cells (−1, 1), (0, 2), (0, 1), (−1, 2)
+    assert g["area_q"].values[0, 1] == (south[1] + a[0, 2]) + (a[0, 1] + south[2])
+    # Interior faces are plain sums (no extrapolation)
+    assert np.array_equal(g["dx_u"].values[:, 1:-1], dx[1::2, 1:-1:2] + dx[1::2, 2::2])
+
+
+def test_stretched_supergrid_equals_create_cartesian_grid_stretched() -> None:
+    rng = np.random.default_rng(7)
+    nx, ny = 11, 8
+    dxs = 1_000.0 * (1.0 + rng.random(nx))
+    dys = 800.0 * (1.0 + rng.random(ny))
+    ref = create_cartesian_grid_stretched(dxs, dys)
+    xu = ref["x_u"].values[0]
+    xt = ref["x_t"].values[0]
+    yv = ref["y_v"].values[:, 0]
+    yt = ref["y_t"].values[:, 0]
+    xn = np.empty(2 * nx + 1)
+    xn[0::2], xn[1::2] = xu, xt
+    yn = np.empty(2 * ny + 1)
+    yn[0::2], yn[1::2] = yv, yt
+    X, Y = np.meshgrid(xn, yn)
+    hx = np.repeat(dxs / 2.0, 2)                     # half-segments
+    hy = np.repeat(dys / 2.0, 2)
+    dx = np.broadcast_to(hx, (2 * ny + 1, 2 * nx)).copy()
+    dy = np.broadcast_to(hy[:, None], (2 * ny, 2 * nx + 1)).copy()
+    area = hy[:, None] * hx[None, :]
+    g = grid_from_supergrid(supergrid_from_arrays(X, Y, dx, dy, area, np.zeros_like(X), units="m"))
+    for name in SHARED:
+        if name in ("f_t", "f_q"):
+            continue                                  # planar grid: f is NaN
+        np.testing.assert_allclose(g[name].values, ref[name].values, rtol=1e-15, atol=0.0,
+                                   err_msg=name)
+
+
+def test_lon_wrap_across_dateline() -> None:
+    sg = _spherical_supergrid(6, 4, 0.5, 0.5, 178.0, 10.0)
+    x = sg["x"].values.copy()
+    x[x > 180.0] -= 360.0                             # 178 … 180, −179.75 … −179
+    sg["x"] = (sg["x"].dims, x)
+    g = grid_from_supergrid(sg)
+    ref = grid_from_supergrid(_spherical_supergrid(6, 4, 0.5, 0.5, 178.0, 10.0))
+    np.testing.assert_allclose(g["x_t"].values, ref["x_t"].values, rtol=1e-12)
+    np.testing.assert_allclose(g["cos_t"].values, ref["cos_t"].values, rtol=0, atol=1e-15)
 
 
 def test_mask_from_depth() -> None:

@@ -17,9 +17,9 @@ read and translated to Python indices in
 * T and q areas are sums of four supergrid sub-cells, in MOM6's order of
   summation (pairs of diagonal sub-cells first, ``:296-301``);
 * u and v areas are MOM6's products ``areaCu = dxCu · dyCu``,
-  ``areaCv = dyCv · dxCv`` (``:1334, 1341``), **unmasked** here (MOM6 masks
-  them through the open face length ``dy_Cu``, ``dx_Cv``; masking is left to
-  the model, plan Task 3);
+  ``areaCv = dyCv · dxCv`` (``:1334, 1342``), **unmasked** here (MOM6 masks
+  them through the open face length ``dy_Cu``, ``dx_Cv``, ``:1332, 1340``;
+  masking is left to plan Task 3);
 * half-segments and sub-cell areas beyond the grid edge are linearly
   extrapolated, ``v_out = 2 v(edge) − v(edge∓1)``, in MOM6's order (south,
   north, then west, east; ``extrapolate_metric``, ``:1139-1169``).  This sets
@@ -118,6 +118,7 @@ def grid_from_supergrid(
     depth: np.ndarray | None = None,
     window: tuple[int, int, int, int] | None = None,
     omega: float = 7.2921e-5,
+    max_skew: float = MAX_SKEW,
 ) -> xr.Dataset:
     """
     pyOCEAN C-grid Dataset from a MOM6 supergrid, as MOM6 builds it.
@@ -163,6 +164,9 @@ def grid_from_supergrid(
         Sub-domain in T-cell indices of the full grid.
     omega : float
         Earth's rotation rate Ω [s⁻¹] (MOM6 ``OMEGA``, NWA12 7.2921e-5).
+    max_skew : float
+        Largest accepted departure of the grid-x/grid-y angle from 90° [rad],
+        checked in wet cells when ``depth`` is given, in every cell otherwise.
 
     Returns
     -------
@@ -175,8 +179,9 @@ def grid_from_supergrid(
     ------
     ValueError
         Bad supergrid shapes, window, depth shape, or a grid whose
-        grid-x/grid-y angle departs from 90° by more than ``MAX_SKEW`` in a
-        wet cell (names the worst T cell (j, i), window indices).
+        grid-x/grid-y angle departs from 90° by more than ``max_skew``
+        (wet cells with ``depth``, all cells without; names the skew and the
+        worst T cell (j, i), window indices).
     """
     nyp_f, nxp_f = hgrid["x"].shape
     _check_supergrid_shape(nyp_f, nxp_f)
@@ -205,7 +210,7 @@ def grid_from_supergrid(
     mask_t = _mask_from_depth(depth, (nj_f, ni_f), (nj, ni), (j0, j1, i0, i1))
 
     # ---- non-orthogonality check from the supergrid geometry -------------
-    _check_orthogonal(X, Y, geo, mask_t)
+    _check_orthogonal(X, Y, geo, mask_t, max_skew)
 
     # ---- edge extrapolation (MOM_grid_initialize.F90:1139-1169) ----------
     # dx only needs columns outside (index -1 and 2ni), dy rows outside,
@@ -237,7 +242,7 @@ def grid_from_supergrid(
     area_t = (a[0::2, 0::2] + a[1::2, 1::2]) + (a[1::2, 0::2] + a[0::2, 1::2])
     # areaBu = (a[2J-1,2I-1] + a[2J,2I]) + (a[2J,2I-1] + a[2J-1,2I])  (:300-301)
     area_q = (ap[0::2, 0::2] + ap[1::2, 1::2]) + (ap[1::2, 0::2] + ap[0::2, 1::2])
-    # areaCu = dxCu · dyCu, areaCv = dyCv · dxCv (:1334, :1341; unmasked here)
+    # areaCu = dxCu · dyCu, areaCv = dyCv · dxCv (:1334, :1342; unmasked here, masking in Task 3)
     area_u = dx_u * dy_u
     area_v = dy_v * dx_v
 
@@ -250,8 +255,9 @@ def grid_from_supergrid(
         lon = {k: X[s] for k, s in pos.items()}
         lat = {k: Y[s] for k, s in pos.items()}
         lon0, lat0 = X[0, 0], Y[0, 0]
-        # Arc-length positions from the SW corner, as create_spherical_grid.
-        xy = {k: (R_EARTH * np.deg2rad(lon[k] - lon0) * np.cos(np.deg2rad(lat0)),
+        # Arc-length positions from the SW corner, as create_spherical_grid;
+        # longitude differences wrapped to (−180°, 180°] (dateline-safe).
+        xy = {k: (R_EARTH * np.deg2rad(_wrap_lon(lon[k] - lon0)) * np.cos(np.deg2rad(lat0)),
                   R_EARTH * np.deg2rad(lat[k] - lat0)) for k in pos}
         # f = (2Ω) sin(π φ / 180)   (MOM_shared_initialization.F90:504-506)
         f_q = (2.0 * omega) * np.sin((np.pi * lat["q"]) / 180.0)
@@ -364,6 +370,16 @@ def _extrap_cols(v: np.ndarray) -> np.ndarray:
     return out
 
 
+def _wrap_lon(d: np.ndarray) -> np.ndarray:
+    """Longitude difference wrapped to (−180°, 180°] [degrees]; values
+    already inside are returned unchanged (bit for bit)."""
+    d = np.asarray(d, dtype=float)
+    out = d.copy()
+    bad = (d <= -180.0) | (d > 180.0)
+    out[bad] = 180.0 - np.mod(180.0 - d[bad], 360.0)
+    return out
+
+
 def _modulo_around_point(x: np.ndarray, xc: np.ndarray, period: float) -> np.ndarray:
     """x shifted by a multiple of ``period`` into [xc − L/2, xc + L/2)
     (MOM_shared_initialization.F90:629-642)."""
@@ -403,7 +419,8 @@ def _planar_rotation_angle(x_q: np.ndarray, y_q: np.ndarray) -> np.ndarray:
                       (y_q[nw] - y_q[se]) + (y_q[ne] - y_q[sw]))
 
 
-def _check_orthogonal(X: np.ndarray, Y: np.ndarray, geo: bool, mask_t: np.ndarray) -> None:
+def _check_orthogonal(X: np.ndarray, Y: np.ndarray, geo: bool, mask_t: np.ndarray,
+                      max_skew: float = MAX_SKEW) -> None:
     """
     Raise if a T cell's grid-x and grid-y directions are not orthogonal.
 
@@ -412,8 +429,9 @@ def _check_orthogonal(X: np.ndarray, Y: np.ndarray, geo: bool, mask_t: np.ndarra
     (2j+1, 2i) → (2j+1, 2i+2), grid-y between the v nodes
     (2j, 2i+1) → (2j+2, 2i+1); on the sphere longitude differences are
     wrapped to ±180° and scaled by cos φ_T (local tangent plane).
-    The skew |π/2 − ∠(x, y)| must not exceed ``MAX_SKEW`` [rad] in wet
-    cells (``mask_t == 1``; land cells carry no flow).  NWA12 has land cells
+    The skew |π/2 − ∠(x, y)| must not exceed ``max_skew`` [rad] in wet
+    cells (``mask_t == 1``, all ones without a depth; land cells carry no
+    flow).  NWA12 has land cells
     with aspect ratio 7 and skew up to 2.6e-3 rad (float32-exact node
     positions, inherited from the HYCOM grid; the skew halves when the
     stencil span doubles, so it is mostly rounding); its wet cells stay
@@ -435,8 +453,8 @@ def _check_orthogonal(X: np.ndarray, Y: np.ndarray, geo: bool, mask_t: np.ndarra
         j, i = np.unravel_index(np.argmax(~np.isfinite(skew)), skew.shape)
         raise ValueError(f"degenerate supergrid cell at (j, i) = ({j}, {i})")
     k = int(np.argmax(skew))
-    if skew.flat[k] > MAX_SKEW:
+    if skew.flat[k] > max_skew:
         j, i = np.unravel_index(k, skew.shape)
         raise ValueError(
-            f"non-orthogonal supergrid: skew {skew.flat[k]:.3e} rad > {MAX_SKEW:g} "
+            f"non-orthogonal supergrid: skew {skew.flat[k]:.3e} rad > max_skew {max_skew:g} "
             f"at T cell (j, i) = ({j}, {i})")
