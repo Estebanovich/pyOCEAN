@@ -1386,7 +1386,10 @@ class SigmaBaroclinic:
         self.surface_fluxes = surface_fluxes                            # bulk fluxes (N2b task 4), or None
         self._surface_fluxes = (None if surface_fluxes is None else
                                 SurfaceFluxes(surface_fluxes, fs=self.fs, area=self.area, ds=self.ds, ale=self.ale,
-                                              periodic=self.periodic, rho0=self.rho0, salinity=self.salinity))
+                                              periodic=self.periodic, rho0=self.rho0, salinity=self.salinity,
+                                              ts_kind=self._eos.ts_kind))
+        self.n_below_freezing = 0                                       # wet cell-layers with T < freezing point, last
+                                                                        # step (counted, never corrected; TEOS-10 task 7)
         self._driver = Driver(self)
         self._tracer_advection = TracerAdvection(scheme=self.tracer_scheme, time=self.tracer_time, dt=dt, ob=self._ob)
         self._tracer_diffusion = TracerDiffusion(kh=self.kh, dt=dt, ds=self.ds, fs=self.fs, eos=self._eos, pgf=self._pgf,

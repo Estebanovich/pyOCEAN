@@ -69,6 +69,8 @@ from typing import Any
 
 import numpy as np
 
+from physics.eos.convert import ct_to_theta, sa_to_sp
+
 from forcing.bulk import (RHO_FW, T0_K, _HY_RHOREF, bulk_kara, bulk_ncar, bulk_ncar_fms,  # noqa: F401
                           radiative_fluxes)
 from forcing.bulk_coare import PSURF, RHO0_CROCO, bulk_coare_croco
@@ -269,8 +271,9 @@ class SurfaceFluxes:
     """
 
     def __init__(self, cfg: BulkFluxes, *, fs, area: np.ndarray, ds: np.ndarray, ale: bool, periodic,
-                 rho0: float, salinity: bool) -> None:
+                 rho0: float, salinity: bool, ts_kind: str = "theta_sp") -> None:
         self.cfg = cfg
+        self.ts_kind = ts_kind                                      # (T, S) convention of the model state (EOS)
         self.fs, self.ds, self.ale = fs, np.asarray(ds, float), ale
         self.A = np.nan_to_num(np.asarray(area, float))
         self.per_x, self.per_y = bool(getattr(periodic, "x", False)), bool(getattr(periodic, "y", False))
@@ -335,6 +338,10 @@ class SurfaceFluxes:
         avg = self._averager(h, wet)
         sst = np.where(wet, avg(cfg.h_sfc, st.T), 10.0)                  # land: any finite value, masked below
         sss = np.where(wet, avg(cfg.h_sfc, st.S), 35.0) if st.S is not None else None
+        if self.ts_kind == "ct_sa" and sss is not None:
+            # TEOS-10 state (Θ, S_A): average first, then convert the 1 m mean to the (θ, S_P) the bulk formulae
+            # take (MOM6 coupler order, docs/design/teos10_refs/mom6_eos.md §6; spec goal F)
+            sst, sss = ct_to_theta(sss, sst), sa_to_sp(sss)
         if cfg.relative_wind:
             k0 = avg.k0(self.h_uv)                                     # centre u, v on the layers used only
             uc = 0.5 * (st.u[k0:, :, :-1] + st.u[k0:, :, 1:])

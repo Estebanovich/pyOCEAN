@@ -44,6 +44,8 @@ _SPECS = [
             "Klingbeil et al. 2014): {S,T}_{num_adv,surf,phy_h,phy_v,sponge[,num_remap]}"),
     VarSpec("n_trunc", (), "scalar", "1", None, "diagnostic", "CFL velocity truncations so far (ALE)"),
     VarSpec("n_limited", (), "scalar", "1", None, "diagnostic", "cell-layers scaled by the outflow limiter (ALE)"),
+    VarSpec("n_below_freezing", (), "scalar", "1", None, "diagnostic",
+            "wet cell-layers whose T is below the freezing point at the layer-centre pressure, last step (counted only)"),
     VarSpec("n_visc_limited", (), "scalar", "1", None, "diagnostic",
             "h and q points whose Smagorinsky viscosity the AB3 stability bound reduced, summed over steps"),
     VarSpec("nu_smag", ("k", "y", "x"), "t", "m2 s-1", None, "diagnostic",

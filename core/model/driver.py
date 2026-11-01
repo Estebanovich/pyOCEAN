@@ -249,6 +249,24 @@ class Driver:
         if self.m._momentum.smagorinsky > 0:          # points where the AB3 bound reduced the Smagorinsky ν
             ctx.set(n_visc_limited=self.m._momentum.last_n_limited)
 
+    def _n_below_freezing(self, eta: np.ndarray, T: np.ndarray, S: np.ndarray | None, h: np.ndarray) -> int:
+        """
+        Wet cell-layers whose T is below the freezing point Tf(S, p) [°C] of the EOS at the layer-centre pressure
+        p = g ρ₀ (Σ_{above} h + ½ h) [Pa] (the pressure of ``_layer_density``).  Only counted: T is never modified.
+        Needs salinity (0 without).  Cells warmer than 0.5 °C cannot freeze (Tf ≤ 0 for S ≥ 0 in both freezing
+        laws), so the EOS is evaluated only on the cold cells (cheap with gsw).  (N, ny, nx) bed first.
+        """
+        m = self.m
+        if S is None:
+            return 0
+        wet = m.fs.active & (m.fs.H + eta > m.fs.d_min) & (np.nan_to_num(m.area) > 0)
+        cold = (T < 0.5) & wet[None] & (h > 0)
+        if not cold.any():
+            return 0
+        h = np.nan_to_num(np.asarray(h, float))
+        p = (m.g * m.rho0 * (np.cumsum(h[::-1], axis=0)[::-1] - 0.5 * h))[cold]
+        return int(np.count_nonzero(T[cold] < m._eos.freezing_point(S[cold], p)))
+
     @staticmethod
     def _n_visc_limited(ctx: StepContext):
         """Running count of Smagorinsky-limited points; stays None while the viscosity has never been on."""
@@ -587,6 +605,8 @@ class Driver:
 
     def _sigma_finalize(self, ctx: StepContext) -> None:
         m, st, lf = self.m, ctx.st, ctx.lf
+        m.n_below_freezing = self._n_below_freezing(ctx.eta_new, ctx.T_new, ctx.S_new if m.salinity else None,
+                                                    self._sigma_thickness(ctx.eta_new))
         omega = lf.Fz / np.where(m.area > 0, m.area, 1.0)[None]
         ctx.set(new_state=type(st)(eta=ctx.eta_new, u=ctx.u_new, v=ctx.v_new, T=ctx.T_new, g_hist=ctx.hist,
                                    omega=omega, mix_num=ctx.mix, Qx=lf.Qx, Qy=lf.Qy, Fz=lf.Fz, time=st.time + m.dt,
@@ -892,6 +912,8 @@ class Driver:
     def _ale_finalize(self, ctx: StepContext) -> None:
         m, st, lf, vc = self.m, ctx.st, ctx.lf, self.m._vertical
         dt = m.dt
+        m.n_below_freezing = self._n_below_freezing(ctx.eta_new, ctx.T_new, ctx.S_new if m.salinity else None,
+                                                    ctx.h_new)
         hu_lag, hv_lag = vc.mean_face_thickness(ctx.vals.get("h_fw", lf.h_dagger))
         hu1, hv1 = vc.mean_face_thickness(ctx.h_new)
         wu1, wv1 = face_fractions(hu1), face_fractions(hv1)                # once: remap target and thin-bed rule
