@@ -149,8 +149,10 @@ interfaz inicial. Volúmenes de cabbeling: agua con ρ(T, S, 0) mayor que la de 
   El residuo no es termobárico (es igual con la lineal), pero no es de redondeo: abierto, sección 3 diferencias 1 y
   3, sección 4 puntos 1 y 2.
 - **Criterio 4, modo MOM6 (`rho_ref=None`), sin límite:** montaña z\* 4.2–4.6 cm/s, híbrido 23–26 cm/s; escalón z\*
-  2.1 mm/s, híbrido 6.5–7.4 mm/s; las no lineales 0.89–1.14× la lineal. **No se corrió MOM6 en el mismo caso**
-  (aplazado a la cadena regional / NWA12, donde MOM6 corre en el mismo recorte; decisión del controlador del plan, 2026-11-01).
+  2.1 mm/s, híbrido 6.5–7.4 mm/s; las no lineales 0.89–1.14× la lineal. **MOM6 compilado en el mismo caso
+  (montaña, 2026-11-01, sección 5):** mismo PGF inicial a ≤ 5e-12; con fondo libre MOM6 trunca en z\* y en el
+  híbrido; con arrastre de fondo en los dos, híbrido MOM6 0.13–0.16 frente a 0.17 m s⁻¹ de pyOCEAN: el residuo del
+  híbrido es compartido, (c). El escalón de BayIW no se corrió en MOM6.
 - **Criterio 5a (cabbeling): cumplido.** Con `wright_full` y `teos10` aparece agua más densa que las dos fuentes en
   la primera hora, su volumen crece (0.52e9 m³ a 2 h, 1.3e9 a 6 h, el dominio a 1 día) y su altura media ponderada por
   el exceso de densidad baja hasta −147 m (H = 200 m) a las 15 h, antes de que el dominio se mezcle entero. Con la
@@ -255,7 +257,7 @@ interfaz inicial. Volúmenes de cabbeling: agua con ρ(T, S, 0) mayor que la de 
    (cabbeling) y forma corrientes de gravedad de g′H ≈ (0.5 m s⁻¹)².
 5. **Inversión termobárica por GLS en una columna 1-D: (b) física ausente por diseño (hidrostático).** Sin
    movimiento (max\|u\| = 0): la convección es la mezcla del cierre con N² < 0, no plumas resueltas.
-6. **Criterio 4 modo MOM6 sin la corrida de MOM6: pendiente** (no es diferencia; falta la referencia).
+6. **Criterio 4 modo MOM6 contra MOM6 compilado: hecho en la montaña** (sección 5): mismo PGF inicial; residuo del híbrido compartido con MOM6, (c).
 7. **Fuerza cero a redondeo del criterio 4 no alcanzada** en z\* sobre la montaña (celdas parciales, diferencia 3,
    (c)) ni en el híbrido (diferencia 1): abierto, independiente de la EOS.
 8. **Costo de `teos10` 3.16× (límite 2.5×): (a) resuelto el 2026-11-01** con optimizaciones exactas (núcleos de
@@ -269,8 +271,8 @@ interfaz inicial. Volúmenes de cabbeling: agua con ρ(T, S, 0) mayor que la de 
    (diferencia 1). Una reconstrucción de mayor orden debería acercar el híbrido de pocas capas a z\*.
 2. **Perfil de referencia de `rho_ref="auto"` exacto en celdas parciales:** muestrear el perfil de los datos
    (h_src) en lugar de clases de los centros de capa; quitaría el residuo de 1e-7 m s⁻² (diferencia 3).
-3. **Correr MOM6 en el caso de reposo (montaña, z\* y ρ, WRIGHT_FULL)** para poner las cifras del modo
-   `rho_ref=None` junto a las suyas, como pide el criterio 4.
+3. ~~**Correr MOM6 en el caso de reposo**~~ Hecho el 2026-11-01 en la montaña (z\* e híbrido HYCOM1, tres EOS;
+   sección 5).
 4. **Validar cabbeling/termobaricidad contra observaciones o LES** (no hay verdad en esta tarea: solo signo y
    aparición). Candidatos: la formación de agua por cabbeling en frentes (McDougall 1987).
 5. **Columna bulk contra la boya 44025** con `teos10`: la diferencia lineal/no lineal (+0.1 °C) es del orden de la
@@ -287,3 +289,138 @@ interfaz inicial. Volúmenes de cabbeling: agua con ρ(T, S, 0) mayor que la de 
    N² inicial es igual a MOM6, diferencia de segundo orden, (c)).
 9. ~~**Comprobar la cota de ajuste de Roquet contra el artículo**~~ Hecho el 2026-11-01: `ROQUET_FIT_MAX` = 1.1 × 5.355e-2
    kg m⁻³ es coherente con la Tabla 2 de Roquet et al. 2015 (cubo completo 1.83 ± 27.45e-3 kg m⁻³).
+
+## 5. Caso de reposo en MOM6 compilado (modo MOM6, `rho_ref=None`)
+
+Cierra el punto abierto "no se corrió MOM6 en el mismo caso" (criterio 4, sección 3 diferencia 6, sección 4 punto 3).
+Código: `mom6.py` (entradas, lectura, métrica común), `run_mom6.sh` (lanzador, mismo patrón que
+`validation/ilicak_benchmark/run_mom6.sh`), `compare_mom6.py` (corridas de pyOCEAN con la misma métrica y tablas).
+MOM6 git 0e9a561, ejecutable `repro` (-O2), 1 proceso; ~2 min por corrida de 10 días; pyOCEAN 30–40 s (5 hilos).
+
+```bash
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=5
+validation/teos10/run_mom6.sh wright_full hybrid            # eos: linear | wright_full | teos10; coord: zstar | hybrid
+DRAG=1 validation/teos10/run_mom6.sh wright_full hybrid     # sensibilidad con arrastre de fondo
+DRAG=1 validation/teos10/run_mom6.sh wright_full hybrid 50  # 50 capas
+python -m validation.teos10.compare_mom6 pyocean --all      # y: pyocean EOS COORD [N] --drag
+python -m validation.teos10.compare_mom6 table              # escribe las tablas entre los marcadores
+```
+
+Salidas en `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/teos10/mom6_rest/<eos>_<coord>[_nN][_drag]/` (`pgf0/`, `run/`,
+`series.npz` de MOM6, `pyocean.npz`).
+
+**Mismo estado inicial.** MOM6 arranca del estado inicial de pyOCEAN (h, T, S de `rest_case` tras su
+inicialización; capas volteadas a superficie primero) con `THICKNESS_CONFIG = "thickness_file"`,
+`TS_CONFIG = "file"` y `REMAP_AFTER_INITIALIZATION = False` (`MOM_ALE.F90:293-297`; con el valor por defecto MOM6
+regridea la condición inicial otra vez, `MOM.F90:3469-3497`). `MOM_IC.nc` = entrada de pyOCEAN con diferencia 0.0 en
+h, T y S en las 13 corridas. `teos10` ya está en Θ, S_A (`physics/eos/convert.py`), lo que toma `ROQUET_RHO`.
+
+**Métrica.** La de `run_pyocean.py` (máximo de \|u\|, \|v\| sobre todas las caras y capas, cada hora, 10 días) y
+además la misma sobre las caras cuyas dos celdas tienen ≥ 1 m ("thick": una velocidad en una capa evanescente no
+mueve agua). \|PGF\| t=0: en pyOCEAN `pressure_gradient` sobre el estado inicial; en MOM6 `PFu`, `PFv` de una
+corrida de un paso: con `BEGW = 0` (defecto) el corrector llama a `PressureForce` con h del tiempo n
+(`MOM_dynamics_split_RK2.F90:840-848`, publicado en `:1120`), es decir, el PGF del estado inicial.
+
+**Ajustes de MOM6 y diferencias con pyOCEAN** (todo citado en el docstring de `mom6.py`):
+
+| Elemento | MOM6 | pyOCEAN | Clase |
+|---|---|---|---|
+| EOS | `LINEAR` (RHO_REF_LINEAR_EOS 1035, T/S_REF_LINEAR_EOS, DRHO_DT = −α, DRHO_DS = β de `linear_equivalent`), `WRIGHT_FULL`, `ROQUET_RHO`; RHO_0 = RHO_PGF_REF = 1035 | igual | — |
+| PGF | `ANALYTIC_FV_PGF`, PLM de T y S (`PRESSURE_RECONSTRUCTION_SCHEME = 1`, `BOUNDARY_EXTRAPOLATION_PRESSURE`), `MASS_WEIGHT_IN_PRESSURE_GRADIENT` con `_VANISHED_ONLY` y `RESET_INTXPA_H_NONVANISHED = 0.01` m, sin `CORRECTION_INTXPA` | `fv_pgf_nonlinear`, `pgf_mass_weight="vanished"`: \|PGF\| inicial **igual a ≤ 5e-12 relativo** sobre todas las caras en las 13 corridas, y ≤ 2e-11 sobre caras gruesas salvo la lineal en z\* | — |
+| PGF lineal en caras gruesas | PLM de T y S, ρ puntual | PLM de la anomalía de densidad (`core/vertical/pgf.py`): 1.76e-6 frente a 2.82e-6 m s⁻² en z\* (el máximo global, en caras delgadas, es igual) | (c) |
+| Coordenada z\* | `ZSTAR`, 20 niveles H_max/N (`FILE:vgrid.nc,dz`) | igual (= `coord_zlike` a 3e-14 m) | — |
+| Coordenada híbrida | `HYCOM1`, `HYBRID:vgrid.nc,sigma2,dz` con los pisos y objetivos de pyOCEAN (densidades completas a P_REF 2e7), P1M_H2, sin extrapolación, MIN_THICKNESS 1e-3 | HYCOM1 + `keep_isopycnal` (no mueve interfaces entre capas que ya están en su intervalo) + relleno de capas sin masa (hybgen) | (c) |
+| Inicialización híbrida | la de pyOCEAN (4N niveles + `snap_to_jumps`), regrideada por HYCOM1 de MOM6 al final del primer paso | propia | (c) |
+| Transporte de capa junto al fondo | `continuity_PPM` sin recorte por el lecho; solo `visc_rem` de la capa límite de fondo frena las capas bajo el lecho del vecino | PPM con el espesor recortado al lecho más somero (HYCOM `cnuity.F90:252-256`; `core/vertical/ale.py:1-30`) | (c), decisivo (abajo) |
+| Momento | invariante vectorial, `SADOURNY75_ENERGY`, `BOUND_CORIOLIS`, `KE_ARAKAWA`, sin viscosidad horizontal, KV 1e-4 | igual (WENO5 no entra en el momento) | — |
+| Fondo | libre (`CDRAG = 0`, `KV_BBL_MIN = 0`); sensibilidad: `CDRAG` 3e-3, `HBBL` 10 m, `KV_BBL_MIN` = KV (defectos de MOM6) | libre; sensibilidad: `bottom_drag="quadratic"`, `cd` 3e-3, `hbbl` 10 m | — |
+| Trazadores | PPM:H3, KHTR = KD = 0 | WENO5 + FCT, kh = kv = 0 | (c) |
+| Tiempo | RK2 partido, DTBT = −0.98, Δt 600 s | AB3 + superficie libre implícita (θ 0.6, θ_bc ½), Δt 600 s | (c) |
+
+<!-- mom6-rest:start -->
+### Configuración del caso (lecho sin fricción, sin viscosidad horizontal)
+
+| coord | EOS | model | \|PGF\| t=0 all / thick [m s⁻²] | max\|u\| 1 h all / thick | max\|u\| 1 d all / thick | max\|u\| 10 d all / thick [m s⁻¹] | truncations | MOM6/pyOCEAN thick 10 d |
+|---|---|---|---|---|---|---|---|---|
+| zstar | linear | pyOCEAN | 6.13e-05 / 1.76e-06 | 5.8e-03 / 5.8e-03 | 3.2e-02 / 3.2e-02 | 4.25e-02 / 4.25e-02 | 0 |  |
+| zstar | linear | MOM6 | 6.13e-05 / 2.82e-06 | 2.2e-01 / 5.2e-03 | 5.0e+00 / 4.3e+00 | 5.00e+00 / 5.00e+00 | 1279 | 117.6 |
+| zstar | wright_full | pyOCEAN | 6.08e-05 / 2.66e-06 | 6.6e-03 / 6.6e-03 | 3.7e-02 / 3.7e-02 | 4.61e-02 / 4.61e-02 | 0 |  |
+| zstar | wright_full | MOM6 | 6.08e-05 / 2.66e-06 | 2.2e-01 / 5.1e-03 | 4.6e+00 / 2.6e+00 | 5.00e+00 / 5.00e+00 | 1520 | 108.4 |
+| zstar | teos10 | pyOCEAN | 6.12e-05 / 2.71e-06 | 6.6e-03 / 6.6e-03 | 3.7e-02 / 3.7e-02 | 4.62e-02 / 4.62e-02 | 0 |  |
+| zstar | teos10 | MOM6 | 6.12e-05 / 2.71e-06 | 2.2e-01 / 5.1e-03 | 4.8e+00 / 2.6e+00 | 5.00e+00 / 5.00e+00 | 844 | 108.1 |
+| hybrid | linear | pyOCEAN | 3.70e-05 / 1.09e-05 | 3.3e-02 / 3.3e-02 | 8.0e-02 / 8.0e-02 | 2.56e-01 / 2.56e-01 | 0 |  |
+| hybrid | linear | MOM6 | 3.70e-05 / 1.09e-05 | 1.4e-01 / 2.8e-02 | 4.5e+00 / 2.1e+00 | 5.00e+00 / 5.00e+00 | 4 | 19.6 |
+| hybrid | wright_full | pyOCEAN | 3.66e-05 / 1.17e-05 | 3.6e-02 / 3.6e-02 | 7.7e-02 / 7.7e-02 | 2.28e-01 / 2.28e-01 | 0 |  |
+| hybrid | wright_full | MOM6 | 3.66e-05 / 1.17e-05 | 1.4e-01 / 3.0e-02 | 2.9e+00 / 1.1e+00 | 5.00e+00 / 4.95e+00 | 7 | 21.7 |
+| hybrid | teos10 | pyOCEAN | 3.68e-05 / 1.17e-05 | 3.6e-02 / 3.6e-02 | 7.9e-02 / 7.9e-02 | 2.28e-01 / 2.28e-01 | 0 |  |
+| hybrid | teos10 | MOM6 | 3.68e-05 / 1.17e-05 | 1.4e-01 / 3.0e-02 | 2.9e+00 / 1.2e+00 | 5.00e+00 / 5.00e+00 | 418 | 21.9 |
+
+### Sensibilidad: arrastre cuadrático en el fondo en los dos modelos (C_d 3e-3, HBBL 10 m)
+
+| coord | EOS | model | \|PGF\| t=0 all / thick [m s⁻²] | max\|u\| 1 h all / thick | max\|u\| 1 d all / thick | max\|u\| 10 d all / thick [m s⁻¹] | truncations | MOM6/pyOCEAN thick 10 d |
+|---|---|---|---|---|---|---|---|---|
+| zstar | linear | pyOCEAN | 6.13e-05 / 1.76e-06 | 5.8e-03 / 5.8e-03 | 3.0e-02 / 3.0e-02 | 4.02e-02 / 4.02e-02 | 0 |  |
+| zstar | linear | MOM6 | 6.13e-05 / 2.82e-06 | 1.8e-01 / 5.3e-03 | 3.0e-01 / 3.1e-02 | 4.27e-01 / 8.71e-02 | 0 | 2.2 |
+| zstar | wright_full | pyOCEAN | 6.08e-05 / 2.66e-06 | 6.6e-03 / 6.6e-03 | 3.4e-02 / 3.4e-02 | 4.36e-02 / 4.36e-02 | 0 |  |
+| zstar | wright_full | MOM6 | 6.08e-05 / 2.66e-06 | 1.9e-01 / 5.2e-03 | 1.6e-01 / 3.1e-02 | 6.34e-01 / 8.61e-02 | 0 | 2.0 |
+| zstar | teos10 | pyOCEAN | 6.12e-05 / 2.71e-06 | 6.6e-03 / 6.6e-03 | 3.4e-02 / 3.4e-02 | 4.37e-02 / 4.37e-02 | 0 |  |
+| zstar | teos10 | MOM6 | 6.12e-05 / 2.71e-06 | 1.9e-01 / 5.2e-03 | 1.2e-01 / 3.0e-02 | 4.52e-01 / 7.38e-02 | 0 | 1.7 |
+| hybrid | linear | pyOCEAN | 3.70e-05 / 1.09e-05 | 3.3e-02 / 3.3e-02 | 7.8e-02 / 7.8e-02 | 1.70e-01 / 1.70e-01 | 0 |  |
+| hybrid | linear | MOM6 | 3.70e-05 / 1.09e-05 | 1.0e-01 / 2.7e-02 | 7.3e-02 / 7.3e-02 | 1.58e-01 / 1.32e-01 | 0 | 0.8 |
+| hybrid | wright_full | pyOCEAN | 3.66e-05 / 1.17e-05 | 3.6e-02 / 3.6e-02 | 7.5e-02 / 7.5e-02 | 1.74e-01 / 1.74e-01 | 0 |  |
+| hybrid | wright_full | MOM6 | 3.66e-05 / 1.17e-05 | 1.2e-01 / 3.0e-02 | 7.8e-02 / 7.8e-02 | 1.44e-01 / 1.44e-01 | 0 | 0.8 |
+| hybrid | teos10 | pyOCEAN | 3.68e-05 / 1.17e-05 | 3.6e-02 / 3.6e-02 | 7.6e-02 / 7.6e-02 | 1.70e-01 / 1.70e-01 | 0 |  |
+| hybrid | teos10 | MOM6 | 3.68e-05 / 1.17e-05 | 1.2e-01 / 3.0e-02 | 7.8e-02 / 7.8e-02 | 1.38e-01 / 1.38e-01 | 0 | 0.8 |
+
+### Resolución: híbrido con 50 capas, con arrastre
+
+| coord | EOS | model | \|PGF\| t=0 all / thick [m s⁻²] | max\|u\| 1 h all / thick | max\|u\| 1 d all / thick | max\|u\| 10 d all / thick [m s⁻¹] | truncations | MOM6/pyOCEAN thick 10 d |
+|---|---|---|---|---|---|---|---|---|
+| hybrid | wright_full | pyOCEAN | 4.67e-05 / 8.04e-07 | 2.7e-03 / 2.7e-03 | 4.1e-03 / 4.1e-03 | 9.53e-03 / 9.53e-03 | 0 |  |
+| hybrid | wright_full | MOM6 | 4.67e-05 / 8.04e-07 | 1.7e-01 / 1.4e-03 | 6.8e-02 / 2.8e-02 | 4.63e-01 / 4.37e-02 | 0 | 4.6 |
+<!-- mom6-rest:end -->
+**Lectura.**
+
+1. **El PGF inicial es el mismo.** Con el mismo (h, T, S) los dos modelos dan el mismo \|PGF\| a ≤ 5e-12 relativo
+   (6.08–6.13e-5 m s⁻² en z\*, 3.66–3.70e-5 en el híbrido, en caras junto a capas evanescentes); en caras gruesas
+   también, salvo la EOS lineal en z\* (fila "PGF lineal" de la tabla de ajustes, (c)). La primera hora sobre caras
+   gruesas es parecida: z\* 5–7e-3 m s⁻¹ en los dos, híbrido 3.3–3.6e-2 (pyOCEAN) y 2.7–3.0e-2 (MOM6).
+2. **Fondo libre: MOM6 se dispara en las dos coordenadas** y llega al tope de truncación (CFL 0.5 → 5 m s⁻¹) en
+   ~1 día, con 844–1520 truncaciones en z\* y 4–418 en el híbrido; pyOCEAN se queda en 4.2–4.6 cm s⁻¹ (z\*) y
+   23–26 cm s⁻¹ (híbrido), sin truncaciones. El mecanismo de MOM6 se ve en el registro de truncaciones
+   (`run/U_velocity_truncations`) y en la serie: las capas evanescentes de z\* bajo el lecho del vecino se aceleran
+   al ritmo del PGF de las caras delgadas (0.22 m s⁻¹ en la primera hora = 6.1e-5 m s⁻² × 3600 s) sin nada que las
+   frene, y desde ~3 h contaminan las capas gruesas. Es lo mismo que el docstring de `core/vertical/ale.py` describe
+   para pyOCEAN sin el recorte por el lecho ("seamount: 0.02 → 35 cm/s in one day") y lo que paró a MOM6 z\* en el
+   seamount del benchmark de Ilicak (`validation/ilicak_benchmark/README.md`, "MOM6 z\* truncates"): diferencia de
+   método, (c), no un error de MOM6 ni de pyOCEAN. MOM6 cuenta para eso con el arrastre de fondo y la viscosidad de
+   la capa límite (`visc_rem` en `continuity_PPM`); su propio ejemplo `ocean_only/seamount/z` corre con `CDRAG`,
+   `HBBL` 10 m y viscosidad horizontal.
+3. **Con arrastre de fondo en los dos modelos** (C_d 3e-3, HBBL 10 m: los defectos de MOM6) MOM6 no trunca. **Híbrido
+   de 20 capas: MOM6 0.13–0.14 m s⁻¹ sobre caras gruesas (0.14–0.16 en todas) frente a 0.17 de pyOCEAN (cociente 0.8 en las tres EOS),
+   el mismo orden y el mismo crecimiento en el primer día (7.3–7.8e-2 frente a 7.5–7.8e-2).** z\*: MOM6
+   7.4–8.7e-2 sobre caras gruesas y 0.43–0.63 m s⁻¹ en capas evanescentes, frente a 4.0–4.4e-2 de pyOCEAN
+   (2×; el recorte por el lecho, punto 2).
+4. **Resolución (híbrido `wright_full` con arrastre, 50 capas):** pyOCEAN baja de 0.174 a 9.5e-3 m s⁻¹ (18×, como
+   la serie con perfil de la sección 3, diferencia 1); MOM6 baja de 0.144 a 4.4e-2 sobre caras gruesas (3.3×) y su
+   máximo global (0.46 m s⁻¹) está en capas evanescentes: con 50 capas el híbrido tiene más capas z\* finas sobre
+   el talud y en MOM6 domina el mecanismo del punto 2 (en la primera hora las caras gruesas dan 1.4e-3 en MOM6 y
+   2.7e-3 en pyOCEAN).
+
+**Conclusión sobre el residuo del híbrido.** Con 20 capas el residuo de reposo del híbrido en modo MOM6
+(0.17–0.26 m s⁻¹ en pyOCEAN) **lo tiene también MOM6** con el mismo estado inicial, el mismo PGF y la misma regla
+HYCOM1: 0.13–0.16 m s⁻¹ con arrastre de fondo, y peor sin él. Es error de truncamiento de las capas gruesas
+cortadas por la topografía (el PGF inicial es el mismo a redondeo), **clase (c), no (a)**. Con 50 capas pyOCEAN
+queda por debajo de MOM6 (9.5e-3 frente a 4.4e-2) por el recorte del transporte al lecho más somero.
+
+**Qué debe mejorar pyOCEAN (de este benchmark).**
+
+1. Nada en el PGF: es igual a MOM6 a redondeo en el estado inicial. El camino para bajar el residuo del híbrido
+   sigue siendo la reconstrucción de mayor orden y `rho_ref="auto"` (sección 4, puntos 1 y 2).
+2. EOS lineal en el PGF en caras gruesas: PLM de T y S con ρ puntual (como MOM6) en lugar de PLM de la densidad,
+   para que el modo MOM6 lineal sea también bit a bit fuera de las caras delgadas (diferencia (c), 1.76e-6 frente a
+   2.82e-6 m s⁻² en z\*).
+3. Documentar en la guía de usuario que el recorte del transporte al lecho es lo que protege las celdas parciales sin
+   arrastre de fondo, y que MOM6 depende del arrastre para lo mismo.
+4. Pendiente: el mismo caso con los ajustes de NWA12 (`MASS_WEIGHT_IN_PGF_VANISHED_ONLY = False`, viscosidad
+   horizontal, arrastre) en la cadena regional.

@@ -188,14 +188,15 @@ def _rest_geometry(kind: str, fast: bool) -> dict:
 
 
 def rest_case(kind: str, eos: str, coord: str, *, rho_ref: str | None = "auto", fast: bool = False,
-              days: float | None = None, n_layers: int | None = None) -> Case:
+              days: float | None = None, n_layers: int | None = None, drag: bool = False) -> Case:
     """
     The WOA profile at rest over ``kind`` ('seamount' | 'bayiw_step') with ``eos`` and ``coord`` ('zstar' |
     'hybrid'), 10 days (``fast``: half the resolution and 1 day).  ``rho_ref`` 'auto' (pyOCEAN's reference
     profile, the default of real runs) or None (MOM6's method: constant RHO_PGF_REF = ρ₀ subtracted).
     Constant ν_v = 1e-4 m² s⁻¹, no horizontal viscosity or diffusion (as the seamount of the Ilicak benchmark),
     no bed drag.  ``n_layers`` overrides the number of layers (resolution check of the hybrid residual; the
-    floors and targets follow it).
+    floors and targets follow it).  ``drag`` (sensitivity of the MOM6 comparison, ``mom6.py``): quadratic bed drag
+    with MOM6's defaults C_d = 3e-3 over HBBL = 10 m, no background velocity (MOM_set_viscosity.F90:3129-3140).
     """
     geo = _rest_geometry(kind, fast)
     if n_layers is not None:
@@ -211,6 +212,8 @@ def rest_case(kind: str, eos: str, coord: str, *, rho_ref: str | None = "auto", 
         raise ValueError(f"unknown coord {coord!r}; expected 'zstar' or 'hybrid'")
     kw = dict(z0=None, closure="constant", nu_const=1e-4, ah=0.0, g=G, salinity=True, rho_ref=rho_ref,
               vertical_coordinate="ale", pgf="fv", regrid=coord, regrid_params=params, **_eos_kwargs(eos))
+    if drag:
+        kw.update(bottom_drag="quadratic", cd=3e-3, hbbl=10.0, drag_bg_vel=0.0)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", PyOceanConfigWarning)
         m = SigmaBaroclinic(hg, H, dt=geo["dt"], n_layers=nz, **kw)
@@ -226,7 +229,7 @@ def rest_case(kind: str, eos: str, coord: str, *, rho_ref: str | None = "auto", 
         th, sp = profile_at(m.layer_heights(eta))
         st = m.initial_state(eta, th, S=sp, ts_kind="theta_sp")
     days = (1.0 if fast else 10.0) if days is None else days
-    tag = "" if n_layers is None else f"_n{int(n_layers)}"
+    tag = ("" if n_layers is None else f"_n{int(n_layers)}") + ("_drag" if drag else "")
     return Case(f"rest_{kind}_{eos}_{coord}_{'auto' if rho_ref else 'none'}{tag}", m, st,
                 int(round(days * DAY / geo["dt"])), dict(kind=kind, eos=eos, coord=coord, rho_ref=rho_ref))
 
