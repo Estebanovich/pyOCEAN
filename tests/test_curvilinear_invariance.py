@@ -283,8 +283,24 @@ def test_divergence_free_flow_steady(coord: str) -> None:
     assert float(np.max(np.abs(st.eta))) <= 1e-6 * scale
 
 
-@pytest.mark.parametrize("coord", ["sigma", "zstar"])
-def test_geostrophic_balance_steady(coord: str) -> None:
+GEO_CASES = [("sigma", "linear"), ("zstar", "linear"), ("zstar", "wright_full"), ("hybrid", "wright_full")]
+
+
+def _geo_model(g: xr.Dataset, H: np.ndarray, coord: str, eos: str, dt: float, grav: float):
+    """Model and resting (T, S) for the geostrophic test: ρ = ρ₀ at the surface, so η alone drives the flow."""
+    ny, nx = H.shape
+    if eos == "linear":
+        return _model(g, H, coord, dt=dt, g=grav), np.zeros((3, ny, nx)), None     # T = t_ref: ρ = ρ₀
+    from physics.eos.wright_full import density
+    T, S = np.full((3, ny, nx), 10.0), np.full((3, ny, nx), 35.0)
+    kw = dict(eos="wright_full", salinity=True, rho0=float(density(10.0, 35.0, 0.0)))
+    if coord == "hybrid":                     # targets bracket the water: the hybrid keeps its z* floor layers
+        kw["regrid_params"] = dict(dz_top=np.full(3, float(H.max()) / 3), rho_target=np.linspace(1025.0, 1030.0, 4))
+    return _model(g, H, coord, dt=dt, g=grav, **kw), T, S
+
+
+@pytest.mark.parametrize("coord,eos", GEO_CASES)
+def test_geostrophic_balance_steady(coord: str, eos: str) -> None:
     """
     Discrete geostrophic state on an f-plane over a flat bed, on the non-separable grid: transports from a corner
     stream function ψ and η = f/(g H) · ¼ Σ₄ ψ(corners).  With the MOM6 (Sadourny 1975 energy) Coriolis weights,
@@ -296,11 +312,11 @@ def test_geostrophic_balance_steady(coord: str) -> None:
     ny, nx = g["dx_t"].shape
     Hd, grav, nsteps, dt = 10.0, 0.1, 5, 60.0
     H = np.full((ny, nx), Hd)
-    m = _model(g, H, coord, dt=dt, g=grav)
+    m, T, S = _geo_model(g, H, coord, eos, dt, grav)
     psi = _psi_random(ny, nx)
     psi *= 1e-6 * F0 * 1_000.0 * 1_000.0 * Hd / np.max(np.abs(psi))          # u ~ Ro f Δx, Ro = 1e-6
     eta = F0 / (grav * Hd) * 0.25 * (psi[:-1, :-1] + psi[:-1, 1:] + psi[1:, :-1] + psi[1:, 1:])
-    st = m.initial_state(eta, np.zeros((3, ny, nx)))           # T = t_ref: ρ = ρ₀, no baroclinic force
+    st = m.initial_state(eta, T, S=S)                          # surface ρ = ρ₀: no baroclinic force at rest
     Qx, Qy = _transports(psi)
     u0 = Qx / (Hd * g["dy_u"].values)
     v0 = Qy / (Hd * g["dx_v"].values)
@@ -421,3 +437,195 @@ def test_pgf_metric_used(coord: str, eos: str, axis: str) -> None:
     mask = np.ones(r0.shape[1:], bool)
     mask[j0, i0] = False
     np.testing.assert_array_equal(r1[:, mask], r0[:, mask])
+
+
+# ================================================================ review fixes (I1, I2, M3, M4)
+def _energy(m: SigmaBaroclinic, g: xr.Dataset, st, h_layer: float) -> float:
+    """E = ½ g Σ A_T η² + ½ Σ_k h_k (Σ A_u u² + Σ A_v v²) [m⁵ s⁻²], A_u = Δx_u Δy_u, A_v = Δx_v Δy_v (MOM6 areaCu,
+    areaCv): the energy of the linear free-surface system on a flat bed with equal layers."""
+    At, Au, Av = (g[k].values for k in ("area_t", "area_u", "area_v"))
+    kinetic = float(np.sum(Au * st.u ** 2) + np.sum(Av * st.v ** 2))
+    return 0.5 * m.g * float(np.sum(At * st.eta ** 2)) + 0.5 * h_layer * kinetic
+
+
+@pytest.mark.parametrize("coord", ["sigma", "zstar"])
+def test_free_surface_wave_energy_on_curvilinear_grid(coord: str) -> None:
+    """
+    Free-surface gravity wave (f = 0, flat bed, no closure, A_h = 0) on the non-separable grid with θ = ½: the
+    linear system is ∂u/∂t = −g δ_x η/Δx_u, ∂η/∂t = −(δ_x(H Δy_u u) + δ_y(H Δx_v v))/A_T, whose gradient and
+    divergence are adjoint in the energy E (``_energy``) only with the MOM6 metrics, and Crank–Nicolson keeps E
+    exactly.  The remaining drift is the O(η/H) nonlinearity of the free surface (2e-8 at η/H = 5e-8, 40 steps); a
+    swapped face length or centre distance changes E at O(δ) ≥ 1e-4.
+    """
+    g = conformal_grid(f0=0.0)
+    ny, nx = g["dx_t"].shape
+    Hd = 20.0
+    H = np.full((ny, nx), Hd)
+    m = _model(g, H, coord, dt=30.0, theta=0.5)
+    x, y = g["x_t"].values, g["y_t"].values
+    eta = 1e-6 * np.exp(-((x - x.mean()) ** 2 + (y - y.mean()) ** 2) / (2_500.0 ** 2))
+    st = m.initial_state(eta, np.zeros((3, ny, nx)))
+    e0 = _energy(m, g, st, Hd / 3)
+    worst = 0.0
+    for _ in range(40):
+        st = m.step(st)
+        worst = max(worst, abs(_energy(m, g, st, Hd / 3) / e0 - 1.0))
+    assert float(np.max(np.abs(st.u))) > 0.0
+    assert worst <= 1e-6
+
+
+@pytest.mark.parametrize("coord", ["zstar", "hybrid"])
+def test_stratified_rest_on_curvilinear_grid(coord: str) -> None:
+    """
+    Stratified rest with the Wright EOS on the non-separable grid (flat bed, horizontally uniform T and S, z* and
+    hybrid, FV PGF): the velocities stay at round-off.  The force is zero for any metric, so this checks only
+    that the curvilinear grid introduces nothing (no swap can fail it; the swap-sensitive stratified checks are
+    ``test_geostrophic_balance_steady[*-wright_full]`` and ``test_pgf_metric_used[*-wright_full]``).
+    """
+    g = conformal_grid()
+    ny, nx = g["dx_t"].shape
+    nz = 6
+    H = np.full((ny, nx), 60.0)
+    params = dict(dz_top=np.full(nz, 60.0 / nz))
+    if coord == "hybrid":
+        params["rho_target"] = np.linspace(1025.8, 1027.6, nz + 1)
+    m = _model(g, H, coord, nz=nz, eos="wright_full", salinity=True, rho_ref="auto", closure="constant",
+               nu_const=1e-4, regrid_params=params)
+    k = np.arange(nz)[:, None, None] / (nz - 1)
+    T = (8.0 + 6.0 * k) * np.ones((nz, ny, nx))
+    S = (35.2 - 0.4 * k) * np.ones((nz, ny, nx))
+    st = _run(m, m.initial_state(np.zeros((ny, nx)), T, S=S), 20)
+    assert float(np.max(np.abs(st.u))) <= 1e-12 and float(np.max(np.abs(st.v))) <= 1e-12
+    assert float(np.max(np.abs(st.eta))) <= 1e-12
+
+
+def _smag_operator(g: xr.Dataset, nu: float = 50.0, h: float = 10.0):
+    """The Smagorinsky stress divergence with constant ν (C = 1e-9 below A_h = ν, MOM6 control) and uniform h,
+    as a linear map (u, v) ↦ (F_u, F_v) on one layer, all faces wet, walls at the domain edge."""
+    from core.dynamics.hor_visc import smagorinsky
+    ny, nx = g["dx_t"].shape
+    geom = smag_geometry(g)
+    wet_u = np.ones((ny, nx + 1), bool)
+    wet_u[:, [0, -1]] = False
+    wet_v = np.ones((ny + 1, nx), bool)
+    wet_v[[0, -1], :] = False
+    mask_q = np.zeros((ny + 1, nx + 1), bool)
+    mask_q[1:-1, 1:-1] = True
+    ou, ov = np.zeros((ny, nx + 1), bool), np.zeros((ny + 1, nx), bool)
+    ht, hu, hv = np.full((1, ny, nx), h), np.full((1, ny, nx + 1), h), np.full((1, ny + 1, nx), h)
+
+    def op(u, v):
+        fu, fv, _, _, n_lim = smagorinsky(u[None], v[None], ht, hu, hv, wet_u, wet_v, mask_q, ou, ov, geom,
+                                          1e-9, nu, 1.0)
+        assert n_lim == 0
+        return fu[0], fv[0]
+    return op, wet_u, wet_v
+
+
+def test_smagorinsky_self_adjoint_and_dissipative_on_curvilinear_grid() -> None:
+    """
+    MOM6's stress-tensor form (MOM_hor_visc.F90:707-722, 1757-1781) with constant ν and uniform h is the
+    symmetric negative semi-definite operator −Σ ν h (D_T² Δx_T Δy_T + D_S² Δx_q Δy_q) in the inner product
+    ⟨a, b⟩ = Σ A_u h a_u b_u + Σ A_v h a_v b_v (A_u = Δx_u Δy_u): ⟨a, L b⟩ = ⟨L a, b⟩ to round-off and ⟨a, L a⟩ ≤ 0,
+    on any orthogonal grid.  A metric in the strain that differs from the one in the stress divergence (Δy_T for
+    Δy_u, Δx_q² for Δy_q², A_u ≠ Δx_u Δy_u) breaks the symmetry.
+    """
+    g = conformal_grid()
+    ny, nx = g["dx_t"].shape
+    op, wet_u, wet_v = _smag_operator(g)
+    Au, Av = g["area_u"].values, g["area_v"].values
+    rng = np.random.default_rng(17)
+
+    def rand():
+        return np.where(wet_u, rng.standard_normal((ny, nx + 1)), 0.0), \
+            np.where(wet_v, rng.standard_normal((ny + 1, nx)), 0.0)
+
+    def dot(a, b):
+        return float(np.sum(Au * a[0] * b[0]) + np.sum(Av * a[1] * b[1]))
+    a, b = rand(), rand()
+    La, Lb = op(*a), op(*b)
+    scale = np.sqrt(abs(dot(a, La) * dot(b, Lb)))
+    assert abs(dot(a, Lb) - dot(La, b)) <= 1e-12 * scale
+    for x, Lx in ((a, La), (b, Lb)):
+        assert dot(x, Lx) < 0.0
+
+
+@pytest.mark.parametrize("periodic", [False, True])
+def test_coriolis_does_no_work_on_stretched_grid(periodic: bool) -> None:
+    """The weighted σ Coriolis is energy neutral on a stretched Cartesian grid (where ``coriolis_metrics`` switches
+    the weights on), also through the periodic path (wrap faces stored twice, counted once)."""
+    rng = np.random.default_rng(23)
+    nx, ny = 11, 9
+    g = create_cartesian_grid_stretched(1_000.0 * (1.0 + rng.random(nx)), 800.0 * (1.0 + rng.random(ny)), f0=F0)
+    kw = dict(periodic=("x",)) if periodic else {}
+    m = _model(g, np.full((ny, nx), 20.0), "sigma", **kw)
+    assert m._momentum._cor_metrics is not None
+    u = rng.standard_normal((2, ny, nx + 1))
+    v = rng.standard_normal((2, ny + 1, nx))
+    v[:, [0, -1], :] = 0.0
+    if periodic:
+        u[..., -1] = u[..., 0]
+    else:
+        u[..., [0, -1]] = 0.0
+    cu, cv = m._momentum.coriolis(u, v)
+    hg = m.hg                                   # the model's grid (wrap-face metrics when periodic)
+    Au, Av = hg["area_u"].values, hg["area_v"].values
+    if periodic:
+        np.testing.assert_array_equal(cu[..., -1], cu[..., 0])
+        Au = Au.copy()
+        Au[:, -1] = 0.0                          # face nx is face 0
+    work = np.sum(Au * u * cu) + np.sum(Av * v * cv)
+    scale = np.sum(Au * np.abs(u * cu)) + np.sum(Av * np.abs(v * cv))
+    assert abs(work) <= 1e-13 * scale
+
+
+def _kh_model(g: xr.Dataset, kh: float = 50.0):
+    ny, nx = g["dx_t"].shape
+    return _model(g, np.full((ny, nx), 20.0), "zstar", t_coef=0.0, kh=kh, dt=60.0)
+
+
+def test_tracer_diffusion_face_coefficient_on_curvilinear_grid() -> None:
+    """
+    Horizontal tracer diffusion at rest: one cell holds T = 1, the rest 0.  After one explicit step the heat that
+    entered the east neighbour is Δt K_h (Δy_u/Δx_u) h (MOM_tracer_hor_diff.F90:278); perturbing only Δy_u of that
+    face scales it in proportion, and the content Σ A_T h T is exact.
+    """
+    base = conformal_grid(f0=0.0)
+    ny, nx = base["dx_t"].shape
+    j0, i0, fac = ny // 2, nx // 2, 1.3
+    got = []
+    for perturb in (False, True):
+        g = base.copy(deep=True)
+        if perturb:
+            a = g["dy_u"].values.copy()
+            a[j0, i0 + 1] *= fac
+            g["dy_u"] = (g["dy_u"].dims, a)
+        m = _kh_model(g)
+        T = np.zeros((3, ny, nx))
+        T[:, j0, i0] = 1.0
+        st0 = m.initial_state(np.zeros((ny, nx)), T)
+        st = m.step(st0)
+        A = g["area_t"].values
+        c0 = float(np.sum(A[None] * st0.h * st0.T))
+        c1 = float(np.sum(A[None] * st.h * st.T))
+        assert abs(c1 - c0) <= 1e-13 * c0
+        got.append(float(np.sum(A[j0, i0 + 1] * st.h[:, j0, i0 + 1] * st.T[:, j0, i0 + 1])))
+    np.testing.assert_allclose(got[1] / got[0], fac, rtol=1e-10)
+
+
+def test_tracer_diffusion_variance_on_curvilinear_grid() -> None:
+    """K_h on a random T at rest: content Σ A_T h T exact and variance Σ A_T h T² non-increasing every step."""
+    g = conformal_grid(f0=0.0)
+    ny, nx = g["dx_t"].shape
+    m = _kh_model(g)
+    T = np.random.default_rng(29).random((3, ny, nx))
+    st = m.initial_state(np.zeros((ny, nx)), T)
+    A = g["area_t"].values[None]
+    c0 = float(np.sum(A * st.h * st.T))
+    var = float(np.sum(A * st.h * st.T ** 2))
+    for _ in range(10):
+        st = m.step(st)
+        v1 = float(np.sum(A * st.h * st.T ** 2))
+        assert v1 <= var * (1.0 + 1e-14)
+        var = v1
+    assert abs(float(np.sum(A * st.h * st.T)) - c0) <= 1e-13 * c0

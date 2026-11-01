@@ -54,7 +54,10 @@ swap (not changed here; recommendation given).
 | `core/model/periodic.py` `pad_dataset` | halos for grid-reading operators | pads every (t, u, v, q) variable | — | ✅ (includes `dx_q`, `dy_q`, `area_q`) |
 | `core/dynamics/free_surface.py:173-281` (`ImplicitFreeSurface`, phase-2 2-D model) | continuity, gradient, matrix | `dy_u`, `dx_u`, `dx_v`, `dy_v`, `area_t` | as above | ✅ (not used by `SigmaBaroclinic`) |
 | `core/dynamics/pressure.py`, `core/dynamics/momentum.py` (phase-1 z-level line) | — | — | — | not audited: not used by `SigmaBaroclinic` |
+| `forcing/tides.py:432-433` (`body_force`) | tidal body force g ∇η_body | difference over `dx_u`, `dy_v` | as the PGF, `IdxCu`/`IdyCv` | ✅ (to be wired into the 3-D step later in the chain) |
+| `diagnostics/domain_check.py:190-191` | CFL advice | min of `dx_t`, `dy_t` | — (diagnostic) | ✅ (diagnostic only, no operator) |
 | `f_t` | — | used only by `diagnostics/domain_check.py:210` (CFL advice) | no MOM6 counterpart | ✅ (not in any operator) |
+| `cos_t`, `sin_t` | — | not read by any operator | `cos_rot`, `sin_rot` (coupler only) | ✅: the operators are written in grid components; rotating vectors (wind, OBC, tides) is Task 4 |
 
 ## 2. Fixes and decisions
 
@@ -121,32 +124,58 @@ Invariance (criterion 2, 1e-10 relative): stretched Cartesian grid ≡ the same 
 (`test_free_surface_wave_invariant` σ/z\* with Smagorinsky, `test_geostrophic_adjustment_invariant` σ/z\*,
 `test_tracer_advection_invariant` WENO5 + FCT, `test_stratified_rest_invariant` z\*/hybrid with `wright_full`).
 
-Exactness on a non-separable orthogonal grid (conformal map z = w + c w², every metric varies in i and j,
-neighbouring metrics differ by ≥ 0.2 %, Δx_t and Δy_t by 70 % over the domain):
-`test_face_metrics_used` (dy_u or dx_v perturbed at one face → that face's transport in the same proportion),
-`test_divergence_free_flow_steady`, `test_geostrophic_balance_steady` (σ and z\*), `test_tracer_uniform_and_conserved`,
-`test_coriolis_does_no_work_on_curvilinear_grid`, `test_pgf_metric_used` (Δx_u, Δy_v of the baroclinic PGF: σ Jacobian, FV linear, FV `wright_full`),
-`test_supergrid_corner_metrics_used`.
+The Cartesian-equivalent comparison of the brief can only be made on a separable grid: a stretched Cartesian grid
+has dy_u = dy_t and dx_v = dx_t, so it cannot tell those metrics apart and the invariance runs cannot detect a swap.
+The swap-sensitive tests therefore run on the conformal map z = w + c w² (c complex), an analytic rotated and
+stretched orthogonal grid: its local angle varies over the domain (the supergrid's `angle_dx` is set from
+arg(1 + 2cw/L)), every metric varies in i and j, neighbouring metrics differ by ≥ 0.2 %, Δx_t and Δy_t by 70 %.
+No operator reads the angle: the model works in grid components, and rotating vectors to and from east/north
+(wind, open boundaries, tides) is Task 4. Tests on this grid, all time-stepped `SigmaBaroclinic` runs unless noted:
+
+- `test_face_metrics_used` (dy_u or dx_v perturbed at one face → that face's transport in the same proportion);
+- `test_divergence_free_flow_steady` (σ, z\*);
+- `test_free_surface_wave_energy_on_curvilinear_grid` (σ, z\*; θ = ½, 40 steps: the energy
+  E = ½ g Σ A_T η² + ½ Σ h (A_u u² + A_v v²) is kept to 1e-6, measured 2e-8 = the O(η/H) nonlinearity; the
+  gradient and divergence are adjoint in E only with the MOM6 metrics);
+- `test_geostrophic_balance_steady` (σ linear, z\* linear, z\* and hybrid `wright_full`);
+- `test_stratified_rest_on_curvilinear_grid` (z\*, hybrid, `wright_full`, flat bed, uniform T/S: velocities at
+  round-off; the force is zero for any metric, so no swap can fail it — the stratified swap-sensitive cases are the
+  `wright_full` geostrophic and PGF tests);
+- `test_tracer_uniform_and_conserved` (z\*, WENO5 + FCT);
+- `test_tracer_diffusion_face_coefficient_on_curvilinear_grid` (K_h flux into a neighbour ∝ Δy_u/Δx_u of that
+  face; content exact) and `test_tracer_diffusion_variance_on_curvilinear_grid` (content exact, Σ A h T²
+  non-increasing);
+- operator level: `test_coriolis_does_no_work_on_curvilinear_grid` (σ and VI forms),
+  `test_coriolis_does_no_work_on_stretched_grid` (stretched Cartesian, closed and periodic in x),
+  `test_smagorinsky_self_adjoint_and_dissipative_on_curvilinear_grid` (constant ν, uniform h: ⟨a, L b⟩ = ⟨L a, b⟩
+  to 1e-12 and ⟨a, L a⟩ < 0 in the A_u, A_v inner product), `test_pgf_metric_used` (Δx_u, Δy_v of the baroclinic
+  PGF: σ Jacobian, FV linear, FV `wright_full`), `test_supergrid_corner_metrics_used`.
 
 Each metric swap below was applied temporarily to the code and the test file run (script in the task report):
 
 | mutation (temporary) | file | tests that fail |
 |---|---|---|
-| M1 continuity u-face length `dy_u` → `dy_t` of the east cell | `wetting_drying.py:135` | `face_metrics_used[x-σ, x-z*]`, `divergence_free_flow_steady[σ, z*]`, `geostrophic_balance_steady[σ, z*]` |
-| M2 continuity v-face length `dx_v` → `dx_t` of the north cell | `wetting_drying.py:136` | `face_metrics_used[y-σ, y-z*]`, `divergence_free_flow_steady[σ, z*]`, `geostrophic_balance_steady[σ, z*]` |
-| M3 free-surface / PGF distance `dx_u` → `dx_t` of the east cell | `wetting_drying.py:135` | `geostrophic_balance_steady[σ, z*]`, `pgf_metric_used[x-σ, x-z*, x-z*-wright_full]` |
-| M4 σ Coriolis unweighted (the code before this task) | `momentum.py` `coriolis_metrics` | `geostrophic_balance_steady[σ]`, `coriolis_does_no_work` |
-| M5 σ Coriolis `v Δx_v` → `v Δy_v` | `momentum.py` `_coriolis` | `geostrophic_balance_steady[σ]`, `coriolis_does_no_work` |
-| M6 vector-invariant first-step transport `Δy_u` → `Δx_u` | `momentum.py` `vector_invariant` | `geostrophic_balance_steady[z*]` |
+| M1 continuity u-face length `dy_u` → `dy_t` of the east cell | `wetting_drying.py:135` | `face_metrics_used[x-σ, x-z*]`, `divergence_free_flow_steady[σ, z*]`, `free_surface_wave_energy[σ, z*]`, `geostrophic_balance_steady` (all 4), `tracer_diffusion_face_coefficient` |
+| M2 continuity v-face length `dx_v` → `dx_t` of the north cell | `wetting_drying.py:136` | `face_metrics_used[y-σ, y-z*]`, `divergence_free_flow_steady[σ, z*]`, `free_surface_wave_energy[σ, z*]`, `geostrophic_balance_steady` (all 4) |
+| M3 free-surface / PGF distance `dx_u` → `dx_t` of the east cell | `wetting_drying.py:135` | `free_surface_wave_energy[σ, z*]`, `geostrophic_balance_steady` (all 4), `pgf_metric_used[x-σ, x-z*, x-z*-wright_full]` |
+| M4 σ Coriolis unweighted (the code before this task) | `momentum.py` `coriolis_metrics` | `geostrophic_balance_steady[σ]`, `coriolis_does_no_work` (curvilinear, stretched closed and periodic) |
+| M5 σ Coriolis `v Δx_v` → `v Δy_v` | `momentum.py` `_coriolis` | `geostrophic_balance_steady[σ]`, `coriolis_does_no_work` (curvilinear, stretched closed and periodic) |
+| M6 vector-invariant first-step transport `Δy_u` → `Δx_u` | `momentum.py` `vector_invariant` | `geostrophic_balance_steady[z*, z*-wright_full, hybrid-wright_full]` |
 | M7 vorticity area `area_q` → `corner_area(Δx_u, Δy_v)` (before this task) | `vector_invariant.py` `grid_corner_area` | `supergrid_corner_metrics_used` |
 | M8 Smagorinsky corner spacings from face means (before this task) | `hor_visc.py` `smag_geometry` | `supergrid_corner_metrics_used` |
 | M9 ALE Lagrangian thickness over `Δx_u Δy_v` instead of `area_t` | `layer_transport.py:144` | `tracer_uniform_and_conserved` |
-| M10 ALE layer volume `h Δx_u Δy_v` instead of `h area_t` | `sigma_baroclinic.py:1713` | `tracer_uniform_and_conserved` |
+| M10 ALE layer volume `h Δx_u Δy_v` instead of `h area_t` | `sigma_baroclinic.py:1713` | `tracer_uniform_and_conserved`, `tracer_diffusion_face_coefficient`, `tracer_diffusion_variance` |
 | M11 FV PGF, nonlinear EOS: `Δx_u` of the west neighbour face | `pgf.py:245` | `pgf_metric_used[x-z*-wright_full]` |
 | M12 σ Jacobian PGF: `Δx_u` of the west neighbour face | `pgf.py:160` | `pgf_metric_used[x-σ]` |
 | M13 FV PGF, linear EOS: `Δx_u` of the west neighbour face | `pgf.py:214` | `pgf_metric_used[x-z*]` |
+| S1 Smagorinsky stress divergence Δx_q² ↔ Δy_q² | `hor_visc.py` `smag_geometry` | `smagorinsky_self_adjoint_and_dissipative` |
+| S2 Smagorinsky 1/A_u from Δx_u Δy_T (east cell) | `hor_visc.py` `smag_geometry` | `smagorinsky_self_adjoint_and_dissipative` |
+| S3 Smagorinsky tension Δy_T/Δx_T → Δy_u(west)/Δx_T | `hor_visc.py` `smag_geometry` | `smagorinsky_self_adjoint_and_dissipative` |
+| K1 K_h face length Δy_u → A_T/Δx_u of the east cell (≈ Δy_T) | `tracers.py:412` | `tracer_diffusion_face_coefficient` |
+| K2 K_h divergence over a volume with Δx_u Δy_v | `tracers.py:413` | `tracer_diffusion_face_coefficient`, `tracer_diffusion_variance` |
+| C1 periodic σ Coriolis without the weights | `momentum.py` `coriolis` | `coriolis_does_no_work_on_stretched_grid[periodic]` |
 
-Every mutation is caught; the invariance tests pass under every mutation (the same code runs on both grids, by
+All 19 mutations are caught; the invariance tests pass under every mutation (the same code runs on both grids, by
 design: they check the supergrid path, not the operators). The vorticity area enters ζ, which is O(Ro) in the
 geostrophic test, so M7 is caught only by the dependency test.
 
@@ -156,7 +185,8 @@ the continuity, PGF and tracer operators already passed (✅ rows).
 
 Not covered by a swap-sensitive test: the CFL truncation (backstop, §2.5), the Orlanski phase speed (index units),
 the advective-form momentum and constant Laplacian spacings (forms of class b, §2.3; checked by the dependency of
-`_spacings_u/_v` on `dy_q`/`dx_q` through the invariance runs only).
+`_spacings_u/_v` on `dy_q`/`dx_q` through the invariance runs only), and the stratified rest test (zero force for any
+metric by construction).
 
 ## 4. Bit for bit on existing grids
 
