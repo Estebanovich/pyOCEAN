@@ -313,3 +313,40 @@ def test_real_glofas_on_the_nwa12_cut():
     assert {(40.875, -73.925), (41.275, -72.325), (39.875, -75.225)} <= big   # Hudson, Connecticut, Delaware
     wet = np.asarray(g.mask_t.values, bool)
     assert all(wet[j, i] for j, i in r.cells)
+
+
+_LDD = "/Users/estebancruz/pyOCEAN_refs/glofas_aux/ldd_glofas_v4_0.nc"
+
+
+@pytest.mark.skipif(len(_GLOFAS) < 6 or not glob.glob(_HGRID) or not glob.glob(_LDD),
+                    reason="GloFAS 2017 files, the NWA12 grid or the GloFAS v4 ldd absent")
+def test_real_glofas_with_ldd_on_the_nwa12_cut():
+    """Ruling R11: CEFI's exact ldd rule on the cut; Hudson, Delaware, Connecticut present; total conserved."""
+    import warnings
+    from core.grid.supergrid import grid_from_supergrid
+    from forcing.sources.glofas import open_ldd
+    hg = xr.open_dataset(_HGRID)
+    depth = xr.open_dataset(_HGRID.replace("ocean_hgrid", "ocean_topog")).depth.values
+    x, y = hg.x.values[1::2, 1::2], hg.y.values[1::2, 1::2]
+    jj, ii = np.nonzero((x > -75.5) & (x < -68.5) & (y > 36.5) & (y < 41.8))
+    g = grid_from_supergrid(hg, depth, window=(ii.min(), ii.max() + 1, jj.min(), jj.max() + 1))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)                   # the ldd path does not warn
+        r = glofas_mouths(_GLOFAS, g, "2017-05-01", "2017-09-01", ldd=open_ldd(_LDD))
+    assert r.method == "ldd" and r.mouth_lat.size > 0
+    ds = xr.open_mfdataset(_GLOFAS, combine="by_coords")
+    lat, lon = ds.latitude.values, ds.longitude.values - 360.0
+    t = np.isin(ds.valid_time.values - np.timedelta64(12, "h"), r.times)
+    q = ds.avg_dis.values[t].astype(float)
+    expect = sum(q[:, int(np.argmin(np.abs(lat - la))), int(np.argmin(np.abs(lon - lo)))]
+                 for la, lo in zip(r.mouth_lat, r.mouth_lon))
+    np.testing.assert_allclose(r.Q.sum(axis=1), expect, rtol=1e-14, atol=0)
+    qm = r.mouth_Q.mean(axis=0)
+    big = {(round(float(la), 3), round(float(lo), 3)) for la, lo, qq in zip(r.mouth_lat, r.mouth_lon, qm) if qq > 300}
+    assert {(40.875, -73.925), (41.275, -72.325), (39.875, -75.225)} <= big   # Hudson, Connecticut, Delaware
+
+
+def test_substitute_warns():
+    """Ruling R11: without ldd the substitute is used with a UserWarning naming the ldd file."""
+    with pytest.warns(UserWarning, match="ldd"):
+        _river()

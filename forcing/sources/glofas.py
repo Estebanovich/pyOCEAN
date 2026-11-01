@@ -54,7 +54,18 @@ local data (2026-11-01).  Without ``ldd=``, the outlets are found from the disch
 This substitute differs from CEFI where coastal cells drain into each other along the shore (the smaller of two
 adjacent coastal outlets is not a local maximum and is lost: its discharge is not counted, a few m³ s⁻¹ at most),
 and in which estuary cells count as mouths.  Pass ``ldd=`` (GloFAS v4 ``ldd`` on the same 0.05° grid) for CEFI's
-exact rule.  [Implementer's choice pending a controller ruling; class c for the parity comparison of Task 11.]
+exact rule.  Ruling R11 (2026-11-01): the regional case uses the exact ldd rule (``open_ldd`` on
+``~/pyOCEAN_refs/glofas_aux/ldd_glofas_v4_0.nc``, the file CEFI's ``tools/rivers/bgc/NEP/README.md:21`` points to);
+the substitute is the fallback (class c) and warns.  On the NWA12 cut, Apr–Sep 2017 data: ldd 115 mouths
+≥ 1 m³ s⁻¹ (70 cells), substitute 67 (67 cells); the eight largest are the same cells with the same discharge; the
+substitute misses ≈ 5 % of the total (small coastal outlets next to larger ones).
+
+No per-river relocation (ruling R12)
+------------------------------------
+The nearest-coast rule is kept as CEFI applies it, for parity with NWA12.  On the NWA12 cut the GloFAS Hudson
+outlet (40.875 °N 73.925 °W, north of Manhattan, in a model land cell) goes 80 % to western Long Island Sound
+(73.52 °W 40.95 °N) and 20 % to (73.84 °W 40.59 °N), not to the New York Bight apex: class c, documented, not
+corrected (CEFI corrects only the Susquehanna and the Mississippi, on the full grid).
 
 Time
 ----
@@ -75,6 +86,7 @@ Ross, A. C. et al. (2023). A high-resolution, data-assimilative regional ocean m
 from __future__ import annotations
 
 import hashlib
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -287,6 +299,30 @@ def _names(ds: xr.Dataset) -> tuple[str, str, str, str]:
     return var, tname, la, lo
 
 
+def open_ldd(path: str | Path) -> xr.DataArray:
+    """The ``ldd`` variable of a GloFAS local-drain-direction file (e.g. ``ldd_glofas_v4_0.nc``, 0.05° global)."""
+    return xr.open_dataset(path)["ldd"]
+
+
+def _ldd_on(ldd, glat: np.ndarray, glon: np.ndarray) -> np.ndarray:
+    """
+    ``ldd`` on the discharge grid (glat, glon [−180, 180)): an array of that shape is used as is; a DataArray with
+    latitude/longitude coordinates (``lat``/``lon`` or ``latitude``/``longitude``, either longitude convention, e.g.
+    the global ``ldd_glofas_v4_0.nc``) is picked at the discharge cell centres (nearest, within 1e-3°).
+    """
+    if not isinstance(ldd, xr.DataArray) or ldd.ndim != 2:
+        return np.asarray(ldd, float)
+    la = "lat" if "lat" in ldd.dims else "latitude"
+    lo = "lon" if "lon" in ldd.dims else "longitude"
+    lon_l = np.asarray(ldd[lo].values, float)
+    want = np.where(glon < 0.0, glon + 360.0, glon) if lon_l.max() > 180.0 else glon
+    sub = ldd.sel({la: xr.DataArray(glat, dims="y"), lo: xr.DataArray(want, dims="x")}, method="nearest")
+    if (np.abs(sub[la].values - glat).max() > 1e-3 or
+            np.abs(((sub[lo].values - want) + 180.0) % 360.0 - 180.0).max() > 1e-3):
+        raise ValueError("the ldd grid does not contain the discharge cell centres (different GloFAS grid?)")
+    return np.asarray(sub.transpose("y", "x").values, float)
+
+
 def glofas_mouths(path_or_ds, grid: xr.Dataset, t0, t1, min_mean_discharge: float = 1.0, *,
                   origin=None, ldd: np.ndarray | xr.DataArray | None = None, wet: np.ndarray | None = None,
                   stamp: str = "end", max_inland_cells: float = 15.0, n_sub: int = 5) -> RiverInput:
@@ -337,12 +373,15 @@ def glofas_mouths(path_or_ds, grid: xr.Dataset, t0, t1, min_mean_discharge: floa
     q_mean = q.mean(axis=0)                                                   # NaN where any record is NaN (sea)
     report: list[str] = []
     if ldd is not None:
-        ldd_a = np.asarray(ldd.values if isinstance(ldd, xr.DataArray) else ldd, float)
+        ldd_a = _ldd_on(ldd, glat, glon)
         if ldd_a.shape != q_mean.shape:
             raise ValueError(f"ldd shape {ldd_a.shape} differs from the discharge grid {q_mean.shape}")
         pour, method = cefi_pour_points(ldd_a), "ldd"
         report.append(f"pour points: CEFI rule (ldd == 5 next to the sea, grown through outlets): {int(pour.sum())}")
     else:
+        warnings.warn("glofas_mouths without ldd: CEFI's pour-point rule needs the GloFAS local drain direction "
+                      "file (ldd_glofas_v4_0.nc); using the substitute pits of the mean discharge (class c, "
+                      "ruling R11)", UserWarning, stacklevel=2)
         pour, far = pit_pour_points(q_mean, max_inland_cells)
         method = "pits"
         report.append(f"pour points: substitute without ldd (pits of the mean discharge within {max_inland_cells:g} "
