@@ -100,11 +100,11 @@ from core.vertical.ale import (DZ_FLOOR, baroclinic_split, blend_thin_layers, ex
                                viscous_face_thickness, zero_thin_bed_velocity)
 from core.vertical.pgf import fv_pgf
 from core.components.eos import make_eos
-from physics.eos.convert import pressure_from_z
+from physics.eos.convert import pressure_from_z, to_model_ts
 from core.components.geometry import LayerGeometry
 from core.components.pgf import PressureGradient
 from core.components.momentum import Momentum, sum_terms
-from core.components.open_boundary import CONFIG as _OB_CONFIG, OpenBoundary
+from core.components.open_boundary import CONFIG as _OB_CONFIG, OpenBoundary, convert_exterior
 from core.components.bottom_drag import LogLawBedDrag, QuadraticBedDrag
 from core.components.closure import BBLAddedClosure, ShearAddedClosure, find_closure, make_closure
 from physics.mixing.kpp_cvmix import KPPParams
@@ -1152,6 +1152,12 @@ class SigmaBaroclinic:
         salinity toward sponge_S (nz_s,) [g kg⁻¹] (``salinity=True``; None: S is not relaxed);
         r = sponge_rate (ny, nx) [s⁻¹], ignored on land; momentum is not damped (as MOM6 DOME_initialize_sponges).
         It acts after the remap, so the mixing diagnostic counts advection and remap only
+    ts_kind : convention of the T and S data given to the **constructor** — the exterior of ``open_boundary_state``
+        (``OBData.T``, ``OBData.S``) and the sponge profiles ``sponge_T``, ``sponge_S``: ``"theta_sp"`` (default; θ [°C],
+        S_P) or ``"ct_sa"`` (Θ [°C], S_A [g kg⁻¹]).  They are converted to the EOS convention (Θ, S_A for ``teos10``)
+        once, when received (the exterior at every call of ``open_boundary_state(t)``).  Not the convention of
+        ``initial_state``, which has its own ``ts_kind``; ``surface_fluxes`` convert the model SST/SSS themselves.
+        Same rule as ``initial_state``: data already in the EOS convention need ``ts_kind`` equal to it
     bottom_drag, cd, drag_bg_vel, hbbl : ALE bed stress (spec 2026-10-14-dome §3): None (default, free slip) or
         'quadratic': τ_b/ρ₀ = −r u_b, r = C_d √(ū_bbl² + v̄_bbl² + u_bg²), with ū_bbl the thickness-weighted mean of the
         face column over the bottom ``hbbl`` metres (MOM6 HBBL, MOM_set_viscosity.F90) — a vanished bed layer does
@@ -1200,7 +1206,7 @@ class SigmaBaroclinic:
                  shear_prandtl: float = 1.0, jackson_params: JacksonParams | None = None,
                  bbl_mixing: str | None = None, bbl_params: BBLParams | None = None,
                  surface_fluxes: BulkFluxes | None = None, eos: str = "linear", rho_pgf_ref: float | None = None,
-                 pgf_mass_weight: str = "vanished", p_ref: float = 2e7) -> None:
+                 pgf_mass_weight: str = "vanished", p_ref: float = 2e7, ts_kind: str = "theta_sp") -> None:
         _args = {k: v for k, v in locals().items() if k != "self"}
         raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
         # equation of state (TEOS-10 in 3-D, Task 4): ρ₀ of the EOS before anything that uses it is built
@@ -1232,6 +1238,10 @@ class SigmaBaroclinic:
         self.open = tuple(open_boundaries)
         if open_boundary_state is not None and not self.open:
             raise ValueError("open_boundary_state needs open_boundaries")
+        # exterior data in ``ts_kind`` reach the model in the EOS convention, converted once when received
+        # (TEOS-10 in 3-D task 8); the same provider object when the two agree
+        open_boundary_state = (None if open_boundary_state is None else
+                               convert_exterior(open_boundary_state, _eos.ts_kind, ts_kind))
         self.obc_state, self.obc_mode = open_boundary_state, {e: "radiating" for e in self.open}
         for e, mode in (open_boundary_mode or {}).items():
             if e not in self.open or mode not in ("radiating", "clamped", "eta"):
@@ -1402,6 +1412,11 @@ class SigmaBaroclinic:
             if r.shape != self.H.shape:
                 raise ValueError(f"sponge_rate shape {r.shape}, expected {self.H.shape}")
             zw, Ts = np.asarray(sponge_zw, float), np.asarray(sponge_T, float)
+            if ts_kind != _eos.ts_kind:                                 # sponge profiles in ts_kind (task 8)
+                if sponge_S is None:
+                    raise ValueError(f"sponge_T in ts_kind={ts_kind!r} needs sponge_S to convert to "
+                                     f"{_eos.ts_kind!r}")
+                Ts, sponge_S = to_model_ts(Ts, np.asarray(sponge_S, float), _eos.ts_kind, ts_kind)
             if zw.ndim != 1 or Ts.shape != (zw.size - 1,) or not (np.diff(zw) < 0).all():
                 raise ValueError("sponge_T (nz_s,) needs sponge_zw (nz_s + 1,) decreasing from the surface")
             self.sponge_rate = np.where(self.fs.active, np.nan_to_num(r), 0.0)
@@ -1509,7 +1524,8 @@ class SigmaBaroclinic:
         return self._closure.state()
 
     def initial_state(self, eta: np.ndarray, T: np.ndarray, h_src: np.ndarray | None = None,
-                      tr: np.ndarray | None = None, S: np.ndarray | None = None) -> SigmaState:
+                      tr: np.ndarray | None = None, S: np.ndarray | None = None,
+                      ts_kind: str = "theta_sp") -> SigmaState:
         """
         Resting state; T on the layers of ``layer_heights(eta)``.  With ``rho_ref="auto"`` the reference
         profile is taken from this T.  ALE: h is the rule's grid (σ-layers for 'hybrid', followed by
@@ -1524,10 +1540,25 @@ class SigmaBaroclinic:
         ``tr``: passive tracers (n_tracers, ...) on the grid of T (default 0; ALE ``n_tracers``).
         ``S``: salinity [g kg⁻¹] on the grid of T, required with ``salinity=True`` and refused without; it is
         remapped with T (from ``h_src`` and in the hybrid start-up passes).
+
+        ``ts_kind`` (TEOS-10 in 3-D, task 8) is the convention of the T and S **passed**: ``"theta_sp"`` (default;
+        potential temperature θ [°C], practical salinity S_P) or ``"ct_sa"`` (conservative Θ [°C], absolute S_A
+        [g kg⁻¹]).  The model converts them to the convention of its EOS (``eos.ts_kind``: Θ, S_A for ``teos10``;
+        θ, S_P for ``linear`` and ``wright_full``) **exactly once, here**: S_A = (35.16504/35) S_P, Θ = CT_from_pt
+        (``physics.eos.convert.to_model_ts``).  Nothing converts afterwards.  Rule: pass the data in the convention
+        you have.  Data that are *already* Θ, S_A given to a ``teos10`` model with the default ``ts_kind`` would be
+        converted a second time without any message (S_A scaled by 1.0047, Θ shifted by ~0.01–0.1 °C): pass
+        ``ts_kind="ct_sa"`` for them.  With ``ts_kind`` equal to the EOS convention nothing is touched (linear
+        EOS and defaults: bit for bit).  A conversion needs S (``salinity=True``); ``tr`` is never converted.
         """
         ny, nx = self.H.shape
         eta = np.asarray(eta, float)
         S = self._check_salinity(S, np.shape(T))
+        if ts_kind != self._eos.ts_kind:
+            if S is None:
+                raise ValueError(f"initial_state(ts_kind={ts_kind!r}) needs S to convert T and S to the "
+                                 f"{self._eos.ts_kind!r} convention of eos={self.eos_name!r}")
+            T, S = to_model_ts(np.asarray(T, float), S, self._eos.ts_kind, ts_kind)
         if h_src is not None:
             return self._initial_state_from_source(eta, np.asarray(T, float), np.asarray(h_src, float), tr, S)
         tr = self._check_tracers(tr, np.shape(T))

@@ -114,6 +114,11 @@ def variable_specs(eos: str = "linear") -> dict[str, VarSpec]:
     """
     The registry for a model with equation of state ``eos`` ("linear", "wright_full" or "teos10"): ``REGISTRY``
     with T and S described in the convention of that EOS.  ``REGISTRY`` itself is the linear one.
+
+    Consumers: the CF output (``diagnostics.output.OutputWriter(eos=...)``) and the restart attributes use T and S of
+    this table.  Not every entry is a ``SigmaState`` field: ``location="scalar"`` diagnostics such as
+    ``n_below_freezing`` are attributes of the model, so code that iterates the registry to read the state must
+    skip them (or read them from the model).
     """
     if eos == "linear":
         return dict(REGISTRY)

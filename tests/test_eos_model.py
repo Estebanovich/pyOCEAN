@@ -118,7 +118,7 @@ def test_profile_diffusion_keeps_reference(coord):
     m = _model(coord, "teos10", kh=50.0)
     z = m.layer_heights(np.zeros((NY, NX)))
     T, S = 12.0 + 0.05 * z, 35.0 - 0.004 * z
-    st0 = m.initial_state(np.zeros((NY, NX)), T, S=S)
+    st0 = m.initial_state(np.zeros((NY, NX)), T, S=S, ts_kind="ct_sa")     # Θ, S_A linear in z (task 8: no conversion)
     st = st0
     for _ in range(20):
         st = m.step(st)

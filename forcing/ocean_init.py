@@ -38,6 +38,7 @@ import xarray as xr
 
 from boundaries.obcs import OBData
 from core.state import ModelState
+from physics.eos.convert import to_model_ts
 from forcing.interp import fill_land, interp_time, to_model_grid, to_model_levels
 
 _SIDES = {
@@ -89,6 +90,8 @@ def initial_state(
     v_grid: xr.Dataset,
     t: np.datetime64,
     remove_mean_ssh: bool = True,
+    ts_kind: str = "theta_sp",
+    eos_ts_kind: str = "theta_sp",
 ) -> ModelState:
     """
     Model state at time ``t`` from prepared ocean data.
@@ -105,11 +108,16 @@ def initial_state(
         Initial time.
     remove_mean_ssh : bool
         Subtract the domain-mean η (default True).
+    ts_kind, eos_ts_kind : {'theta_sp', 'ct_sa'}
+        Convention of the data (``temp``, ``salt``; ESPC/GOFS and HYCOM give θ, S_P, the default) and of the
+        receiving model's EOS (``model._eos.ts_kind``).  T and S are converted once here
+        (``physics.eos.convert.to_model_ts``) when they differ; data already in the EOS convention must be passed
+        with ``ts_kind == eos_ts_kind`` or they are converted twice.
     """
     state = ModelState.from_grids(h_grid, v_grid)
     at_t = {p: interp_time(ds, t) for p, ds in prepared.items()}
-    state.T.values[:] = at_t["t"]["temp"].values
-    state.S.values[:] = at_t["t"]["salt"].values
+    state.T.values[:], state.S.values[:] = to_model_ts(at_t["t"]["temp"].values, at_t["t"]["salt"].values,
+                                                       eos_ts_kind, ts_kind)
     if "u" in at_t:
         state.u.values[:] = at_t["u"]["u"].values
     if "v" in at_t:
@@ -125,6 +133,8 @@ def boundary_data(
     side: str,
     t: np.datetime64,
     remove_mean_ssh: bool = True,
+    ts_kind: str = "theta_sp",
+    eos_ts_kind: str = "theta_sp",
 ) -> OBData:
     """
     Prescribed exterior values for one open boundary at time ``t``.
@@ -140,6 +150,9 @@ def boundary_data(
     remove_mean_ssh : bool
         Subtract the domain-mean η at ``t`` (default True), consistent with
         ``initial_state``.
+    ts_kind, eos_ts_kind : {'theta_sp', 'ct_sa'}
+        As in ``initial_state``: T and S of the exterior are converted once here when the data convention
+        differs from the model's.
 
     Returns
     -------
@@ -158,4 +171,5 @@ def boundary_data(
     eta = None
     if "ssh" in tp:
         eta = tp["ssh"].values - (_mean_ssh(prepared, t) if remove_mean_ssh else 0.0)
-    return OBData(side=side, T=tp["temp"].values, S=tp["salt"].values, u_normal=u_normal, eta=eta)
+    T_b, S_b = to_model_ts(tp["temp"].values, tp["salt"].values, eos_ts_kind, ts_kind)
+    return OBData(side=side, T=T_b, S=S_b, u_normal=u_normal, eta=eta)

@@ -43,6 +43,7 @@ import xarray as xr
 
 from core.components.closure import STATE_PREFIX as CLOSURE_PREFIX
 from core.components.closure import BBLAddedClosure, KPPClosure, ShearAddedClosure, find_closure
+from core.model.registry import variable_specs
 from core.dynamics.sigma_baroclinic import ReferenceProfile, SigmaBaroclinic, SigmaState, TSReferenceProfile
 
 _FIELDS = {          # name: (dims, units, long name)
@@ -253,6 +254,10 @@ def write_restart(path: str | Path, model: SigmaBaroclinic, state: SigmaState) -
     attrs.update({f"config_{k}": v for k, v in _config(model).items()})
     if pre is not None:
         attrs.update(fs_lu_rows=int(pre["shape"][0]), fs_lu_cols=int(pre["shape"][1]), fs_lu_refactor=int(pre["refactor"]))
+    if model.eos_name != "linear":                                   # TEOS-10 in 3-D task 8: T, S in the EOS convention
+        for name, sp in ((k, v) for k, v in variable_specs(model.eos_name).items() if k in ("T", "S")):
+            if name in data:
+                data[name].attrs.update(units=sp.units, standard_name=sp.standard_name, long_name=sp.long_name)
     for name, var in data.items():                                   # N1: one section per component
         var.attrs["component"] = _component_of(name)
     xr.Dataset(data, attrs=attrs).to_netcdf(path, engine="netcdf4", format="NETCDF4")

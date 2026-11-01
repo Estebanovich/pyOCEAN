@@ -19,10 +19,13 @@ exposes it as properties of the same names (``CONFIG``).  Index order (k, j, i),
 """
 from __future__ import annotations
 
+from dataclasses import replace as dc_replace
+
 import numba
 import numpy as np
 
 from core.dynamics import open_boundary as obc
+from physics.eos.convert import to_model_ts
 from core.model import threads
 from core.model.contract import BuildContext, Issue, Role
 from core.vertical import remap as rm
@@ -32,6 +35,34 @@ from core.vertical.ale import baroclinic_split, exterior_on_layers, open_face_tr
 CONFIG = ("open", "obc_state", "obc_mode", "obc_tau_in", "obc_tau_out", "orlanski_cmax", "sponge_tracer",
           "theta_bc", "T_ext", "h_ext", "tr_ext", "S_ext", "_bc_mask", "_ext_cols", "_bc_u", "_bc_v", "_sp_c", "_sp_u",
           "_sp_v")
+
+
+def convert_exterior(provider, eos_ts_kind: str, ts_kind: str):
+    """
+    Wrap the time-varying exterior ``provider(t) -> {edge: OBData}`` so that its T and S reach the model in the EOS
+    convention ``eos_ts_kind`` although the data are in ``ts_kind`` (TEOS-10 in 3-D, task 8).  The conversion
+    (``physics.eos.convert.to_model_ts``: θ, S_P → Θ, S_A = (35.16504/35) S_P, or back) is done **once, when the exterior
+    is received**, on every call at time t; the model never converts again.  T and S are (nz, n_bdy); a provider
+    that gives T without S cannot be converted (Θ needs S_A) and raises.  Returns ``provider`` itself when the two
+    conventions agree (no wrapper, bit for bit).
+    """
+    if ts_kind == eos_ts_kind:
+        return provider
+
+    def converted(t: float) -> dict:
+        out = {}
+        for edge, ob in provider(t).items():
+            if ob.T is None:
+                out[edge] = ob
+                continue
+            if ob.S is None:
+                raise ValueError(f"{edge}: OBData has T but no S: the conversion {ts_kind!r} → {eos_ts_kind!r} "
+                                 "needs both")
+            T, S = to_model_ts(np.asarray(ob.T, float), np.asarray(ob.S, float), eos_ts_kind, ts_kind)
+            out[edge] = dc_replace(ob, T=T, S=S)
+        return out
+
+    return converted
 
 
 class OpenBoundary:

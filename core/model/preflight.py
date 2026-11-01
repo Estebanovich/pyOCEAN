@@ -373,6 +373,15 @@ def _eos_issues(a: dict, given: frozenset[str], eos, nonlinear: bool, sal: bool,
                    "pressure gradient takes 'vanished' or 'none'")
     elif "pgf_mass_weight" in given and a["pgf"] != "fv":
         warn("pgf", f"pgf_mass_weight={mw!r} is ignored with pgf={a['pgf']!r} (it applies to pgf='fv' only)")
+    tk = a.get("ts_kind", "theta_sp")
+    if tk not in ("theta_sp", "ct_sa"):
+        err("eos", f"unknown ts_kind {tk!r} (valid: 'theta_sp', 'ct_sa')")
+    elif tk != ("ct_sa" if eos == "teos10" else "theta_sp") and eos in EOS_NAMES:
+        if a.get("sponge_T") is not None and a.get("sponge_S") is None:
+            err("eos", f"sponge_T in ts_kind={tk!r} needs sponge_S to be converted to the convention of eos={eos!r}")
+        if not sal:
+            err("eos", f"ts_kind={tk!r} differs from the convention of eos={eos!r}: the conversion needs "
+                       "salinity=True")
     p_ref = a.get("p_ref", 2e7)
     if not (np.isfinite(p_ref) and p_ref >= 0):
         err("eos", f"p_ref={p_ref!r}: the reference pressure of the hybrid potential density must be a finite "
