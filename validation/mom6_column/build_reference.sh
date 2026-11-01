@@ -82,7 +82,27 @@ for m in Wright_full:wright_full Roquet_rho:roquet_rho; do
   sed -E 's/^real, parameter :: *([A-Za-z0-9_]+) *=.*/write(u,"(a,1x,es25.17)") "\1", \1/' \
       "${OUT}_params.inc" > "${OUT}_write.inc"
 done
-for d in remap_driver regrid_driver hybgen_driver kappa_shear_driver bbl_driver eos_driver; do
+# Nonlinear FV pressure gradient (TEOS-10 in the 3-D core, task 3): ALE_PLM_edge_values
+# (MOM_ALE.F90:1537-1596) reads the private ALE_CS only for answer_date.  Copy it verbatim into a
+# module with a public stand-in type holding that one field and the module's PLM use line (:55-56).
+PLM=$REF/build/column/ale_plm_column_mom6.F90
+{
+  echo "module ale_plm_column_mom6"
+  echo "use MOM_grid, only : ocean_grid_type"
+  echo "use MOM_verticalGrid, only : verticalGrid_type"
+  echo "use PLM_functions, only : PLM_extrapolate_slope, PLM_monotonized_slope, PLM_slope_wa"
+  echo "implicit none ; private"
+  echo "#include <MOM_memory.h>"
+  echo "public :: ALE_PLM_edge_values"
+  echo "type, public :: ALE_CS"
+  echo "  integer :: answer_date"
+  echo "end type ALE_CS"
+  echo "contains"
+  awk '/^subroutine ALE_PLM_edge_values\(/{on=1} on{print} /^end subroutine ALE_PLM_edge_values/{on=0}' \
+      "$REF/MOM6/src/ALE/MOM_ALE.F90"
+  echo "end module ale_plm_column_mom6"
+} > "$PLM"
+for d in remap_driver regrid_driver hybgen_driver kappa_shear_driver bbl_driver eos_driver pgf_driver; do
   [ -f "$HERE/$d.F90" ] || continue
   EXTRA=""; [ "$d" = hybgen_driver ] && EXTRA="$HYB"
   # kappa_shear: preprocess MOM_memory.h; no FMA contraction, so the comparison with NumPy can
@@ -90,6 +110,7 @@ for d in remap_driver regrid_driver hybgen_driver kappa_shear_driver bbl_driver 
   [ "$d" = kappa_shear_driver ] && EXTRA="-ffp-contract=off -I$REF/MOM6/config_src/memory/dynamic_symmetric -I$REF/MOM6/src/framework $KSM"
   [ "$d" = bbl_driver ] && EXTRA="-ffp-contract=off -I$REF/MOM6/config_src/memory/dynamic_symmetric -I$REF/MOM6/src/framework $BBM"
   [ "$d" = eos_driver ] && EXTRA="-ffp-contract=off -I$REF/build/column"
+  [ "$d" = pgf_driver ] && EXTRA="-ffp-contract=off -I$REF/MOM6/config_src/memory/dynamic_symmetric -I$REF/MOM6/src/framework $PLM"
   mpif90 -O2 -fdefault-real-8 -fdefault-double-8 -I"$B" -I"$DEPS/include" -J"$REF/build/column" \
          $EXTRA "$HERE/$d.F90" $OBJS "$DEPS/lib/libFMS.a" "$DEPS/lib/libgsw.a" "$DEPS/lib/libcvmix.a" \
          $(nf-config --flibs) $(nc-config --libs) -o "$REF/build/column/$d"
@@ -97,3 +118,5 @@ done
 echo "built: $(ls "$REF/build/column" | grep -v '\.mod$' | tr '\n' ' ')"
 # Reference table of the nonlinear EOS for tests/test_eos_nonlinear.py (committed, < 1 MB)
 python "$HERE/eos_columns.py" "$REF/build/column/eos_driver" "$HERE/../../tests/data/mom6_eos_reference.npz"
+# Reference table of the nonlinear FV pressure gradient for tests/test_pgf_nonlinear.py (< 1 MB)
+python "$HERE/eos_columns.py" pgf "$REF/build/column/pgf_driver" "$HERE/../../tests/data/mom6_pgf_plm_reference.npz"

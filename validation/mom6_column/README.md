@@ -45,6 +45,7 @@ Los tests de pytest (`tests/test_vertical_vs_mom6.py`) se saltan cuando falta un
 | `bbl_driver tke` | `MOM_set_diffusivity::set_BBL_TKE` (extraída) | factor contra C_d\|U\|³ y √C_d\|U\| | 1e-12 relativo |
 | `eos_driver eval` | `MOM_EOS::calculate_density` (sin y con `rho_ref` = 1035) y `calculate_density_derivs` (1-D), con `EOS_manual_init(form_of_EOS = EOS_WRIGHT_FULL / EOS_ROQUET_RHO)` | `physics.eos.wright_full`, `physics.eos.roquet_rho` (`density`, `density_anomaly`, `density_derivs`) | rtol 1e-12 (ρ, ∂ρ/∂T, ∂ρ/∂S), atol 1e-12 (ρ − ρ_ref); medido: bit a bit |
 | `eos_driver coef` | coeficientes `parameter` de `MOM_EOS_Wright_full.F90:23-37` y `MOM_EOS_Roquet_rho.F90:14-156`, tal como los pliega el compilador | constantes de módulo de los mismos nombres | bit a bit |
+| `pgf_driver` | `MOM_density_integrals::int_density_dz_generic_plm` + PLM de T y S (`ALE_PLM_edge_values`, extraída) + ensamblado de `PressureForce_FV_Bouss`, WRIGHT_FULL y ROQUET_RHO, tres modos de peso de masa | `core.vertical.pgf_nonlinear.fv_pgf_nonlinear` | rtol 1e-12, atol 1e-12 × max \|PFu\|; medido: bit a bit |
 
 Las columnas de prueba se generan en `columns.py`:
 - semilla 2026;
@@ -463,3 +464,60 @@ Contra TEOS-10 de `gsw` (polinomio de 75 términos en volumen específico), Roqu
 5.4e-2 kg m⁻³ como máximo sobre los puntos con S ≥ 2 (salobre a 5500-6000 dbar, fuera del
 embudo oceánico de los ajustes), RMS 7.6e-3, mediana 3.2e-4; 3.0e-2 para 30 < S_A < 40.
 `ROQUET_FIT_MAX` = 1.1 × el máximo medido [verificar Roquet 2015, Tabla].
+
+## Gradiente de presión de volumen finito no lineal (`int_density_dz_generic_plm` de MOM6)
+
+TEOS-10 en el núcleo 3-D, tarea 3 (criterio 3 de la especificación; lectura de referencia
+`docs/design/teos10_refs/mom6_eos.md` §4.0-4.c).
+
+`pgf_driver` recibe filas de columnas (`eos_columns.pgf_cases`); cada cara u es un par de
+columnas (L, R). Para cada caso y cada EOS (`EOS_manual_init`, como `eos_driver`):
+1. construye las interfaces desde el fondo, e(nz+1) = −bathyT, e(K) = e(K+1) + h(k)
+   (`MOM_PressureForce_FV.F90:1146-1148, 1195-1198`);
+2. reconstruye T y S por separado con `ALE_PLM_edge_values` (`MOM_ALE.F90:1537-1596`) con
+   `BOUNDARY_EXTRAPOLATION_PRESSURE = True`. `ALE_CS` es privado y la rutina solo lee
+   `answer_date`, así que `build_reference.sh` la copia tal cual a `ale_plm_column_mom6` con
+   un tipo público que tiene ese campo (≥ 20190101: h_neglect = `GV%H_subroundoff`);
+3. llama a la rutina pública `int_density_dz_generic_plm` capa por capa con los argumentos de
+   `PressureForce_FV_Bouss` (`:1285-1293`: ρ₀ = `Rho0`, `dZ_subroundoff`, Z_0p = meanSL = 0,
+   forma precisa de `rho_ref`);
+4. ensambla la fuerza como `PressureForce_FV_Bouss` (`:1257-1259` pa(1), `:1338-1343`,
+   `:1539-1556`, `:1796-1801`) dos veces: `pfu_mom6` tal cual, con pa(1) = g ρ_ref η, y
+   `pfu_bc` con pa(1) = g η (ρ_ref − ρ₀), la única línea cambiada. pyOCEAN devuelve la fuerza
+   baroclínica y su solver barotrópico pone −g ∇η, así que `pfu_bc` = `pfu_mom6` + g Δη/Δx
+   (lo comprueba `test_reference_convention`).
+
+Modos de peso de masa (`MOM_PressureForce_FV.F90:2124-2149`), con
+`MASS_WEIGHT_IN_PRESSURE_GRADIENT_TOP = False` en los tres (como NWA12):
+
+| `mass_weight` | `MASS_WEIGHT_IN_PRESSURE_GRADIENT` | `MASS_WEIGHT_IN_PGF_VANISHED_ONLY` | h_nv |
+|---|---|---|---|
+| `"vanished"` (pyOCEAN, por defecto) | True | True | 0.01 m (`H_VANISHED`) |
+| `"full"` (NWA12) | True | False | — |
+| `"none"` | False | — | — |
+
+Casos (`eos_columns.pgf_cases`, ρ₀ = 1035, g = 9.8, ρ_ref = 1030 o 1035):
+
+| Caso | Columnas × capas | Qué prueba |
+|---|---|---|
+| `gulf_zstar` | 8 × 30 | z\* (30 niveles hasta 3000 m, estirados por (H+η)/H) sobre un talud 3000 → 400 m, celdas de fondo parciales, niveles de 1e-10 m bajo el fondo, η ±0.3 m |
+| `gulf_sigma` | 8 × 20 | σ sobre un talud empinado 2000 → 150 m |
+| `thin_layers` | 6 × 16 | capas de 1 mm y de 1e-10 m entre capas gruesas, en posiciones distintas en columnas vecinas, ruido en T (limitador activo) |
+| `bottom_step` | 6 × 25 | niveles de 24 m sobre el escalón de la boca de BayIW 600 → 164 m, celdas parciales con D_L ≠ D_R |
+
+T y S siguen un perfil profundo al norte de la Corriente del Golfo (~40°N 70°W) con un frente
+horizontal. Los valores del perfil son aproximados, idealizados a partir de la climatología
+anual de WOA23 (el servidor OPeNDAP de WOA no respondió el 2026-10-31); la comparación
+necesita un rango θ–S–p y una estratificación realistas, no la climatología exacta.
+
+`build_reference.sh` termina llamando a `eos_columns.py pgf`, que escribe
+`tests/data/mom6_pgf_plm_reference.npz` (199 kB, versionado): entradas, valores de borde
+PLM, `dpa`, `intz_dpa`, `intx_dpa` y las dos fuerzas por caso, EOS y modo.
+`tests/test_pgf_nonlinear.py` compara contra ese npz y no necesita la compilación.
+
+**Resultado** (2026-10-31): la fuerza de pyOCEAN es **bit a bit** igual a `pfu_bc` de MOM6
+compilado en las 3330 caras × capas (4 casos × 2 EOS × 3 modos; max |Δ| = 0). El kernel
+repite el orden de las operaciones de MOM6 (interfaces sumadas desde el fondo, `C1_90`,
+presiones de las subcolumnas acumuladas como en `MOM_density_integrals.F90:705-707`, PLM en el orden de superficie a
+fondo de MOM6). El driver se compila con `-ffp-contract=off` y los objetos de MOM6 con `-O0`.
+
