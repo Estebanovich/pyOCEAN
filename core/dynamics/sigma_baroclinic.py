@@ -99,7 +99,8 @@ from core.vertical.ale import (DZ_FLOOR, baroclinic_split, blend_thin_layers, ex
                                open_face_transport, ppm_transport_x, transport_velocity, upwind_transport_x,
                                viscous_face_thickness, zero_thin_bed_velocity)
 from core.vertical.pgf import fv_pgf
-from core.components.eos import LinearEOS
+from core.components.eos import make_eos
+from physics.eos.convert import pressure_from_z
 from core.components.geometry import LayerGeometry
 from core.components.pgf import PressureGradient
 from core.components.momentum import Momentum, sum_terms
@@ -804,16 +805,7 @@ def reference_profile(z: np.ndarray, rho: np.ndarray, n_bins: int = 400):
     resting stratification from the pressure-gradient computation (Haney 1991;
     Berntsen et al. 2015).  Returns a callable z → ρ_ref.
     """
-    zf, rf = np.asarray(z, float).ravel(), np.asarray(rho, float).ravel()
-    ok = np.isfinite(zf) & np.isfinite(rf)
-    zf, rf = zf[ok], rf[ok]
-    edges = np.linspace(zf.min(), zf.max(), n_bins + 1)
-    idx = np.clip(np.digitize(zf, edges) - 1, 0, n_bins - 1)
-    cnt = np.bincount(idx, minlength=n_bins)
-    mean = np.bincount(idx, weights=rf, minlength=n_bins) / np.maximum(cnt, 1)
-    zc = np.bincount(idx, weights=zf, minlength=n_bins) / np.maximum(cnt, 1)
-    keep = cnt > 0
-    return ReferenceProfile(zc[keep], mean[keep])
+    return ReferenceProfile(*_binned_profile(z, rho, n_bins))
 
 
 @numba.njit(parallel=True, cache=True, fastmath={"contract"})
@@ -893,6 +885,59 @@ class ReferenceProfile:
         return out
 
 
+def _binned_profile(z: np.ndarray, q: np.ndarray, n_bins: int = 400) -> tuple[np.ndarray, np.ndarray]:
+    """(heights, means) of ``q`` in ``n_bins`` equal depth bins spanning the cell heights ``z`` (empty bins
+    dropped), the binning of ``reference_profile``."""
+    zf, qf = np.asarray(z, float).ravel(), np.asarray(q, float).ravel()
+    ok = np.isfinite(zf) & np.isfinite(qf)
+    zf, qf = zf[ok], qf[ok]
+    edges = np.linspace(zf.min(), zf.max(), n_bins + 1)
+    idx = np.clip(np.digitize(zf, edges) - 1, 0, n_bins - 1)
+    cnt = np.bincount(idx, minlength=n_bins)
+    mean = np.bincount(idx, weights=qf, minlength=n_bins) / np.maximum(cnt, 1)
+    zc = np.bincount(idx, weights=zf, minlength=n_bins) / np.maximum(cnt, 1)
+    keep = cnt > 0
+    return zc[keep], mean[keep]
+
+
+class TSReferenceProfile:
+    """
+    Reference stratification of a nonlinear EOS (``rho_ref="auto"``; spec 2026-10-31-teos10-3d goals B and E):
+    the horizontal-mean initial temperature T_ref(z) [°C] and salinity S_ref(z) (the EOS convention: θ, S_P for
+    "wright_full", Θ, S_A [g kg⁻¹] for "teos10") at heights z [m] (increasing, z = 0 at the rest surface).
+
+    The grid ``z`` holds the mean heights of the cell centres in 400 equal depth bins spanning every active cell
+    centre, from the deepest column to the top (the binning of the linear ``reference_profile``); T and S are the
+    bin means and are interpolated linearly in between, constant beyond the ends.  A density profile cannot
+    serve here: ρ depends on p, and T_ref, S_ref do not follow from it.  Calling the profile gives
+    ρ_ref(z) = ρ(T_ref(z), S_ref(z), p(z)) [kg m⁻³] with p = −g ρ₀ z (Boussinesq, MOM6 convention), so a
+    horizontally uniform column on the profile has ρ − ρ_ref = 0 at every height whatever the layers.
+    """
+
+    def __init__(self, z: np.ndarray, T: np.ndarray, S: np.ndarray, eos, g: float) -> None:
+        self.z, self.T, self.S = (np.asarray(a, float) for a in (z, T, S))
+        self.eos, self.g = eos, float(g)
+        self._T, self._S = ReferenceProfile(self.z, self.T), ReferenceProfile(self.z, self.S)
+
+    @classmethod
+    def from_cells(cls, z: np.ndarray, T: np.ndarray, S: np.ndarray, eos, g: float) -> "TSReferenceProfile":
+        """The profile of the cell values (z, T, S) (1-D, active cells only)."""
+        z, T, S = (np.asarray(a, float).ravel() for a in (z, T, S))
+        ok = np.isfinite(z) & np.isfinite(T) & np.isfinite(S)          # one set of cells: one height grid
+        zr, Tr = _binned_profile(z[ok], T[ok])
+        _, Sr = _binned_profile(z[ok], S[ok])
+        return cls(zr, Tr, Sr, eos, g)
+
+    def ts(self, zz: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """(T_ref(zz), S_ref(zz)) by linear interpolation."""
+        return self._T(zz), self._S(zz)
+
+    def __call__(self, zz: np.ndarray) -> np.ndarray:
+        """ρ_ref(zz) = ρ(T_ref, S_ref, −g ρ₀ zz) [kg m⁻³]."""
+        Tr, Sr = self.ts(zz)
+        return self.eos.density(Tr, Sr, pressure_from_z(zz, self.eos.rho0, self.g))
+
+
 EDGES = ("west", "east", "south", "north")
 
 
@@ -933,13 +978,30 @@ class SigmaBaroclinic:
         law-of-the-wall drag on a bed layer of thickness max(h_b, min(hbbl, D)), h_b the lowest face layer with
         mass, spread over the bottom metres it covers (N3 task 4, ``core.components.bottom_drag.LogLawBedDrag``;
         MOM6 HBBL averaging); exclusive with ``bottom_drag='quadratic'``
-    rho0 : reference density [kg m⁻³];  t_coef : α [kg m⁻³ °C⁻¹];  t_ref : T₀ [°C]
+    rho0 : reference (Boussinesq) density [kg m⁻³]; None (default): 1000 with ``eos="linear"``, the EOS default
+          (1035, MOM6 RHO_0) with a nonlinear EOS;  t_coef : α [kg m⁻³ °C⁻¹];  t_ref : T₀ [°C] (linear EOS only)
+    eos : equation of state (spec 2026-10-31-teos10-3d goal A; ``core.components.eos``): "linear" (default,
+          ρ₀ − α (T − T₀) + β (S − S₀), bit for bit as before), "wright_full" (Wright 1997 on θ, S_P; MOM6
+          WRIGHT_FULL) or "teos10" (Roquet et al. 2015 on Θ, S_A; MOM6 ROQUET_RHO).  A nonlinear EOS needs
+          ``salinity=True`` and takes no t_coef/t_ref/s_coef/s_ref.  Its density depends on the pressure: the
+          pressure gradient uses p = −g ρ₀ z (``core.components.pgf``), the closures p = g ρ₀ Σ h from the surface
+          (``Driver._layer_density``).  ``rho_ref="auto"`` then keeps the horizontal-mean initial T and S profiles
+          (``TSReferenceProfile``, ``self._ts_ref``) instead of a density profile: ρ_ref(z) = ρ(T_ref, S_ref, p(z))
+          for the σ schemes, the T′/S′ anomalies of the 'fv' scheme, and K_h acts on T − T_ref(z), S − S_ref(z)
+    rho_pgf_ref : density subtracted by the nonlinear pressure gradient without a reference profile [kg m⁻³]
+          (MOM6 RHO_PGF_REF, inside the EOS for 'fv'; None: ρ₀); ignored by the linear EOS
+    pgf_mass_weight : bed mass weighting of the 'fv' pressure gradient: "vanished" (default, only next to
+          vanished layers), "full" (MOM6 MASS_WEIGHT_IN_PGF_VANISHED_ONLY = False, as NWA12; nonlinear EOS only)
+          or "none"
+    p_ref : reference pressure of the potential density of the hybrid regrid with a nonlinear EOS [Pa]
+          (2e7 = σ₂, MOM6 hybrid coordinate)
     salinity : carry salinity S [g kg⁻¹] in the state (N2a, spec 2026-10-28-n2a-salinity-freshwater); the EOS is
           then ρ = ρ₀ − α (T − T₀) + β (S − S₀) (Vallis 2006, eq. 1.156) and ``initial_state`` needs S.  S is
           stepped along the path of T in σ and ALE (advection in the same stack and limiter, K_h, K_v, open-edge
           inflow from ``OBData.S`` — required on every edge with data — or the resting ``S_ext``, boundary
-          sponge, remap, interior sponge ``sponge_S``); with salinity both T and S are diffused along the layers as
-          fields, without the T − T_ref(z) anomaly of ``rho_ref``
+          sponge, remap, interior sponge ``sponge_S``); with salinity and the linear EOS both T and S are diffused
+          along the layers as fields, without the T − T_ref(z) anomaly of ``rho_ref`` (a nonlinear EOS with
+          ``rho_ref="auto"`` diffuses T − T_ref(z) and S − S_ref(z))
     s_coef : β [kg m⁻³ (g kg⁻¹)⁻¹];  s_ref : S₀ [g kg⁻¹] (both fixed after construction, as t_coef)
     variance_budget : exact discrete budget of Σ V S² and Σ V T² operator by operator in ``SigmaState.budget``
           (needs ``salinity=True``; default False, nothing changes; N2a task 6, Klingbeil et al. 2014,
@@ -1037,7 +1099,8 @@ class SigmaBaroclinic:
     thickness_flux : ALE layer thickness at the faces: 'ppm' (default) = MOM6 continuity_PPM with the
           barotropic adjustment (B2b; core.vertical.ale.ppm_transport_x; hybrid lock exchange with 21
           layers = MOM6, needs ~20 layers in density currents) or 'upwind' = donor cell (B2a, 28 % cheaper)
-    pgf : 'jacobian' (default), 'twoterm', or 'fv', finite volume (Adcroft et al. 2008; core.vertical.pgf)
+    pgf : 'jacobian' (default), 'twoterm', or 'fv', finite volume (Adcroft et al. 2008; core.vertical.pgf;
+          ``core.vertical.pgf_nonlinear`` with a nonlinear EOS)
     mix_diagnostic : ALE: advect and remap T² for the spurious-mixing diagnostic ``mix_num`` (default True; False
           halves the tracer work and leaves T unchanged; mix_num is then None)
     solver : free-surface solver: 'direct' (σ default) or 'cg' (ALE default: CG preconditioned with the LU of a
@@ -1111,7 +1174,7 @@ class SigmaBaroclinic:
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, n_layers: int = 10,
-                 rho0: float = 1000.0, t_coef: float = 0.2, t_ref: float = 0.0, z0: float | None = None,
+                 rho0: float | None = None, t_coef: float = 0.2, t_ref: float = 0.0, z0: float | None = None,
                  closure: str = "constant", nu_const: float = 1e-4, ah: float = 0.0, adv: str = "flux",
                  theta: float = 0.6, d_min: float = 0.05, g: float = G, tracer_scheme: str = "weno5",
                  tracer_time: str = "ssprk3", pgf: str = "jacobian", rho_ref=None,
@@ -1131,14 +1194,22 @@ class SigmaBaroclinic:
                  drag_bg_vel: float = 0.0, hbbl: float = 10.0, salinity: bool = False, s_coef: float = 0.0,
                  s_ref: float = 35.0, sponge_S: np.ndarray | None = None, variance_budget: bool = False,
                  tef_face: int | None = None, tef_sign: int = 1, tef_region: np.ndarray | None = None,
-                 gls_stratified: bool = True, cp: float = 3985.0, jerlov: str = "I",
+                 gls_stratified: bool = True, cp: float | None = None, jerlov: str = "I",
                  periodic: tuple[str, ...] = (), gls_production: str = "croco",
                  kpp_params: KPPParams | None = None, smagorinsky: float = 0.0, shear_mixing: str | None = None,
                  shear_prandtl: float = 1.0, jackson_params: JacksonParams | None = None,
                  bbl_mixing: str | None = None, bbl_params: BBLParams | None = None,
-                 surface_fluxes: BulkFluxes | None = None) -> None:
+                 surface_fluxes: BulkFluxes | None = None, eos: str = "linear", rho_pgf_ref: float | None = None,
+                 pgf_mass_weight: str = "vanished", p_ref: float = 2e7) -> None:
         _args = {k: v for k, v in locals().items() if k != "self"}
         raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
+        # equation of state (TEOS-10 in 3-D, Task 4): ρ₀ of the EOS before anything that uses it is built
+        _eos_kw = (dict(t_coef=t_coef, t_ref=t_ref, s_coef=float(s_coef), s_ref=float(s_ref)) if eos == "linear"
+                   else {})
+        if rho0 is None:                                                # None: the EOS default (1035) if nonlinear
+            rho0 = 1000.0 if eos == "linear" else None
+        _eos = make_eos(eos, rho0, **_eos_kw)
+        rho0 = _eos.rho0
         self.periodic = Periodic(periodic)                              # N3 task 3 (class docstring)
         h_grid = periodic_grid(h_grid, self.periodic)                   # wrap-face metrics; unchanged without
         if ke_scheme == "godunov":                                      # correct spelling; the kernels use 'gudonov'
@@ -1246,9 +1317,11 @@ class SigmaBaroclinic:
         self.rho0, self.t_coef, self.t_ref, self.ah, self.adv = rho0, t_coef, t_ref, ah, adv
         self.smagorinsky = float(smagorinsky)                          # Smagorinsky C (0 = off, the default)
         self.salinity, self.s_coef, self.s_ref = bool(salinity), float(s_coef), float(s_ref)
-        self._eos = LinearEOS(rho0=rho0, t_coef=t_coef, t_ref=t_ref, s_coef=self.s_coef, s_ref=self.s_ref)
+        self.eos_name, self.p_ref, self.pgf_mass_weight = eos, float(p_ref), pgf_mass_weight
+        self._eos = _eos                                                # EOS protocol (core.components.eos)
         self._time_stepper = AB3Momentum()
-        self._pgf = PressureGradient(pgf, self._eos, g, rho_ref)
+        self._pgf = PressureGradient(pgf, self._eos, g, rho_ref, rho_pgf_ref=rho_pgf_ref, mass_weight=pgf_mass_weight)
+        self.rho_pgf_ref = self._pgf.rho_pgf_ref
         self.fs = self.core.fs
         self._free_surface = FreeSurfaceVerticalViscosity(self.core)
         self._fluxes = None                                             # BarotropicFluxes of the last step
@@ -1280,7 +1353,8 @@ class SigmaBaroclinic:
             raise ValueError("tracer_limiter='fct' needs vertical_coordinate='ale', tracer_time='ssprk3' and a "
                              "WENO5 tracer_scheme")
         self.tracer_limiter = tracer_limiter
-        self.cp, self.jerlov = float(cp), jerlov                       # heat flux: c_p [J kg⁻¹ K⁻¹], Jerlov type
+        self.cp = float(self._eos.cp_default if cp is None else cp)   # heat flux: c_p [J kg⁻¹ K⁻¹] (EOS default)
+        self.jerlov = jerlov                                            # Jerlov water type
         # turbulence closure as its own component (N3 task 1), stepped by the driver (phases 4 and 7); the core
         # keeps a reference only for the ``core.gls`` path.  Built here, after the EOS and c_p that KPP uses
         self.kpp_params = kpp_params                                    # closure='kpp' (N3 task 7)
@@ -1457,7 +1531,7 @@ class SigmaBaroclinic:
         if isinstance(self.rho_ref, str) and self.rho_ref == "auto":
             z = self.layer_heights(eta)
             act = np.broadcast_to(self.fs.active[None], z.shape)
-            self.rho_ref = reference_profile(z[act], self.density(np.asarray(T, float), S)[act])
+            self.rho_ref = self._auto_reference(z[act], np.asarray(T, float)[act], None if S is None else S[act])
         self.T_ext = np.array(T, float)                                # inflow / sponge target at open boundaries
         self.S_ext = None if S is None else S.copy()
         st = SigmaState(eta=np.array(eta, float), u=np.zeros((self.n, ny, nx + 1)),
@@ -1476,6 +1550,21 @@ class SigmaBaroclinic:
             self.tr_ext = None if st.tr is None else st.tr.copy()
             self.S_ext = None if st.S is None else st.S.copy()
         return st
+
+    def _auto_reference(self, z: np.ndarray, T: np.ndarray, S: np.ndarray | None):
+        """
+        The ``rho_ref="auto"`` profile from the active cells (z, T, S): the binned density profile of the linear EOS
+        (``reference_profile``, unchanged), or the T/S profiles of a nonlinear one (``TSReferenceProfile``).
+        """
+        if self._eos.linear:
+            return reference_profile(z, self.density(T, S))
+        return TSReferenceProfile.from_cells(z, T, S, self._eos, self.g)
+
+    @property
+    def _ts_ref(self) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        """(z_ref, T_ref, S_ref) of a nonlinear EOS with ``rho_ref="auto"`` after ``initial_state``, else None."""
+        r = self.rho_ref
+        return (r.z, r.T, r.S) if isinstance(r, TSReferenceProfile) else None
 
     def _check_tracers(self, tr, shape: tuple) -> np.ndarray | None:
         """Passive tracers (n_tracers,) + shape (zeros when None), or None without tracers; ValueError otherwise."""
@@ -1527,7 +1616,7 @@ class SigmaBaroclinic:
         if isinstance(self.rho_ref, str) and self.rho_ref == "auto":
             zc = -H[None] + np.cumsum(h_src, axis=0) - 0.5 * h_src
             act = wet[None] & (h_src > 0)
-            self.rho_ref = reference_profile(zc[act], self.density(T_src, S_src)[act])
+            self.rho_ref = self._auto_reference(zc[act], T_src[act], None if S_src is None else S_src[act])
         numba.set_num_threads(_THREADS[0])
 
         def from_source(h_tgt: np.ndarray) -> np.ndarray:
@@ -1578,7 +1667,11 @@ class SigmaBaroclinic:
         return val
 
     def density(self, T: np.ndarray, S: np.ndarray | None = None) -> np.ndarray:
-        """Linear EOS ρ = ρ₀ − α (T − T₀) [+ β (S − S₀) with S] [kg m⁻³] (Vallis 2006 eq. 1.156; components.eos)."""
+        """
+        ρ(T, S) of the model's EOS [kg m⁻³]: linear ρ₀ − α (T − T₀) [+ β (S − S₀) with S] (Vallis 2006 eq. 1.156;
+        components.eos), or a nonlinear EOS at the surface pressure p = 0 (potential density referred to the
+        surface; the step passes the pressure itself where it matters).
+        """
         return self._eos.density(T, S)
 
     def layer_volumes(self, eta: np.ndarray, h: np.ndarray | None = None) -> np.ndarray:

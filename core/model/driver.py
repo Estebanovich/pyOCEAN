@@ -337,6 +337,35 @@ class Driver:
         if bud is not None:
             bud.source("T_surf", V1 * (C[0] ** 2 - T_old**2) / m.dt)
 
+    # ------------------------------------------------------------------ EOS (TEOS-10 in 3-D, Task 4)
+    def _layer_density(self, T: np.ndarray, S: np.ndarray | None, h) -> np.ndarray:
+        """
+        Density of the layers [kg m⁻³] for the consumers inside the step (closures).  Linear EOS: exactly
+        ``eos.density(T, S)`` (Vallis 2006 eq. 1.156; p not used, bit for bit).  Nonlinear EOS: in-situ ρ(T, S, p)
+        at the layer centres, p = g ρ₀ (Σ_{layers above} h + ½ h_k) [Pa] from the surface (spec 2026-10-31-teos10-3d,
+        pressure in the closures).  ``h`` (N, ny, nx) [m], bed first, or a callable returning it (only called
+        with a nonlinear EOS, so the linear path builds nothing).
+        """
+        m = self.m
+        if m._eos.linear:
+            return m._eos.density(T, S)
+        h = h() if callable(h) else h
+        h = np.nan_to_num(np.asarray(h, float))
+        above = np.cumsum(h[::-1], axis=0)[::-1]                      # Σ_{j ≥ k} h_j: column top to the bed of k
+        return m._eos.density(T, S, m.g * m.rho0 * (above - 0.5 * h))
+
+    def _sigma_thickness(self, eta: np.ndarray) -> np.ndarray:
+        """σ-layer thicknesses D Δσ_k [m] at η, D = max(H + η, d_min) (as the σ pressure gradient)."""
+        m = self.m
+        D = np.maximum(np.nan_to_num(m.H + eta, nan=m.fs.d_min), m.fs.d_min)
+        return D[None] * m.ds[:, None, None]
+
+    def _ts_anomaly(self) -> tuple[bool | str, bool | str]:
+        """``anomaly`` arguments of the K_h diffusion of T and S with salinity: the fields themselves with the
+        linear EOS (False, unchanged), the anomalies from the T/S profile with a nonlinear one ("T", "S";
+        spec goal E; without a profile TracerDiffusion diffuses the fields)."""
+        return (False, False) if self.m._eos.linear else ("T", "S")
+
     # ------------------------------------------------------------------ KPP (N3 task 7)
     def _kpp_update(self, ctx: StepContext, C: np.ndarray, lay: dict[str, int], V1: np.ndarray) -> None:
         """
@@ -349,7 +378,7 @@ class Driver:
         _, h = self._wet_thickness(ctx, V1)
         sal = m.salinity
         S = C[lay["S"]] if sal else None
-        rho = m._eos.density(C[0], S)
+        rho = self._layer_density(C[0], S, h)
         uc = vc = None                                                 # BBL mixing on a constant closure
         if cl.reads_velocity:
             u, v = ctx.u_new, ctx.v_new
@@ -436,7 +465,7 @@ class Driver:
         cl = m._closure                                                # turbulence closure (N3 task 1)
         rho = None
         if m.core.gls_stratified:                                      # N² from ρ(Tⁿ, Sⁿ) (N2a task 8c)
-            rho = m._eos.density(st.T, st.S if m.salinity else None)
+            rho = self._layer_density(st.T, st.S if m.salinity else None, lambda: self._sigma_thickness(st.eta))
             cl.gls.kt_min = m.kv if m.kv > 0 else KT_MIN               # kv set after construction reaches the floor
         nu = cl.viscosity(st)                                          # ν of the current closure state (CROCO order)
         nu_u, nu_v = (None, None) if nu is None else nu
@@ -491,8 +520,9 @@ class Driver:
         if m.kh > 0:
             T_a, S_a = T_new, S_new
             if sal:                                                    # T and S as fields (module docstring)
-                T_new = m._tracer_diffusion.diffuse_h(T_new, V1, ctx.eta_new, anomaly=False)
-                S_new = m._tracer_diffusion.diffuse_h(S_new, V1, ctx.eta_new, anomaly=False)
+                aT, aS = self._ts_anomaly()
+                T_new = m._tracer_diffusion.diffuse_h(T_new, V1, ctx.eta_new, anomaly=aT)
+                S_new = m._tracer_diffusion.diffuse_h(S_new, V1, ctx.eta_new, anomaly=aS)
             else:
                 T_new = m._tracer_diffusion.diffuse_h(T_new, V1, ctx.eta_new)
             if bud is not None:
@@ -579,7 +609,7 @@ class Driver:
         cl = m._closure
         rho = None
         if cl.stateful and m.core.gls_stratified:                      # N² from ρ(Tⁿ, Sⁿ), as σ (N3 task 5)
-            rho = m._eos.density(st.T, st.S if m.salinity else None)
+            rho = self._layer_density(st.T, st.S if m.salinity else None, st.h)
             cl.gls.kt_min = m.kv if m.kv > 0 else KT_MIN
         nu = cl.viscosity(st)                                          # None for the constant closures of ALE
         nu_u, nu_v = (None, None) if nu is None else nu
@@ -756,8 +786,9 @@ class Driver:
             T_a, S_a = T_lag, S_lag
             dif = m._tracer_diffusion
             if sal:                                                     # T and S as fields (module docstring)
-                T_lag = dif.diffuse_h(T_lag, V1, ctx.eta_new, h_lag, anomaly=False)
-                S_lag = dif.diffuse_h(S_lag, V1, ctx.eta_new, h_lag, anomaly=False)
+                aT, aS = self._ts_anomaly()
+                T_lag = dif.diffuse_h(T_lag, V1, ctx.eta_new, h_lag, anomaly=aT)
+                S_lag = dif.diffuse_h(S_lag, V1, ctx.eta_new, h_lag, anomaly=aS)
             else:
                 T_lag = dif.diffuse_h(T_lag, V1, ctx.eta_new, h_lag)
             tr_lag = [dif.diffuse_h(c, V1, ctx.eta_new, h_lag, anomaly=False) for c in tr_lag]

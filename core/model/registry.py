@@ -92,3 +92,29 @@ _SPECS = [
 ]
 
 REGISTRY: dict[str, VarSpec] = {s.name: s for s in _SPECS}
+
+# prognostic T and S of each equation of state (TEOS-10 in 3-D, spec 2026-10-31-teos10-3d goal G): the CF standard
+# name and units of the variables the EOS takes (θ, S_P for Wright 1997; Θ, S_A for TEOS-10 / Roquet et al. 2015).
+# The linear EOS keeps the generic entries above.
+_TS_BY_EOS = {
+    "wright_full": (VarSpec("T", ("k", "y", "x"), "t", "degC", "sea_water_potential_temperature", "prognostic",
+                            "potential temperature θ"),
+                    VarSpec("S", ("k", "y", "x"), "t", "1", "sea_water_practical_salinity", "prognostic",
+                            "practical salinity S_P")),
+    "teos10": (VarSpec("T", ("k", "y", "x"), "t", "degC", "sea_water_conservative_temperature", "prognostic",
+                       "conservative temperature Θ"),
+               VarSpec("S", ("k", "y", "x"), "t", "g kg-1", "sea_water_absolute_salinity", "prognostic",
+                       "absolute salinity S_A = (35.16504/35) S_P (no δS_A, as MOM6)")),
+}
+
+
+def variable_specs(eos: str = "linear") -> dict[str, VarSpec]:
+    """
+    The registry for a model with equation of state ``eos`` ("linear", "wright_full" or "teos10"): ``REGISTRY``
+    with T and S described in the convention of that EOS.  ``REGISTRY`` itself is the linear one.
+    """
+    if eos == "linear":
+        return dict(REGISTRY)
+    if eos not in _TS_BY_EOS:
+        raise ValueError(f"unknown eos {eos!r}: expected 'linear', 'wright_full' or 'teos10'")
+    return {**REGISTRY, **{s.name: s for s in _TS_BY_EOS[eos]}}

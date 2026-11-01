@@ -22,7 +22,11 @@ SCHISM #140).  For ``SigmaBaroclinic`` that is:
   flag): CG stops at an iterate that depends on it;
 * ALE (``vertical_coordinate='ale'``, Plan D): the layer thicknesses h, the exterior profile kept in z
   (T_ext on h_ext) and the CFL truncation count.  ``open_boundary_state`` is a function and is passed
-  to the model again; its edges and modes are checked.
+  to the model again; its edges and modes are checked;
+* the equation of state (TEOS-10 in 3-D, spec 2026-10-31-teos10-3d goal H): its name, ρ₀, c_p and the hybrid
+  ``p_ref`` (and with a nonlinear EOS ``rho_pgf_ref``) are checked; a restart of another EOS is refused (T and S
+  are θ/S_P or Θ/S_A depending on it, and nothing is converted).  With ``rho_ref="auto"`` the reference profile
+  is stored: ρ_ref(z) for the linear EOS, T_ref(z) and S_ref(z) for a nonlinear one.
 
 Arrays are written as float64 NetCDF4 (CF attributes, named dimensions), so
 reading back is exact.  The model configuration (Δt, layers, closure, schemes,
@@ -39,7 +43,7 @@ import xarray as xr
 
 from core.components.closure import STATE_PREFIX as CLOSURE_PREFIX
 from core.components.closure import BBLAddedClosure, KPPClosure, ShearAddedClosure, find_closure
-from core.dynamics.sigma_baroclinic import ReferenceProfile, SigmaBaroclinic, SigmaState
+from core.dynamics.sigma_baroclinic import ReferenceProfile, SigmaBaroclinic, SigmaState, TSReferenceProfile
 
 _FIELDS = {          # name: (dims, units, long name)
     "eta": (("y", "x"), "m", "sea surface height"),
@@ -70,9 +74,11 @@ def _config(model: SigmaBaroclinic) -> dict:
     """Configuration that must match between the writer and the reader."""
     core = model.core
     rr = model.rho_ref
+    eos = getattr(model, "eos_name", "linear")
     cfg = dict(dt=model.dt, n_layers=model.n, theta=model.fs.theta, d_min=model.fs.d_min,
                 sigma_w=" ".join(f"{x:.17g}" for x in core.sigma_w[:, 0]), pgf=model.pgf,
-                rho_ref="none" if rr is None else ("auto" if isinstance(rr, (str, ReferenceProfile)) else "callable"),
+                rho_ref="none" if rr is None else ("auto" if isinstance(rr, (str, ReferenceProfile, TSReferenceProfile))
+                                                   else "callable"),
                 open_boundaries=",".join(model.open) or "none",
                 sponge_cells=model.sponge_cells, sponge_tau=" ".join(f"{t:.17g}" for t in model.sponge_tau),
                 orlanski_cmax=model.orlanski_cmax, sponge_tracer=int(model.sponge_tracer), kh=model.kh, kv=model.kv,
@@ -82,7 +88,11 @@ def _config(model: SigmaBaroclinic) -> dict:
                 salinity=int(model.salinity), s_coef=model.s_coef, s_ref=model.s_ref,
                 theta_bc=model.theta_bc,
                 ny=int(model.H.shape[0]), nx=int(model.H.shape[1]),
-                periodic=",".join(model.periodic.axes) or "none")              # N3 task 3: periodic axes
+                periodic=",".join(model.periodic.axes) or "none",              # N3 task 3: periodic axes
+                eos=eos, cp=model.cp, p_ref=getattr(model, "p_ref", 2e7),       # TEOS-10 in 3-D, Task 4
+                pgf_mass_weight=getattr(model, "pgf_mass_weight", "vanished"))
+    if eos != "linear":
+        cfg.update(rho_pgf_ref=model.rho_pgf_ref)
     if core.closure == "gls":                                   # N2a task 8c: stratified or homogeneous k-ε
         cfg.update(gls_stratified=int(getattr(model, "gls_stratified", False)),
                    gls_production=str(getattr(model, "gls_production", "croco")))   # N3 task 5
@@ -140,7 +150,12 @@ _CONFIG_DEFAULTS = {"salinity": 0, "s_coef": 0.0, "s_ref": 35.0, "sponge_S": "no
                     "smagorinsky": 0.0,                                                     # Smagorinsky off
                     "shear_mixing": "none",                                                 # no shear mixing
                     "bbl_mixing": "none",                                                   # no BBL mixing
-                    "surface_fluxes": "none"}                                               # no bulk fluxes
+                    "surface_fluxes": "none",                                               # no bulk fluxes
+                    "eos": "linear", "p_ref": 2e7, "pgf_mass_weight": "vanished"}           # before TEOS-10 in 3-D
+
+# configuration entries not checked when a file lacks them: files written before TEOS-10 in 3-D did not store c_p,
+# which could be any value the run passed
+_UNCHECKED_IF_MISSING = ("cp",)
 
 _SECTIONS = {"ab_hist": "time_stepper", "gls_": "closure", "kpp_": "closure", "shear_": "closure",
              "T_ext": "open_boundary", "h_ext": "open_boundary",
@@ -221,6 +236,12 @@ def write_restart(path: str | Path, model: SigmaBaroclinic, state: SigmaState) -
         data["fs_lu_data"] = xr.Variable(("lu_nnz",), pre["data"], {"long_name": "lagged CG preconditioner matrix (CSC data)"})
         data["fs_lu_indices"] = xr.Variable(("lu_nnz",), pre["indices"].astype(np.int64))
         data["fs_lu_indptr"] = xr.Variable(("lu_ptr",), pre["indptr"].astype(np.int64))
+    if isinstance(model.rho_ref, TSReferenceProfile):                # nonlinear EOS: the T and S profiles
+        data["rho_ref_z"] = xr.Variable(("ref",), model.rho_ref.z, {"units": "m", "long_name": "reference profile height"})
+        data["rho_ref_T"] = xr.Variable(("ref",), model.rho_ref.T, {"units": "degC",
+                                                                   "long_name": "reference temperature profile"})
+        data["rho_ref_S"] = xr.Variable(("ref",), model.rho_ref.S, {"units": "1e-3",
+                                                                   "long_name": "reference salinity profile"})
     if isinstance(model.rho_ref, ReferenceProfile):
         data["rho_ref_z"] = xr.Variable(("ref",), model.rho_ref.z, {"units": "m", "long_name": "reference profile height"})
         data["rho_ref_rho"] = xr.Variable(("ref",), model.rho_ref.rho,
@@ -260,8 +281,15 @@ def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
     if written is not None and str(written) != model.core.closure:  # Review Focus 3 (N3 task 7)
         raise ValueError(f"restart written with closure={written!r} but the model uses closure={model.core.closure!r}: "
                          "the turbulence state of one closure cannot start another; restart with the same closure")
+    written_eos = str(ds.attrs.get("config_eos", _CONFIG_DEFAULTS["eos"]))
+    if written_eos != getattr(model, "eos_name", "linear"):          # Review Focus 5 (TEOS-10 in 3-D)
+        raise ValueError(f"restart written with eos={written_eos!r} but the model uses eos={model.eos_name!r}: T and "
+                         "S follow the convention of each equation of state (θ/S_P or Θ/S_A) and a restart is not "
+                         "converted; restart with the same eos")
     bad = []
     for k, v in _config(model).items():
+        if k in _UNCHECKED_IF_MISSING and f"config_{k}" not in ds.attrs:
+            continue
         stored = ds.attrs.get(f"config_{k}", _CONFIG_DEFAULTS.get(k))
         if isinstance(v, str) or isinstance(stored, str):
             same = str(stored) == str(v)
@@ -328,10 +356,17 @@ def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
                  indptr=ds["fs_lu_indptr"].values.astype(np.int32),
                  shape=(int(ds.attrs["fs_lu_rows"]), int(ds.attrs["fs_lu_cols"])),
                  refactor=bool(ds.attrs["fs_lu_refactor"])) if "fs_lu_data" in ds else None)
-    if isinstance(model.rho_ref, (str, ReferenceProfile)):
-        if "rho_ref_z" not in ds:
+    if isinstance(model.rho_ref, (str, ReferenceProfile, TSReferenceProfile)):
+        if not model._eos.linear:
+            if "rho_ref_T" not in ds:
+                raise ValueError("restart has no reference T/S profile but the model uses rho_ref='auto' with "
+                                 f"eos={model.eos_name!r}")
+            model.rho_ref = TSReferenceProfile(ds["rho_ref_z"].values.copy(), ds["rho_ref_T"].values.copy(),
+                                               ds["rho_ref_S"].values.copy(), model._eos, model.g)
+        elif "rho_ref_z" not in ds:
             raise ValueError("restart has no reference density profile but the model uses rho_ref='auto'")
-        model.rho_ref = ReferenceProfile(ds["rho_ref_z"].values.copy(), ds["rho_ref_rho"].values.copy())
+        else:
+            model.rho_ref = ReferenceProfile(ds["rho_ref_z"].values.copy(), ds["rho_ref_rho"].values.copy())
     return SigmaState(g_hist=hist, time=float(ds.attrs["time"]), n_trunc=int(ds.attrs.get("n_trunc", 0)),
                       n_limited=int(ds.attrs.get("n_limited", 0)),
                       n_visc_limited=_n_visc_limited(ds, model),

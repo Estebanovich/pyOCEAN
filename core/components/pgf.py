@@ -7,6 +7,19 @@ uniform reference profile ρ_ref(z) removed first (Berntsen et al. 2015).  Moved
 With salinity (N2a) every scheme uses ρ(T, S) of the EOS; the finite-volume form then takes the density path
 ``fv_pgf_rho`` (anomaly ρ − ρ_ref, no division by α), as it does for α = 0 without S.
 
+With a nonlinear EOS (TEOS-10 in 3-D, Task 4; spec 2026-10-31-teos10-3d goal B):
+
+* 'fv' calls ``core.vertical.pgf_nonlinear.fv_pgf_nonlinear`` (MOM6 ``int_density_dz_generic_plm``): without a
+  profile (``rho_ref`` None) the density ``rho_pgf_ref`` (MOM6 RHO_PGF_REF, default ρ₀) is subtracted inside the
+  EOS; with the T/S reference profile of ``rho_ref="auto"`` (``TSReferenceProfile``) the anomalies T − T_ref(z),
+  S − S_ref(z) are reconstructed, so a column equal to the profile has no force;
+* 'jacobian' / 'twoterm' use the in-situ density at the Boussinesq pressure of the cell centre,
+  ρ(T, S, p(z)) with p = −g ρ₀ z (z from the mean surface, no η; MOM6 convention), minus ρ_ref(z) =
+  ρ(T_ref(z), S_ref(z), p(z)) of the profile, or minus ``rho_pgf_ref`` without one.
+
+The linear EOS keeps every expression and its order of operations (bit for bit); there ``mass_weight`` is
+"vanished" (the default, today's weighting) or "none" (``fv_pgf(..., mass_weight=False)``).
+
 Reads η [m], T [°C], S [g kg⁻¹] (optional), h [m] (ALE) or the σ-layers; returns the force at u- and v-faces [m s⁻²],
 (N, ny, nx+1) and (N, ny+1, nx), k = 0 at the bed.
 """
@@ -21,14 +34,25 @@ from core.model import threads
 from core.model.contract import BuildContext, Issue, Role
 from core.model.periodic import NONE
 from core.vertical.pgf import fv_pgf, fv_pgf_rho
+from core.vertical.pgf_nonlinear import fv_pgf_nonlinear
+from physics.eos.convert import pressure_from_z
 
 SCHEMES = ("twoterm", "jacobian", "fv")
+MASS_WEIGHTS = ("vanished", "full", "none")      # "full" needs a nonlinear EOS (fv_pgf_nonlinear)
+
+
+def ts_profile(ref):
+    """The T/S reference profile behind ``rho_ref`` (an object with ``z``, ``T``, ``S`` and ``ts(z)``,
+    ``core.dynamics.sigma_baroclinic.TSReferenceProfile``), or None for None, "auto" and density profiles."""
+    return ref if hasattr(ref, "ts") else None
 
 
 class PressureGradient:
     """
     PGF component.  ``rho_ref`` is None (ρ₀), "auto" (fixed by ``SigmaBaroclinic.initial_state`` from the
-    initial stratification) or a callable z → ρ_ref(z) [kg m⁻³].
+    initial stratification) or a callable z → ρ_ref(z) [kg m⁻³].  ``rho_pgf_ref`` [kg m⁻³]: density subtracted
+    without a profile by a nonlinear EOS (None: ρ₀).  ``mass_weight``: bed mass weighting of the 'fv' scheme,
+    "vanished" (default), "full" (nonlinear EOS only; NWA12) or "none".
     """
     name = "pgf"
     role = Role.PGF
@@ -36,13 +60,20 @@ class PressureGradient:
     writes = ()
     per = NONE                       # periodic axes (core.model.periodic), set by the model
 
-    def __init__(self, scheme: str, eos: LinearEOS, g: float, rho_ref=None) -> None:
+    def __init__(self, scheme: str, eos: LinearEOS, g: float, rho_ref=None, rho_pgf_ref: float | None = None,
+                 mass_weight: str = "vanished") -> None:
         self.scheme, self.eos, self.g, self.rho_ref = scheme, eos, g, rho_ref
+        self.rho_pgf_ref = float(eos.rho0 if rho_pgf_ref is None else rho_pgf_ref)
+        self.mass_weight = mass_weight
 
     def check(self, ctx: BuildContext) -> list[Issue]:
+        out = []
         if self.scheme not in SCHEMES:
-            return [Issue("error", self.name, f"unknown pressure-gradient scheme {self.scheme!r}")]
-        return []
+            out.append(Issue("error", self.name, f"unknown pressure-gradient scheme {self.scheme!r}"))
+        if self.mass_weight not in MASS_WEIGHTS or (self.eos.linear and self.mass_weight == "full"):
+            out.append(Issue("error", self.name, f"pgf_mass_weight={self.mass_weight!r}: use 'vanished' or 'none' "
+                                                 "('full' needs a nonlinear EOS)"))
+        return out
 
     def state_fields(self) -> dict[str, np.ndarray]:
         return {}
@@ -75,8 +106,13 @@ class PressureGradient:
             z = -np.nan_to_num(geom.H)[None] + D[None] * geom.sigma_c[:, None, None]   # cell-centre height (z = 0 at rest)
         else:
             z = geom.layer_heights(eta, h)
-        rho = self.eos.density(T, S)
-        rp = rho - (self.rho_ref(z) if self.rho_ref is not None else self.eos.rho0)
+        if self.eos.linear:
+            rho = self.eos.density(T, S)
+            rp = rho - (self.rho_ref(z) if self.rho_ref is not None else self.eos.rho0)
+        else:                                                         # in situ at p = −g ρ₀ z (module docstring)
+            rho = self.eos.density(T, S, pressure_from_z(z, self.eos.rho0, self.g))
+            ref = None if isinstance(self.rho_ref, str) else self.rho_ref        # "auto" before initial_state
+            rp = rho - (ref(z) if ref is not None else self.rho_pgf_ref)
         g = self.g
         # surface values for the Jacobian: z_s = η, ρ′ linearly extrapolated from the two top layers
         z_s = np.nan_to_num(eta)[None]
@@ -168,16 +204,46 @@ class PressureGradient:
         if h is None:
             D = np.maximum(np.nan_to_num(geom.H + eta, nan=geom.d_min), geom.d_min)
             h = D[None] * geom.ds[:, None, None]
+        if not self.eos.linear:
+            return self._fv_nonlinear(geom, eta, T, h, S)
         ref = None if isinstance(self.rho_ref, str) else self.rho_ref        # "auto" before initial_state: ρ₀
         numba.set_num_threads(threads._THREADS[0])
         kinds = ("c", "c", "c", "c", "u", "v")                            # periodic: pad–crop, halo 1 (two columns)
+        kw = {} if self.mass_weight == "vanished" else {"mass_weight": False}   # "none": no bed mass weighting
         if S is None and self.eos.t_coef != 0:
             args = (h, np.nan_to_num(geom.H), np.nan_to_num(eta), np.nan_to_num(T), geom.du, geom.dv)
-            fn = lambda *a: fv_pgf(*a, self.eos.rho0, self.eos.t_coef, self.eos.t_ref, ref, self.g)   # noqa: E731
+            fn = lambda *a: fv_pgf(*a, self.eos.rho0, self.eos.t_coef, self.eos.t_ref, ref, self.g, **kw)  # noqa: E731
         else:
             rho = self.eos.density(np.nan_to_num(T), None if S is None else np.nan_to_num(S))
             args = (h, np.nan_to_num(geom.H), np.nan_to_num(eta), rho, geom.du, geom.dv)
-            fn = lambda *a: fv_pgf_rho(*a, self.eos.rho0, ref, self.g)                               # noqa: E731
+            fn = lambda *a: fv_pgf_rho(*a, self.eos.rho0, ref, self.g, **kw)                       # noqa: E731
+        gx, gy = self.per.apply(fn, args, kinds, ("u", "v"), 1) if self.per else fn(*args)
+        return (np.where(np.isfinite(geom.H_u)[None], gx, 0.0),
+                np.where(np.isfinite(geom.H_v)[None], gy, 0.0))
+
+    def _fv_nonlinear(self, geom: LayerGeometry, eta: np.ndarray, T: np.ndarray, h: np.ndarray,
+                      S: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Finite-volume PGF with a nonlinear EOS (``fv_pgf_nonlinear``, MOM6 ``int_density_dz_generic_plm``,
+        MOM_density_integrals.F90): the T/S profile mode with ``rho_ref="auto"``, MOM6's mode with
+        ``rho_pgf_ref`` otherwise.  Active columns are the wet ones (D = H + η > d_min); the kernel takes the
+        surface pressure from η and the interfaces from Σh − H, so η is passed as Σh − H in wet columns (exactly
+        the height of the column top that h describes, also in ALE).
+        """
+        H0 = np.nan_to_num(geom.H)
+        hh = np.nan_to_num(h)
+        wet = np.isfinite(geom.H) & (np.nan_to_num(geom.H + eta, nan=0.0) > geom.d_min)
+        eta_h = np.where(wet, hh.sum(axis=0) - H0, np.nan_to_num(eta))
+        prof = ts_profile(self.rho_ref)
+        ref = {} if prof is None else {"T_ref": prof.T, "S_ref": prof.S, "z_ref": prof.z}
+        numba.set_num_threads(threads._THREADS[0])
+
+        def fn(h_, H_, e_, T_, S_, du, dv, wet_):
+            return fv_pgf_nonlinear(h_, H_, e_, T_, S_, du, dv, eos_name=self.eos.name, rho0=self.eos.rho0,
+                                    rho_pgf_ref=self.rho_pgf_ref, g=self.g, mass_weight=self.mass_weight,
+                                    wet=wet_, **ref)
+        args = (hh, H0, eta_h, np.nan_to_num(T), np.nan_to_num(S), geom.du, geom.dv, wet)
+        kinds = ("c", "c", "c", "c", "c", "u", "v", "c")
         gx, gy = self.per.apply(fn, args, kinds, ("u", "v"), 1) if self.per else fn(*args)
         return (np.where(np.isfinite(geom.H_u)[None], gx, 0.0),
                 np.where(np.isfinite(geom.H_v)[None], gy, 0.0))

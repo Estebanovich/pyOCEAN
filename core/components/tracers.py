@@ -28,6 +28,7 @@ from collections.abc import Callable
 import numba
 import numpy as np
 
+from core.components.pgf import ts_profile
 from core.model import threads
 from core.model.contract import BuildContext, Issue, Role
 from core.model.periodic import NONE, TRACER_HALO
@@ -374,17 +375,34 @@ class TracerDiffusion:
     def state_fields(self) -> dict[str, np.ndarray]:
         return {}
 
+    def _diffused_field(self, T: np.ndarray, eta: np.ndarray, h: np.ndarray | None, anomaly) -> np.ndarray:
+        """
+        The field K_h acts on.  ``anomaly`` True (linear EOS, T without S): T − T_ref(z) with T_ref inverted from
+        ρ_ref(z) by α, T_ref = T₀ + (ρ₀ − ρ_ref)/α (unchanged arithmetic).  "T" or "S" (nonlinear EOS with the T/S
+        profile of ``rho_ref="auto"``, spec 2026-10-31-teos10-3d goal E): T − T_ref(z) or S − S_ref(z), the
+        horizontal-mean initial profiles interpolated to the layer centres.  False, or no profile: the field.
+        """
+        if anomaly is True:
+            if (self.eos.linear and self.pgf.rho_ref is not None and not isinstance(self.pgf.rho_ref, str)
+                    and self.eos.t_coef != 0):
+                return T - (self.eos.t_ref + (self.eos.rho0 - self.pgf.rho_ref(self.layer_heights(eta, h)))
+                            / self.eos.t_coef)
+            return T
+        prof = ts_profile(self.pgf.rho_ref)
+        if anomaly in ("T", "S") and prof is not None:
+            T_ref, S_ref = prof.ts(self.layer_heights(eta, h))
+            return T - (T_ref if anomaly == "T" else S_ref)
+        return T
+
     def diffuse_h(self, T: np.ndarray, V: np.ndarray, eta: np.ndarray, h: np.ndarray | None = None,
-                   anomaly: bool = True) -> np.ndarray:
+                   anomaly: bool | str = True) -> np.ndarray:
         """
         Explicit Laplacian diffusion along the layers (see _diffuse_h_numpy).  ALE: the Numba kernel
         _diffuse_ale_kernel with the same per-element arithmetic (performance task 5.6); σ: the NumPy version.
         """
         if h is None:
             return self.diffuse_h_numpy(T, V, eta, h, anomaly)
-        Tw = T
-        if anomaly and self.pgf.rho_ref is not None and not isinstance(self.pgf.rho_ref, str) and self.eos.t_coef != 0:
-            Tw = T - (self.eos.t_ref + (self.eos.rho0 - self.pgf.rho_ref(self.layer_heights(eta, h))) / self.eos.t_coef)
+        Tw = self._diffused_field(T, eta, h, anomaly)
         Du, Dv = self.face_depths(eta)
         okx = np.isfinite(self.fs.H_u) & np.isfinite(Du) & (Du > self.fs.d_min)
         oky = np.isfinite(self.fs.H_v) & np.isfinite(Dv) & (Dv > self.fs.d_min)
@@ -405,7 +423,7 @@ class TracerDiffusion:
         return run(*args)
 
     def diffuse_h_numpy(self, T: np.ndarray, V: np.ndarray, eta: np.ndarray, h: np.ndarray | None = None,
-                         anomaly: bool = True) -> np.ndarray:
+                         anomaly: bool | str = True) -> np.ndarray:
         """
         NumPy reference of _diffuse_h (test oracle; used for σ).
         Explicit Laplacian diffusion along σ-surfaces in flux form (MITgcm diffKhT):
@@ -414,11 +432,10 @@ class TracerDiffusion:
         T stays uniform.  With a reference profile the anomaly T − T_ref(z) is diffused instead
         (Mellor & Blumberg 1985 [verificar]), so a resting stratification is not mixed across
         sloping σ-surfaces (e.g. a shelf step).  ``anomaly`` False (passive tracers, which have no reference
-        profile): the field itself is diffused.
+        profile): the field itself is diffused; "T" / "S": the anomaly from the T/S profile of a nonlinear EOS
+        (``_diffused_field``).
         """
-        Tw = T
-        if anomaly and self.pgf.rho_ref is not None and not isinstance(self.pgf.rho_ref, str) and self.eos.t_coef != 0:
-            Tw = T - (self.eos.t_ref + (self.eos.rho0 - self.pgf.rho_ref(self.layer_heights(eta, h))) / self.eos.t_coef)
+        Tw = self._diffused_field(T, eta, h, anomaly)
         Du, Dv = self.face_depths(eta)
         okx = np.isfinite(self.fs.H_u) & np.isfinite(Du) & (Du > self.fs.d_min)
         oky = np.isfinite(self.fs.H_v) & np.isfinite(Dv) & (Dv > self.fs.d_min)

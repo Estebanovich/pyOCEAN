@@ -26,6 +26,10 @@ ADV = ("flux", "upwind3", "centred")
 KE_SCHEMES = ("arakawa", "gudonov", "godunov")
 REMAP = ("pcm", "plm", "ppm_h4")
 BBL_SCHEMES = ("lotw",)
+EOS_NAMES = ("linear", "wright_full", "teos10")
+PGF_MASS_WEIGHTS = ("vanished", "full", "none")
+LINEAR_EOS_ONLY = ("t_coef", "t_ref", "s_coef", "s_ref")   # coefficients of ρ₀ − α (T − T₀) + β (S − S₀)
+SIGMA2_RANGE = (1000.0, 1060.0)    # [kg m⁻³] plausible potential densities at p_ref = 2e7 Pa (σ₂ + 1000)
 
 # arguments that only the ALE coordinate uses (ignored, with a warning, in σ)
 ALE_ONLY = ("regrid", "regrid_params", "remap_scheme", "h_thin_bed", "init_iterations", "max_truncations",
@@ -172,8 +176,8 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
     if lim == "fct" and not (ale and a["tracer_time"] == "ssprk3" and a["tracer_scheme"] in ("weno5", "weno5js")):
         err("tracer_advection", "tracer_limiter='fct' needs vertical_coordinate='ale', tracer_time='ssprk3' and a "
                                 "WENO5 tracer_scheme")
-    cp = a.get("cp", 3985.0)
-    if not (cp > 0):
+    cp = a.get("cp")
+    if cp is not None and not (cp > 0):
         err("heat", f"cp={cp!r}: the specific heat must be > 0 [J kg⁻¹ K⁻¹]")
     if a.get("jerlov", "I") not in JERLOV:
         err("heat", f"unknown jerlov type {a['jerlov']!r} (valid: {_opts(JERLOV)})")
@@ -253,14 +257,17 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
         err("tef", f"tef_sign must be +1 or −1, got {a.get('tef_sign')!r}")
     if a.get("tef_region") is not None and not a.get("variance_budget", False):
         err("tef", "tef_region integrates the variance budget over the region: it needs variance_budget=True")
-    if not sal and a.get("s_coef", 0.0) != 0.0:
+    eos = a.get("eos", "linear")
+    nonlinear = eos in EOS_NAMES and eos != "linear"
+    _eos_issues(a, given, eos, nonlinear, sal, ale, err, warn)
+    if not sal and a.get("s_coef", 0.0) != 0.0 and not nonlinear:
         warn("salinity", f"s_coef={a['s_coef']!r} is ignored with salinity=False (there is no S in the density); "
                          "pass salinity=True")
-    if sal and a.get("s_coef", 0.0) == 0.0:
+    if sal and a.get("s_coef", 0.0) == 0.0 and eos == "linear":
         warn("salinity", "salinity=True with s_coef = 0: S is carried but does not enter the density "
                          "(ρ = ρ₀ − α (T − T₀) + β (S − S₀) with β = s_coef); pass s_coef (e.g. 0.78) for an active "
                          "salinity")
-    if sal and a.get("rho_ref") is not None and a.get("kh", 0.0) > 0:
+    if sal and a.get("rho_ref") is not None and a.get("kh", 0.0) > 0 and eos == "linear":
         warn("tracer_diffusion", "salinity=True with rho_ref and kh > 0: K_h diffuses T and S themselves, not the "
                                  "anomaly T − T_ref(z) of the reference profile (a density profile does not split "
                                  "into T_ref and S_ref), so along sloping σ-layers it also mixes the mean "
@@ -347,3 +354,58 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
     if a["sponge_rate"] is None and ({"sponge_T", "sponge_zw", "sponge_tr", "sponge_S"} & given):
         warn("interior_sponge", "sponge_T / sponge_zw / sponge_tr / sponge_S are ignored without sponge_rate")
     return out
+
+
+def _eos_issues(a: dict, given: frozenset[str], eos, nonlinear: bool, sal: bool, ale: bool, err, warn) -> None:
+    """
+    Equation-of-state rules (spec 2026-10-31-teos10-3d goal H): unknown EOS; a nonlinear EOS without salinity, with
+    the linear coefficients, with a ``rho_ref`` function (a density profile does not give T_ref, S_ref), with
+    hybrid ``rho_target`` outside the σ₂ range, or with ρ₀ outside 1000–1050 (warning); σ-layers with a nonlinear
+    EOS and no ``rho_ref`` (warning: the compressibility enters the σ anomaly); the 'fv' bed mass weighting.
+    """
+    if eos not in EOS_NAMES:
+        err("eos", f"unknown eos {eos!r} (valid: {_opts(EOS_NAMES)})")
+    mw = a.get("pgf_mass_weight", "vanished")
+    if mw not in PGF_MASS_WEIGHTS:
+        err("pgf", f"unknown pgf_mass_weight {mw!r} (valid: {_opts(PGF_MASS_WEIGHTS)})")
+    elif mw == "full" and eos == "linear":
+        err("pgf", "pgf_mass_weight='full' needs a nonlinear eos ('wright_full' or 'teos10'); the linear finite-volume "
+                   "pressure gradient takes 'vanished' or 'none'")
+    elif "pgf_mass_weight" in given and a["pgf"] != "fv":
+        warn("pgf", f"pgf_mass_weight={mw!r} is ignored with pgf={a['pgf']!r} (it applies to pgf='fv' only)")
+    p_ref = a.get("p_ref", 2e7)
+    if not (np.isfinite(p_ref) and p_ref >= 0):
+        err("eos", f"p_ref={p_ref!r}: the reference pressure of the hybrid potential density must be a finite "
+                   "number ≥ 0 [Pa] (2e7 = σ₂)")
+    rpr = a.get("rho_pgf_ref")
+    if rpr is not None and not (np.isfinite(rpr) and rpr > 0):
+        err("pgf", f"rho_pgf_ref={rpr!r}: must be a finite density > 0 [kg m⁻³]")
+    elif rpr is not None and eos == "linear":
+        warn("pgf", "rho_pgf_ref is ignored with eos='linear' (it applies to a nonlinear EOS)")
+    if not nonlinear:
+        return
+    if not sal:
+        err("eos", f"eos={eos!r} needs salinity=True: its density depends on S")
+    for name in LINEAR_EOS_ONLY:
+        if name in given:
+            err("eos", f"{name}={a[name]!r} does not apply with eos={eos!r} (it is a coefficient of the linear EOS)")
+    rr = a.get("rho_ref")
+    if callable(rr):
+        err("pgf", f"rho_ref as a function cannot be used with eos={eos!r}: a density profile does not give the "
+                   "T_ref(z), S_ref(z) the nonlinear EOS needs; use rho_ref='auto' (or None)")
+    rho0 = a.get("rho0")
+    if rho0 is not None and not 1000.0 <= rho0 <= 1050.0:
+        warn("eos", f"rho0={rho0!r} with eos={eos!r} is outside 1000–1050 kg m⁻³: the Boussinesq density sets the "
+                    "EOS pressure −g ρ₀ z and 1/ρ₀ of the pressure gradient (MOM6 RHO_0 1035)")
+    tgt = (a.get("regrid_params") or {}).get("rho_target")
+    if ale and a.get("regrid") == "hybrid" and tgt is not None:
+        t = np.asarray(tgt, float)
+        lo, hi = SIGMA2_RANGE
+        if t.size and not (np.isfinite(t).all() and (t >= lo).all() and (t <= hi).all()):
+            err("vertical_coordinate", f"regrid_params['rho_target'] ({t.min()!r} … {t.max()!r}) is outside the "
+                                       f"plausible range {lo:g}–{hi:g} kg m⁻³ of the potential density at p_ref "
+                                       f"(σ₂ + 1000 at 2e7 Pa) the hybrid regrid uses with eos={eos!r}")
+    sigma = a["vertical_coordinate"] == "sigma_eulerian" or (ale and a.get("regrid") == "sigma")
+    if sigma and rr is None:
+        warn("pgf", f"σ-layers with eos={eos!r} and rho_ref=None: the compressibility (~4–5 kg m⁻³ per km) enters "
+                    "the density anomaly along sloping layers whole; pass rho_ref='auto' (the T/S reference profile)")
