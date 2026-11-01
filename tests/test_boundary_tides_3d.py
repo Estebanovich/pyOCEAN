@@ -14,6 +14,7 @@ Index order (k, j, i), k = 0 at the bed.
 from __future__ import annotations
 
 import warnings
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -79,7 +80,8 @@ def test_3d_tidal_channel():
     """
     100 km × 100 m channel, closed except the west edge, M2 η_tide = 0.5 m (ū_tide = 0: constants without
     transports).  3-D z* (4 layers, no drag, no Coriolis) vs the 2-D wetting–drying free surface driven by the same
-    Flather exterior at tⁿ + Δt/2: η at the closed end within 2 % in amplitude and 2° in phase after the ramp.
+    Flather exterior at tⁿ⁺¹ (the model's time level, as MOM6): η at the closed end within 2 % in amplitude and 2° in
+    phase after the ramp.
     """
     nx, ny, dx, dt = 50, 3, 2000.0, 300.0
     hg = _channel_grid(nx, ny, dx)
@@ -94,7 +96,7 @@ def test_3d_tidal_channel():
     n_steps = int(2.5 * 86400 / dt)
     t, s3, s2 = [], [], []
     for n in range(n_steps):
-        eu, ev, uu, vv = m._boundary_tides.flather_arrays(n * dt + 0.5 * dt)
+        eu, ev, uu, vv = m._boundary_tides.flather_arrays((n + 1) * dt)
         e2, u2, v2 = fs2.step(e2, u2, v2, u2, v2, flather_eta=(eu, ev), flather_ubar=uu, flather_vbar=vv)
         st = m.step(st)
         t.append((n + 1) * dt)
@@ -199,32 +201,22 @@ def test_restart_during_ramp_bit_for_bit(tmp_path):
 # ---------------------------------------------------------------------------- off = bit for bit
 
 def test_tides_off_bit_for_bit():
-    """The new arguments at their off values give the same bits as not passing them (the N1 goldens and the
-    smoke hashes cover the rest), and WetDryFreeSurface(sal_beta=0) is the free surface of before."""
-    nx, ny, dx, dt = 12, 4, 2000.0, 300.0
-    hg = _channel_grid(nx, ny, dx)
-    H = np.full((ny, nx), 50.0)
-    eta0 = 0.05 * np.cos(np.pi * (np.arange(nx) + 0.5) / nx)[None] * np.ones((ny, 1))
-    out = []
-    for kw in ({}, dict(boundary_tides=None, tidal_potential=False, sal_beta=0.0)):
-        m = _channel_model(hg, H, dt, **kw)
-        st = m.initial_state(eta0, np.full((4, ny, nx), 10.0))
-        for _ in range(5):
-            st = m.step(st)
-        out.append(st)
-    for name in ("eta", "u", "v", "T", "h"):
-        np.testing.assert_array_equal(getattr(out[0], name), getattr(out[1], name))
-    fl = np.zeros((ny, nx + 1), bool)
-    fl[:, 0] = True
-    res = []
-    for kw in ({}, dict(sal_beta=0.0, sal_flather=True)):
-        fs = WetDryFreeSurface(hg, H, dt=dt, theta=0.6, flather_u=fl, **kw)
-        e, u, v = eta0.copy(), np.zeros((ny, nx + 1)), np.zeros((ny + 1, nx))
-        for _ in range(5):
-            e, u, v = fs.step(e, u, v, u, v, flather_eta=0.0 * u, flather_ubar=0.0 * u, flather_vbar=0.0 * v)
-        res.append((e, u))
-    np.testing.assert_array_equal(res[0][0], res[1][0])
-    np.testing.assert_array_equal(res[0][1], res[1][1])
+    """
+    With the Task 5 arguments at their off values (boundary_tides=None, tidal_potential=False, sal_beta=0,
+    sal_flather=False) a z* channel with a 'radiating' edge and the 2-D WetDryFreeSurface with a Flather edge give,
+    bit for bit, the arrays the code before Task 5 produced (commit 71e848c, tests/data/task5_base_reference.npz
+    from validation/tides/make_task5_base_reference.py).  The N1 goldens and the smoke hashes cover the rest.
+    """
+    from validation.tides.make_task5_base_reference import run_off_2d, run_off_case
+    base = np.load(Path(__file__).parent / "data" / "task5_base_reference.npz")
+    for kw in ({}, dict(boundary_tides=None, tidal_potential=False, sal_beta=0.0, sal_flather=False)):
+        out = run_off_case(**kw)
+        for name, a in out.items():
+            np.testing.assert_array_equal(a, base[f"off3d_{name}"], err_msg=name)
+    for kw in ({}, dict(sal_beta=0.0), dict(sal_beta=0.0, sal_flather=True)):
+        out = run_off_2d(**kw)
+        for name, a in out.items():
+            np.testing.assert_array_equal(a, base[f"off2d_{name}"], err_msg=name)
 
 
 # ---------------------------------------------------------------------------- scalar SAL
@@ -326,3 +318,88 @@ def test_preflight_refuses_tides_without_radiating_edge():
         warnings.simplefilter("always")
         SigmaBaroclinic(hg, H, dt=60.0, n_layers=2, z0=None, closure="constant", sal_flather=True)
     assert any("sal_flather" in str(x.message) for x in w)
+
+
+# ---------------------------------------------------------------------------- incoming progressive wave (review I1)
+
+def _wave_constants(axis: str, direction: int, amp: float, H: float, rotated: bool = False, flip: bool = False,
+                    drop: bool = False):
+    """
+    TPXO-like constants of a progressive long wave (f = 0) travelling along ``axis`` ('lon' or 'lat') in
+    ``direction`` ±1: h = a e^{−i(φ0 + k s)}, transport U = H ū = ±√(gH) h along the wave (east U for 'lon', north V for
+    'lat'; with ``rotated`` the 'lon' wave's transport is given as north V, for a grid whose x axis points north).
+    ``flip`` reverses the transport sign (a wave that would leave instead of enter); ``drop`` sets it to zero.
+    """
+    g = 9.81
+    c = np.sqrt(g * H)
+    k = OMEGA["m2"] / c                                                 # [rad m⁻¹]
+    lat = np.arange(29.5, 32.01, 0.02)
+    lon = np.arange(-70.5, -67.49, 0.02)
+    LA, LO = np.meshgrid(lat, lon, indexing="ij")
+    s = ((LO + 70.0) if axis == "lon" else (LA - 30.0)) * DEG           # distance along the wave [m]
+    h = amp * np.exp(-1j * (np.deg2rad(30.0) + direction * k * s))
+    q = (0.0 if drop else -1.0 if flip else 1.0) * direction * c * h                     # U = H ū = H √(g/H) η = √(gH) η [m² s⁻¹]
+    zero = np.zeros_like(h)
+    along_x = axis == "lon" and not rotated
+    U, V = (q, zero) if along_x else (zero, q)
+    ds = xr.Dataset({"h": (("constituent", "lat", "lon"), h[None])},
+                    coords={"constituent": ["m2"], "lat": lat, "lon": lon})
+    ds["U"] = xr.DataArray(U[None], dims=("constituent", "lat", "lon_u"), coords={"lon_u": lon})
+    ds["V"] = xr.DataArray(V[None], dims=("constituent", "lat_v", "lon"), coords={"lat_v": lat})
+    return ds
+
+
+def _run_wave(axis: str, direction: int, rotated: bool = False, flip: bool = False, drop: bool = False):
+    """
+    200 km × 100 m z* channel along x ('lon') or y ('lat'), both ends 'radiating' with the boundary tide of a
+    progressive M2 wave of 0.2 m (no Coriolis, no drag), 2 days; returns the fitted M2 amplitude and phase at
+    every cell along the channel centre line (last M2 period).
+    """
+    n, dx, H, dt, amp = 50, 4000.0, 100.0, 300.0, 0.2
+    nx, ny = (n, 3) if axis == "lon" else (3, n)
+    hg = _channel_grid(nx, ny, dx)
+    if rotated:                                                        # grid x points north: α = 90°
+        hg = hg.assign(cos_t=(hg["x_t"].dims, np.zeros((ny, nx))), sin_t=(hg["x_t"].dims, np.ones((ny, nx))))
+    edges = ("west", "east") if axis == "lon" else ("south", "north")
+    bt = BoundaryTides(_wave_constants(axis, direction, amp, H, rotated, flip, drop), ["m2"], REF, ramp_days=0.25)
+    m = _channel_model(hg, np.full((ny, nx), H), dt, nz=2, open_boundaries=edges, boundary_tides=bt)
+    st = m.initial_state(np.zeros((ny, nx)), np.zeros((2, ny, nx)))
+    t, rec = [], []
+    for k in range(int(2.0 * 86400 / dt)):
+        st = m.step(st)
+        t.append((k + 1) * dt)
+        rec.append(st.eta[1, :].copy() if axis == "lon" else st.eta[:, 1].copy())
+    t, rec = np.array(t), np.array(rec)
+    late = t > t[-1] - 2 * np.pi / OMEGA["m2"]
+    fits = [_harmonic(t[late], rec[late, i], OMEGA["m2"]) for i in range(n)]
+    from forcing.tides import nodal_corrections
+    fm2 = nodal_corrections(np.array([bt.mjd(t[-1])]), ["m2"])[0][0, 0]   # nodal factor of M2 at the run date
+    return np.array([f[0] for f in fits]), np.array([f[1] for f in fits]), fm2 * amp
+
+
+@pytest.mark.parametrize("axis,direction,rotated", [("lon", 1, False),   # enters at the west edge
+                                                    ("lon", -1, False),  # enters at the east edge
+                                                    ("lat", -1, False),  # enters at the north edge
+                                                    ("lon", 1, True)])   # east/north constants, grid rotated 90°
+def test_incoming_progressive_wave(axis, direction, rotated):
+    """
+    A progressive long wave given as TPXO-like η and transport (U = √(gH) η along the wave) enters through the
+    tidal Flather edge with its own amplitude and leaves through the other one: the interior M2 amplitude is the
+    forced f_M2 · 0.2 m (f_M2 the nodal factor, ≈ 0.967 in 2026) within 3 % everywhere and the phase propagates in
+    the wave's direction.  Wrong conventions must fail: with the transport sign reversed both tidal edges send the
+    wave the other way (same amplitude, phase propagating backwards); with the transport dropped (ū_tide = 0) each
+    edge injects half a wave from each side and the amplitude along the channel is far from the forced one.  Checks
+    the sign of ū_tide on west, east, south/north edges and the rotation of (east, north) transports to grid axes
+    (``forcing.rotation.to_grid``).
+    """
+    A, P, amp = _run_wave(axis, direction, rotated)
+    ratio = A / amp
+    print(f"{axis} dir {direction} rot {rotated}: amplitude/forced {ratio.min():.4f}–{ratio.max():.4f}")
+    assert np.all(np.abs(ratio - 1.0) <= 0.03)
+    dphi = np.diff(np.unwrap(np.deg2rad(P)))                           # phase lag grows along the wave
+    assert np.all(direction * dphi > 0)
+    _, Pf, _ = _run_wave(axis, direction, rotated, flip=True)
+    assert np.all(direction * np.diff(np.unwrap(np.deg2rad(Pf))) < 0)  # the reversed wave
+    Ad, _, _ = _run_wave(axis, direction, rotated, drop=True)
+    print(f"  ū_tide dropped: amplitude/forced {Ad.min() / amp:.4f}–{Ad.max() / amp:.4f}")
+    assert np.max(np.abs(Ad / amp - 1.0)) > 0.1

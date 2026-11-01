@@ -27,9 +27,11 @@ M2,S2,N2,K2,K1,O1,P1,Q1,MM,MF``, docs/design/regional_refs/mom6_obc_tides.md
 argument from OTPS ``constit.h`` (equal to the Doodson arguments 2s and
 s − p of ``mean_longitudes`` at 1992-01-01 to 1e-9 rad, checked in
 ``tests/test_tides.py``), f and u from the long-period branch of the OTPS
-``nodal`` routine (Schureman 1958) [verificar against OTPS/pyTMD: pyTMD is
-not installed here; reference arrays in ``tests/data/tide_mm_mf_reference.npz``
-come from ``validation/tides/make_mm_mf_reference.py``].
+``nodal`` routine (Schureman 1958): the first-order terms equal MOM6 nodal_fu
+(MOM_tidal_forcing.F90:221-226); the 2N, 3N terms of MF u are Schureman's
+[verificar against pyTMD ``arguments(..., corrections='OTIS')``: pyTMD is not
+installed here; reference arrays in ``tests/data/tide_mm_mf_reference.npz`` come
+from ``validation/tides/make_mm_mf_reference.py``].
 
 References
 ----------
@@ -420,7 +422,8 @@ def equilibrium_constants(lon: np.ndarray, lat: np.ndarray, constituents: list[s
     so that predict gives η_eq = α A f G(φ) cos(θ_c + mλ), as in HYCOM
     (mod_tides.F90: atide = A α cos²φ cos 2λ, btide = A α cos²φ sin 2λ).  The long-period structure
     ½ − 3/2 sin²φ with the argument V₀ = 2s (MF), s − p (MM) is MOM6's (tidal_forcing_init, struct = 3,
-    MOM_tidal_forcing.F90:288-296, 452, 457) [verificar sign convention against Cartwright & Tayler 1971].
+    MOM_tidal_forcing.F90:288-296, 451-458); sign checked in the Task 5 review (P₂(sin δ) gives a positive
+    coefficient on cos 2s for MF and on cos(s − p) for MM).
 
     Parameters
     ----------

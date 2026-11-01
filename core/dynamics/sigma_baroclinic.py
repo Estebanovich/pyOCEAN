@@ -1180,7 +1180,8 @@ class SigmaBaroclinic:
         the doubly periodic single-column cases (CROCO 5×5, MOM6 2×2) and for channels
     boundary_tides : ``core.components.boundary_tides.BoundaryTides`` (regional chain Task 5): TPXO barotropic tide
         added to the Flather exterior of every ``'radiating'`` edge, η_ext + η_tide and ū_ext + ū_tide with
-        ū_tide = U_TPXO / D_model (rotated to grid axes on curvilinear grids), at tⁿ + Δt/2; u′ untouched.  Needs at
+        ū_tide = U_TPXO / D_model (rotated to grid axes on curvilinear grids), at tⁿ⁺¹ (as the provider and MOM6);
+        u′ untouched.  Needs at
         least one 'radiating' edge (pre-flight).  None (default): bit for bit
     tidal_potential : False (default), True (the equilibrium tide of the ``boundary_tides`` constituents and dates)
         or a ``TidalPotential``: g∇η_body added to the momentum tendency of every layer after the AB3 combination,

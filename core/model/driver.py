@@ -4,7 +4,7 @@ Fixed-order driver of the 3-D core (N1, spec docs/superpowers/specs/2026-10-28-n
 One time step is ten named phases, the same order in σ and ALE (phases 8–9 do nothing in σ):
 
  1 prepare                    exterior state at tⁿ⁺¹ (open boundaries); ALE: face geometry of hⁿ; boundary
-                              tide of the Flather exterior at tⁿ + Δt/2 (``boundary_tides``, regional chain Task 5)
+                              tide of the Flather exterior at tⁿ⁺¹ too (``boundary_tides``, regional chain Task 5)
  2 explicit_momentum          named explicit terms (PGF, Coriolis or vector-invariant, advection, viscosity, …)
  3 time_combine               AB3 (AB1, AB2 at start-up); τ/ρ₀, not extrapolated; body tide g∇η_body at
                               tⁿ + Δt/2, not extrapolated either (``tidal_potential``)
@@ -289,10 +289,14 @@ class Driver:
         ctx.set(gu_ab=gu_ab, gv_ab=gv_ab, hist=hist, tu=tu, tv=tv)
 
     def _boundary_tide(self, ctx: StepContext) -> None:
-        """Tide of the Flather exterior at tⁿ + Δt/2 (regional chain Task 5; ``BoundaryTides``); nothing without."""
+        """
+        Tide of the Flather exterior at tⁿ⁺¹, the time level of the exterior provider (regional chain Task 5,
+        ``BoundaryTides``; MOM6 update_OBC_data(..., Time_local) with Time_local = tⁿ⁺¹,
+        MOM_dynamics_split_RK2.F90:315, 553); nothing without.
+        """
         m = self.m
         if getattr(m, "_boundary_tides", None) is not None:
-            ctx.set(tide=m._boundary_tides.flather_arrays(ctx.st.time + 0.5 * m.dt))
+            ctx.set(tide=m._boundary_tides.flather_arrays(ctx.st.time + m.dt))
 
     _sigma_explicit_momentum = _ale_explicit_momentum = _explicit_momentum
     _sigma_time_combine = _ale_time_combine = _time_combine

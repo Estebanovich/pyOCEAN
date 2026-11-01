@@ -15,7 +15,8 @@ environment, so the MF and MM reference is built here from the published tables,
 * nodal factors of the OTPS ``nodal`` routine, long-period branch (Schureman 1958):
   MF f = 1.043 + 0.414 cos N, u = −23.7° sin N + 2.7° sin 2N − 0.4° sin 3N; MM f = 1 − 0.130 cos N, u = 0
   [verificar against pyTMD ``arguments(..., corrections='OTIS')`` when it is available];
-* MOM6's first-order nodal factors (nodal_fu, MOM_tidal_forcing.F90:187-231), stored for a looser cross-check.
+* MOM6's first-order nodal factors transcribed from its source (nodal_fu, MOM_tidal_forcing.F90:221-226), the
+  independent oracle of f and of the first-order u (the 2N, 3N terms of OTPS are checked against it to ≤ 3.1°).
 
 Run:  python validation/tides/make_mm_mf_reference.py   →  tests/data/tide_mm_mf_reference.npz
 """
@@ -47,8 +48,12 @@ def main() -> None:
     N = np.deg2rad(n)
     f = np.column_stack([1.043 + 0.414 * np.cos(N), 1.0 - 0.130 * np.cos(N)])
     u = np.column_stack([np.deg2rad(-23.7 * np.sin(N) + 2.7 * np.sin(2 * N) - 0.4 * np.sin(3 * N)), 0.0 * N])
-    f_mom6 = np.column_stack([1.043 + 0.414 * np.cos(N), 1.0 - 0.130 * np.cos(N)])
-    u_mom6 = np.column_stack([np.deg2rad(-23.7 * np.sin(N)), 0.0 * N])
+    # oracle: MOM6 nodal_fu transcribed from the source (MOM_tidal_forcing.F90:221-226, git 0e9a561):
+    #   case ("MF")  fn = 1.043 + 0.414 * cos(nodelon) ; un = -23.7 * RADIANS * sin(nodelon)
+    #   case ("MM")  fn = 1.0 - 0.130 * cos(nodelon)   ; un = 0.0
+    mom6 = {"mf": (1.043, 0.414, -23.7), "mm": (1.0, -0.130, 0.0)}      # (f0, f1, u1 [deg])
+    f_mom6 = np.column_stack([mom6[c][0] + mom6[c][1] * np.cos(N) for c in ("mf", "mm")])
+    u_mom6 = np.column_stack([mom6[c][2] * (np.pi / 180.0) * np.sin(N) for c in ("mf", "mm")])
     out = Path(__file__).resolve().parents[2] / "tests" / "data" / "tide_mm_mf_reference.npz"
     np.savez(out, constituents=np.array(["mf", "mm"]), mjd=mjd, f=f, u=u, f_mom6=f_mom6, u_mom6=u_mom6,
              omega_doodson=np.array([omega["mf"], omega["mm"]]), phase_doodson=np.array([phase["mf"], phase["mm"]]),

@@ -144,18 +144,28 @@ class TestLongPeriod:
         assert days["mm"] == pytest.approx(27.555, abs=2e-3)
 
     def test_existing_eight_bit_for_bit(self, ref):
-        """Adding MF and MM changes nothing of the eight HYCOM constituents (same order, same bits)."""
-        assert CONSTITUENTS == ("m2", "s2", "k1", "o1", "n2", "p1", "k2", "q1")
-        f, u = nodal_corrections(ref["mjd"], list(ref["constituents"]))
-        np.testing.assert_allclose(f, ref["f"], rtol=1e-12, atol=1e-14)
+        """
+        Adding MF and MM changes nothing of the eight HYCOM constituents: f, u, ω, astronomical arguments and a
+        30-day prediction equal, bit for bit, those of forcing/tides.py before Task 5 (commit 71e848c,
+        tests/data/task5_base_reference.npz from validation/tides/make_task5_base_reference.py).
+        """
+        from forcing.tides import OMEGA, PHASE_1992
+        base = np.load(Path(__file__).parent / "data" / "task5_base_reference.npz")
+        names = list(base["eight_names"])
+        assert CONSTITUENTS == tuple(names)
+        f, u = nodal_corrections(ref["mjd"], names)
+        np.testing.assert_array_equal(f, base["eight_f"])
+        np.testing.assert_array_equal(u, base["eight_u"])
+        np.testing.assert_array_equal([OMEGA[c] for c in names], base["eight_omega"])
+        np.testing.assert_array_equal([PHASE_1992[c] for c in names], base["eight_phase"])
         t = np.datetime64("1992-01-01T00:00", "ns") + (ref["t_days_1992"] * 86400e9).astype("timedelta64[ns]")
-        names = list(ref["constituents"])
-        for hc, eta in zip(ref["hc"], ref["eta"]):
-            np.testing.assert_allclose(predict(t, hc, names), eta, atol=1e-11)
-        # predict with ten constituents = predict of the eight plus that of MF, MM, bit for bit per column
-        hc10 = np.concatenate([ref["hc"][0], [0.01 + 0.02j, -0.03 + 0.01j]])
-        ten = predict(t[:5], hc10, names + ["mf", "mm"])
-        assert np.all(np.isfinite(ten))
+        eta = np.array([predict(t, hc, list(ref["constituents"])) for hc in ref["hc"]])
+        np.testing.assert_array_equal(eta, base["eight_eta"])
+        # ten constituents = the eight plus MF, MM (the matrix product order changes the rounding only)
+        hc2 = np.array([0.01 + 0.02j, -0.03 + 0.01j])
+        ten = predict(t, np.concatenate([ref["hc"][0], hc2]), names + ["mf", "mm"])
+        np.testing.assert_allclose(ten, predict(t, ref["hc"][0], names) + predict(t, hc2, ["mf", "mm"]),
+                                   rtol=0, atol=1e-15)
 
     def test_nodal_mjd_fixes_corrections(self):
         """predict(nodal_mjd=…) uses f, u of that date at every time (MOM6 TIDE_NODAL_REF_DATE)."""

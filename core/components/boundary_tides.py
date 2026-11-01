@@ -24,9 +24,13 @@ is the date ref_date + t.  ``ramp_days`` > 0 multiplies the tide (only the tide;
 whole SSH, MOM_open_boundary.F90:4980-4983, and NWA12 has it off) by r = min(t / (ramp_days · 86400), 1), linear in
 the model time from t = 0, so it is a pure function of t and a restart needs no state; default 0: r = 1.
 
-The tide is evaluated at the mid-step time tⁿ + Δt/2, as the 2-D PAC_MEX tidal runner does
-(validation/pacmex_tides/run_tides.py:299-337); the time-varying exterior ``open_boundary_state`` is evaluated at
-tⁿ⁺¹ (core.components.open_boundary).
+The tide is evaluated at tⁿ⁺¹, the time level of the time-varying exterior ``open_boundary_state``
+(core.components.open_boundary) and of MOM6, whose OBC tides are updated with Time_local = tⁿ⁺¹
+(update_OBC_data, MOM_dynamics_split_RK2.F90:315, 553; ruling M1 of the Task 5 review).  The 2-D PAC_MEX runner
+uses tⁿ + Δt/2 (validation/pacmex_tides/run_tides.py:299-337), a phase ωΔt/2 earlier (2.4° of M2 at Δt = 600 s);
+tⁿ + θΔt would match the θ-weighted Flather flux best — all three are class (c) choices.  The body tide stays at
+the mid-step tⁿ + Δt/2, as MOM6 (calc_tidal_forcing(CS%Time), MOM_PressureForce_FV.F90:1179, CS%Time at mid-step,
+MOM.F90:877).
 
 ``TidalPotential`` — the equilibrium tide as a body force on every layer, −∇(−g η_body) = g ∇η_body with
 η_body = Σ_c α_c η_eq,c (``forcing.tides.equilibrium_constants``, α = 1 + k − h; HYCOM mod_tides.F90, MOM6
