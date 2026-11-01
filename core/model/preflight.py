@@ -352,9 +352,35 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
         from core.components.surface_fluxes import bulk_errors
         for msg in bulk_errors(sf, sal):
             err("surface_fluxes", msg)
+    _atm_pressure_issues(a, given, sf, err, warn)
     if a["sponge_rate"] is None and ({"sponge_T", "sponge_zw", "sponge_tr", "sponge_S"} & given):
         warn("interior_sponge", "sponge_T / sponge_zw / sponge_tr / sponge_S are ignored without sponge_rate")
     return out
+
+
+def _atm_pressure_issues(a: dict, given: frozenset[str], sf, err, warn) -> None:
+    """
+    Atmospheric pressure (regional chain Task 6, ``core.components.atm_pressure``): ``atm_pressure`` is a bool and
+    needs ``surface_fluxes`` (p_a is the ``msl`` of the bulk component's atmosphere); ``atm_pressure_ref`` is None
+    or a finite pressure in Pa (a value in hPa is caught), and is ignored without ``atm_pressure``.
+    """
+    ap = a.get("atm_pressure", False)
+    if not isinstance(ap, (bool, np.bool_)):
+        err("atm_pressure", f"atm_pressure must be True or False, got {ap!r}")
+    elif ap and sf is None:
+        err("atm_pressure", "atm_pressure=True needs surface_fluxes: the sea-level pressure p_a is the 'msl' of the "
+                            "bulk fluxes' atmosphere (BulkFluxes(atmosphere, ...)) at tⁿ + Δt/2")
+    ref = a.get("atm_pressure_ref")
+    if ref is not None:
+        try:
+            ok = bool(np.isfinite(ref) and 5e4 <= float(ref) <= 1.2e5)
+        except (TypeError, ValueError):
+            ok = False
+        if not ok:
+            err("atm_pressure", f"atm_pressure_ref={ref!r}: the reference sea-level pressure p̄_a must be a number in "
+                                "Pa between 5e4 and 1.2e5 (e.g. 1e5, as SIS2), or None for the domain mean")
+        if not ap:
+            warn("atm_pressure", "atm_pressure_ref is ignored without atm_pressure=True")
 
 
 def _tide_issues(a: dict, given: frozenset[str], modes: dict[str, str], err, warn) -> None:

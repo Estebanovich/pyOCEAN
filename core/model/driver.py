@@ -4,10 +4,13 @@ Fixed-order driver of the 3-D core (N1, spec docs/superpowers/specs/2026-10-28-n
 One time step is ten named phases, the same order in σ and ALE (phases 8–9 do nothing in σ):
 
  1 prepare                    exterior state at tⁿ⁺¹ (open boundaries); ALE: face geometry of hⁿ; boundary
-                              tide of the Flather exterior at tⁿ⁺¹ too (``boundary_tides``, regional chain Task 5)
+                              tide of the Flather exterior at tⁿ⁺¹ too (``boundary_tides``, regional chain Task 5);
+                              atmospheric pressure p_a at tⁿ + Δt/2 and its inverse barometer at the 'radiating'
+                              edges (``atm_pressure``, Task 6)
  2 explicit_momentum          named explicit terms (PGF, Coriolis or vector-invariant, advection, viscosity, …)
  3 time_combine               AB3 (AB1, AB2 at start-up); τ/ρ₀, not extrapolated; body tide g∇η_body at
-                              tⁿ + Δt/2, not extrapolated either (``tidal_potential``)
+                              tⁿ + Δt/2, not extrapolated either (``tidal_potential``); −∇p_a/ρ₀ likewise
+                              (``atm_pressure``)
  4 implicit_and_free_surface  closure ν, implicit vertical viscosity + bed drag + wind, free surface, Flather,
                               closure update (core.components.closure)
  5 boundary_velocity          sponge on u′, Orlanski; ALE: thin bed layers, optional blending
@@ -282,11 +285,35 @@ class Driver:
         gu_ab, gv_ab, hist = m._time_stepper.combine(ctx.st.g_hist, ctx.gu, ctx.gv)
         tu = None if ctx.tau_x is None else np.asarray(ctx.tau_x, float) / m.rho0
         tv = None if ctx.tau_y is None else np.asarray(ctx.tau_y, float) / m.rho0
+        if "patm_force" in ctx.vals:
+            # atmospheric pressure −∇p_a/ρ₀ (regional chain Task 6): at tⁿ + Δt/2 on every layer, outside the AB3
+            # history (as τ), so it enters the depth mean and the free-surface solve where g∇η enters
+            fx, fy = ctx.patm_force
+            gu_ab, gv_ab = gu_ab + fx[None], gv_ab + fy[None]
         if getattr(m, "_tidal_potential", None) is not None:
             # body tide g∇η_body (regional chain Task 5): at tⁿ + Δt/2 on every layer, outside the AB3 history (as τ)
             fx, fy = m._tidal_potential.force(ctx.st.time + 0.5 * m.dt)
             gu_ab, gv_ab = gu_ab + fx[None], gv_ab + fy[None]
         ctx.set(gu_ab=gu_ab, gv_ab=gv_ab, hist=hist, tu=tu, tv=tv)
+
+    def _atm_pressure(self, ctx: StepContext) -> None:
+        """
+        Atmospheric pressure of the step (regional chain Task 6, ``core.components.atm_pressure``): p_a = the
+        ``msl`` of the bulk component's atmosphere at tⁿ + Δt/2, p̄_a over the wet cells of the state n, the face
+        force −∇p_a/ρ₀ for phase 3 and η_IB of the 'radiating' edges for the Flather exterior of phase 4; the
+        field is kept as ``m.p_atm`` (registry diagnostic).  Nothing without ``atm_pressure``.
+        """
+        m = self.m
+        ap = getattr(m, "_atm_pressure", None)
+        if ap is None:
+            return
+        p_a = np.asarray(m._surface_fluxes.last_msl, float)
+        pbar = ap.mean(p_a, ap.wet(ctx.st.eta))
+        m.p_atm = p_a
+        ctx.set(patm_force=ap.force(p_a, pbar))
+        ib = ap.flather_eta(ap.eta_ib(p_a, pbar)) if m._ob.open else None
+        if ib is not None:
+            ctx.set(ib=ib)
 
     def _boundary_tide(self, ctx: StepContext) -> None:
         """
@@ -516,6 +543,7 @@ class Driver:
                 ctx.set(S_in=m._ob.exterior_S(D0[None] * ds, ext))
         ctx.set(ext=ext)
         self._boundary_tide(ctx)
+        self._atm_pressure(ctx)
 
     def _sigma_implicit_and_free_surface(self, ctx: StepContext) -> None:
         m, st = self.m, ctx.st
@@ -528,7 +556,7 @@ class Driver:
         nu = cl.viscosity(st)                                          # ν of the current closure state (CROCO order)
         nu_u, nu_v = (None, None) if nu is None else nu
         eta_new, u_new, v_new, fluxes = m._free_surface.step(st.eta, st.u, st.v, ctx.gu_ab, ctx.gv_ab, ctx.tu, ctx.tv,
-                                                             m._ob.flather_args(ctx.ext, ctx.vals.get("tide")), fw=ctx.fw, nu_u=nu_u,
+                                                             m._ob.flather_args(ctx.ext, ctx.vals.get("tide"), ctx.vals.get("ib")), fw=ctx.fw, nu_u=nu_u,
                                                              nu_v=nu_v)
         # bed u*² of the closure (N3 task 4): one source, the first-layer log law at the new velocities
         ustar2_bot = m.core.bed_ustar2(eta_new, u_new, v_new)
@@ -644,6 +672,7 @@ class Driver:
         ext = m._ob.evaluate(st.time + m.dt, hu, hv, wu, wv)
         ctx.set(qe=qe, qw=qw, qn=qn, qs=qs, hu=hu, hv=hv, wu=wu, wv=wv, ext=ext)
         self._boundary_tide(ctx)
+        self._atm_pressure(ctx)
 
     def _ale_implicit_and_free_surface(self, ctx: StepContext) -> None:
         m, st = self.m, ctx.st
@@ -677,7 +706,7 @@ class Driver:
         nu = cl.viscosity(st)                                          # None for the constant closures of ALE
         nu_u, nu_v = (None, None) if nu is None else nu
         eta_new, u_new, v_new, fluxes = m._free_surface.step(st.eta, st.u, st.v, ctx.gu_ab, ctx.gv_ab, ctx.tu, ctx.tv,
-                                                             m._ob.flather_args(ctx.ext, ctx.vals.get("tide")), fw=ctx.fw, wu=ctx.wu,
+                                                             m._ob.flather_args(ctx.ext, ctx.vals.get("tide"), ctx.vals.get("ib")), fw=ctx.fw, wu=ctx.wu,
                                                              wv=ctx.wv, nu_u=nu_u, nu_v=nu_v, **visc)
         ustar2_bot = self._ale_bed_ustar2(ctx, u_new, v_new, visc)
         ctx.set(eta_new=eta_new, u_new=u_new, v_new=v_new, fluxes=fluxes, ustar2_bot=ustar2_bot)

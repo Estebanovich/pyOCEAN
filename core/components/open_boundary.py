@@ -150,11 +150,13 @@ class OpenBoundary:
         sl[axis] = edge
         u_new[tuple(sl)] = np.where(open_, take(bar[None], edge) + pb, take(u_new, edge))
 
-    def flather_args(self, ext: dict | None, tide: tuple | None = None) -> dict:
+    def flather_args(self, ext: dict | None, tide: tuple | None = None, ib: tuple | None = None) -> dict:
         """
         Flather exterior for the free-surface step: the provider's (η, ū)ₑₓₜ, or a resting exterior (η = 0, ū = 0);
         {} if closed.  ``tide`` (η_u, η_v, ū_u, v̄_v) from ``BoundaryTides.flather_arrays`` (regional chain Task 5;
-        zero away from the 'radiating' edges) is added to η and ū only — u′ₑₓₜ is not touched.  None: unchanged.
+        zero away from the 'radiating' edges) is added to η and ū only — u′ₑₓₜ is not touched.  ``ib`` (η_u, η_v):
+        the inverse barometer of the 'radiating' edges (regional chain Task 6, ``AtmosphericPressure.flather_eta``),
+        added to η after the tide.  None: unchanged.
         """
         if not self.open:
             return {}
@@ -163,12 +165,15 @@ class OpenBoundary:
         else:
             zu, zv = np.zeros(self.fs.H_u.shape), np.zeros(self.fs.H_v.shape)
             base = dict(flather_eta=(zu, zv), flather_ubar=zu, flather_vbar=zv)
-        if tide is None:
+        if tide is None and ib is None:
             return base
-        eu, ev, uu, vv = tide
         out = dict(base)
-        out.update(flather_eta=(base["flather_eta"][0] + eu, base["flather_eta"][1] + ev),
-                   flather_ubar=base["flather_ubar"] + uu, flather_vbar=base["flather_vbar"] + vv)
+        if tide is not None:
+            eu, ev, uu, vv = tide
+            out.update(flather_eta=(base["flather_eta"][0] + eu, base["flather_eta"][1] + ev),
+                       flather_ubar=base["flather_ubar"] + uu, flather_vbar=base["flather_vbar"] + vv)
+        if ib is not None:
+            out.update(flather_eta=(out["flather_eta"][0] + ib[0], out["flather_eta"][1] + ib[1]))
         return out
 
     def relax_velocity(self, u_old: np.ndarray, v_old: np.ndarray, u_new: np.ndarray, v_new: np.ndarray,

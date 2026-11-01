@@ -107,6 +107,7 @@ from core.components.momentum import Momentum, sum_terms
 from core.components.open_boundary import CONFIG as _OB_CONFIG, OpenBoundary, convert_exterior
 from core.components.bottom_drag import LogLawBedDrag, QuadraticBedDrag
 from core.components.boundary_tides import BoundaryTides, TidalPotential, bind_copy
+from core.components.atm_pressure import AtmosphericPressure
 from core.components.closure import BBLAddedClosure, ShearAddedClosure, find_closure, make_closure
 from physics.mixing.kpp_cvmix import KPPParams
 from physics.mixing.kappa_shear import JacksonParams
@@ -1189,6 +1190,14 @@ class SigmaBaroclinic:
     sal_beta : scalar self-attraction and loading β ∈ [0, 1): surface pressure gradient g(1 − β)∇η on the total η
         (MOM6 SAL_SCALAR_VALUE, NWA12 0.05; ``core.dynamics.wetting_drying.WetDryFreeSurface``); 0: bit for bit
     sal_flather : also use g(1 − β) in the Flather wave speed (MOM6 TIDAL_SAL_FLATHER: default False, NWA12 True)
+    atm_pressure : atmospheric pressure forcing (regional chain Task 6, ``core.components.atm_pressure``): the
+        ``msl`` of the ``surface_fluxes`` atmosphere at tⁿ + Δt/2 adds −∇p_a/ρ₀ to every layer after the AB3
+        combination (depth-uniform, so it enters the free-surface solve with g∇η, as MOM6's p_surf), and the inverse
+        barometer η_IB = −(p_a − p̄_a)/(ρ₀ g) is added to the Flather exterior η of the 'radiating' edges.  Not in
+        the EOS pressure (MOM6).  Needs ``surface_fluxes``.  False (default): bit for bit
+    atm_pressure_ref : p̄_a [Pa] of the inverse barometer; None (default): the area mean over the wet cells at
+        each step (a uniform p_a then does nothing); a number (e.g. 1e5 as SIS2) lets a uniform p_a change move
+        the domain's mean level through the open edges
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, n_layers: int = 10,
@@ -1220,7 +1229,8 @@ class SigmaBaroclinic:
                  surface_fluxes: BulkFluxes | None = None, eos: str = "linear", rho_pgf_ref: float | None = None,
                  pgf_mass_weight: str = "vanished", p_ref: float = 2e7, ts_kind: str = "theta_sp",
                  boundary_tides: BoundaryTides | None = None, tidal_potential: bool | TidalPotential = False,
-                 sal_beta: float = 0.0, sal_flather: bool = False) -> None:
+                 sal_beta: float = 0.0, sal_flather: bool = False, atm_pressure: bool = False,
+                 atm_pressure_ref: float | None = None) -> None:
         _args = {k: v for k, v in locals().items() if k != "self"}
         raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
         # equation of state (TEOS-10 in 3-D, Task 4): ρ₀ of the EOS before anything that uses it is built
@@ -1426,6 +1436,13 @@ class SigmaBaroclinic:
                                 SurfaceFluxes(surface_fluxes, fs=self.fs, area=self.area, ds=self.ds, ale=self.ale,
                                               periodic=self.periodic, rho0=self.rho0, salinity=self.salinity,
                                               ts_kind=self._eos.ts_kind))
+        # atmospheric pressure (regional chain Task 6): needs the bulk component's atmosphere (pre-flight)
+        self.atm_pressure, self.atm_pressure_ref = bool(atm_pressure), atm_pressure_ref
+        self.p_atm = None                                               # p_a [Pa] of the last step (diagnostic)
+        self._atm_pressure = (None if not atm_pressure else
+                              AtmosphericPressure(self.fs, self.area, self.rho0,
+                                                  edges=tuple(e for e in self.open if self.obc_mode[e] == "radiating"),
+                                                  p_ref=atm_pressure_ref))
         self.n_below_freezing = 0                                       # wet cell-layers with T < freezing point, last
                                                                         # step (counted, never corrected; TEOS-10 task 7)
         self._driver = Driver(self)

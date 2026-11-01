@@ -280,6 +280,7 @@ class SurfaceFluxes:
         self.rho0, self.salinity = float(rho0), salinity
         self.h_uv = cfg.h_sfc if cfg.h_uv_sfc is None else cfg.h_uv_sfc
         self.last: dict[str, np.ndarray] = {}
+        self.last_msl: np.ndarray | None = None                    # msl [Pa] of the last call (regional chain Task 6)
 
     @staticmethod
     def _averager(h: np.ndarray, wet: np.ndarray):
@@ -351,6 +352,7 @@ class SurfaceFluxes:
         else:
             us = vs = np.zeros_like(sst)
         u10, v10, t2m, q2m, msl = (atm[k] for k in ("u10", "v10", "t2m", "q2m", "msl"))
+        self.last_msl = msl          # sea-level pressure at t, read by the atmospheric-pressure force (Task 6)
         sch = cfg.scheme
         if sch == "coare":
             f = bulk_coare_croco(u10 - us, v10 - vs, t2m - T0_K, q2m, sst, atm["lw_down"], p_sfc=PSURF,

@@ -90,6 +90,10 @@ _SPECS = [
             "bulk wind stress at the T points, y (averaged to the v faces for the model)"),
     VarSpec("sst_bulk", ("y", "x"), "t", "degC", "sea_surface_temperature", "diagnostic",
             "SST seen by the bulk formula: thickness-weighted mean over the top h_sfc m"),
+    VarSpec("p_atm", ("y", "x"), "t", "Pa", "air_pressure_at_mean_sea_level", "diagnostic",
+            "sea-level pressure p_a of the last step (msl of the bulk atmosphere at tⁿ + Δt/2), applied as "
+            "−∇p_a/ρ₀ and as the inverse barometer at 'radiating' edges (atm_pressure, regional chain Task 6; an "
+            "attribute of the model, not a SigmaState field)"),
     VarSpec("closure.akt", ("kw", "y", "x"), "w", "m2 s-1", None, "component_state",
             "eddy tracer diffusivity (stratified GLS k-ε, gls_stratified; N2a task 8c)"),
 ]
