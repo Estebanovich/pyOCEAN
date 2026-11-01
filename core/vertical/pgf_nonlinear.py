@@ -152,13 +152,34 @@ def _plm_edges(h, Q, Qt, Qb):  # pragma: no cover
 
 
 @njit(inline="always")
-def _point(eos, T, S, p, z, rho_ref, profile, zr, Tr, Sr):  # pragma: no cover
-    """Density anomaly at one quadrature point: ρ(T,S,p) − ρ_ref, or the profile form (T, S = T′, S′)."""
+def _ref_ts(z, zr, Tr, Sr, lo):  # pragma: no cover
+    """
+    (T_ref(z), S_ref(z), lo): ``_interp`` of both profiles at z with one shared index search, started from the
+    previous point's index ``lo`` (0 ≤ lo ≤ M − 2) and walked to the unique lo with zr[lo] ≤ z < zr[lo+1] that
+    the bisection of ``_interp`` finds (zr strictly increasing), so the values are those of ``_interp`` bit for
+    bit; the quadrature points of a column are visited top to bottom, so the walk is short.
+    """
+    m = zr.size
+    if z <= zr[0]:
+        return Tr[0], Sr[0], lo
+    if z >= zr[m - 1]:
+        return Tr[m - 1], Sr[m - 1], lo
+    while zr[lo] > z:
+        lo -= 1
+    while zr[lo + 1] <= z:
+        lo += 1
+    f = (z - zr[lo]) / (zr[lo + 1] - zr[lo])
+    return Tr[lo] + (Tr[lo + 1] - Tr[lo]) * f, Sr[lo] + (Sr[lo + 1] - Sr[lo]) * f, lo
+
+
+@njit(inline="always")
+def _point(eos, T, S, p, z, rho_ref, profile, zr, Tr, Sr, lo):  # pragma: no cover
+    """(density anomaly at one quadrature point, profile index): ρ(T,S,p) − ρ_ref, or the profile form
+    (T, S = T′, S′); ``lo`` is the index hint of ``_ref_ts``."""
     if profile:
-        tr = _interp(z, zr, Tr)
-        sr = _interp(z, zr, Sr)
-        return _anom(eos, tr + T, sr + S, p, rho_ref) - _anom(eos, tr, sr, p, rho_ref)
-    return _anom(eos, T, S, p, rho_ref)
+        tr, sr, lo = _ref_ts(z, zr, Tr, Sr, lo)
+        return _anom(eos, tr + T, sr + S, p, rho_ref) - _anom(eos, tr, sr, p, rho_ref), lo
+    return _anom(eos, T, S, p, rho_ref), lo
 
 
 @njit(parallel=True)
@@ -173,30 +194,36 @@ def _columns(H, hs, Ts, Ss, eos, rho0, rho_ref, g, profile, zr, Tr, Sr,
     for j in prange(ny):
         hc = np.empty(n)
         q = np.empty(n)
+        q2 = np.empty(n)
         qt = np.empty(n)
         qb = np.empty(n)
         r = np.empty(5)
         for i in range(nx):
+            lo = zr.size - 2                                 # profile index hint, walked down the column
             e[n, j, i] = -H[j, i]
             for k in range(n - 1, -1, -1):
                 e[k, j, i] = e[k + 1, j, i] + hs[k, j, i]
             for k in range(n):
                 hc[k] = hs[k, j, i]
-            for var in range(2):
+            if profile:                                      # anomalies T′, S′ at the layer centres
                 for k in range(n):
-                    v = Ts[k, j, i] if var == 0 else Ss[k, j, i]
-                    if profile:
-                        zc = 0.5 * (e[k, j, i] + e[k + 1, j, i])
-                        v = v - _interp(zc, zr, Tr if var == 0 else Sr)
-                    q[k] = v
-                _plm_edges(hc, q, qt, qb)
+                    zc = 0.5 * (e[k, j, i] + e[k + 1, j, i])
+                    tr, sr, lo = _ref_ts(zc, zr, Tr, Sr, lo)
+                    q[k] = Ts[k, j, i] - tr
+                    q2[k] = Ss[k, j, i] - sr
+                lo = zr.size - 2
+            else:
                 for k in range(n):
-                    if var == 0:
-                        Tt[k, j, i] = qt[k]
-                        Tb[k, j, i] = qb[k]
-                    else:
-                        St[k, j, i] = qt[k]
-                        Sb[k, j, i] = qb[k]
+                    q[k] = Ts[k, j, i]
+                    q2[k] = Ss[k, j, i]
+            _plm_edges(hc, q, qt, qb)
+            for k in range(n):
+                Tt[k, j, i] = qt[k]
+                Tb[k, j, i] = qb[k]
+            _plm_edges(hc, q2, qt, qb)
+            for k in range(n):
+                St[k, j, i] = qt[k]
+                Sb[k, j, i] = qb[k]
             for k in range(n):
                 dz = e[k, j, i] - e[k + 1, j, i]
                 for m in range(5):
@@ -204,8 +231,8 @@ def _columns(H, hs, Ts, Ss, eos, rho0, rho_ref, g, profile, zr, Tr, Sr,
                     wb = 1.0 - wt
                     z = (e[k, j, i] - Z_0P) - 0.25 * m * dz
                     p = -GxRho * z
-                    r[m] = _point(eos, wt * Tt[k, j, i] + wb * Tb[k, j, i], wt * St[k, j, i] + wb * Sb[k, j, i],
-                                  p, z, rho_ref, profile, zr, Tr, Sr)
+                    r[m], lo = _point(eos, wt * Tt[k, j, i] + wb * Tb[k, j, i], wt * St[k, j, i] + wb * Sb[k, j, i],
+                                      p, z, rho_ref, profile, zr, Tr, Sr, lo)
                 ra = C1_90 * (7.0 * (r[0] + r[4]) + 32.0 * (r[1] + r[3]) + 12.0 * r[2])
                 dpa[k, j, i] = g * dz * ra
                 intz[k, j, i] = 0.5 * g * (dz * dz) * (ra - C1_90 * (16.0 * (r[3] - r[1]) + 7.0 * (r[4] - r[0])))
@@ -230,11 +257,13 @@ def _faces(e, hs, Tt, Tb, St, Sb, dpa, intz, pa0, active, dx, eos, rho0, rho_ref
     I_Rho0 = 1.0 / rho0
     for j in prange(ny):
         r = np.empty(5)
+        lov = np.empty(3, np.int64)                          # profile index hints of the three sub-columns
         for i in range(1, nx):
             L = i - 1
             R = i
             if not (active[j, L] and active[j, R]):
                 continue
+            lov[:] = zr.size - 2
             paL = pa0[j, L]
             paR = pa0[j, R]
             ixpa = 0.5 * (paL + paR)
@@ -292,7 +321,7 @@ def _faces(e, hs, Tt, Tb, St, Sb, dpa, intz, pa0, active, dx, eos, rho0, rho_ref
                             wb = 1.0 - wt
                             tq = wt * t1 + wb * t5
                             sq = wt * s1 + wb * s5
-                        r[m] = _point(eos, tq, sq, p, z, rho_ref, profile, zr, Tr, Sr)
+                        r[m], lov[mm] = _point(eos, tq, sq, p, z, rho_ref, profile, zr, Tr, Sr, lov[mm])
                     v = g * dzx * (C1_90 * (7.0 * (r[0] + r[4]) + 32.0 * (r[1] + r[3]) + 12.0 * r[2]))
                     if mm == 0:
                         I1 = v

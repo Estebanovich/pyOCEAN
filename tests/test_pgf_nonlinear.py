@@ -110,6 +110,32 @@ def test_numba_equals_numpy(ref, profile):
         numba.set_num_threads(old)
 
 
+def test_numba_equals_numpy_profile_index_walk(ref):
+    """The kernel's walked profile index (``_ref_ts``, cost brief 2026-11-01) gives ``_interp``'s values: Numba =
+    NumPy oracle with identical bits (incl. the sign of zero), 1 and 5 threads, for a dense, unevenly spaced
+    profile that covers only the middle of the columns (quadrature points above, inside and below it)."""
+    arr, par = _grid_2d(ref)
+    zc = _layer_centres(arr["h"], arr["H"])
+    lo, hi = zc.min(), zc.max()
+    rng = np.random.default_rng(3)
+    z_ref = np.sort(lo + (hi - lo) * (0.2 + 0.6 * rng.random(40)))
+    prof = dict(T_ref=np.interp(z_ref, Z_REF, T_REF) + 0.1 * rng.standard_normal(40),
+                S_ref=np.interp(z_ref, Z_REF, S_REF) + 0.01 * rng.standard_normal(40), z_ref=z_ref)
+    old = numba.get_num_threads()
+    try:
+        for eos in EOS:
+            for mw in MW:
+                want = _fv_pgf_nonlinear_numpy(**arr, eos_name=eos, mass_weight=mw, **par, **prof)
+                for nt in (1, min(5, numba.config.NUMBA_NUM_THREADS)):
+                    numba.set_num_threads(nt)
+                    got = fv_pgf_nonlinear(**arr, eos_name=eos, mass_weight=mw, **par, **prof)
+                    for g_, w_ in zip(got, want):
+                        np.testing.assert_array_equal(g_.view(np.int64), w_.view(np.int64))
+                assert np.abs(want[0]).max() > 0.0
+    finally:
+        numba.set_num_threads(old)
+
+
 def _profile_columns(h, H):
     """T, S equal to the reference profile at the layer centres (the kernel's own z_c and interpolation)."""
     zc = _layer_centres(h, H)
