@@ -4,9 +4,10 @@ Vector rotation between earth axes (east, north) and grid axes (x, y).
 On a curvilinear (rotated) grid the model momentum and the surface stress live
 on grid axes, whereas the atmosphere (ERA5, WRF earth-relative) and the tides
 and open-boundary data are given as east/north components.  With the angle
-convention of ``core.grid.supergrid.grid_from_supergrid`` (MOM6 ``angle_dx``,
-``cos_t = cos α``, ``sin_t = sin α`` with α the counter-clockwise angle of
-grid-x from east):
+convention of ``core.grid.supergrid.grid_from_supergrid`` (``cos_t = cos α``,
+``sin_t = sin α`` with α the counter-clockwise angle of grid-x from east,
+computed from the corner lon/lat as MOM6 does, so α = −angle_MOM6 ≈ the
+supergrid's ``angle_dx``; ruling R1 of the regional-chain plan):
 
     u_east  = cos α u_x − sin α v_y,        (to_earth)
     v_north = sin α u_x + cos α v_y,
