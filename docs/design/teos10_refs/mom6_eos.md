@@ -32,8 +32,9 @@ done for Wright; if the model carried CT/SA it would be fed in unconverted (see 
 | | | b4 | 6.844158e5 Pa PSU⁻¹ | c4 | -1.664201e2 |
 | | | b5 | -8.389457e3 Pa °C⁻¹ PSU⁻¹ | c5 | -2.765195 |
 
-These are already in Pa / m² s⁻²; Wright (1997) tabulates them in other units [verificar the
-paper's units before citing them as the paper's numbers].
+These are Wright (1997) Table 1, second column (extended formula fitted over the full range,
+rms ρ error 0.015 kg m⁻³), in the paper's own mks units (Pa, m³ kg⁻¹, m² s⁻²); all 15 checked
+against the paper on 2026-11-01.
 
 **Functional form** (Tumlirz/Eckart form, specific volume α = A + λ/(P + p)), written with
 MOM6's exact association (`density_elem_Wright_full`, `:86-89`):
@@ -124,8 +125,9 @@ are derived from the `EOS…` set.
 (`:683`), the `.dox` says "a 75-member polynomial for density" (`_Equation_of_State.dox:62-64`),
 and `MOM_EOS_Roquet_SpV.F90:768` says "55 terms". The code has 52 + 6. The 75-term polynomial is
 GSW's `gsw_specvol` (75 `v…` coefficients, `TEOS10/gsw_mod_specvol_coefficients.f90`), which is
-what `EQN_OF_STATE="TEOS10"` evaluates (below). [verificar against Roquet et al. 2015 which named
-form is the "55-term" one.]
+what `EQN_OF_STATE="TEOS10"` evaluates (below). Roquet et al. (2015) name the forms: polyTEOS10-bsq (density,
+52-term anomaly + 6-term reference profile = `ROQUET_RHO`), polyTEOS10-55t (specific volume,
+52 + 3 terms = the "55 terms" of `MOM_EOS_Roquet_SpV`) and polyTEOS10-75t (GSW's specific volume).
 
 **Anomaly form** (`:305-308`): `rho_ref` is subtracted from `rho0S0` **before** the
 pressure-dependent terms are added (precision device, different from TEOS10's after-the-fact

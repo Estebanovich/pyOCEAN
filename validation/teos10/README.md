@@ -272,7 +272,7 @@ interfaz inicial. Volúmenes de cabbeling: agua con ρ(T, S, 0) mayor que la de 
 3. **Correr MOM6 en el caso de reposo (montaña, z\* y ρ, WRIGHT_FULL)** para poner las cifras del modo
    `rho_ref=None` junto a las suyas, como pide el criterio 4.
 4. **Validar cabbeling/termobaricidad contra observaciones o LES** (no hay verdad en esta tarea: solo signo y
-   aparición). Candidatos: la formación de agua por cabbeling en frentes (McDougall 1987 [verificar]).
+   aparición). Candidatos: la formación de agua por cabbeling en frentes (McDougall 1987).
 5. **Columna bulk contra la boya 44025** con `teos10`: la diferencia lineal/no lineal (+0.1 °C) es del orden de la
    que el benchmark puede resolver; decidir con observaciones, no con el modelo (proyecto 3 de la cadena).
 6. **Costo del gradiente de presión no lineal** (criterio 11 cumplido: `teos10` 1.87×, `wright_full` 1.37×): si
@@ -284,5 +284,5 @@ interfaz inicial. Volúmenes de cabbeling: agua con ρ(T, S, 0) mayor que la de 
    suaves, 2–37 % aleatorias, 100 % en una; `docs/design/teos10_refs/mom6_eos.md` §5).
 8. **Proyección de dos trazadores de Jackson** (MOM6 proyecta T y S por separado dentro de los subpasos; aquí solo el
    N² inicial es igual a MOM6, diferencia de segundo orden, (c)).
-9. **Comprobar la cota de ajuste de Roquet contra el artículo** (`ROQUET_FIT_MAX` = 1.1 × 5.355e-2 kg m⁻³ medido,
-   [verificar Roquet 2015]; el artículo sigue ⬜ en `docs/literature/reading_list.md`).
+9. ~~**Comprobar la cota de ajuste de Roquet contra el artículo**~~ Hecho el 2026-11-01: `ROQUET_FIT_MAX` = 1.1 × 5.355e-2
+   kg m⁻³ es coherente con la Tabla 2 de Roquet et al. 2015 (cubo completo 1.83 ± 27.45e-3 kg m⁻³).

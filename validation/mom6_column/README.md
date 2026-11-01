@@ -464,7 +464,8 @@ Python.
 Contra TEOS-10 de `gsw` (polinomio de 75 términos en volumen específico), Roquet difiere en
 5.4e-2 kg m⁻³ como máximo sobre los puntos con S ≥ 2 (salobre a 5500-6000 dbar, fuera del
 embudo oceánico de los ajustes), RMS 7.6e-3, mediana 3.2e-4; 3.0e-2 para 30 < S_A < 40.
-`ROQUET_FIT_MAX` = 1.1 × el máximo medido [verificar Roquet 2015, Tabla].
+`ROQUET_FIT_MAX` = 1.1 × el máximo medido, coherente con la Tabla 2 de Roquet et al. 2015
+(1.83 ± 27.45e-3 kg m⁻³ en el cubo completo, 0.08 ± 0.32e-3 en el embudo oceánico).
 
 ## Gradiente de presión de volumen finito no lineal (`int_density_dz_generic_plm` de MOM6)
 

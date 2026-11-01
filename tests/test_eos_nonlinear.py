@@ -24,8 +24,9 @@ MODULES = {"w": wright_full, "r": roquet_rho}
 
 # Fit error of the Roquet et al. (2015) density polynomial against TEOS-10 (gsw.rho, the
 # 75-term polynomial) over the oceanic cloud S >= 2: 1.1 x the measured maximum
-# (ruling of the task-1 ledger).  [verificar Roquet 2015, Tabla: the paper's stated
-# fit error is not in the local library]
+# (ruling of the task-1 ledger).  Consistent with Roquet et al. (2015) Table 2: polyTEOS10-bsq
+# against the exact Gibbs function is 1.83 +- 27.45e-3 kg m-3 over the whole cube
+# (S_A 0-42, CT -2..40 C, 0-10000 dbar), 0.08 +- 0.32e-3 in the oceanic funnel.
 ROQUET_FIT_MAX = 1.1 * 5.355e-2   # kg m-3; measured max 5.3546e-2 (test docstring)
 
 

@@ -25,7 +25,7 @@ agrees with ``gsw`` only to the fit error (measured in ``tests/test_eos_nonlinea
 References: Roquet, F., Madec, G., McDougall, T. J. and Barker, P. M., 2015: Accurate
 polynomial expressions for the density and specific volume of seawater using the TEOS-10
 standard.  Ocean Modelling, 90, 29–43, https://doi.org/10.1016/j.ocemod.2015.04.002
-[verificar: not in the local library]; IOC, SCOR and IAPSO, 2010: The international
+(the polyTEOS10-bsq form, their Section 3.1 and Appendix A); IOC, SCOR and IAPSO, 2010: The international
 thermodynamic equation of seawater – 2010 (TEOS-10).
 
 Reference implementation, MOM6 git 0e9a561 (``~/pyOCEAN_refs/MOM6/src/equation_of_state/``):

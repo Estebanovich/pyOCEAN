@@ -35,9 +35,9 @@ scalars ``buoyancy_jump_elem`` and ``n2_iface_elem`` are shared by the vectorise
 compiled closure kernels (``physics.mixing.gls_merged``, ``bbl_mixing``, ``kappa_shear``), so the kernels and
 their NumPy oracles agree bit for bit.  EOS codes: ``EOS_CODES`` (0 linear, 1 WRIGHT_FULL, 2 ROQUET_RHO = teos10).
 
-References: Wright, D. G. (1997), J. Atmos. Oceanic Technol. 14, 735–740 [verificar]; Roquet et al. (2015), Ocean
-Modell. 90, 29–43 [verificar]; IOC, SCOR and IAPSO (2010), TEOS-10 manual; McDougall, T. J. (1987), Thermobaricity,
-cabbeling, and water-mass conversion, J. Geophys. Res. 92, 5448–5464 [verificar].  MOM6 git 0e9a561.
+References: Wright, D. G. (1997), J. Atmos. Oceanic Technol. 14, 735–740; Roquet et al. (2015), Ocean
+Modell. 90, 29–43; IOC, SCOR and IAPSO (2010), TEOS-10 manual; McDougall, T. J. (1987), Thermobaricity,
+cabbeling, and water-mass conversion, J. Geophys. Res. 92, 5448–5464.  MOM6 git 0e9a561.
 """
 from __future__ import annotations
 

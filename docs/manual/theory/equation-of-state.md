@@ -43,8 +43,9 @@ T −2…32 °C, S 0…42, p 0…6e7 Pa, freshwater included; max |Δ| = 0; `tes
     The two fits differ beyond round-off. Against `gsw` (the 75-term polynomial) the Roquet density differs by
     5.4e-2 kg m⁻³ at most for S ≥ 2. That maximum is in brackish water at 5500–6000 dbar, outside the oceanic range
     of the fits. The RMS is 7.6e-3 and, for 30 < S_A < 40, the maximum is 3.0e-2. The test bound `ROQUET_FIT_MAX` is
-    1.1 × the measured maximum, because the published fit error has not been checked yet: Roquet (2015) is not in
-    the local library **[verificar Roquet 2015]**.
+    1.1 × the measured maximum. That is consistent with the published fit error (Roquet et al. 2015, Table 2):
+    0.08 ± 0.32e-3 kg m⁻³ in the oceanic funnel and 1.83 ± 27.45e-3 kg m⁻³ over the whole range S_A 0–42 g/kg,
+    Θ −2…40 °C, 0–10 000 dbar.
 
 ### Pressure and salinity conventions
 

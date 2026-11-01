@@ -23,9 +23,9 @@ model carries Θ and S_A this EOS is fed them unconverted, as MOM6 does.
 
 Reference: Wright, D. G., 1997: An equation of state for use in ocean models:
 Eckart's formula revisited.  J. Atmos. Oceanic Technol., 14, 735–740,
-https://doi.org/10.1175/1520-0426(1997)014<0735:AEOSFU>2.0.CO;2 [verificar: not in the
-local library; the coefficients below are MOM6's, in Pa and m² s⁻², and Wright tabulates
-them in other units].
+https://doi.org/10.1175/1520-0426(1997)014<0735:AEOSFU>2.0.CO;2.  The coefficients below
+are his Table 1, second column (extended formula fitted over the full range), in the
+paper's mks units (Pa, m³ kg⁻¹, m² s⁻²), the same values as MOM6.
 
 Reference implementation, MOM6 git 0e9a561 (``~/pyOCEAN_refs/MOM6/src/equation_of_state/``):
 coefficients ``MOM_EOS_Wright_full.F90:23-37``, density ``:86-89``, density anomaly
