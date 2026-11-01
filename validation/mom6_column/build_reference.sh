@@ -120,3 +120,5 @@ echo "built: $(ls "$REF/build/column" | grep -v '\.mod$' | tr '\n' ' ')"
 python "$HERE/eos_columns.py" "$REF/build/column/eos_driver" "$HERE/../../tests/data/mom6_eos_reference.npz"
 # Reference table of the nonlinear FV pressure gradient for tests/test_pgf_nonlinear.py (< 1 MB)
 python "$HERE/eos_columns.py" pgf "$REF/build/column/pgf_driver" "$HERE/../../tests/data/mom6_pgf_plm_reference.npz"
+# Reference table of the closures' N² and KPP density differences for tests/test_eos_closures.py (< 1 MB)
+python "$HERE/eos_columns.py" n2 "$REF/build/column/eos_driver" "$HERE/../../tests/data/mom6_n2_reference.npz"

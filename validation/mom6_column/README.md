@@ -44,6 +44,7 @@ Los tests de pytest (`tests/test_vertical_vs_mom6.py`) se saltan cuando falta un
 | `bbl_driver lotw` | `MOM_set_diffusivity::add_LOTW_BBL_diffusivity` (extraída con `set_diffusivity_CS`; Boussinesq, valores OM4) | `physics.mixing.bbl_mixing.lotw_bbl_column` | 1e-10 × max Kd de la columna |
 | `bbl_driver tke` | `MOM_set_diffusivity::set_BBL_TKE` (extraída) | factor contra C_d\|U\|³ y √C_d\|U\| | 1e-12 relativo |
 | `eos_driver eval` | `MOM_EOS::calculate_density` (sin y con `rho_ref` = 1035) y `calculate_density_derivs` (1-D), con `EOS_manual_init(form_of_EOS = EOS_WRIGHT_FULL / EOS_ROQUET_RHO)` | `physics.eos.wright_full`, `physics.eos.roquet_rho` (`density`, `density_anomaly`, `density_derivs`) | rtol 1e-12 (ρ, ∂ρ/∂T, ∂ρ/∂S), atol 1e-12 (ρ − ρ_ref); medido: bit a bit |
+| `eos_driver n2` | N² referido localmente de `MOM_kappa_shear.F90:1128-1136, 1496-1500` (`calculate_density_derivs` con `scale=-g_R0`, sin el `max(0, ·)`) y diferencias de densidad de KPP de `MOM_CVMix_KPP.F90:1396-1436` (`calculate_density` a la presión de la interfaz superior de la capa k), WRIGHT_FULL y ROQUET_RHO | `physics.eos.stratification` (`interface_pressure`, `n2_local`, `kpp_delta_rho`) | rtol 1e-12; medido: bit a bit |
 | `eos_driver coef` | coeficientes `parameter` de `MOM_EOS_Wright_full.F90:23-37` y `MOM_EOS_Roquet_rho.F90:14-156`, tal como los pliega el compilador | constantes de módulo de los mismos nombres | bit a bit |
 | `pgf_driver` | `MOM_density_integrals::int_density_dz_generic_plm` + PLM de T y S (`ALE_PLM_edge_values`, extraída) + ensamblado de `PressureForce_FV_Bouss`, WRIGHT_FULL y ROQUET_RHO, tres modos de peso de masa | `core.vertical.pgf_nonlinear.fv_pgf_nonlinear` | rtol 1e-12, atol 1e-12 × max \|PFu\|; medido: bit a bit |
 
@@ -514,6 +515,26 @@ necesita un rango θ–S–p y una estratificación realistas, no la climatolog�
 `tests/data/mom6_pgf_plm_reference.npz` (199 kB, versionado): entradas, valores de borde
 PLM, `dpa`, `intz_dpa`, `intx_dpa` y las dos fuerzas por caso, EOS y modo.
 `tests/test_pgf_nonlinear.py` compara contra ese npz y no necesita la compilación.
+
+### N² y flotabilidad de los cierres (TEOS-10 en 3-D, tarea 6)
+
+`eos_driver n2` recibe columnas (superficie primero: h, T, S y la media de la capa superficial
+T_sl, S_sl que KPP empareja con la capa k) y escribe, para cada EOS, el N² referido localmente
+de kappa_shear (presión p(K) = p(K−1) + ρ₀ g h(k−1) desde la superficie, derivadas en la T y S
+medias de la interfaz, `I_dz_int = 2/(h(k−1)+h(k))`; con signo, sin el `max(0, ·)` de MOM6) y,
+para KPP, ρ(T_k, S_k, p_k) − ρ(T_sl, S_sl, p_k) y ρ(T_k, S_k, p_k) − ρ(T_k−1, S_k−1, p_k) con
+p_k la presión de la interfaz superior de la capa k (una sola llamada a `calculate_density` sobre
+los 3·nz puntos, como MOM6). Columnas (`eos_columns.n2_cases`): las 28 columnas de los casos de
+`pgf_cases` y dos columnas de termobaricidad (agua fría y dulce, 0 °C y 34.5, sobre agua cálida y
+salada, 4 °C y 34.95, con la interfaz a 100 m y a 4000 m). `build_reference.sh` termina llamando
+a `eos_columns.py n2`, que escribe `tests/data/mom6_n2_reference.npz` (206 kB, versionado);
+`tests/test_eos_closures.py` compara contra ese npz.
+
+**Resultado** (2026-10-31): `n2_local`, la presión de las interfaces y `kpp_delta_rho` son
+**bit a bit** iguales a MOM6 compilado en las 30 columnas y las dos EOS. Termobaricidad: N² > 0
+a 100 m (2.3e-6 s⁻² WRIGHT_FULL, 1.9e-6 ROQUET_RHO) y N² < 0 a 4000 m (−1.9e-5 s⁻² en las dos),
+mientras la diferencia de densidad in situ de las dos capas de 200 m, cada una a la presión de su
+centro, sale estable a 4000 m (el signo contrario).
 
 **Resultado** (2026-10-31): la fuerza de pyOCEAN es **bit a bit** igual a `pfu_bc` de MOM6
 compilado en las 3330 caras × capas (4 casos × 2 EOS × 3 modos; max |Δ| = 0). El kernel

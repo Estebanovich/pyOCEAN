@@ -37,6 +37,8 @@ import numpy as np
 from core.model import threads
 from core.model.contract import BuildContext, Issue, Role
 from core.vertical import remap as rm
+from physics.eos.stratification import (DensityContext, eos_code, interface_pressure, n2_local, nonlinear,
+                                        surface_alpha_beta)
 from physics.mixing.bbl_mixing import BBLParams, lotw_bbl_columns
 from physics.mixing.gls import KT_MIN, N2_FLOOR, RM, RN, RP, GLSKEpsilon, buoyancy_frequency2
 from physics.mixing.gls_merged import merged_columns
@@ -154,7 +156,8 @@ class Closure:
         return None
 
     def update(self, u: np.ndarray, v: np.ndarray, h: np.ndarray, rho: np.ndarray | None,
-               ustar2_sfc: np.ndarray | None, ustar2_bot: np.ndarray, bflux: dict | None = None) -> None:
+               ustar2_sfc: np.ndarray | None, ustar2_bot: np.ndarray, bflux: dict | None = None,
+               dens: DensityContext | None = None) -> None:
         """
         Advance the closure state with the new velocities.
 
@@ -163,6 +166,9 @@ class Closure:
         rho : (N, ny, nx) layer density [kg m⁻³] or None
         ustar2_sfc, ustar2_bot : (ny, nx) kinematic surface and bed stress |τ|/ρ₀ [m² s⁻²] (surface None: zero)
         bflux : surface buoyancy fluxes (N3 tasks 6–7), optional
+        dens : ``physics.eos.stratification.DensityContext`` (TEOS-10 in the 3-D core, task 6): with a nonlinear EOS
+            the stratification is MOM6's locally referenced one (N² from T, S at the interface pressure, KPP density
+            differences at a common pressure); None or a linear EOS: ``rho`` as before (bit for bit)
         """
         return None
 
@@ -266,6 +272,12 @@ class GLSClosure(Closure):
       creates no new extrema, so k, ε stay ≥ their floors; the floors (tke_min 1e-10, eps_min 1e-12, ν_min, κ_min)
       and the Galperin limit l ≤ 0.53 √(2k)/N (gls_mixing.F:829-834) with the remapped N² are applied after.  An
       unchanged grid (h_src == h_dst) is not remapped.
+
+    Nonlinear EOS (``update(..., dens=...)``, TEOS-10 in the 3-D core, task 6; spec goal C): N² is MOM6's locally
+    referenced N² (``physics.eos.stratification.n2_local``; ``MOM_kappa_shear.F90:1128-1136, 1496-1500``) from
+    the layer T, S at the interface pressure p = Σ g ρ₀ h from the surface, signed as the linear N² (a column made
+    unstable by thermobaricity gives N² < 0 and convective buoyancy production); on merged columns from the merged
+    T, S (Σ h·x / Σ h) at the merged interface pressure.  Linear EOS: ``buoyancy_frequency2`` of ``rho`` as before.
     """
     stateful = True
     restart_prefix = "gls_"       # file names of the restarts written before N3 (``core.restart``)
@@ -305,7 +317,7 @@ class GLSClosure(Closure):
 
     def update(self, u: np.ndarray, v: np.ndarray, h: np.ndarray, rho: np.ndarray | None,
                ustar2_sfc: np.ndarray | None, ustar2_bot: np.ndarray, bflux: dict | None = None,
-               shear_work: np.ndarray | None = None) -> None:
+               shear_work: np.ndarray | None = None, dens: DensityContext | None = None) -> None:
         """
         Advance k-ε (``GLSKEpsilon.step``).  Stratified: N² from ``rho`` (``buoyancy_frequency2``, CROCO
         rho_eos.F:404-411) and the surface k = u*²_s/c_μ⁰² with the Charnock roughness; homogeneous: u*²_s = 0
@@ -314,6 +326,7 @@ class GLSClosure(Closure):
         shear_work : (N−1, ny, nx) kinetic energy per unit area removed by the implicit vertical viscosity at the
             interior interfaces during the step [m³ s⁻³] (production 'energy', Burchard 2002 eq. 16 times the
             centre distance; ``core.model.driver``), None with 'croco'.
+        dens : nonlinear EOS context (class docstring; ``Closure.update``), None or linear: N² from ``rho``.
         ALE (``bind_ale``): thin layers merged first (class docstring).
         """
         n = self.n
@@ -325,23 +338,42 @@ class GLSClosure(Closure):
         rh = None if rho is None else np.asarray(rho, float).reshape(n, -1)
         us2s = None if (ustar2_sfc is None or not self.stratified) else np.asarray(ustar2_sfc).ravel()
         work = None if shear_work is None else np.asarray(shear_work, float).reshape(n - 1, -1)
+        nl = self._nonlinear_columns(dz, dens) if self.stratified else None
         if self.ale:
             thr = self.thin_threshold(dz)
             if not (dz >= thr).all():
-                self._update_ale(uc, vc, dz, rh, us2s, us2b, work, thr)
+                self._update_ale(uc, vc, dz, rh, us2s, us2b, work, thr, nl=nl)
                 return
-        self._step_direct(uc, vc, dz, rh, us2s, us2b, work)
+        self._step_direct(uc, vc, dz, rh, us2s, us2b, work, nl=nl)
+
+    def _nonlinear_columns(self, dz: np.ndarray, dens: DensityContext | None) -> tuple | None:
+        """(eos, T, S, p_iface) of the columns for the locally referenced N² (class docstring), T, S (N, M) and the
+        interface pressure (N+1, M) [Pa] from the thicknesses dz (N, M); None without ``dens`` or with a linear EOS."""
+        if not nonlinear(dens):
+            return None
+        n = self.n
+        return (dens.eos, np.asarray(dens.T, float).reshape(n, -1), np.asarray(dens.S, float).reshape(n, -1),
+                interface_pressure(dz, self.g, self.rho0))
+
+    def _column_n2(self, rh: np.ndarray | None, dz: np.ndarray, nl: tuple | None) -> np.ndarray:
+        """N² (N−1, M) [s⁻²] of the columns: ``buoyancy_frequency2`` of ρ (linear EOS) or the locally referenced
+        ``n2_local`` (nonlinear EOS, ``nl`` from ``_nonlinear_columns`` for these columns)."""
+        if nl is None:
+            return buoyancy_frequency2(rh, dz, self.rho0, self.g)
+        return n2_local(nl[1], nl[2], dz, nl[3], nl[0], rho0=self.rho0, g=self.g)
 
     def thin_threshold(self, dz: np.ndarray) -> np.ndarray:
         """Per-column thin-layer threshold h_thin (M,) [m] of the layers ``dz`` (N, M) (``thin_layer_threshold``)."""
         return thin_layer_threshold(dz, self.h_massless, self.thin_fraction, self.h_thin_max)
 
     def _step_direct(self, uc: np.ndarray, vc: np.ndarray, dz: np.ndarray, rh: np.ndarray | None,
-                     us2s: np.ndarray | None, us2b: np.ndarray, work: np.ndarray | None) -> None:
-        """GLS step on the model columns as they are (σ, and ALE columns without thin layers)."""
+                     us2s: np.ndarray | None, us2b: np.ndarray, work: np.ndarray | None,
+                     nl: tuple | None = None) -> None:
+        """GLS step on the model columns as they are (σ, and ALE columns without thin layers); ``nl`` (nonlinear
+        EOS) from ``_nonlinear_columns``."""
         prod = None if work is None else work / (0.5 * (dz[:-1] + dz[1:]))
         if self.stratified:
-            n2 = buoyancy_frequency2(rh, dz, self.rho0, self.g)
+            n2 = self._column_n2(rh, dz, nl)
             self.gls.step(uc, vc, dz, us2b, self.dt, ustar2_sfc=us2s, n2=n2, prod=prod)
             if self.ale:
                 self._n2 = _pad_interfaces(n2)
@@ -350,13 +382,14 @@ class GLSClosure(Closure):
 
     def _update_ale(self, uc: np.ndarray, vc: np.ndarray, dz: np.ndarray, rho: np.ndarray | None,
                     us2s: np.ndarray | None, us2b: np.ndarray, work: np.ndarray | None,
-                    thr: np.ndarray | None = None) -> None:
+                    thr: np.ndarray | None = None, nl: tuple | None = None) -> None:
         """
         ALE step when some columns have thin layers (N3 task 10a): the columns without thin layers take the direct
         GLS step (``_step_direct`` on that subset: the same elementwise arithmetic as a column of a σ run, so σ ≡
         ALE holds column by column), the columns with thin layers the merged step of the compiled kernel
         ``physics.mixing.gls_merged.merged_columns`` (class docstring; oracle ``_update_ale_numpy``).
-        thr : (M,) thin-layer threshold [m] (default ``thin_threshold(dz)``).
+        thr : (M,) thin-layer threshold [m] (default ``thin_threshold(dz)``);  nl : nonlinear EOS columns
+        (``_nonlinear_columns``) or None.
         """
         gls, n = self.gls, self.n
         thr = self.thin_threshold(dz) if thr is None else thr
@@ -376,7 +409,8 @@ class GLSClosure(Closure):
             try:
                 self._step_direct(uc[:, cc], vc[:, cc], dz[:, cc], None if rho is None else rho[:, cc],
                                   None if us2s is None else us2s[cc], us2b[cc],
-                                  None if work is None else work[:, cc])
+                                  None if work is None else work[:, cc],
+                                  nl=None if nl is None else (nl[0], nl[1][:, cc], nl[2][:, cc], nl[3][:, cc]))
             finally:
                 self.gls = gls
             tke[:, cc], eps[:, cc], akv[:, cc] = sub.tke, sub.eps, sub.akv
@@ -403,7 +437,10 @@ class GLSClosure(Closure):
                            np.ascontiguousarray(thr[tc], dtype=float), self.h_massless, float(self.dt),
                            self.stratified, work is not None, float(self.rho0),
                            float(self.g), gls.cm0, gls.tke_min, gls.psi_min, gls.eps_min, gls.nu_min, gls.kt_min,
-                           gls.galp, gls.z0s_min, gls.chk, gls.z0_bed, gls.alpha_n_min, *o, o_prod)
+                           gls.galp, gls.z0s_min, gls.chk, gls.z0_bed, gls.alpha_n_min, *o, o_prod,
+                           dummy if nl is None else np.ascontiguousarray(nl[1][:, tc]),
+                           dummy if nl is None else np.ascontiguousarray(nl[2][:, tc]),
+                           0 if nl is None else eos_code(nl[0]))
             tke[:, tc], eps[:, tc], akv[:, tc] = o[0], o[1], o[2]
             if akt is not None:
                 akt[:, tc] = o[3]
@@ -416,12 +453,15 @@ class GLSClosure(Closure):
         self._n2 = n2_full
 
     def _update_ale_numpy(self, uc: np.ndarray, vc: np.ndarray, dz: np.ndarray, rho: np.ndarray | None,
-                          us2s: np.ndarray | None, us2b: np.ndarray, work: np.ndarray | None) -> None:
+                          us2s: np.ndarray | None, us2b: np.ndarray, work: np.ndarray | None,
+                          dens: DensityContext | None = None) -> None:
         """
         NumPy form of the merged step, every column through the merging (the N3 task-5 code, kept as the oracle of
         the compiled kernel, ``tests/test_gls_ale.py::test_gls_merge_numba_matches_numpy``): merge, solve the
         columns with the same number c of merged layers together, interpolate back to the model interfaces.
+        ``dens`` (nonlinear EOS): N² from the merged T, S at the merged interface pressure (class docstring).
         """
+        nlc = self._nonlinear_columns(dz, dens) if self.stratified else None
         gls, n = self.gls, self.n
         act = active_layers(dz, self.thin_threshold(dz), self.h_massless)   # layers that open a merged layer
         cnt = act.sum(axis=0)
@@ -490,8 +530,12 @@ class GLSClosure(Closure):
                 np.add.at(ec, (np.minimum(kc + 1, c), colix[:1].repeat(n + 1, 0)), kf * wf)
                 prod = ec[1:-1] / (0.5 * (hc[:-1] + hc[1:]))
             us2s_c = None if us2s is None else us2s[cols]
-            if self.stratified:
+            if self.stratified and nlc is None:
                 n2 = buoyancy_frequency2(merge(h_s * rho[:, cols]) / hc, hc, self.rho0, self.g)
+            elif self.stratified:                                      # merged T, S at the merged interfaces
+                n2 = n2_local(merge(h_s * nlc[1][:, cols]) / hc, merge(h_s * nlc[2][:, cols]) / hc, hc,
+                              interface_pressure(hc, self.g, self.rho0), nlc[0], rho0=self.rho0, g=self.g)
+            if self.stratified:
                 sub.step(uc_c, vc_c, hc, us2b[cols], self.dt, ustar2_sfc=us2s_c, n2=n2, prod=prod)
                 n2_full[:, cols] = scatter(_pad_interfaces(n2))
                 akt[:, cols] = scatter(sub.akt)
@@ -662,6 +706,14 @@ class KPPClosure(Closure):
     ALE_regridding_and_remapping, MOM.F90:1964-1965); the KPP state is not remapped.
     Interior Richardson-number mixing (L94 §4) is not part of 'kpp' (MOM6 adds it from its own interior schemes;
     spec item 4 leaves it optional, decided here: off).  Index order (k, j, i), k = 0 at the bed; interfaces N+1.
+
+    Nonlinear EOS (``update(..., dens=...)``, TEOS-10 in the 3-D core, task 6; spec goal C): B_r − B(d) and the local
+    N² are MOM6's density differences at the pressure of the top interface of layer k (``kpp_column`` with T, S,
+    ``physics.eos.stratification.kpp_delta_rho``; ``MOM_CVMix_KPP.F90:1396-1436``), on merged columns from the
+    merged T, S; the surface buoyancy fluxes use ∂ρ/∂T and ∂ρ/∂S of the top layer at p = 0 instead of α = t_coef
+    and β = s_coef (``surface_alpha_beta``; ``MOM_forcing_type.F90:1116-1148``):
+
+        B_ns = −(g/ρ₀)(∂ρ/∂S F_S + ∂ρ/∂T F_T),     B_sw = −(g/ρ₀) ∂ρ/∂T Q_sw/(ρ₀ c_p).
     """
     stateful = True
     update_phase = "tracers"
@@ -691,22 +743,31 @@ class KPPClosure(Closure):
         return centre_to_faces(self.akv.reshape(self.n + 1, *self.shape), getattr(self, "per", None))
 
     def buoyancy_fluxes(self, Q_ns: np.ndarray, Q_sw: np.ndarray | None, fw: np.ndarray | None,
-                        S_sfc: np.ndarray | None) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+                        S_sfc: np.ndarray | None, drho: tuple[np.ndarray, np.ndarray] | None = None
+                        ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Kinematic surface fluxes and buoyancy fluxes (class docstring), all (M,):
         F_T [K m s⁻¹], F_S [g kg⁻¹ m s⁻¹], B_ns, B_sw [m² s⁻³] (positive = stabilising).
+        drho : None (linear EOS: α = t_coef, β = s_coef) or (∂ρ/∂T, ∂ρ/∂S) (M,) of the top layer at p = 0
+            (nonlinear EOS, ``surface_alpha_beta``; MOM_forcing_type.F90:1138-1148).
         """
         rc = self.rho0 * self.cp
         F_T = np.asarray(Q_ns, float).ravel() / rc
         F_S = np.zeros_like(F_T) if (fw is None or S_sfc is None) else \
             -np.asarray(S_sfc, float).ravel() * np.asarray(fw, float).ravel()
         go = self.g / self.rho0
+        if drho is not None:                                           # MOM_forcing_type.F90:1143, 1147
+            dT, dS = (np.asarray(x, float).ravel() for x in drho)
+            B_ns = -go * (dS * F_S + dT * F_T)
+            B_sw = np.zeros_like(F_T) if Q_sw is None else -go * (dT * (np.asarray(Q_sw, float).ravel() / rc))
+            return F_T, F_S, B_ns, B_sw
         B_ns = go * (self.t_coef * F_T - self.s_coef * F_S)
         B_sw = np.zeros_like(F_T) if Q_sw is None else go * self.t_coef * np.asarray(Q_sw, float).ravel() / rc
         return F_T, F_S, B_ns, B_sw
 
     def update(self, u: np.ndarray, v: np.ndarray, h: np.ndarray, rho: np.ndarray | None,
-               ustar2_sfc: np.ndarray | None, ustar2_bot: np.ndarray, bflux: dict | None = None) -> None:
+               ustar2_sfc: np.ndarray | None, ustar2_bot: np.ndarray, bflux: dict | None = None,
+               dens: DensityContext | None = None) -> None:
         """
         KPP on the wet columns (``kpp_column``).
 
@@ -714,10 +775,12 @@ class KPPClosure(Closure):
             in dry and land columns;  rho : (N, ny, nx) layer density of the model EOS [kg m⁻³];
         ustar2_sfc : (ny, nx) |τ_s|/ρ₀ [m² s⁻²] (None: 0);  ustar2_bot : unused (no bed boundary layer);
         bflux : None (no surface flux) or {"Q_ns", "Q_sw" (or None), "sw_frac_iface" (N+1, ny, nx), "fw" (or None),
-            "S_sfc" (or None)} [W m⁻², m s⁻¹, g kg⁻¹].
+            "S_sfc" (or None)} [W m⁻², m s⁻¹, g kg⁻¹];
+        dens : nonlinear EOS context (class docstring), None or linear: ``rho`` and t_coef, s_coef as before.
         """
         if rho is None:
             raise ValueError("closure='kpp' needs the layer density rho")
+        nl = nonlinear(dens)
         n = self.n
         m = self.shape[0] * self.shape[1]
         hh = np.asarray(h, float).reshape(n, m)
@@ -728,12 +791,19 @@ class KPPClosure(Closure):
             hw = hh[:, wet]
             zw = np.concatenate([np.zeros((1, wet.size)), np.cumsum(hw, axis=0)])
             b = -self.g * (np.asarray(rho, float).reshape(n, m)[:, wet] - self.rho0) / self.rho0
+            ts = None
+            if nl:                                                     # T, S of the wet columns (class docstring)
+                ts = (np.asarray(dens.T, float).reshape(n, m)[:, wet], np.asarray(dens.S, float).reshape(n, m)[:, wet])
             us = np.zeros(wet.size) if ustar2_sfc is None else np.sqrt(np.asarray(ustar2_sfc, float).ravel()[wet])
             if bflux is None:
                 bns, bsw, frac = np.zeros(wet.size), None, None
             else:
+                drho = None
+                if nl:                                                 # top layer, p = 0 (all columns, dry unused)
+                    drho = surface_alpha_beta(np.asarray(dens.T, float).reshape(n, m)[-1],
+                                              np.asarray(dens.S, float).reshape(n, m)[-1], dens.eos)
                 ft, fs, bns_a, bsw_a = self.buoyancy_fluxes(bflux["Q_ns"], bflux.get("Q_sw"), bflux.get("fw"),
-                                                            bflux.get("S_sfc"))
+                                                            bflux.get("S_sfc"), drho=drho)
                 F_T[wet], F_S[wet], bns = ft[wet], fs[wet], bns_a[wet]
                 bsw = None if bflux.get("Q_sw") is None else bsw_a[wet]
                 frac = None if bsw is None else np.asarray(bflux["sw_frac_iface"], float).reshape(n + 1, m)[:, wet]
@@ -747,26 +817,30 @@ class KPPClosure(Closure):
                               np.zeros((n + 1, wet.size)), np.zeros(wet.size))
             if plain.any():
                 c = np.flatnonzero(plain)
+                eos_kw = {} if ts is None else dict(T=ts[0][:, c], S=ts[1][:, c], eos=dens.eos, rho0=self.rho0,
+                                                    g=self.g)
                 r = kpp_column(hw[:, c], zw[:, c], uw[:, c], vw[:, c], b[:, c], bns[c], us[c],
                                None if frac is None else frac[:, c], None if f is None else f[c], self.params,
-                               bflux_sw=None if bsw is None else bsw[c])
+                               bflux_sw=None if bsw is None else bsw[c], **eos_kw)
                 ka[:, c], ks[:, c], gm[:, c], ob[c] = r.kappa_m, r.kappa_s, r.nonlocal_, r.obl_depth
             if not plain.all():
                 c = np.flatnonzero(~plain)
                 ka[:, c], ks[:, c], gm[:, c], ob[c] = self._merged(
                     hw[:, c], act[:, c], uw[:, c], vw[:, c], b[:, c], bns[c], us[c],
                     None if frac is None else frac[:, c], None if f is None else f[c],
-                    None if bsw is None else bsw[c])
+                    None if bsw is None else bsw[c],
+                    ts=None if ts is None else (ts[0][:, c], ts[1][:, c], dens.eos))
             akv[:, wet], akt[:, wet], gam[:, wet], obl[wet] = ka, ks, gm, ob
         for x in (akv, akt, gam):                                      # no flux through the bed or the surface
             x[0] = 0.0
             x[n] = 0.0
         self.akv, self.akt, self.gamma, self.obl_depth, self.F_T, self.F_S = akv, akt, gam, obl, F_T, F_S
 
-    def _merged(self, h, act, u, v, b, bns, us, frac, f, bsw):
+    def _merged(self, h, act, u, v, b, bns, us, frac, f, bsw, ts=None):
         """
         KPP on columns with thin layers (final-review fix I1), (N, M) inputs of those columns only, ``act`` from
-        ``active_layers``.  Returns ν, κ_s, γ (N+1, M) and the boundary-layer depth (M,).
+        ``active_layers``.  Returns ν, κ_s, γ (N+1, M) and the boundary-layer depth (M,).  ``ts`` = (T, S, eos) with a
+        nonlinear EOS: T and S are merged as b and passed to ``kpp_column`` (class docstring).
 
         Why: CVMix takes every layer centre as a trial depth and every layer's T, S, u, v as its own value
         (``kpp_cvmix.kpp_column``), so one 1e-10 m layer of slightly denser advected water inside the mixed layer
@@ -821,10 +895,13 @@ class KPPClosure(Closure):
                 lo = np.take_along_axis(xc, kc, axis=0)
                 hi = np.take_along_axis(xc, np.minimum(kc + 1, c), axis=0)
                 return np.where(kf == 0.0, lo, np.where(kf == 1.0, hi, (1.0 - kf) * lo + kf * hi))
+            eos_kw = {} if ts is None else dict(T=merge(h_s * ts[0][:, cols]) / hc, S=merge(h_s * ts[1][:, cols]) / hc,
+                                                eos=ts[2], rho0=self.rho0, g=self.g)
             r = kpp_column(hc, zc, merge(h_s * u[:, cols]) / hc, merge(h_s * v[:, cols]) / hc,
                            merge(h_s * b[:, cols]) / hc, bns[cols], us[cols],
                            None if frac is None else np.take_along_axis(frac[:, cols], first, axis=0),
-                           None if f is None else f[cols], self.params, bflux_sw=None if bsw is None else bsw[cols])
+                           None if f is None else f[cols], self.params, bflux_sw=None if bsw is None else bsw[cols],
+                           **eos_kw)
             ka[:, cols], ks[:, cols], gm[:, cols] = scatter(r.kappa_m), scatter(r.kappa_s), scatter(r.nonlocal_)
             ob[cols] = r.obl_depth
         return ka, ks, gm, ob
@@ -937,6 +1014,11 @@ class ShearAddedClosure(Closure):
     'none' base (no ν: no implicit solve) or a constant base with kv = 0 (no tracer solve) this shortcut switches
     the whole domain between no solve and the implicit solve whenever κ_shear becomes zero or non-zero anywhere;
     the two differ only at round-off level, and the switch is what keeps zero shear = base bit for bit.
+
+    Nonlinear EOS (``update(..., dens=...)``, TEOS-10 in the 3-D core, task 6; spec goal C): the column buoyancy is
+    MOM6's locally referenced one (jumps dbuoy_dT ΔT + dbuoy_dS ΔS at the interface pressure of the merged column,
+    MOM_kappa_shear.F90:1128-1136; ``kappa_shear_columns`` with T, S, module docstring of
+    ``physics.mixing.kappa_shear``), so the initial N² is MOM6's; ``dens`` is passed on to the base.
     """
     stateful = True
     update_phase = "tracers"
@@ -1045,15 +1127,16 @@ class ShearAddedClosure(Closure):
         return nb[0] + su, nb[1] + sv
 
     def update(self, u: np.ndarray, v: np.ndarray, h: np.ndarray, rho: np.ndarray | None,
-               ustar2_sfc: np.ndarray | None, ustar2_bot: np.ndarray, bflux: dict | None = None) -> None:
+               ustar2_sfc: np.ndarray | None, ustar2_bot: np.ndarray, bflux: dict | None = None,
+               dens: DensityContext | None = None) -> None:
         """
         The base's update, then κ_shear of the wet columns (``kappa_shear_columns``) and ν_shear = Pr κ_shear.
 
         u, v : (N, ny, nx) velocities at the cell centres [m s⁻¹];  h : (N, ny, nx) layer thicknesses [m], zero in
-        dry and land columns;  rho : (N, ny, nx) layer density [kg m⁻³] (None: κ_shear = 0);  the rest goes to
-        the base.
+        dry and land columns;  rho : (N, ny, nx) layer density [kg m⁻³] (None: κ_shear = 0);  dens : nonlinear EOS
+        context (class docstring);  the rest goes to the base.
         """
-        self.base.update(u, v, h, rho, ustar2_sfc, ustar2_bot, bflux=bflux)
+        self.base.update(u, v, h, rho, ustar2_sfc, ustar2_bot, bflux=bflux, dens=dens)
         n = self.n
         m = self.kd.shape[1]
         hh = np.asarray(h, float).reshape(n, m)
@@ -1065,9 +1148,14 @@ class ShearAddedClosure(Closure):
             b = -self.g * (np.asarray(rho, float).reshape(n, m)[:, wet] - self.rho0) / self.rho0
             uw = np.asarray(u, float).reshape(n, m)[:, wet]
             vw = np.asarray(v, float).reshape(n, m)[:, wet]
+            eos_kw = {}
+            if nonlinear(dens):                                        # locally referenced buoyancy (class docstring)
+                eos_kw = dict(T=np.asarray(dens.T, float).reshape(n, m)[:, wet],
+                              S=np.asarray(dens.S, float).reshape(n, m)[:, wet], eos=dens.eos, rho0=self.rho0,
+                              g=self.g)
             numba.set_num_threads(threads._THREADS[0])
             kappa, _ = kappa_shear_columns(uw, vw, b, dz, self.f2[wet], self.dt, self.kappa0(),
-                                           thin_layer_threshold(dz), self.params)
+                                           thin_layer_threshold(dz), self.params, **eos_kw)
             kd[:, wet] = kappa
         kd[0] = 0.0                                                    # no flux through the bed or the surface
         kd[n] = 0.0
@@ -1262,15 +1350,17 @@ class BBLAddedClosure(Closure):
 
     def update(self, u: np.ndarray, v: np.ndarray, h: np.ndarray, rho: np.ndarray | None,
                ustar2_sfc: np.ndarray | None, ustar2_bot: np.ndarray, bflux: dict | None = None,
-               bbl_energy: np.ndarray | None = None) -> None:
+               bbl_energy: np.ndarray | None = None, dens: DensityContext | None = None) -> None:
         """
         The wrapped closure's update, then Kd_BBL of the wet columns (``lotw_bbl_columns``).
 
         u, v : (N, ny, nx) velocities at the cell centres [m s⁻¹] (to the wrapped closure);  h : (N, ny, nx) layer
         thicknesses [m], zero in dry and land columns;  rho : (N, ny, nx) layer density [kg m⁻³] (None: Kd_BBL = 0);
-        ustar2_bot : (ny, nx) |τ_b|/ρ₀ [m² s⁻²];  bbl_energy : (ny, nx) drag work E [m³ s⁻³] (None: 0).
+        ustar2_bot : (ny, nx) |τ_b|/ρ₀ [m² s⁻²];  bbl_energy : (ny, nx) drag work E [m³ s⁻³] (None: 0);
+        dens : nonlinear EOS context (``Closure.update``): N² is then MOM6's locally referenced N² of the merged T, S
+        (``lotw_bbl_columns`` with T, S; spec goal C), passed on to the wrapped closure too.
         """
-        self.base.update(u, v, h, rho, ustar2_sfc, ustar2_bot, bflux=bflux)
+        self.base.update(u, v, h, rho, ustar2_sfc, ustar2_bot, bflux=bflux, dens=dens)
         n = self.n
         m = self.kd.shape[1]
         energy = np.zeros(m) if bbl_energy is None else np.asarray(bbl_energy, float).reshape(m)
@@ -1283,10 +1373,14 @@ class BBLAddedClosure(Closure):
             p = self.bbl_params
             ustar = np.sqrt(np.asarray(ustar2_bot, float).reshape(m))
             tke = p.bbl_effic * energy                                 # TKE_col = BBL_EFFIC · E (SD:1709)
+            eos_kw = {}
+            if nonlinear(dens):                                        # locally referenced N² (TEOS-10 task 6)
+                eos_kw = dict(T=np.asarray(dens.T, float).reshape(n, m), S=np.asarray(dens.S, float).reshape(n, m),
+                              eos=dens.eos)
             numba.set_num_threads(threads._THREADS[0])
             # N² from the merged densities inside (final review I1; = buoyancy_frequency2 without thin layers)
             kd = lotw_bbl_columns(dz, np.asarray(rho, float).reshape(n, m), ustar, self.absf, tke,
-                                  thin_layer_threshold(dz), p, rho0=self.rho0, g=self.g)
+                                  thin_layer_threshold(dz), p, rho0=self.rho0, g=self.g, **eos_kw)
         kd[0] = 0.0                                                    # no flux through the bed or the surface
         kd[n] = 0.0
         self.kd = kd

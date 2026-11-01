@@ -85,6 +85,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from physics.eos.stratification import interface_pressure, kpp_delta_rho
+
 # Newton iteration of cvmix_math_cubic_root_find (cvmix_math.F90:46-47)
 NEWTON_TOL: float = 1.0e-12
 NEWTON_MAX_ITERS: int = 100
@@ -756,6 +758,11 @@ def kpp_column(
     params: KPPParams | None = None,
     *,
     bflux_sw: np.ndarray | None = None,
+    T: np.ndarray | None = None,
+    S: np.ndarray | None = None,
+    eos=None,
+    rho0: float | None = None,
+    g: float = 9.81,
 ) -> KPPResult:
     """
     KPP on M independent columns in the model orientation (MOM6's
@@ -786,6 +793,15 @@ def kpp_column(
         B_f(d) = B_ns + B_sw (1 − F_sw(d)), F_sw(d) at the bottom of the layer
         (MOM6 ``buoyFlux(1) − buoyFlux(k+1)``, MOM_CVMix_KPP.F90:1383;
         MOM_forcing_type.F90:1130-1148).
+    T, S, eos, rho0, g : nonlinear EOS (TEOS-10 in the 3-D core, task 6), all
+        or none.  T, S (N, M) layer temperature and salinity in the EOS
+        convention, ``eos`` a nonlinear EOS component, ρ₀ [kg m⁻³] (None:
+        ``eos.rho0``), g [m s⁻²].  B_r − B(d) and N² are then MOM6's density
+        differences at a common pressure, the pressure of the top interface of
+        layer k, p = Σ g ρ₀ h from the surface (``MOM_CVMix_KPP.F90:1396-1436``;
+        ``physics.eos.stratification.kpp_delta_rho``), with T, S of the surface
+        layer averaged as b is; ``b`` is not used.  Without them (or with a
+        linear ``eos``), the differences of ``b`` as before.
 
     Returns
     -------
@@ -851,9 +867,24 @@ def kpp_column(
 
     # N at interfaces, surface-down: 0 at the surface and the bed (MOM_CVMix_KPP.F90:1432-1442)
     n_if = np.zeros((n + 1, m))
-    if n > 1:
-        n2 = (bs_c[:-1] - bs_c[1:]) / (0.5 * (dz[:-1] + dz[1:]) + H_SUBROUNDOFF)
-        n_if[1:n] = np.sqrt(np.maximum(n2, 0.0))
+    if eos is None or eos.linear:
+        if n > 1:
+            n2 = (bs_c[:-1] - bs_c[1:]) / (0.5 * (dz[:-1] + dz[1:]) + H_SUBROUNDOFF)
+            n_if[1:n] = np.sqrt(np.maximum(n2, 0.0))
+    else:
+        # nonlinear EOS: density of both parts at the top-interface pressure of layer k (MOM_CVMix_KPP.F90:1396-1436)
+        r0 = eos.rho0 if rho0 is None else float(rho0)
+        go = g / r0                                                    # MOM6 GoRho
+        T = np.asarray(T, dtype=float)
+        S = np.asarray(S, dtype=float)
+        t_sl = _surface_layer_mean(T[::-1], dz, d_top_raw, sl)[::-1]
+        s_sl = _surface_layer_mean(S[::-1], dz, d_top_raw, sl)[::-1]
+        p_top = interface_pressure(h, g, r0)[1:]                       # pRef of MOM_CVMix_KPP.F90:1408, bed first
+        drho_sl, drho_up = kpp_delta_rho(T, S, t_sl, s_sl, p_top, eos)
+        delta_b = (go * drho_sl)[::-1]                                 # deltaBuoy, :1430
+        if n > 1:                                                      # N2_1d, :1435-1436
+            n2 = (go * drho_up[::-1]) / (0.5 * (dz[:-1] + dz[1:]) + H_SUBROUNDOFF)
+            n_if[1:n] = np.sqrt(np.maximum(n2, 0.0))
 
     # B_f(d) of each trial depth: surface flux minus SW still below the layer (MOM_CVMix_KPP.F90:1383)
     bf_trial = b_total[None, :] - bsw_iface[1:]

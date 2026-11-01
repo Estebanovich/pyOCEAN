@@ -14,7 +14,13 @@ Usage (called by ``build_reference.sh`` after the driver is built)::
     python eos_columns.py pgf ~/pyOCEAN_refs/build/column/pgf_driver tests/data/mom6_pgf_plm_reference.npz
 
 The second form (task 3) writes the rows of column pairs of the nonlinear finite-volume pressure
-gradient (``pgf_cases``) and the reference ``tests/data/mom6_pgf_plm_reference.npz``.
+gradient (``pgf_cases``) and the reference ``tests/data/mom6_pgf_plm_reference.npz``.  The third
+form (task 6)::
+
+    python eos_columns.py n2 ~/pyOCEAN_refs/build/column/eos_driver tests/data/mom6_n2_reference.npz
+
+writes the columns of ``n2_cases`` (every column of ``pgf_cases`` plus two thermobaric columns) and
+the locally referenced N² of MOM6's kappa_shear and the KPP density differences (``eos_driver n2``).
 
 The npz holds the inputs ``T, S, p``, ``rho_ref`` (1035 kg m⁻³) and, for
 ``w`` = WRIGHT_FULL and ``r`` = ROQUET_RHO, ``{w,r}_rho`` [kg m⁻³], ``{w,r}_rho_anom``
@@ -262,8 +268,108 @@ def build_pgf_reference(driver: Path, npz: Path) -> None:
                         mass_weight=np.array(MW_MODES), **inputs, **res)
 
 
+# ---------------------------------------------------------------------------------------------
+# Locally referenced N² and KPP density differences of the closures (task 6)
+# ---------------------------------------------------------------------------------------------
+
+# Thermobaric pair (spec criterion 5b, review focus 3): cold and fresh water over warm and salty water,
+# stable at 100 m and unstable at 4000 m in the locally referenced sense with both EOS (∂²ρ/∂T∂p < 0:
+# the thermal expansion grows with pressure).  The 200 m layers make the in-situ density difference of
+# the deep pair (each layer at its own centre pressure) stable-looking, the opposite sign.
+THERMOBARIC_COLD = (0.0, 34.5)      # T [°C], S [PSU or g/kg] of the upper layer
+THERMOBARIC_WARM = (4.0, 34.95)     # of the lower layer
+
+
+def thermobaric_columns() -> list[dict]:
+    """The two thermobaric columns, bed first: interface at 100 m (``thermo_100``) and at 4000 m
+    (``thermo_4000``); ``k_if`` is the index of the interior interface between the two water masses."""
+    (tc, sc), (tw, sw) = THERMOBARIC_COLD, THERMOBARIC_WARM
+    a = dict(name="thermo_100", h=np.array([200.0, 100.0]), T=np.array([tw, tc]), S=np.array([sw, sc]), k_if=0)
+    b = dict(name="thermo_4000", h=np.array([200.0, 200.0, 3800.0]), T=np.array([tw, tc, tc]),
+             S=np.array([sw, sc, sc]), k_if=0)
+    for c in (a, b):
+        c.update(rho0=1035.0, g=9.81)
+    return [a, b]
+
+
+def _surface_layer_means(h: np.ndarray, x: np.ndarray) -> np.ndarray:
+    """A surface-layer value per layer for the KPP pairs: the thickness-weighted mean of the layers from the
+    surface down to layer k (bed first in and out); any values serve, the comparison is of the EOS calls."""
+    hs, xs = h[::-1], x[::-1]
+    return (np.cumsum(hs * xs) / np.cumsum(hs))[::-1]
+
+
+def n2_cases() -> list[dict]:
+    """Columns of the N² comparison, bed first: every column of ``pgf_cases`` (z* with partial cells and
+    1e-10 m levels, σ, 1 mm / 1e-10 m layers, bottom step) and ``thermobaric_columns``; dicts with ``name``,
+    ``h``, ``T``, ``S``, ``T_sl``, ``S_sl`` (nz,), ``rho0`` [kg m⁻³] and ``g`` [m s⁻²]."""
+    cols = []
+    for c in pgf_cases():
+        for i in range(c["h"].shape[1]):
+            cols.append(dict(name=f"{c['name']}_{i}", h=c["h"][:, i].copy(), T=c["T"][:, i].copy(),
+                             S=c["S"][:, i].copy(), rho0=c["rho0"], g=c["g"]))
+    cols += thermobaric_columns()
+    for c in cols:
+        c["T_sl"] = _surface_layer_means(c["h"], c["T"])
+        c["S_sl"] = _surface_layer_means(c["h"], c["S"])
+    return cols
+
+
+def write_n2_cases(path: Path, cols: list[dict]) -> None:
+    """Input of ``eos_driver n2`` (surface first; 17 significant digits)."""
+    with open(path, "w") as f:
+        f.write(f"{len(cols)}\n")
+        for c in cols:
+            nz = c["h"].size
+            f.write(f"{nz} {c['rho0']:.17e} {c['g']:.17e}\n")
+            for k in range(nz - 1, -1, -1):
+                f.write(" ".join(f"{c[n][k]:.17e}" for n in ("h", "T", "S", "T_sl", "S_sl")) + "\n")
+
+
+def read_n2_results(path: Path, cols: list[dict]) -> dict[str, np.ndarray]:
+    """
+    Parse ``eos_driver n2`` output, flipped to bed first: for ``e`` in EOS_TAGS and column n,
+    ``c{n}_{e}_n2`` (nz−1, entry k = interface between layers k and k+1), ``c{n}_{e}_dbdT``,
+    ``c{n}_{e}_dbdS``, ``c{n}_{e}_p_if`` (same), ``c{n}_{e}_drho_sl`` (nz), ``c{n}_{e}_drho_up`` (nz−1, entry
+    k = the top interface of layer k) and ``c{n}_{e}_p_top`` (nz).
+    """
+    lines = iter(Path(path).read_text().split("\n"))
+    assert int(next(lines)) == len(cols)
+    out = {}
+    for tag in EOS_TAGS:
+        for n, c in enumerate(cols):
+            nz = c["h"].size
+            a = np.array([next(lines).split() for _ in range(nz - 1)], float).reshape(nz - 1, 4)[::-1]
+            for j, name in enumerate(("n2", "dbdT", "dbdS", "p_if")):
+                out[f"c{n}_{tag}_{name}"] = a[:, j].copy()
+            b = np.array([next(lines).split() for _ in range(nz)], float)[::-1]
+            out[f"c{n}_{tag}_drho_sl"] = b[:, 0].copy()
+            out[f"c{n}_{tag}_drho_up"] = b[:-1, 1].copy()          # MOM6 k = 1 (surface) pairs the layer with itself
+            out[f"c{n}_{tag}_p_top"] = b[:, 2].copy()
+    return out
+
+
+def build_n2_reference(driver: Path, npz: Path) -> None:
+    """Run ``eos_driver n2`` on ``n2_cases`` and write the reference npz."""
+    cols = n2_cases()
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        write_n2_cases(tmp / "in.txt", cols)
+        subprocess.run([str(driver), "n2", str(tmp / "in.txt"), str(tmp / "out.txt")], check=True,
+                       capture_output=True)
+        res = read_n2_results(tmp / "out.txt", cols)
+    inputs = {}
+    for n, c in enumerate(cols):
+        for k in ("h", "T", "S", "T_sl", "S_sl"):
+            inputs[f"c{n}_{k}"] = c[k]
+        inputs[f"c{n}_par"] = np.array([c["rho0"], c["g"]])
+    np.savez_compressed(npz, names=np.array([c["name"] for c in cols]), eos=np.array(EOS_TAGS), **inputs, **res)
+
+
 if __name__ == "__main__":
-    if sys.argv[1] == "pgf":
+    if sys.argv[1] == "n2":
+        build_n2_reference(Path(sys.argv[2]), Path(sys.argv[3]))
+    elif sys.argv[1] == "pgf":
         build_pgf_reference(Path(sys.argv[2]), Path(sys.argv[3]))
     else:
         build_reference(Path(sys.argv[1]), Path(sys.argv[2]))

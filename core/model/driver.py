@@ -60,6 +60,7 @@ from core.components.variance_budget import VarianceBudget
 from core.components.momentum import sum_terms
 from core.dynamics.sigma_wd import vertical_implicit
 from core.model import threads
+from physics.eos.stratification import DensityContext
 from physics.mixing.gls import KT_MIN
 from core.model.contract import Issue, raise_issues
 from core.vertical.ale import (DZ_FLOOR, blend_thin_layers, face_fractions, viscous_face_thickness,
@@ -354,6 +355,23 @@ class Driver:
         above = np.cumsum(h[::-1], axis=0)[::-1]                      # Σ_{j ≥ k} h_j: column top to the bed of k
         return m._eos.density(T, S, m.g * m.rho0 * (above - 0.5 * h))
 
+    def _closure_density(self, T: np.ndarray, S: np.ndarray | None, h) -> tuple[np.ndarray, DensityContext | None]:
+        """
+        Layer density and the nonlinear-EOS context of the closures (TEOS-10 in 3-D, task 6; spec goal C).  Linear
+        EOS: (``_layer_density``, None), so the closures run their linear expressions bit for bit.  Nonlinear EOS:
+        ρ(T, S, p_layer) at the layer centres and a ``DensityContext`` with T, S, p_layer, ρ, from which the closures
+        build MOM6's locally referenced N² and KPP density differences.  ``h`` as in ``_layer_density``.
+        """
+        m = self.m
+        if m._eos.linear:
+            return self._layer_density(T, S, h), None
+        h = h() if callable(h) else h
+        h = np.nan_to_num(np.asarray(h, float))
+        above = np.cumsum(h[::-1], axis=0)[::-1]
+        p_layer = m.g * m.rho0 * (above - 0.5 * h)
+        rho = m._eos.density(T, S, p_layer)
+        return rho, DensityContext(m._eos, T, S, p_layer, rho)
+
     def _sigma_thickness(self, eta: np.ndarray) -> np.ndarray:
         """σ-layer thicknesses D Δσ_k [m] at η, D = max(H + η, d_min) (as the σ pressure gradient)."""
         m = self.m
@@ -378,7 +396,7 @@ class Driver:
         _, h = self._wet_thickness(ctx, V1)
         sal = m.salinity
         S = C[lay["S"]] if sal else None
-        rho = self._layer_density(C[0], S, h)
+        rho, dens = self._closure_density(C[0], S, h)
         uc = vc = None                                                 # BBL mixing on a constant closure
         if cl.reads_velocity:
             u, v = ctx.u_new, ctx.v_new
@@ -393,6 +411,8 @@ class Driver:
         kw = {}
         if getattr(m, "bbl_mixing", None) is not None:                 # drag-driven BBL mixing (BBLAddedClosure)
             kw["bbl_energy"] = ctx.bbl_energy
+        if dens is not None:
+            kw["dens"] = dens
         cl.update(uc, vc, h, rho, self._surface_ustar2(ctx), ctx.ustar2_bot, bflux=bflux, **kw)
         ctx.set(closure=cl.state(), kpp_h=h)
 
@@ -463,9 +483,10 @@ class Driver:
     def _sigma_implicit_and_free_surface(self, ctx: StepContext) -> None:
         m, st = self.m, ctx.st
         cl = m._closure                                                # turbulence closure (N3 task 1)
-        rho = None
+        rho = dens = None
         if m.core.gls_stratified:                                      # N² from ρ(Tⁿ, Sⁿ) (N2a task 8c)
-            rho = self._layer_density(st.T, st.S if m.salinity else None, lambda: self._sigma_thickness(st.eta))
+            rho, dens = self._closure_density(st.T, st.S if m.salinity else None,
+                                              lambda: self._sigma_thickness(st.eta))
             cl.gls.kt_min = m.kv if m.kv > 0 else KT_MIN               # kv set after construction reaches the floor
         nu = cl.viscosity(st)                                          # ν of the current closure state (CROCO order)
         nu_u, nu_v = (None, None) if nu is None else nu
@@ -482,6 +503,8 @@ class Driver:
                 hu = np.maximum(np.nan_to_num(Du, nan=m.fs.d_min), m.fs.d_min)[None] * ds
                 hv = np.maximum(np.nan_to_num(Dv, nan=m.fs.d_min), m.fs.d_min)[None] * ds
                 kw["shear_work"] = self._shear_work(ctx, u_new, v_new, nu_u, nu_v, hu, hv)
+            if dens is not None:                                       # nonlinear EOS (TEOS-10 task 6)
+                kw["dens"] = dens
             cl.update(rho=rho, **m.core.closure_forcing(eta_new, u_new, v_new, ctx.tu, ctx.tv, ustar2_bot=ustar2_bot),
                       **kw)
         ctx.set(eta_new=eta_new, u_new=u_new, v_new=v_new, fluxes=fluxes, closure=cl.state(), ustar2_bot=ustar2_bot)
@@ -607,9 +630,9 @@ class Driver:
             if "hu_mean" not in visc:
                 visc.update(hu_mean=hu, hv_mean=hv)
         cl = m._closure
-        rho = None
+        rho = dens = None
         if cl.stateful and m.core.gls_stratified:                      # N² from ρ(Tⁿ, Sⁿ), as σ (N3 task 5)
-            rho = self._layer_density(st.T, st.S if m.salinity else None, st.h)
+            rho, dens = self._closure_density(st.T, st.S if m.salinity else None, st.h)
             cl.gls.kt_min = m.kv if m.kv > 0 else KT_MIN
         nu = cl.viscosity(st)                                          # None for the constant closures of ALE
         nu_u, nu_v = (None, None) if nu is None else nu
@@ -624,6 +647,8 @@ class Driver:
             kw = {}
             if cl.production == "energy":                              # the viscous solve's own face thickness
                 kw["shear_work"] = self._shear_work(ctx, u_new, v_new, nu_u, nu_v, visc["hu"], visc["hv"])
+            if dens is not None:                                       # nonlinear EOS (TEOS-10 task 6)
+                kw["dens"] = dens
             cl.update(**self._ale_closure_forcing(ctx, u_new, v_new, ustar2_bot), rho=rho, **kw)
             ctx.set(closure=cl.state())
 

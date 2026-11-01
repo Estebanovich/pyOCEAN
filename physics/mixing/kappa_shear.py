@@ -110,6 +110,20 @@ Conventions of this module
   I_Ld2, the N2/S2 arrays that ``calculate_projected_state`` updates only in its
   active range, and loop indices left after ``exit``) are kept with the same
   persistence; arrays that MOM6 leaves uninitialised start at zero.
+
+Nonlinear EOS (TEOS-10 in the 3-D core, task 6)
+-----------------------------------------------
+MOM6 carries T and S through ``calculate_projected_state`` and forms N² from the fixed interface coefficients
+dbuoy_dT, dbuoy_dS of the locally referenced density (MOM_kappa_shear.F90:1128-1136, 1496-1500).  This port carries
+one buoyancy b (exact for the linear EOS, whose coefficients are constant).  With a nonlinear EOS the column drivers
+(``kappa_shear_columns`` and its oracle, ``eos`` given) build a **locally referenced buoyancy** of the merged
+column instead of −g(ρ − ρ₀)/ρ₀: b_0 = 0, b_q = b_q−1 + Δb_q with Δb_q MOM6's jump dbuoy_dT ΔT + dbuoy_dS ΔS at the
+merged interface (``physics.eos.stratification.buoyancy_jump_elem``; merged T, S = Σ h·x / Σ h, p = Σ g ρ₀ hc
+from the surface; ``_local_buoyancy``).  The initial N² of the column (the dt = 0 projection) is then MOM6's to
+the round-off of the running sum; inside the sub-stepping the projected Δb of a diffused b differs from
+dbuoy_dT ΔT′ + dbuoy_dS ΔS′ of the separately diffused T′, S′ by the change of the coefficients between interfaces
+times the change of the gradients (second order; class (c), a port of the two-tracer projection is left for a
+later task).
 """
 
 from __future__ import annotations
@@ -118,6 +132,8 @@ from dataclasses import dataclass, fields
 
 import numpy as np
 from numba import njit, prange
+
+from physics.eos.stratification import buoyancy_jump_elem, eos_code
 
 # A negligible fractional change in TKE [nondim] (MOM_kappa_shear.F90:1605).
 ROUNDOFF: float = 1.0e-16
@@ -993,7 +1009,9 @@ def _merge_map(dzc: np.ndarray, act: np.ndarray) -> tuple[np.ndarray, np.ndarray
 
 def kappa_shear_columns_numpy(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: np.ndarray, f2: np.ndarray,
                               dt: float, kappa0: float, h_thin: np.ndarray, p: JacksonParams,
-                              h_massless: float = H_MASSLESS) -> tuple[np.ndarray, np.ndarray]:
+                              h_massless: float = H_MASSLESS, T: np.ndarray | None = None,
+                              S: np.ndarray | None = None, eos=None, rho0: float = 1000.0,
+                              g: float = 9.81) -> tuple[np.ndarray, np.ndarray]:
     """
     Jackson et al. (2008) κ and Q of M columns with thin-layer merging — the **NumPy oracle** of
     ``kappa_shear_columns`` (thin-layer merge of the section header, then ``kappa_shear_column`` per column).
@@ -1005,12 +1023,17 @@ def kappa_shear_columns_numpy(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: n
     f2 : (M,) f² [s⁻²]; dt : averaging step [s]; kappa0 : κ0 [m² s⁻¹] (``kappa_shear_column``).
     h_thin : (M,) thin-layer threshold [m] (``core.components.closure.thin_layer_threshold``).
     p : JacksonParams; h_massless : [m] dry-column limit and least total of a surface thin cluster.
+    T, S, eos, rho0, g : nonlinear EOS (module docstring): T, S (N, M) in the EOS convention, ``eos`` a nonlinear
+        EOS component, ρ₀ [kg m⁻³] and g [m s⁻²] of the interface pressure and of g/ρ₀; ``b`` is then not used.
+        ``eos`` None (linear EOS): b as before.
 
     Returns
     -------
     kappa, tke : (N+1, M) Δt-averaged κ [m² s⁻¹] and Q [m² s⁻²] at the model interfaces (0 = bed).
     """
     from core.components.closure import active_layers     # lazy: closure imports this module (task 4)
+
+    code = 0 if eos is None else eos_code(eos)
 
     u, v, b, dz = (np.asarray(x, float) for x in (u, v, b, dz))
     f2 = np.asarray(f2, float)
@@ -1033,16 +1056,28 @@ def kappa_shear_columns_numpy(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: n
         hu = np.zeros(c)
         hv = np.zeros(c)
         hb = np.zeros(c)
+        ht = np.zeros(c)
+        hs = np.zeros(c)
         for k in range(n):
             h = dzc[k]
             hc[lay[k]] += h
             hu[lay[k]] += h * u[k, j]
             hv[lay[k]] += h * v[k, j]
-            hb[lay[k]] += h * b[k, j]
+            if code == 0:
+                hb[lay[k]] += h * b[k, j]
+            else:
+                ht[lay[k]] += h * T[k, j]
+                hs[lay[k]] += h * S[k, j]
         for q in range(c):
             hu[q] = hu[q] / hc[q]
             hv[q] = hv[q] / hc[q]
-            hb[q] = hb[q] / hc[q]
+            if code == 0:
+                hb[q] = hb[q] / hc[q]
+            else:
+                ht[q] = ht[q] / hc[q]
+                hs[q] = hs[q] / hc[q]
+        if code != 0:
+            _local_buoyancy(ht, hs, hc, c, code, float(rho0), float(g), hb)
         kap_c, tke_c = kappa_shear_column(hu, hv, hb, hc, float(f2[j]), dt, kappa0, p)
         for i in range(n + 1):
             lo_k, hi_k = kap_c[kc[i]], kap_c[min(kc[i] + 1, c)]
@@ -1699,9 +1734,29 @@ def _kappa_shear_column_nb(u, v, b, dz, f2, dt, kappa0, prm, kappa_out_m, tke_ou
             tke_out_m[i, j] = (1.0 - f) * lo_q + f * hi_q
 
 
+@njit(cache=True)
+def _local_buoyancy(ht, hs, hc, c, code, rho0, g, hb):
+    """
+    Locally referenced buoyancy hb (c,) [m s⁻²] of a merged column (module docstring) from its T, S (c,) and
+    thicknesses hc (c,) [m], merged layer 0 at the bed: hb_0 = 0, hb_q = hb_q−1 + Δb at the interface between q−1
+    and q (``buoyancy_jump_elem``), at the pressure Σ_{q' ≥ q} g ρ₀ hc_q' [Pa] summed from the surface.
+    """
+    gr0 = g * rho0
+    g_rho0 = g / rho0
+    pint = np.zeros(c)
+    pq = 0.0
+    for q in range(c - 1, 0, -1):
+        pq = pq + gr0 * hc[q]
+        pint[q] = pq
+    hb[0] = 0.0
+    for q in range(1, c):
+        hb[q] = hb[q - 1] + buoyancy_jump_elem(ht[q], hs[q], ht[q - 1], hs[q - 1], pint[q], code, g_rho0)
+
+
 @njit(cache=True, parallel=True)
-def _columns_nb(u, v, b, dz, f2, dt, kappa0, h_thin, prm, h_massless, kappa_out, tke_out):
-    """Thin-layer merge + ``_kappa_shear_column_nb`` of every column of dz (N, M), one column per thread task."""
+def _columns_nb(u, v, b, dz, f2, dt, kappa0, h_thin, prm, h_massless, kappa_out, tke_out, tem, sal, code, rho0, g):
+    """Thin-layer merge + ``_kappa_shear_column_nb`` of every column of dz (N, M), one column per thread task;
+    ``code`` > 0 (nonlinear EOS): the locally referenced buoyancy of ``tem``, ``sal`` (``_local_buoyancy``)."""
     n, mcol = dz.shape
     for j in prange(mcol):
         dry = 0.0
@@ -1768,27 +1823,42 @@ def _columns_nb(u, v, b, dz, f2, dt, kappa0, h_thin, prm, h_massless, kappa_out,
         hu = np.zeros(c)
         hv = np.zeros(c)
         hb = np.zeros(c)
+        ht = np.zeros(c)
+        hs = np.zeros(c)
         for k in range(n):
             h = dz[k, j]
             hc[lay[k]] += h
             hu[lay[k]] += h * u[k, j]
             hv[lay[k]] += h * v[k, j]
-            hb[lay[k]] += h * b[k, j]
+            if code == 0:
+                hb[lay[k]] += h * b[k, j]
+            else:
+                ht[lay[k]] += h * tem[k, j]
+                hs[lay[k]] += h * sal[k, j]
         for q in range(c):
             hu[q] = hu[q] / hc[q]
             hv[q] = hv[q] / hc[q]
-            hb[q] = hb[q] / hc[q]
+            if code == 0:
+                hb[q] = hb[q] / hc[q]
+            else:
+                ht[q] = ht[q] / hc[q]
+                hs[q] = hs[q] / hc[q]
+        if code != 0:
+            _local_buoyancy(ht, hs, hc, c, code, rho0, g, hb)
         _kappa_shear_column_nb(hu, hv, hb, hc, f2[j], dt, kappa0, prm, kappa_out, tke_out, j, kc, kf, c)
 
 
 def kappa_shear_columns(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: np.ndarray, f2: np.ndarray, dt: float,
                         kappa0: float, h_thin: np.ndarray, p: JacksonParams,
-                        h_massless: float = H_MASSLESS) -> tuple[np.ndarray, np.ndarray]:
+                        h_massless: float = H_MASSLESS, T: np.ndarray | None = None, S: np.ndarray | None = None,
+                        eos=None, rho0: float = 1000.0, g: float = 9.81) -> tuple[np.ndarray, np.ndarray]:
     """
     Jackson et al. (2008) κ [m² s⁻¹] and Q [m² s⁻²] of M columns with thin-layer merging, compiled (Numba, threads
     over the columns); bit for bit with ``kappa_shear_columns_numpy`` (same arguments and returns: u, v, b, dz
-    (N, M) with k = 0 at the bed, f2 and h_thin (M,), outputs (N+1, M) at the model interfaces).
+    (N, M) with k = 0 at the bed, f2 and h_thin (M,), outputs (N+1, M) at the model interfaces; T, S, eos, rho0, g
+    for a nonlinear EOS, module docstring).
     """
+    code = 0 if eos is None else eos_code(eos)
     if not kappa0 > 0.0:
         raise ValueError("kappa_shear_columns: kappa0 must be > 0 (MOM6 uses max(KD, 1e-7))")
     if not dt > 0.0:
@@ -1812,5 +1882,13 @@ def kappa_shear_columns(u: np.ndarray, v: np.ndarray, b: np.ndarray, dz: np.ndar
     h_thin = np.ascontiguousarray(np.broadcast_to(h_thin, (m,)))
     kappa = np.zeros((n + 1, m))
     tke = np.zeros((n + 1, m))
-    _columns_nb(u, v, b, dz, f2, float(dt), float(kappa0), h_thin, params_array(p), float(h_massless), kappa, tke)
+    if code:
+        tem, sal = (np.ascontiguousarray(x, dtype=float) for x in (T, S))
+        for name, arr in (("T", tem), ("S", sal)):
+            if arr.shape != dz.shape:
+                raise ValueError(f"kappa_shear_columns: {name} must have shape {dz.shape}, got {arr.shape}")
+    else:
+        tem = sal = np.zeros((1, 1))
+    _columns_nb(u, v, b, dz, f2, float(dt), float(kappa0), h_thin, params_array(p), float(h_massless), kappa, tke,
+                tem, sal, code, float(rho0), float(g))
     return kappa, tke

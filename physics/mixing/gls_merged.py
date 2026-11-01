@@ -16,6 +16,11 @@ for one column of c merged layers.  The NumPy path is kept as the oracle
 Equations: as ``physics.mixing.gls`` (Umlauf & Burchard 2003, eqs. 11–12; Canuto et al. 2001 A; Patankar split of
 B and of Burchard's 2002 P < 0; Galperin limit l ≤ 0.53 √(2k)/N).  Index order: layers k = 0 … N−1 from the bed,
 interfaces 0 … N (0 = bed), columns last: (N, M) and (N+1, M).
+
+Nonlinear EOS (TEOS-10 in the 3-D core, task 6): with ``eos_code`` > 0 the N² of the merged column is MOM6's
+locally referenced N² (``physics.eos.stratification.n2_iface_elem``; ``MOM_kappa_shear.F90:1128-1136, 1496-1500``)
+from the merged T and S (Σ h·x / Σ h) at the merged interface pressure p = Σ g ρ₀ hc from the surface; with
+``eos_code`` = 0 the layer density ``rho`` is used as before (unchanged arithmetic).
 """
 from __future__ import annotations
 
@@ -25,6 +30,7 @@ from numba import njit, prange
 from physics.mixing.gls import (BETA1, BETA2, BETA3M, BETA3P, E1, E2, E3, KAPPA, LIM_AM0, LIM_AM1, LIM_AM2, LIM_AM3,
                                 LIM_AM4, LIM_AM5, LIM_AM6, N2_FLOOR, RM, RN, RP, SF_D0, SF_D1, SF_D2, SF_D3, SF_D4,
                                 SF_D5, SF_N0, SF_N1, SF_N2, SF_NB0, SF_NB1, SF_NB2, SIG_K_INV, SIG_PSI_INV)
+from physics.eos.stratification import n2_iface_elem
 
 
 @njit(cache=True)
@@ -206,7 +212,7 @@ def _scatter(xc, kc, kf, c, out, j):
 @njit(cache=True, parallel=True)
 def merged_columns(dz, uc, vc, rho, us2s, us2b, work, tke, eps, akv, akt, h_thin, h_massless, dt, stratified,
                    energy, rho0, g, cm0, tke_min, psi_min, eps_min, nu_min, kt_min, galp, z0s_min, chk, z0_bed,
-                   alpha_n_min, o_tke, o_eps, o_akv, o_akt, o_n2, o_prod):
+                   alpha_n_min, o_tke, o_eps, o_akv, o_akt, o_n2, o_prod, tem, sal, eos_code):
     """
     GLS step of the columns of ``dz`` (N, M) [m] with thin layers (module docstring), one column per thread task.
 
@@ -218,6 +224,8 @@ def merged_columns(dz, uc, vc, rho, us2s, us2b, work, tke, eps, akv, akt, h_thin
     Outputs (N+1, M): o_tke, o_eps, o_akv, o_akt, o_n2 (N² of the merged column on the model interfaces, N2_FLOOR
     where c ≤ 1); o_prod (N−1, M) the P used (0 where c ≤ 1).  A column with no layer ≥ h_thin keeps its
     state; one with a single such layer goes to the floors (no interior interface).
+    tem, sal : (N, M) layer T and S in the EOS convention, read only for ``eos_code`` > 0 (1 WRIGHT_FULL, 2
+    ROQUET_RHO; module docstring); with 0 (linear EOS) N² comes from ``rho`` as before.
     """
     n, mcol = dz.shape
     for j in prange(mcol):
@@ -277,13 +285,19 @@ def merged_columns(dz, uc, vc, rho, us2s, us2b, work, tke, eps, akv, akt, h_thin
         hu = np.zeros(c)
         hv = np.zeros(c)
         hr = np.zeros(c)
+        ht = np.zeros(c)
+        hs = np.zeros(c)
         for k in range(n):
             h = dz[k, j]
             hc[lay[k]] += h
             hu[lay[k]] += h * uc[k, j]
             hv[lay[k]] += h * vc[k, j]
             if stratified:
-                hr[lay[k]] += h * rho[k, j]
+                if eos_code == 0:
+                    hr[lay[k]] += h * rho[k, j]
+                else:
+                    ht[lay[k]] += h * tem[k, j]
+                    hs[lay[k]] += h * sal[k, j]
         for q in range(c):
             hu[q] = hu[q] / hc[q]
             hv[q] = hv[q] / hc[q]
@@ -318,9 +332,19 @@ def merged_columns(dz, uc, vc, rho, us2s, us2b, work, tke, eps, akv, akt, h_thin
             tk[q], ep[q], av[q] = tke[first[q], j], eps[first[q], j], akv[first[q], j]
             at[q] = akt[first[q], j] if stratified else 0.0
         n2c = np.zeros(c - 1)
-        if stratified:
+        if stratified and eos_code == 0:
             for q in range(c - 1):
                 n2c[q] = (g / rho0) * (hr[q] / hc[q] - hr[q + 1] / hc[q + 1]) / (0.5 * (hc[q] + hc[q + 1]))
+        elif stratified:                                             # locally referenced N² (module docstring)
+            for q in range(c):
+                ht[q] = ht[q] / hc[q]
+                hs[q] = hs[q] / hc[q]
+            gr0 = g * rho0
+            pq = 0.0
+            for q in range(c - 1, 0, -1):                            # pq: pressure at the bottom of merged layer q
+                pq = pq + gr0 * hc[q]
+                n2c[q - 1] = n2_iface_elem(ht[q], hs[q], ht[q - 1], hs[q - 1], hc[q], hc[q - 1], pq, eos_code,
+                                           g / rho0)
         prod = np.zeros(c - 1)
         if energy:                                                   # energy split as the interpolation weights
             ec = np.zeros(c + 1)

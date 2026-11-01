@@ -361,6 +361,26 @@ specific-volume derivatives (`MOM_kappa_shear.F90:1137-1146`; KPP `:1431-1433`).
 NWA12 runs ePBL + Jackson kappa_shear + double diffusion, no KPP, no LOTW BBL
 (NWA12 doc `:1806, 1981, 1968, 1869, 1913`).
 
+**Spec decision 8 — bottom N² of the BBL (checked in task 6, 2026-10-31).** MOM6 builds `N2_int` in
+`find_N2` and, before `add_LOTW_BBL_diffusivity` sees it, overwrites the near-bed interfaces with a bulk
+value (`MOM_set_diffusivity.F90:1202-1258`): going up from the bed it sums the clipped jumps
+Δρ_K = max(∂ρ/∂T ΔT + ∂ρ/∂S ΔS, 0) and the thicknesses ½(h_{k−1} + h_k) until the layer-centre height
+passes `h_amp` (0 without tidal mixing), always adding one more interface ("at least one full layer",
+`:1219-1223`), so without tidal mixing N²_bot = (g/ρ₀)(Δρ_nz + Δρ_nz−1) / (½(h_nz + h_nz−1) + ½(h_nz−1 + h_nz−2))
+replaces N² at the **two lowest interior interfaces** (`:1236-1258`; the layer N² of the bottom layers too).
+pyOCEAN's port (`physics/mixing/bbl_mixing.py`) starts at `add_LOTW_BBL_diffusivity` and takes the local
+interface N² of the (merged) column; it does **not** apply the N²_bot overwrite.  The compiled-MOM6 comparison
+of the BBL task (`validation/mom6_column/bbl_driver.F90:85-91`) passes `N2_int` straight to
+`add_LOTW_BBL_diffusivity`, bypassing `find_N2`, so the 15-column agreement does not cover this step.
+**Class (c), numerical choice, not fixed** (spec: only class (a) is fixed here): the Kd formula and its energy
+limit are MOM6's; what differs is how N² near the bed is estimated (a local interface value against a
+two-interface bulk mean with negative jumps clipped).  Effects: (i) where the two lowest interfaces have
+different N², MOM6 spends the BBL energy against their mean; (ii) an unstable bottom interface gives MOM6
+Δρ = 0 (N² = Ω² with `use_omega`, the OM4 default, or the KD_MAX branch without it), and pyOCEAN, with
+max(N², N²_min) in the work term (`SD:1762`), the same Kd only when the mean of MOM6 is also ≤ N²_min.  Where it
+matters is a candidate for the BBL benchmarks (DOME, NWA12), not for this project; the nonlinear EOS changes
+nothing here (both use the locally referenced Δρ).
+
 ---
 
 ## 6. Surface buoyancy flux and SST
