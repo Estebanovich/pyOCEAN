@@ -40,6 +40,7 @@ from boundaries.obcs import OBData
 from core.state import ModelState
 from physics.eos.convert import to_model_ts
 from forcing.interp import fill_land, interp_time, to_model_grid, to_model_levels
+from forcing.rotation import to_grid
 
 _SIDES = {
     "west": ({"i_t": 0}, "u", {"i_u": 0}),
@@ -69,15 +70,113 @@ def prepare_ocean(ocean: xr.Dataset, h_grid: xr.Dataset, v_grid: xr.Dataset) -> 
     """
     filled = xr.Dataset({name: fill_land(da) for name, da in ocean.data_vars.items()},
                         attrs=dict(ocean.attrs))
+    rotate = "cos_t" in h_grid and "sin_t" in h_grid
+    if rotate and (("u" in filled) != ("v" in filled)):
+        raise ValueError("a grid with a rotation angle (cos_t, sin_t) needs both velocity components "
+                         "u (east) and v (north) to rotate them")
     groups = {"t": [n for n in ("temp", "salt", "ssh") if n in filled],
               "u": [n for n in ("u",) if n in filled],
               "v": [n for n in ("v",) if n in filled]}
     out = {}
     for point, names in groups.items():
         if names:
-            on_grid = to_model_grid(filled[names], h_grid, point=point)
+            if rotate and point in ("u", "v"):
+                on_grid = _rotated_velocity(filled[["u", "v"]], h_grid, point, names[0])
+            else:
+                on_grid = to_model_grid(filled[names], h_grid, point=point)
             out[point] = to_model_levels(on_grid, v_grid)
     return out
+
+
+def _face_angle(h_grid: xr.Dataset, point: str) -> tuple[np.ndarray, np.ndarray]:
+    """
+    cos α, sin α at the u (``point='u'``, shape (ny, nx+1)) or v (``'v'``, (ny+1, nx)) faces.
+
+    The angle lives at the T points (``cos_t``, ``sin_t``: counter-clockwise angle α of grid-x from east,
+    ``core.grid.supergrid``).  A face takes the mean of the two T points it separates (one-sided at the
+    outer faces) renormalised to unit length: (cos α, sin α) <- (c, s)/sqrt(c² + s²).  The data are rotated
+    **at the face** (east and north interpolated to the face lon/lat, then rotated with this angle), so the
+    normal velocity of the open boundary is the grid-normal component at the face where the model holds it.
+    """
+    c, s = h_grid["cos_t"].values, h_grid["sin_t"].values
+    axis = 1 if point == "u" else 0
+
+    def face(a: np.ndarray) -> np.ndarray:
+        both = np.concatenate([np.take(a, [0], axis=axis), a, np.take(a, [-1], axis=axis)], axis=axis)
+        n = a.shape[axis]
+        return 0.5 * (np.take(both, range(0, n + 1), axis=axis) + np.take(both, range(1, n + 2), axis=axis))
+
+    cf, sf = face(c), face(s)
+    norm = np.hypot(cf, sf)
+    return cf / norm, sf / norm
+
+
+def _rotated_velocity(vel: xr.Dataset, h_grid: xr.Dataset, point: str, name: str) -> xr.Dataset:
+    """East/north components at C-grid ``point`` rotated to the grid component ``name`` ('u' = x, 'v' = y)."""
+    on_grid = to_model_grid(vel, h_grid, point=point)
+    cos_a, sin_a = _face_angle(h_grid, point)
+    u_x, v_y = to_grid(on_grid["u"].values, on_grid["v"].values, cos_a, sin_a)
+    out = on_grid[[name]].copy()
+    out[name] = on_grid[name].copy(data=u_x if name == "u" else v_y)
+    out[name].attrs = dict(vel[name].attrs)
+    return out
+
+
+def prepare_ocean_source(ocean: xr.Dataset, h_grid: xr.Dataset) -> xr.Dataset:
+    """
+    Temperature and salinity on the model T points but on the **data's own z levels** (no vertical step).
+
+    For starts that remap from the source grid (``SigmaBaroclinic.initial_state(..., h_src=...)``, MOM6
+    Z_INIT_ALE_REMAPPING): ``source_layers`` turns this into layer means and thicknesses.
+    """
+    filled = xr.Dataset({n: fill_land(ocean[n]) for n in ("temp", "salt")}, attrs=dict(ocean.attrs))
+    return to_model_grid(filled, h_grid, point="t")
+
+
+def source_layers(src: xr.Dataset, H: np.ndarray, eta: np.ndarray, t: np.datetime64,
+                  ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Source layers of the data levels in each model column: thicknesses and means, bed first.
+
+    The interfaces are half-way between the data depths d_n (CEFI ``z_to_dz``, ``boundary.py:244-276``), the first at
+    the surface and the last extended to the bed; each is clipped at the bed depth H, so sum h_src = H + eta
+    in a wet column (eta added to the top layer):
+
+        h_n = min((d_n + d_{n+1})/2, H) - min((d_{n-1} + d_n)/2, H)   (d_{-1/2} = 0, d_{N+1/2} = inf),
+
+    and T_n, S_n are the data at d_n (levels below the bed of the source filled downward with the deepest valid
+    value).  Remapping these layers with a conservative scheme conserves the column integrals of T and S.
+
+    Parameters
+    ----------
+    src : xr.Dataset
+        ``prepare_ocean_source`` output (temp, salt on (time, depth, j_t, i_t)).
+    H : np.ndarray
+        Resting depth (ny, nx) [m], 0 on land.
+    eta : np.ndarray
+        Sea surface height (ny, nx) [m].
+    t : np.datetime64
+        Time of the start.
+
+    Returns
+    -------
+    h_src, T_src, S_src : np.ndarray
+        Each (N_src, ny, nx), bed first; zeros on land.
+    """
+    at_t = interp_time(src, t).sortby("depth")
+    d = at_t["depth"].values.astype(float)
+    mid = np.concatenate([[0.0], 0.5 * (d[:-1] + d[1:]), [np.inf]])
+    H = np.asarray(H, float)
+    wet = H > 0
+    h = np.minimum(mid[1:, None, None], H[None]) - np.minimum(mid[:-1, None, None], H[None])
+    h[0] += np.where(wet, np.asarray(eta, float), 0.0)
+    out = []
+    for name in ("temp", "salt"):
+        f = at_t[name].ffill("depth").transpose("depth", "j_t", "i_t").values
+        if np.isnan(f[h > 0]).any():
+            raise ValueError(f"{name} has no valid value in some wet column of the model")
+        out.append(np.where(h > 0, np.nan_to_num(f), 0.0)[::-1])
+    return h[::-1].copy(), out[0], out[1]
 
 
 def _mean_ssh(prepared: dict[str, xr.Dataset], t: np.datetime64) -> float:

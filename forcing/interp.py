@@ -175,6 +175,55 @@ def fill_land(da: xr.DataArray, lat_dim: str = "lat", lon_dim: str = "lon") -> x
     return work.copy(data=a).transpose(*order)
 
 
+def fill_nearest(da: xr.DataArray, lat_dim: str = "lat", lon_dim: str = "lon") -> xr.DataArray:
+    """
+    Replace NaNs by the value of the nearest valid node on the same horizontal slice.
+
+    This is what CEFI's ``fill_glorys_nn.sh`` does with ``cdo setmisstonn`` (nearest-neighbour fill of the
+    land and below-bed missing values of GLORYS on every level, CEFI-tools ``boundary/fill_glorys_nn.sh:32``):
+
+        ψ[j, i] ← ψ[j*, i*],   (j*, i*) = argmin over valid nodes of the great-circle distance,
+
+    evaluated as the chord length between unit vectors on the sphere (monotonic in the angle).  Valid values
+    are never modified; a slice without any valid node (a level below the whole domain) is left unchanged.
+    Slices with the same missing-value pattern (all times of a level) share one nearest-node search.
+
+    Parameters
+    ----------
+    da : xr.DataArray
+        Field with 1-D horizontal coordinates ``lat_dim`` [°N] and ``lon_dim`` [°E]; other dimensions
+        (time, depth) are treated slice by slice.
+    lat_dim, lon_dim : str
+        Names of the horizontal dimensions.
+
+    Returns
+    -------
+    xr.DataArray
+        New array with the same dims, coords and attrs.
+    """
+    from scipy.spatial import cKDTree
+
+    order = da.dims
+    work = da.transpose(..., lat_dim, lon_dim)
+    a = np.array(work.values, dtype=float, copy=True)
+    lat2, lon2 = np.meshgrid(np.deg2rad(work[lat_dim].values), np.deg2rad(work[lon_dim].values), indexing="ij")
+    xyz = np.stack([np.cos(lat2) * np.cos(lon2), np.cos(lat2) * np.sin(lon2), np.sin(lat2)], axis=-1)
+    flat = a.reshape((-1,) + a.shape[-2:])
+    cache: dict[bytes, np.ndarray | None] = {}
+    for n in range(flat.shape[0]):
+        bad = np.isnan(flat[n])
+        if not bad.any() or bad.all():
+            continue
+        key = bad.tobytes()
+        if key not in cache:
+            tree = cKDTree(xyz[~bad])
+            _, idx = tree.query(xyz[bad])
+            cache[key] = np.flatnonzero(~bad.ravel())[idx]
+        src = cache[key]
+        flat[n][bad] = flat[n].ravel()[src]
+    return work.copy(data=a).transpose(*order)
+
+
 # ---------------------------------------------------------------------------
 # Time interpolation
 # ---------------------------------------------------------------------------
