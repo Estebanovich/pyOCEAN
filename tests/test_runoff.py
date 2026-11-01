@@ -115,9 +115,45 @@ def test_total_discharge_conserved():
     r2 = glofas_mouths(shifted, g, DAY0 + np.timedelta64(12, "h"), DAY0 + np.timedelta64(36, "h"),
                        wet=np.isfinite(_bathy()))
     assert any(len(t) > 1 for t in r2.mouth_cells)
-    np.testing.assert_allclose(r2.Q.sum(axis=1), r2.mouth_Q.sum(axis=1), rtol=1e-14, atol=0)
+    np.testing.assert_allclose(r2.Q.sum(axis=1), r2.mouth_Q @ r2.mouth_inside, rtol=1e-14, atol=0)
+    assert (r.mouth_inside == 1.0).all()
     t = 0.37 * 86400.0
     np.testing.assert_allclose(r.discharge(t).sum(), np.interp(t, r.seconds, expect), rtol=1e-14)
+
+
+@pytest.mark.parametrize("n_sub", [4, 5])
+def test_pour_point_straddling_the_edge_injects_its_inside_fraction(n_sub):
+    """
+    Review F1: a pour-point cell centred on the southern grid edge (40.0 °N) injects only its sub-cells inside the
+    grid, as CEFI's conservative regrid on the full grid then cut.  The edge is parallel to the sub-cell rows, so
+    the inside fraction moves by whole rows: exactly 1/2 with n_sub = 4 (2 of 4 rows), 2/5 with n_sub = 5 (the
+    middle row is just outside: centre at 39.9999 °N), i.e. Q/2 to within 1/n_sub (1/n_sub² per sub-cell).
+    """
+    ds = _glofas().assign_coords(latitude=_glofas().latitude - 0.0251)
+    r = glofas_mouths(ds, _grid(), DAY0 + np.timedelta64(12, "h"), DAY0 + np.timedelta64(36, "h"),
+                      wet=np.isfinite(_bathy()), n_sub=n_sub)
+    k = int(np.argmin(np.abs(r.mouth_lat - 39.9999)))
+    assert abs(r.mouth_lat[k] - 39.9999) < 1e-9
+    expect = 0.5 if n_sub == 4 else 0.4
+    assert r.mouth_inside[k] == pytest.approx(expect, abs=1e-15)
+    assert abs(r.mouth_inside[k] - 0.5) <= 1.0 / n_sub
+    assert sum(r.mouth_cells[k].values()) == pytest.approx(expect, abs=1e-15)
+    W = np.zeros(r.cells.shape[0])
+    for c, f in r.mouth_cells[k].items():
+        W[c] = f
+    np.testing.assert_allclose(W.sum() * r.mouth_Q[:, k], expect * r.mouth_Q[:, k], rtol=1e-15)
+    np.testing.assert_allclose(r.Q.sum(axis=1), r.mouth_Q @ r.mouth_inside, rtol=1e-14)
+    assert any("straddle the grid edge" in line for line in r.report)
+
+
+def test_step_beyond_the_runoff_records_raises():
+    """Review F2: a model step whose tⁿ + Δt/2 is past the last GloFAS record raises, naming GloFAS and the dates."""
+    import dataclasses
+    r = _river()
+    m = _model(runoff=r)
+    st = dataclasses.replace(_start(m), time=float(r.seconds[-1]))
+    with pytest.raises(ValueError, match=r"GloFAS runoff covers 2017-06-01T12:00.*2017-06-06T12:00.*outside"):
+        m.step(st)
 
 
 def test_times_are_daily_midpoints_and_coverage_raises():
@@ -307,7 +343,7 @@ def test_real_glofas_on_the_nwa12_cut():
     jj, ii = np.nonzero((x > -75.5) & (x < -68.5) & (y > 36.5) & (y < 41.8))
     g = grid_from_supergrid(hg, depth, window=(ii.min(), ii.max() + 1, jj.min(), jj.max() + 1))
     r = glofas_mouths(_GLOFAS, g, "2017-05-01", "2017-09-01")
-    np.testing.assert_allclose(r.Q.sum(axis=1), r.mouth_Q.sum(axis=1), rtol=1e-13)
+    np.testing.assert_allclose(r.Q.sum(axis=1), r.mouth_Q @ r.mouth_inside, rtol=1e-13)
     qm = r.mouth_Q.mean(axis=0)
     big = {(round(float(la), 3), round(float(lo), 3)) for la, lo, q in zip(r.mouth_lat, r.mouth_lon, qm) if q > 300}
     assert {(40.875, -73.925), (41.275, -72.325), (39.875, -75.225)} <= big   # Hudson, Connecticut, Delaware
@@ -338,8 +374,8 @@ def test_real_glofas_with_ldd_on_the_nwa12_cut():
     lat, lon = ds.latitude.values, ds.longitude.values - 360.0
     t = np.isin(ds.valid_time.values - np.timedelta64(12, "h"), r.times)
     q = ds.avg_dis.values[t].astype(float)
-    expect = sum(q[:, int(np.argmin(np.abs(lat - la))), int(np.argmin(np.abs(lon - lo)))]
-                 for la, lo in zip(r.mouth_lat, r.mouth_lon))
+    expect = sum(f * q[:, int(np.argmin(np.abs(lat - la))), int(np.argmin(np.abs(lon - lo)))]
+                 for la, lo, f in zip(r.mouth_lat, r.mouth_lon, r.mouth_inside))
     np.testing.assert_allclose(r.Q.sum(axis=1), expect, rtol=1e-14, atol=0)
     qm = r.mouth_Q.mean(axis=0)
     big = {(round(float(la), 3), round(float(lo), 3)) for la, lo, qq in zip(r.mouth_lat, r.mouth_lon, qm) if qq > 300}

@@ -23,8 +23,11 @@ CEFI's rule and how it is followed here
    points ``lon_q``, ``lat_q``).  This is the area-weighted (conservative) split of a GloFAS cell among the model
    cells it overlaps, to O(1/n_sub) in the overlap fractions, but it conserves the discharge **exactly**: CEFI's
    flux conversion uses an approximate GloFAS cell area while ESMF uses its own, so CEFI's Σ runoff·area need not
-   equal Σ discharge (cefi_tools.md §5 remark b; class c).  Sub-cells outside the grid are dropped and the
-   discharge is shared among the sub-cells inside (a mouth wholly outside the grid is dropped and reported).
+   equal Σ discharge (cefi_tools.md §5 remark b; class c).  Sub-cells outside the grid are dropped with their
+   share (review F1): a pour point straddling the grid edge injects only the fraction of its n_sub² sub-cells
+   inside (granularity 1/n_sub²), as CEFI's conservative regrid on the full grid followed by the cut would
+   (the rest belongs to cells outside the cut); the dropped share is reported, and ``mouth_inside`` keeps the
+   fraction.  Σ_cells Q = Σ_m mouth_inside · mouth_Q exactly (a mouth wholly outside is dropped and reported).
 4. NWA12-specific edits of CEFI in full-grid indices (``:115-144, 165-171``: Pacific drainage, southern boundary
    row, Hudson Bay, Mississippi rescaling, Susquehanna → lower Chesapeake) are **not** applied: they belong to the
    full NWA12 grid (ruling R8: MOM6's runoff is built on the full grid then cut; Task 11 compares per-mouth totals).
@@ -115,8 +118,9 @@ class RiverInput:
     origin : datetime64[ns] — model time origin: model time t [s] is the date ``origin + t``.
     report : list[str] — how mouths were selected and moved (mouths dropped, mouths moved to a coast cell).
     mouth_lat, mouth_lon : (m,) — GloFAS pour-point centres [°N, °E in −180…180].
-    mouth_Q : (nt, m) — discharge of each pour point [m³ s⁻¹] (Σ_m mouth_Q = Σ_n Q to round-off).
+    mouth_Q : (nt, m) — discharge of each pour point [m³ s⁻¹] (Σ_m mouth_inside mouth_Q = Σ_n Q to round-off).
     mouth_cells : list of dict — per mouth, {cell index in ``cells``: fraction of its discharge}.
+    mouth_inside : (m,) — fraction of each pour-point cell inside the grid (sub-cell count / n_sub²).
     method : 'ldd' (CEFI's rule) or 'pits' (substitute without the drain-direction map).
     """
 
@@ -129,6 +133,7 @@ class RiverInput:
     mouth_lon: np.ndarray = field(default_factory=lambda: np.zeros(0))
     mouth_Q: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
     mouth_cells: list = field(default_factory=list)
+    mouth_inside: np.ndarray = field(default_factory=lambda: np.zeros(0))
     method: str = "user"
 
     def __post_init__(self) -> None:
@@ -342,7 +347,11 @@ def glofas_mouths(path_or_ds, grid: xr.Dataset, t0, t1, min_mean_discharge: floa
     ldd : GloFAS local drain direction on the same grid as the discharge: CEFI's exact pour points.  None: the
         substitute (pits of the discharge, :func:`pit_pour_points`).
     wet : (ny, nx) bool wet T cells (H > 0); default ``grid.mask_t``.
-    stamp : what the file's time stamps mark: 'end' (GloFAS v4 ``valid_time``), 'centre' or 'start' of the day.
+    stamp : what the file's time stamps mark: 'end' (GloFAS v4 ``valid_time``; value placed at stamp − 12 h),
+        'centre' (no shift) or 'start' of the day (stamp + 12 h).  **Warning:** GloFAS v3 ``dis24`` files (CEFI's
+        input) carry 00:00 stamps of a different convention; check which day each mean covers before choosing.
+        MOM6 ``data_override`` with interpolation 'none' (NWA12 ``data_table:21``) uses the stamp as is, so for
+        parity with an NWA12 runoff file use stamp='centre' (no shift) [verificar against the v3 file].
     max_inland_cells : substitute only, farthest pit from the sea [GloFAS cells].
     n_sub : sub-cells per side of a GloFAS cell for the conservative split.
 
@@ -427,11 +436,18 @@ def glofas_mouths(path_or_ds, grid: xr.Dataset, t0, t1, min_mean_discharge: floa
             continue
         keep[k] = True
         tgt, cnt = np.unique(nearest_coast[h], return_counts=True)
-        mouth_targets.append({int(c): float(n) / h.size for c, n in zip(tgt, cnt)})
+        mouth_targets.append({int(c): float(n) / home.shape[1] for c, n in zip(tgt, cnt)})
     n_out = int((~keep).sum())
     if n_out:
         report.append(f"dropped {n_out} pour points outside the model grid "
                       f"(total {float(q_mean[jg[~keep], ig[~keep]].sum()):.2f} m3/s)")
+    inside = (home >= 0).sum(axis=1) / home.shape[1]
+    part = keep & (inside < 1.0)
+    if part.any():
+        lost = float(((1.0 - inside[part]) * q_mean[jg[part], ig[part]]).sum())
+        report.append(f"{int(part.sum())} pour points straddle the grid edge: their sub-cells outside are dropped "
+                      f"(total {lost:.2f} m3/s)")
+    inside = inside[keep]
     jg, ig = jg[keep], ig[keep]
     mouth_targets = [t for t, k_ in zip(mouth_targets, keep) if k_]
     home = home[keep]
@@ -453,8 +469,10 @@ def glofas_mouths(path_or_ds, grid: xr.Dataset, t0, t1, min_mean_discharge: floa
                "edge row/column" if hj in (0, ny - 1) or hi in (0, nx - 1) else
                "wet, not coastal" if not coast[hj, hi] else "coast")
         dest = ", ".join(f"({c // nx}, {c % nx}) {f:.2f}" for c, f in mouth_targets[k].items())
-        report.append(f"mouth {glat[jg[k]]:.3f}N {glon[ig[k]]:.3f}E, mean Q {q_mean[jg[k], ig[k]]:.2f} m3/s: "
+        frac = "" if inside[k] == 1.0 else f", {inside[k]:.2f} inside the grid"
+        report.append(f"mouth {glat[jg[k]]:.3f}N {glon[ig[k]]:.3f}E, mean Q {q_mean[jg[k], ig[k]]:.2f} m3/s{frac}: "
                       f"in cell ({hj}, {hi}) [{why}] -> {dest}")
     return RiverInput(cells=cells, times=times, Q=Q, origin=t0 if origin is None else origin, report=report,
                       mouth_lat=glat[jg], mouth_lon=glon[ig], mouth_Q=mouth_Q,
-                      mouth_cells=[{pos[c]: f for c, f in t.items()} for t in mouth_targets], method=method)
+                      mouth_cells=[{pos[c]: f for c, f in t.items()} for t in mouth_targets], method=method,
+                      mouth_inside=inside)
