@@ -200,13 +200,13 @@ BET003 = 0.5*EOS103*r1_S0                         # drho_dS fit P**3 coef.      
 
 
 # --------------------------------------------------------------------------- scalar kernels
-@njit(cache=True)
+@njit(cache=True, inline="always")
 def _zs(S: float) -> float:
     """ζ_S = √(|S_A + δS| / S_u) [nondim] (MOM_EOS_Roquet_rho.F90:219)."""
     return math.sqrt(abs(S + rdeltaS) * r1_S0)
 
 
-@njit(cache=True)
+@njit(cache=True, inline="always")
 def _rho_parts(zt: float, zs: float, zp: float) -> tuple[float, float, float, float, float, float]:
     """(ρ_TS0, ρ_TS1, ρ_TS2, ρ_TS3, ρ₀S₀, ρ₀₀p) of MOM_EOS_Roquet_rho.F90:227-243
     [kg m⁻³, kg m⁻³ Pa⁻¹, kg m⁻³ Pa⁻², kg m⁻³ Pa⁻³, kg m⁻³, kg m⁻³]."""
@@ -229,7 +229,7 @@ def _rho_parts(zt: float, zs: float, zp: float) -> tuple[float, float, float, fl
     return rhoTS0, rhoTS1, rhoTS2, rhoTS3, rho0S0, rho00p
 
 
-@njit(cache=True)
+@njit(cache=True, inline="always")
 def density_elem(T: float, S: float, p: float) -> float:
     """In situ density ρ [kg m⁻³] of Θ [°C], S_A [g kg⁻¹], p [Pa] (MOM_EOS_Roquet_rho.F90:227-246)."""
     rhoTS0, rhoTS1, rhoTS2, rhoTS3, rho0S0, rho00p = _rho_parts(T, _zs(S), p)
@@ -237,7 +237,7 @@ def density_elem(T: float, S: float, p: float) -> float:
     return rhoTS + rho00p
 
 
-@njit(cache=True)
+@njit(cache=True, inline="always")
 def rho_anom_elem(T: float, S: float, p: float, rho_ref: float) -> float:
     """ρ − ρ_ref [kg m⁻³], ρ_ref subtracted from ρ₀S₀ before the Θ and p terms
     (MOM_EOS_Roquet_rho.F90:287-308).  T = Θ [°C], S = S_A [g kg⁻¹], p [Pa]."""
@@ -247,7 +247,7 @@ def rho_anom_elem(T: float, S: float, p: float, rho_ref: float) -> float:
     return rhoTS + rho00p
 
 
-@njit(cache=True)
+@njit(cache=True, inline="always")
 def drho_elem(T: float, S: float, p: float) -> tuple[float, float]:
     """(∂ρ/∂Θ [kg m⁻³ °C⁻¹], ∂ρ/∂S_A [kg m⁻³ (g/kg)⁻¹]) (MOM_EOS_Roquet_rho.F90:384-411).
 

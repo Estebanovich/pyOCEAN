@@ -76,7 +76,7 @@ c5 = -2.765195      # Wright lambda fit [m2 s-2 degC-1 PSU-1]
 
 
 # --------------------------------------------------------------------------- scalar kernels
-@njit(cache=True)
+@njit(cache=True, inline="always")
 def density_elem(T: float, S: float, p: float) -> float:
     """In situ density ρ(θ, S, p) [kg m⁻³] (MOM_EOS_Wright_full.F90:86-89).
 
@@ -88,7 +88,7 @@ def density_elem(T: float, S: float, p: float) -> float:
     return (p + p0) / (lam + al0 * (p + p0))
 
 
-@njit(cache=True)
+@njit(cache=True, inline="always")
 def rho_anom_elem(T: float, S: float, p: float, rho_ref: float) -> float:
     """Density anomaly ρ − ρ_ref [kg m⁻³] in MOM6's anomaly form (MOM_EOS_Wright_full.F90:110-120).
 
@@ -103,7 +103,7 @@ def rho_anom_elem(T: float, S: float, p: float, rho_ref: float) -> float:
             / ((c0 + lam_TS) + al0 * (b0 + p_TSp)))
 
 
-@njit(cache=True)
+@njit(cache=True, inline="always")
 def drho_elem(T: float, S: float, p: float) -> tuple[float, float]:
     """(∂ρ/∂θ [kg m⁻³ °C⁻¹], ∂ρ/∂S [kg m⁻³ PSU⁻¹]) at (θ, S, p) (MOM_EOS_Wright_full.F90:194-202).
 
