@@ -282,8 +282,8 @@ def lotw_bbl_column(dz: np.ndarray, n2: np.ndarray, ustar: float, absf: float,
 #   of MOM_set_diffusivity.F90:1160-1200) from the merged T and S (the same anomaly means as ρ above) at the merged
 #   interface pressure p = Σ g ρ₀ hc from the surface (``_merged_n2_local``).  MOM6's ``find_N2`` also overwrites
 #   N² at the bottom two interfaces with a bulk N²_bot (MOM_set_diffusivity.F90:1202-1258) before
-#   add_LOTW_BBL_diffusivity; this port does not (spec decision 8: class (c), ``docs/design/teos10_refs/mom6_eos.md``
-#   §5).
+#   add_LOTW_BBL_diffusivity; this port does not (spec decision 8: class (a), fix deferred pending Esteban's approval
+#   because it changes linear BBL runs; effect measured in ``docs/design/teos10_refs/mom6_eos.md`` §5).
 # * Kd back on the model interfaces: an interface at the bottom of a merged layer takes that merged interface's Kd;
 #   an interface inside a merged layer takes the linear interpolation in height between the merged interfaces below
 #   and above (weights kf of ``_merge_map``, as Jackson's κ), so the bed interface 0 stays 0 and bed thin layers get

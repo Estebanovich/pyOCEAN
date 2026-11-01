@@ -361,25 +361,48 @@ specific-volume derivatives (`MOM_kappa_shear.F90:1137-1146`; KPP `:1431-1433`).
 NWA12 runs ePBL + Jackson kappa_shear + double diffusion, no KPP, no LOTW BBL
 (NWA12 doc `:1806, 1981, 1968, 1869, 1913`).
 
-**Spec decision 8 — bottom N² of the BBL (checked in task 6, 2026-10-31).** MOM6 builds `N2_int` in
-`find_N2` and, before `add_LOTW_BBL_diffusivity` sees it, overwrites the near-bed interfaces with a bulk
-value (`MOM_set_diffusivity.F90:1202-1258`): going up from the bed it sums the clipped jumps
-Δρ_K = max(∂ρ/∂T ΔT + ∂ρ/∂S ΔS, 0) and the thicknesses ½(h_{k−1} + h_k) until the layer-centre height
-passes `h_amp` (0 without tidal mixing), always adding one more interface ("at least one full layer",
-`:1219-1223`), so without tidal mixing N²_bot = (g/ρ₀)(Δρ_nz + Δρ_nz−1) / (½(h_nz + h_nz−1) + ½(h_nz−1 + h_nz−2))
-replaces N² at the **two lowest interior interfaces** (`:1236-1258`; the layer N² of the bottom layers too).
-pyOCEAN's port (`physics/mixing/bbl_mixing.py`) starts at `add_LOTW_BBL_diffusivity` and takes the local
-interface N² of the (merged) column; it does **not** apply the N²_bot overwrite.  The compiled-MOM6 comparison
-of the BBL task (`validation/mom6_column/bbl_driver.F90:85-91`) passes `N2_int` straight to
-`add_LOTW_BBL_diffusivity`, bypassing `find_N2`, so the 15-column agreement does not cover this step.
-**Class (c), numerical choice, not fixed** (spec: only class (a) is fixed here): the Kd formula and its energy
-limit are MOM6's; what differs is how N² near the bed is estimated (a local interface value against a
-two-interface bulk mean with negative jumps clipped).  Effects: (i) where the two lowest interfaces have
-different N², MOM6 spends the BBL energy against their mean; (ii) an unstable bottom interface gives MOM6
-Δρ = 0 (N² = Ω² with `use_omega`, the OM4 default, or the KD_MAX branch without it), and pyOCEAN, with
-max(N², N²_min) in the work term (`SD:1762`), the same Kd only when the mean of MOM6 is also ≤ N²_min.  Where it
-matters is a candidate for the BBL benchmarks (DOME, NWA12), not for this project; the nonlinear EOS changes
-nothing here (both use the locally referenced Δρ).
+**Spec decision 8 — bottom N² of the BBL (checked in task 6, 2026-10-31; reclassified after the task-6
+review).** MOM6 builds `N2_int` in `find_N2` (called at `MOM_set_diffusivity.F90:481`) and, before
+`add_LOTW_BBL_diffusivity` receives it (`:671`, used through max(N2_int, N2_min) at `:1762`), overwrites the
+near-bed interfaces with a bulk value (`:1202-1258`): going up from the bed it sums the clipped jumps
+Δρ_K = max(∂ρ/∂T ΔT + ∂ρ/∂S ΔS, 0) and the thicknesses ½(h_{k−1} + h_k) until the layer-centre height passes
+`h_amp` (0 without tidal mixing), always adding one more interface (`:1219-1223`).  So, **unconditionally** and
+also with h_amp = 0, N²_bot = (g/ρ₀)(Δρ_nz + Δρ_nz−1) / (½(h_nz + h_nz−1) + ½(h_nz−1 + h_nz−2)) replaces N² at the
+**two lowest interior interfaces** (`:1236-1258`; the layer N² of the bottom layers too).  pyOCEAN's port
+(`physics/mixing/bbl_mixing.py`) starts at `add_LOTW_BBL_diffusivity` and takes the local interface N² of the
+(merged) column; it does **not** apply the overwrite.  The omission is unintentional: the compiled-MOM6
+comparison of the BBL task (`validation/mom6_column/bbl_driver.F90:85-91`) passes `N2_int` straight to
+`add_LOTW_BBL_diffusivity`, bypassing `find_N2`, so the 15-column agreement never covered this step.
+**Class (a), our bug.  Fix deferred** to a separate follow-up pending Esteban's approval: it changes the BBL
+results of linear-EOS runs (spec anti-goal: no bit of a linear run changes in this project) and the validated
+DOME BBL numbers.  The nonlinear EOS does not change the issue (both codes use the locally referenced Δρ).
+
+Measured effect (`validation/mom6_column/bbl_n2bot_effect.py`, measurement only: Kd of `lotw_bbl_column` with the
+local N² vs with N²_bot at interfaces 1 and 2, on the 15 columns of `columns.bbl_cases` that feed `bbl_driver`;
+relative change |ΔKd|/max(Kd) over the interfaces where either Kd > 0):
+
+| column | max rel ΔKd | median rel ΔKd |
+|---|---|---|
+| stratified | 1.4e-2 | 0 |
+| N² ≤ 0 at two interfaces | 0 | 0 |
+| N² ≤ 0, no Ω floor | 0 | 0 |
+| f = 0 | 1.6e-2 | 0 |
+| 1 mm layers | 1.1e-2 | 0 |
+| large u* (200 m cap) | 2.0e-3 | 0 |
+| ample energy (uncut) | 0 | 0 |
+| random 0 | 1.00 | 0.91 |
+| random 1 | 0.18 | 0.18 |
+| random 2 | 0.22 | 0.11 |
+| random 3 | 0.37 | 0.37 |
+| random 4 | 0.16 | 0.16 |
+| random 5 | 2.0e-2 | 2.0e-2 |
+| random 6 | 0.12 | 0.12 |
+| random 7 | 7.8e-2 | 7.8e-2 |
+
+Smooth stratification (cases 1, 4–7): ≤ 1.6 % at the two bottom interfaces only (median 0).  Random N² profiles
+(cases 8–15): the bulk N² changes the energy spent at the bottom and with it Kd up the whole column, 2–37 %
+typical; in random 0 the energy runs out at a different interface (Kd → 0 there, 100 %).  N² ≤ 0 at both bottom
+interfaces gives the same Kd (N²_bot = 0, then the Ω² floor or KD_MAX in both codes).
 
 ---
 

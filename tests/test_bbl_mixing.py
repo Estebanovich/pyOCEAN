@@ -313,3 +313,21 @@ def test_no_thin_layers_bit_for_bit_with_column() -> None:
         ref = np.stack([lotw_bbl_column(dz[:, j], n2[:, j], ustar[j], absf[j], tke[j], p) for j in range(m)], 1)
         assert np.any(ref > 0.0)
         assert np.array_equal(kd, ref)
+
+
+def test_n2_bottom_overwrite_measurement_helper():
+    """The measurement helper of spec decision 8 (``validation/mom6_column/bbl_n2bot_effect.py``, not the model
+    path): MOM6's N²_bot (MOM_set_diffusivity.F90:1202-1258, h_amp = 0) replaces interfaces 1 and 2 only, as the
+    thickness-weighted mean of the clipped jumps; a uniform column is unchanged."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "validation" / "mom6_column"))
+    from bbl_n2bot_effect import n2_bottom_overwrite
+
+    dz = np.array([2.0, 4.0, 6.0, 8.0])
+    n2 = np.array([0.0, 1e-5, -3e-5, 4e-5, 0.0])
+    out = n2_bottom_overwrite(dz, n2)
+    expect = (1e-5 * 3.0 + 0.0 * 5.0) / (3.0 + 5.0)
+    assert out[1] == out[2] == expect
+    assert np.array_equal(out[[0, 3, 4]], n2[[0, 3, 4]])
+    np.testing.assert_allclose(n2_bottom_overwrite(np.full(6, 2.0), np.full(7, 3e-6)), np.full(7, 3e-6), rtol=1e-15)
