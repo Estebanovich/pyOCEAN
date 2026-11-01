@@ -141,7 +141,7 @@ interfaz inicial. Volúmenes de cabbeling: agua con ρ(T, S, 0) mayor que la de 
   - z\*, caras entre celdas completas: 2e-18 (`wright_full`), 5e-17 (`teos10`), 4e-16 (lineal) m s⁻², a redondeo;
     escalón 1e-16–4e-15, a redondeo;
   - z\*, montaña, junto a celdas parciales de fondo: 1.4e-7 m s⁻² (lineal 1.9e-7), que deja 2.6e-4 m s⁻¹ a los
-    10 días: interpolación del perfil de referencia en 400 clases (el centro de una celda parcial cae entre los
+    10 días: interpolación del perfil de referencia en 400 clases (comprobado el 2026-11-01: con un nodo por cada altura distinta de celda el PGF inicial baja a 6.5e-14 m s⁻² con la lineal y 3e-17 con `wright_full`; se mantienen las 400 clases por decisión de Esteban, porque con datos reales en σ o híbrido ese perfil copiaría el ruido horizontal celda por celda; el centro de una celda parcial cae entre los
     nodos), clase (c), independiente de la EOS;
   - híbrido: 2e-5 m s⁻² en la montaña y 3e-6 en el escalón, iguales con la lineal: truncamiento de las capas
     gruesas, (c), baja 51× de 20 a 50 capas (diferencia 1).
