@@ -326,7 +326,7 @@ class SurfaceFluxes:
         """
         cfg, fs = self.cfg, self.fs
         self._check_time(float(t))
-        atm = cfg.atmosphere(t)
+        atm = cfg.atmosphere(t)      # wind on the grid axes on rotated grids (AtmosphereProvider); current already is
         wet = fs.active & (fs.H + st.eta > fs.d_min) & (self.A > 0)       # the driver's surface-flux mask
         if self.ale:
             h = st.h

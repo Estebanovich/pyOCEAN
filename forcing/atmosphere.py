@@ -43,7 +43,8 @@ up to round-off.  At t = t_last the last record is returned; outside
 
 Output fields (all (ny, nx) float64 at the T points)
 ----------------------------------------------------
-    u10, v10   10 m wind components [m s⁻¹]
+    u10, v10   10 m wind components [m s⁻¹], on the grid axes (x, y) when the grid
+               carries ``cos_t``/``sin_t`` (rotated grids; else east/north)
     t2m        2 m air temperature [K]
     q2m        2 m specific humidity [kg kg⁻¹]
     msl        mean sea-level pressure [Pa]
@@ -75,6 +76,7 @@ import numpy as np
 import xarray as xr
 
 from forcing.interp import fill_land, to_model_grid
+from forcing.rotation import to_grid
 from forcing.sources.base import BBox
 from forcing.sources.era5 import ERA5Source
 from forcing.sources.wrf import WRFSource
@@ -136,6 +138,10 @@ class AtmosphereProvider:
         # Record times in seconds from origin (exact: integer ns → float s)
         self._t = (self._times - self._origin).astype("timedelta64[ns]").astype(np.int64) / 1e9
         self._shape = grid["lon_t"].shape
+        # Curvilinear grids (core.grid.supergrid) carry the angle of grid-x from east: the wind is rotated to the
+        # grid axes after the bilinear step.  Grids without it take no rotation path at all (bit for bit).
+        self._rot = ((np.asarray(grid["cos_t"].values, float), np.asarray(grid["sin_t"].values, float))
+                     if "cos_t" in grid and "sin_t" in grid else None)
         self._cache: dict[int, dict[str, np.ndarray]] = {}
         lo, hi = float(self._t[0]), float(self._t[-1])
         if window is not None:
@@ -203,6 +209,10 @@ class AtmosphereProvider:
             on_grid = to_model_grid(filled, self._grid, point="t")
             out = {k: np.ascontiguousarray(on_grid[k].values, dtype=np.float64)
                    for k in on_grid.data_vars}
+            if self._rot is not None:
+                # earth (east, north) → grid axes; linear, so rotating each record equals rotating the
+                # time-interpolated wind (MOM6 rotates on the ocean grid, mom6_psurf_runoff.md)
+                out["u10"], out["v10"] = to_grid(out["u10"], out["v10"], *self._rot)
             if not self._has_precip:
                 out["precip"] = np.zeros(self._shape)
             self._cache[n] = out
