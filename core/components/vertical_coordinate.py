@@ -82,17 +82,18 @@ class ALECoordinate:
         Layer density the hybrid rule follows the isopycnals of [kg m⁻³], (k, j, i) with k = 0 at the bed.
         Linear EOS: ρ(T, S) (Vallis 2006 eq. 1.156), unchanged.  Nonlinear EOS: the potential density
         ρ(T, S, p_ref) at the reference pressure p_ref (2e7 Pa = σ₂ + 1000, the HYCOM/MOM6 choice, so the
-        compressibility of seawater does not move the isopycnal targets with depth), forced monotonic in each
-        column: HYCOM1 evaluates the density at the reference pressure ``p_col`` (MOM_regridding.F90:2058-2059,
-        P_Ref + compressibility_fraction (p − P_Ref), fraction 0 → P_Ref) and then, working upward from the bed,
-        ``rho_col(k) = min(rho_col(k), rho_col(k+1))`` with k = 1 at the top (coord_hycom.F90:214-219, MOM6
-        git 0e9a561): the profile is non-decreasing towards the bed, "monotonic although not necessarily single
-        valued".  Here k = 0 is the bed, so the rule is a running minimum from k = 0 upward.
+        compressibility of seawater does not move the isopycnal targets with depth): HYCOM1 evaluates the density at
+        the reference pressure ``p_col`` (MOM_regridding.F90:2058-2059, P_Ref + compressibility_fraction
+        (p − P_Ref), fraction 0 → P_Ref, MOM6 git 0e9a561).  Returned unmodified, as for the linear EOS: the column
+        rule (``core.vertical.regrid.hycom1_column``) first gives massless layers the density of the nearest massive
+        layer above (HYCOM hybgen.F90:904-925) and only then forces the profile monotonic, the running minimum from
+        the bed up of coord_hycom.F90:214-219 (``rho_col(k) = min(rho_col(k), rho_col(k+1))``, k = 1 at the top).
+        Monotonising here, before that fill, let the stale light water of a massless bed layer lighten the whole
+        column above it (final review C1).
         """
         if self.eos.linear:
             return self.eos.density(T, S)
-        rho = self.eos.potential_density(T, S, self.p_ref)
-        return np.fmin.accumulate(rho, axis=0)                       # ρ_k = min(ρ_k, ρ_{k−1}), the layer below
+        return self.eos.potential_density(T, S, self.p_ref)
 
     def regrid(self, eta: np.ndarray, h: np.ndarray, T: np.ndarray, wet: np.ndarray | None = None,
                S: np.ndarray | None = None) -> np.ndarray:

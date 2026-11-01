@@ -68,13 +68,21 @@ class OutputWriter:
         diagnostics ``theta`` and ``SP`` (θ, S_P from Θ, S_A, ``physics.eos.convert.from_model_ts``) whenever T and S
         are written.  Registry entries that are not ``SigmaState`` fields (``n_below_freezing``, ``scalar``
         diagnostics of the model) are not output fields: read them from the model.
+    model : the model whose output is written (optional).  Its ``eos_name`` sets ``eos``, so the convention of the
+        files cannot be forgotten or mismatched (final review I2); an explicit ``eos`` that contradicts it raises
+        ValueError.  Pass it for every 3-D run: ``OutputWriter(path, hg, H, n_layers=m.n, model=m)``.
     """
 
     def __init__(self, path: str | Path, h_grid: xr.Dataset, H: np.ndarray, n_layers: int = 0,
                  start: str = "2000-01-01T00:00:00", fmt: str = "zarr", title: str = "pyOCEAN output",
-                 attrs: dict | None = None, dsigma=None, eos: str = "linear") -> None:
+                 attrs: dict | None = None, dsigma=None, eos: str | None = None, model=None) -> None:
         if fmt not in ("zarr", "netcdf"):
             raise ValueError("fmt must be 'zarr' or 'netcdf'")
+        if model is not None:
+            if eos is not None and eos != model.eos_name:
+                raise ValueError(f"eos={eos!r} contradicts the model's eos {model.eos_name!r}; omit eos")
+            eos = model.eos_name
+        eos = "linear" if eos is None else eos
         self.path, self.fmt, self.start = Path(path), fmt, np.datetime64(start, "s")
         self.ny, self.nx = H.shape
         self.n = n_layers

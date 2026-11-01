@@ -102,9 +102,10 @@ def test_freezing_count(eos):
     Tc = st.T.copy()
     Tc[NZ - 1, 2, 3] = -5.0                                              # surface cell, S ≈ 35: Tf ≈ −1.9
     ref = Tc.copy()
-    assert drv._n_below_freezing(st.eta, Tc, st.S, st.h) == 1
+    n = 0 if eos == "linear" else 1                                      # the linear EOS has no freezing law (I1/M2)
+    assert drv._n_below_freezing(st.eta, Tc, st.S, st.h) == n
     assert np.array_equal(Tc, ref)                                       # counted, never corrected
     st.T[:] = Tc
     m.step(st)
-    assert m.n_below_freezing >= 1                                       # model attribute, updated each step
+    assert (m.n_below_freezing >= 1) if n else (m.n_below_freezing == 0)  # model attribute, updated each step
     assert "n_below_freezing" in REGISTRY

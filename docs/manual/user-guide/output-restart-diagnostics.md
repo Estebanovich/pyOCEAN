@@ -61,7 +61,8 @@ Times are rounded to whole seconds (`int(round(time))`, `:126`).
 ```python
 from diagnostics.output import OutputWriter
 w = OutputWriter("run.zarr", hg, bathy, n_layers=m.n, dsigma=m.core.dsigma,
-                 start="2026-02-01T00:00:00", title="BayIW test", attrs={"institution": "UNAM"})
+                 start="2026-02-01T00:00:00", title="BayIW test", attrs={"institution": "UNAM"},
+                 model=m)                          # the EOS of the model sets the CF names of T and S
 for n in range(1, n_steps + 1):
     st = m.step(st)
     if n % n_out == 0:

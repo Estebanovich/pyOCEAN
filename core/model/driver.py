@@ -253,11 +253,13 @@ class Driver:
         """
         Wet cell-layers whose T is below the freezing point Tf(S, p) [°C] of the EOS at the layer-centre pressure
         p = g ρ₀ (Σ_{above} h + ½ h) [Pa] (the pressure of ``_layer_density``).  Only counted: T is never modified.
-        Needs salinity (0 without).  Cells warmer than 0.5 °C cannot freeze (Tf ≤ 0 for S ≥ 0 in both freezing
-        laws), so the EOS is evaluated only on the cold cells (cheap with gsw).  (N, ny, nx) bed first.
+        Needs salinity and a nonlinear EOS (0 otherwise: the linear EOS of idealised runs has no freezing law to
+        count against, and returning at once keeps it from evaluating one every step).  Cells warmer than 0.5 °C
+        cannot freeze (Tf ≤ 0 for S ≥ 0 in both freezing laws), so the freezing law (``gsw.CT_freezing`` for
+        ``teos10``) is evaluated only on the cold cells.  (N, ny, nx) bed first.
         """
         m = self.m
-        if S is None:
+        if S is None or m._eos.linear:
             return 0
         wet = m.fs.active & (m.fs.H + eta > m.fs.d_min) & (np.nan_to_num(m.area) > 0)
         cold = (T < 0.5) & wet[None] & (h > 0)

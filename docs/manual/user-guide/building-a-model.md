@@ -271,7 +271,7 @@ row); analytic mode-1 wave through a clamped west and radiating east edge within
 ```python
 from diagnostics.output import OutputWriter
 from core.restart import write_restart
-w = OutputWriter("run.zarr", hg, bathy, n_layers=m.n, dsigma=m.core.dsigma, start="2026-01-01T00:00:00")
+w = OutputWriter("run.zarr", hg, bathy, n_layers=m.n, dsigma=m.core.dsigma, start="2026-01-01T00:00:00", model=m)
 for n in range(1, n_steps + 1):
     st = m.step(st)
     if n % n_out == 0:

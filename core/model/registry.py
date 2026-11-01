@@ -45,7 +45,8 @@ _SPECS = [
     VarSpec("n_trunc", (), "scalar", "1", None, "diagnostic", "CFL velocity truncations so far (ALE)"),
     VarSpec("n_limited", (), "scalar", "1", None, "diagnostic", "cell-layers scaled by the outflow limiter (ALE)"),
     VarSpec("n_below_freezing", (), "scalar", "1", None, "diagnostic",
-            "wet cell-layers whose T is below the freezing point at the layer-centre pressure, last step (counted only)"),
+            "wet cell-layers whose T is below the freezing point at the layer-centre pressure, last step "
+            "(counted only; nonlinear EOS with salinity, 0 otherwise)"),
     VarSpec("n_visc_limited", (), "scalar", "1", None, "diagnostic",
             "h and q points whose Smagorinsky viscosity the AB3 stability bound reduced, summed over steps"),
     VarSpec("nu_smag", ("k", "y", "x"), "t", "m2 s-1", None, "diagnostic",
@@ -115,10 +116,10 @@ def variable_specs(eos: str = "linear") -> dict[str, VarSpec]:
     The registry for a model with equation of state ``eos`` ("linear", "wright_full" or "teos10"): ``REGISTRY``
     with T and S described in the convention of that EOS.  ``REGISTRY`` itself is the linear one.
 
-    Consumers: the CF output (``diagnostics.output.OutputWriter(eos=...)``) and the restart attributes use T and S of
-    this table.  Not every entry is a ``SigmaState`` field: ``location="scalar"`` diagnostics such as
-    ``n_below_freezing`` are attributes of the model, so code that iterates the registry to read the state must
-    skip them (or read them from the model).
+    Consumers: the CF output (``diagnostics.output.OutputWriter(model=...)`` or ``(eos=...)``) and the restart
+    attributes use T and S of this table.  Not every entry is a ``SigmaState`` field: ``location="scalar"``
+    diagnostics such as ``n_below_freezing`` are attributes of the model, so code that iterates the registry to read
+    the state must skip them (or read them from the model).
     """
     if eos == "linear":
         return dict(REGISTRY)

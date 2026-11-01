@@ -18,7 +18,7 @@ import numpy as np
 
 from core.model.contract import BuildContext, Issue, Role, param
 from physics.eos import roquet_rho, wright_full
-from physics.eos.convert import freezing_linear, freezing_teos10
+from physics.eos.convert import freezing_linear, freezing_teos10, require_gsw
 
 
 @runtime_checkable
@@ -161,7 +161,9 @@ class TEOS10EOS(_NonlinearEOS):
 def make_eos(name: str, rho0: float | None = None, **linear_params):
     """
     EOS component by name: ``"linear"`` (takes ``linear_params``: t_coef, t_ref, s_coef, s_ref),
-    ``"wright_full"`` or ``"teos10"``.  ``rho0`` None keeps the class default.
+    ``"wright_full"`` or ``"teos10"``.  ``rho0`` None keeps the class default.  ``"teos10"`` needs the optional
+    ``gsw`` package (Θ ↔ θ conversions at the I/O boundary and of the bulk SST, freezing point on cold cells) and
+    raises ImportError here, at construction, when it is missing.
     """
     kw = {} if rho0 is None else {"rho0": rho0}
     if name == "linear":
@@ -171,5 +173,6 @@ def make_eos(name: str, rho0: float | None = None, **linear_params):
     if name == "wright_full":
         return WrightFullEOS(**kw)
     if name == "teos10":
+        require_gsw("eos='teos10' (Θ/S_A conversions and freezing point)")
         return TEOS10EOS(**kw)
     raise ValueError(f"unknown EOS {name!r}: expected 'linear', 'wright_full' or 'teos10'")

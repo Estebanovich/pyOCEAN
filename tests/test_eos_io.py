@@ -182,6 +182,30 @@ def test_output_other_eos_unchanged(tmp_path):
         _writer(tmp_path / "x.nc", "foo")
 
 
+def test_output_eos_from_model(tmp_path):
+    """Final review I2: a writer given the model takes its EOS, so a teos10 run cannot be written with θ labels."""
+    T, S = _ts()
+    m = _model("teos10")
+    st = m.initial_state(np.zeros((NY, NX)), T, S=S)
+    w = OutputWriter(tmp_path / "m.nc", _grid(), np.full((NY, NX), 50.0), n_layers=NZ, fmt="netcdf", model=m)
+    w.write(60.0, T=st.T, S=st.S)
+    w.close()
+    ds = xr.open_dataset(tmp_path / "m.nc")
+    assert ds["T"].attrs["standard_name"] == "sea_water_conservative_temperature"
+    assert ds["S"].attrs["standard_name"] == "sea_water_absolute_salinity"
+    assert "theta" in ds and "SP" in ds
+    with pytest.raises(ValueError, match="eos"):                             # contradicting the model is refused
+        OutputWriter(tmp_path / "x.nc", _grid(), np.full((NY, NX), 50.0), n_layers=NZ, fmt="netcdf", model=m,
+                     eos="linear")
+    lin = _model("linear")                                                   # linear: byte-identical to eos default
+    st = lin.initial_state(np.zeros((NY, NX)), T, S=S)
+    for name, kw in (("a.nc", dict(model=lin)), ("b.nc", {})):
+        w = OutputWriter(tmp_path / name, _grid(), np.full((NY, NX), 50.0), n_layers=NZ, fmt="netcdf", **kw)
+        w.write(60.0, T=st.T, S=st.S)
+        w.close()
+    assert (tmp_path / "a.nc").read_bytes() == (tmp_path / "b.nc").read_bytes()
+
+
 def test_restart_attributes_follow_eos(tmp_path):
     T, S = _ts()
     for eos, name in (("teos10", "sea_water_conservative_temperature"), ("linear", None)):

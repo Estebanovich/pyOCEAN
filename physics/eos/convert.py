@@ -18,10 +18,13 @@ Freezing point: MOM6 ``TFREEZE_FORM`` LINEAR (``MOM_TFreeze.F90:62``,
 ``T_Fr = (S0_P0 + dT_dS S) + dT_dp p``), with the NWA12 coefficients 0, −0.054 °C PSU⁻¹,
 −7.75e-8 °C Pa⁻¹ (``MOM_EOS.F90:1683-1696``), and TEOS10 = ``gsw_ct_freezing_exact`` with
 saturation fraction 0 (``MOM_TFreeze.F90:231-250``).
+
+``gsw`` is an optional dependency (as in ``physics/eos/__init__.py``): it is imported inside the functions
+that need it (Θ ↔ θ and the TEOS-10 freezing point), so the 3-D core imports and runs a linear or
+``wright_full`` model without it.  ``require_gsw`` gives the clear error ``eos="teos10"`` raises at construction.
 """
 from __future__ import annotations
 
-import gsw
 import numpy as np
 
 SR_OVER_SP = 35.16504 / 35.0  # S_A / S_P  [-]  (reference salinity, TEOS-10)
@@ -42,14 +45,24 @@ def sa_to_sp(SA):
     return (35.0 / 35.16504) * np.asarray(SA)
 
 
+def require_gsw(purpose: str = "TEOS-10 conversions"):
+    """The ``gsw`` module (optional dependency, imported on first use); ImportError naming ``purpose`` if missing."""
+    try:
+        import gsw  # optional import: not needed with eos="linear" or "wright_full" and θ/S_P data
+    except ImportError as err:
+        raise ImportError(f"{purpose} need the 'gsw' package (TEOS-10 GSW toolbox), which is not installed; "
+                          "it is optional only for eos='linear' and 'wright_full' with θ/S_P data") from err
+    return gsw
+
+
 def theta_to_ct(SA, theta):
     """Conservative temperature Θ [°C] from potential temperature θ [°C] at S_A [g kg⁻¹] (gsw)."""
-    return gsw.CT_from_pt(SA, theta)
+    return require_gsw("θ → Θ conversions").CT_from_pt(SA, theta)
 
 
 def ct_to_theta(SA, CT):
     """Potential temperature θ [°C] from conservative temperature Θ [°C] at S_A [g kg⁻¹] (gsw)."""
-    return gsw.pt_from_CT(SA, CT)
+    return require_gsw("Θ → θ conversions").pt_from_CT(SA, CT)
 
 
 def to_model_ts(T, S, eos_ts_kind: str, ts_kind: str):
@@ -98,4 +111,4 @@ def freezing_teos10(SA, p):
     TEOS-10 freezing conservative temperature Θ_f [°C] of S_A [g kg⁻¹] at sea pressure p [Pa],
     saturation fraction 0 (``gsw.CT_freezing``; MOM6 ``MOM_TFreeze.F90:231-250``).
     """
-    return gsw.CT_freezing(SA, np.asarray(p) * 1.0e-4, 0.0)
+    return require_gsw("the TEOS-10 freezing point").CT_freezing(SA, np.asarray(p) * 1.0e-4, 0.0)

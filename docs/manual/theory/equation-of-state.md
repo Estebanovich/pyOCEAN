@@ -145,9 +145,12 @@ both EOS (`tests/test_eos_closures.py`). The thermobaric column has $N^2 > 0$ at
 ## Hybrid regrid
 
 With a nonlinear EOS the HYCOM1 rule follows the **potential density at `p_ref`** (default 2e7 Pa, so
-$\rho = \sigma_2 + 1000$). The column is forced monotonic as in MOM6, with a running minimum from the bed upward
-(`ALECoordinate.regrid_density`, `core/components/vertical_coordinate.py:80`; `MOM_regridding.F90:2058-2062`,
-`coord_hycom.F90:214-219`). The targets `regrid_params['rho_target']` are given in that density. Pre-flight refuses
+$\rho = \sigma_2 + 1000$; `ALECoordinate.regrid_density`, `core/components/vertical_coordinate.py:80`,
+`MOM_regridding.F90:2058-2062`). The column rule (`core.vertical.regrid.hycom1_column`) treats it as it treats the
+linear density: massless layers first take the density of the nearest massive layer above (HYCOM
+`hybgen.F90:904-925`), and only then is the column forced monotonic as in MOM6, with a running minimum from the bed
+upward (`coord_hycom.F90:214-219`). Monotonising before the fill would let the stale light water of a massless bed
+layer lighten the whole column (final review C1). The targets `regrid_params['rho_target']` are given in that density. Pre-flight refuses
 targets outside 1020–1045 kg m⁻³ (`SIGMA2_RANGE`).
 
 ## Horizontal diffusion with a reference profile
@@ -168,7 +171,9 @@ With a nonlinear EOS and `rho_ref="auto"`, `kh` acts on $T - T_{ref}(z)$ and $S 
     flux that comes back enters Θ with $c_p^0$.
 - **Freezing point.** It is a function of the EOS only: MOM6's `LINEAR` form for `wright_full`, as NWA12
     (T_f = 0 − 0.054 S − 7.75e-8 p), and `gsw.CT_freezing` for `teos10`. The model has no frazil or ice. The model
-    attribute `n_below_freezing` (registry diagnostic) counts the cells below the freezing point in the last step.
+    attribute `n_below_freezing` (registry diagnostic) counts the cells below the freezing point in the last step
+    (nonlinear EOS with salinity; the linear EOS has no freezing law and the count stays 0). `gsw` is evaluated
+    only on the cold cells (T < 0.5 °C).
 
 ## Inputs and outputs
 
@@ -177,7 +182,8 @@ With a nonlinear EOS and `rho_ref="auto"`, `kh` acts on $T - T_{ref}(z)$ and $S 
     when it receives them. This applies to `initial_state(..., ts_kind=)`, the constructor's open-boundary exterior
     and sponge profiles (constructor `ts_kind`), and `forcing.ocean_init` (`eos_ts_kind`). Data that are already
     Θ/S_A must be passed with `ts_kind="ct_sa"`, or they are converted twice.
-- **Output.** `OutputWriter(eos=...)` writes the prognostic variables with their CF standard names:
+- **Output.** `OutputWriter(..., model=m)` takes the EOS from the model (or `eos=` by name; a value that
+    contradicts the model is refused) and writes the prognostic variables with their CF standard names:
     `sea_water_conservative_temperature` and `sea_water_absolute_salinity` with `teos10`. With `teos10` it also
     writes θ and S_P as diagnostics.
 - **T-S diagram.** `diagnostics/ts_diagram.py` provides `ts_histogram` (volume per T-S class) and `plot_ts`, with
