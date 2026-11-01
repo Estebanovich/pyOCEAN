@@ -440,6 +440,21 @@ Salidas en `RUNS/10km/pyocean_<coord>_kv_low_smag0.15_jackson_ubg0.05[_bbl]/`; b
 
 **Números después de la corrección I1 de la revisión final (clase a, 2026-10-31):** N² en las interfaces de capas fusionadas sale ahora de las densidades fusionadas (como GLS y Jackson); antes se reusaba el N² del modelo a través de una capa de 1 mm, que lo duplicaba. Movimiento: híbrida + BBL b_f −11.54 → −11.86, eventos del limitador 32 → 0, T(x′ = −300) 20.8 → 18.0 Sv, E de la esquina 1.87e-4 → 2.66e-4; z\* + BBL cambia < 0.02 en b_f; σ + BBL es idéntica bit a bit (en σ no hay capas que fusionar). Los controles no llevan BBL y no cambian.
 
+**Números después de la corrección del N² de fondo (clase a, 2026-11-01, aprobada por Esteban).** La BBL toma ahora en las dos interfaces interiores más bajas el N²_bot de bulto de `find_N2` de MOM6 (`n2_bottom_bulk`, igual a MOM6 compilado; `validation/mom6_column/README.md`). Las tres corridas con BBL se repitieron con `bbl_logs/chain_n2bot.sh` (rc = 0, 2026-11-01 09:22 – 10:08, en `9a53be2`); las salidas anteriores quedan en `RUNS/10km/*_bbl_preN2bot/` y sus bitácoras en `*_preN2bot.log`. **Las tablas y la lectura de abajo son de antes de esta corrección.** El cambio:
+
+| corrida | b_f [1e-3 m s⁻²] | E esquina | T(x′ −200 / −300) [Sv] | α_E ec. 12 | clase con más trazador x′ −300 / −100 | Y′(−200 / −300 / −500 / −800) [km] | trunc / lim |
+|---|---|---|---|---|---|---|---|
+| híbrida + BBL, antes | −11.86 | 2.66e-4 | 16.1 / 18.0 | 6.40e-4 | −14…−13 / −17…−16 | −62 / −81 / −105 / −122 | 0 / 0 |
+| **híbrida + BBL, después** | **−12.47** | 2.34e-4 | **17.4 / 19.2** | **7.99e-4** | −15…−14 / −17…−16 | −58 / −77 / −99 / −133 | 0 / 0 |
+| z\* + BBL, antes → después | −8.76 → −8.93 | 1.55e-3 → 1.54e-3 | 19.1 / 20.7 → 18.7 / 20.0 | 1.48e-3 → 1.45e-3 | −11…−10 → −12…−11 / −15…−14 | −41 / −52 / −68 / −127 → −120 | 0 / 0 |
+| σ + BBL, antes → después | −10.18 → −10.28 | 5.82e-4 → 4.79e-4 | 20.5 / 21.4 → 20.8 / 21.0 | 1.38e-3 → 1.38e-3 | −12…−11 → −11…−10 / −14…−13 | −70 / −85 / −101 / −131 → −68 / −86 / −106 / −117 | 0 / 0 |
+
+- **El efecto de la BBL sobre b_f es menor en las tres coordenadas.** En la híbrida, la BBL cierra ahora 0.23 de los 1.63 × 10⁻³ m s⁻² entre el control (−12.70) y la isopicna de Legg (−11.07): 14 % (antes 52 %). La clase con más trazador en x′ = −300 km vuelve un escalón hacia lo denso.
+- **El transporte y α_E se acercan a la verdad.** T(x′ = −200 / −300) 16.1 / 18.0 → 17.4 / 19.2 Sv (no hidrostática 22.5 / 20.6 dig.; el control 17.7 / 19.0) y α_E 6.40e-4 → 7.99e-4 (1.03e-3 dig.). Antes la BBL alejaba el transporte; ahora casi no lo mueve.
+- **[Hipótesis, no probada]** En una pluma bien mezclada cerca del fondo el N² local de la interfaz de fondo es pequeño; el bulto lo sube con el salto de la interfaz de arriba, la ley de la pared gasta su energía más abajo y queda menos Kd para la parte alta de la pluma.
+- **Clasificación:** el cambio es la corrección de un error nuestro (a), no un ajuste: pyOCEAN hace ahora lo que hace MOM6. La distancia restante a −11.07 sigue repartida como en la lectura de abajo (esquema y energía c, resolución de la interfaz c, entrada de la híbrida a, geometría c), ahora con más peso.
+- Robustez sin cambio: 0 truncamientos y 0 eventos del limitador en las tres; costo 19.6 / 16.7 / 17.6 s por día simulado (antes 19.1 / 17.0 / 18.1).
+
 **Contra la isopicna de Legg a 10 km (referencia principal) y la no hidrostática (secundaria).** "dig." = leído de las figuras de Legg et al. (2006) (`legg2006_nonhydro.json`). La isopicna de 10 km de Legg tiene la misma física que la principal: ν_v = 1e-4, mezcla por Ri de Hallberg (2000), Smagorinsky y mezcla BBL por arrastre (Ap. A, γ = 0.2, U_bg = 5 cm/s; Legg Ap. A y p. 77; `bbl_refs/mom6_bbl_mixing.md` §3). E de la esquina es la ec. 14 y α_E la ec. 12 (sección de Jackson); diferencias de E menores que ×2 no son significativas.
 
 | corrida | b_f [1e-3 m s⁻²] | E esquina ec. 14, U_rms pluma / todo | T_out, T_in [Sv] | T(x′ = −200 / −300) [Sv] | α_E ec. 12 (−180…−50 km) | b medio del trazador x′ = −300 / −100 [1e-3 m s⁻²] | clase con más trazador x′ = −300 / −100 |

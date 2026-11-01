@@ -375,11 +375,13 @@ also with h_amp = 0, N²_bot = (g/ρ₀)(Δρ_nz + Δρ_nz−1) / (½(h_nz + h_n
 (merged) column; it does **not** apply the overwrite.  The omission is unintentional: the compiled-MOM6
 comparison of the BBL task (`validation/mom6_column/bbl_driver.F90:85-91`) passes `N2_int` straight to
 `add_LOTW_BBL_diffusivity`, bypassing `find_N2`, so the 15-column agreement never covered this step.
-**Class (a), our bug.  Fix deferred** to a separate follow-up pending Esteban's approval: it changes the BBL
-results of linear-EOS runs (spec anti-goal: no bit of a linear run changes in this project) and the validated
-DOME BBL numbers.  The nonlinear EOS does not change the issue (both codes use the locally referenced Δρ).
+**Class (a), our bug.  Fixed on 2026-11-01** with Esteban's approval, in a separate follow-up (it changes the BBL
+results of linear-EOS runs, which this project's anti-goal kept bit for bit, and the DOME BBL numbers):
+`physics.mixing.bbl_mixing.n2_bottom_bulk`, checked against compiled MOM6 `find_N2` (extracted verbatim,
+`bbl_driver n2`) on 8 columns and chained into `add_LOTW_BBL_diffusivity`
+(`tests/test_vertical_vs_mom6.py::test_bbl_bottom_n2_matches_mom6_find_n2`, `::test_bbl_kd_with_bottom_n2_matches_mom6`).  The nonlinear EOS does not change the issue (both codes use the locally referenced Δρ).
 
-Measured effect (`validation/mom6_column/bbl_n2bot_effect.py`, measurement only: Kd of `lotw_bbl_column` with the
+Measured effect (`validation/mom6_column/bbl_n2bot_effect.py`, measured before the fix: Kd of `lotw_bbl_column` with the
 local N² vs with N²_bot at interfaces 1 and 2, on the 15 columns of `columns.bbl_cases` that feed `bbl_driver`;
 relative change |ΔKd|/max(Kd) over the interfaces where either Kd > 0):
 

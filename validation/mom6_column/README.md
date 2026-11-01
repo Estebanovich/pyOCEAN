@@ -43,6 +43,7 @@ Los tests de pytest (`tests/test_vertical_vs_mom6.py`) se saltan cuando falta un
 | `kappa_shear_driver` | `MOM_kappa_shear::kappa_shear_column` (privada, extraída; `nzc = nz`, EOS lineal en T, Boussinesq, valores por defecto) | `physics.mixing.kappa_shear.kappa_shear_column` | 1e-10 × max de la columna (κ y Q) |
 | `bbl_driver lotw` | `MOM_set_diffusivity::add_LOTW_BBL_diffusivity` (extraída con `set_diffusivity_CS`; Boussinesq, valores OM4) | `physics.mixing.bbl_mixing.lotw_bbl_column` | 1e-10 × max Kd de la columna |
 | `bbl_driver tke` | `MOM_set_diffusivity::set_BBL_TKE` (extraída) | factor contra C_d\|U\|³ y √C_d\|U\| | 1e-12 relativo |
+| `bbl_driver n2` | `MOM_set_diffusivity::find_N2` (extraída, con el N²_bot de fondo) y, encadenado, `lotw` | `bbl_mixing._merged_n2[_local]` + `n2_bottom_bulk`; Kd de `lotw_bbl_columns` | 1e-9 × max N² / max Kd |
 | `eos_driver eval` | `MOM_EOS::calculate_density` (sin y con `rho_ref` = 1035) y `calculate_density_derivs` (1-D), con `EOS_manual_init(form_of_EOS = EOS_WRIGHT_FULL / EOS_ROQUET_RHO)` | `physics.eos.wright_full`, `physics.eos.roquet_rho` (`density`, `density_anomaly`, `density_derivs`) | rtol 1e-12 (ρ, ∂ρ/∂T, ∂ρ/∂S), atol 1e-12 (ρ − ρ_ref); medido: bit a bit |
 | `eos_driver n2` | N² referido localmente de `MOM_kappa_shear.F90:1128-1136, 1496-1500` (`calculate_density_derivs` con `scale=-g_R0`, sin el `max(0, ·)`) y diferencias de densidad de KPP de `MOM_CVMix_KPP.F90:1396-1436` (`calculate_density` a la presión de la interfaz superior de la capa k), WRIGHT_FULL y ROQUET_RHO | `physics.eos.stratification` (`interface_pressure`, `n2_local`, `kpp_delta_rho`) | rtol 1e-12; medido: bit a bit |
 | `eos_driver coef` | coeficientes `parameter` de `MOM_EOS_Wright_full.F90:23-37` y `MOM_EOS_Roquet_rho.F90:14-156`, tal como los pliega el compilador | constantes de módulo de los mismos nombres | bit a bit |
@@ -430,6 +431,19 @@ KV_BBL_MIN = 1e-4 (DOME). Los dos factores crecen en KV_BBL_MIN/(C_d|U_b| h_bbl)
 caso 4. Con `CORRECT_BBL_BOUNDS = True`, SV:1103-1110 recalcula bbl_thick y el u\* queda
 consistente. OM4 usa KV_BBL_MIN = 0. Solo afecta a flujos muy débiles, donde la energía es
 pequeña de todos modos.
+
+**N² de fondo (`bbl_driver n2`, 2026-11-01).** La comparación `lotw` le pasaba N² ya hecho a
+`add_LOTW_BBL_diffusivity`, sin pasar por `find_N2`, que en MOM6 sobrescribe las dos interfaces
+interiores más bajas con un N²_bot de bulto (SD:1202-1258). El puerto lo omitía (clase a,
+`docs/design/teos10_refs/mom6_eos.md` §5) y ahora lo aplica (`n2_bottom_bulk`). `find_N2` se
+extrae tal cual con las otras dos rutinas. El driver arma `tv` con T, S y la EOS de
+`EOS_manual_init` (lineal, WRIGHT_FULL o ROQUET_RHO), llena `G%HI` para `EOS_domain` y pasa
+`h_bot`, `k_bot` (`find_rho_bottom` los escribe aunque son opcionales en `find_N2`). 8 columnas
+(`columns.bbl_n2_cases`): lineal suave, interfaz de fondo inestable, aleatoria, `wright_full` y
+`teos10` profundas, 3 y 2 capas, las dos interfaces de fondo inestables. N² igual a MOM6 a
+≤ 1e-9 del máximo de la columna (las lineales vienen de diferencias de ρ ≈ 1030 con Δρ ≈ 0.01;
+las no lineales a ~1e-15), y el Kd con el N² de `find_N2` encadenado a `lotw` igual a
+`lotw_bbl_columns` (Numba = NumPy bit a bit).
 
 ## Ecuaciones de estado no lineales (`WRIGHT_FULL` y `ROQUET_RHO` de MOM6)
 

@@ -134,10 +134,10 @@ both EOS (`tests/test_eos_closures.py`). The thermobaric column has $N^2 > 0$ at
 1.9e-6 Roquet) and $N^2 < 0$ at 4000 m (−1.9e-5 s⁻²).
 
 !!! warning "Open items in the closures"
-    - **BBL near-bed N², class (a), fix deferred.** MOM6 `find_N2` replaces N² at the two lowest interfaces with a
-        bulk N²_bot (`MOM_set_diffusivity.F90:1202-1258`). pyOCEAN's BBL port omits this replacement. Fixing it would
-        change linear-EOS BBL runs and the validated DOME numbers, so it waits for Esteban's approval. Measured
-        effect on Kd (`validation/mom6_column/bbl_n2bot_effect.py`, `mom6_eos.md` §5): ≤ 1.6 % in smooth columns,
+    - **BBL near-bed N², class (a), fixed on 2026-11-01.** MOM6 `find_N2` replaces N² at the two lowest interfaces
+        with a bulk N²_bot (`MOM_set_diffusivity.F90:1202-1258`). The BBL port omitted this replacement until
+        2026-11-01; it now applies it (`n2_bottom_bulk`, equal to compiled MOM6 `find_N2`), with any EOS. Effect
+        before the fix (`validation/mom6_column/bbl_n2bot_effect.py`, `mom6_eos.md` §5): ≤ 1.6 % in smooth columns,
         2–37 % in random columns, and 100 % in one column where the energy runs out at a different interface.
     - **Jackson, class (c).** With a nonlinear EOS, Jackson matches MOM6 only at the starting N². MOM6 projects T and
         S separately inside the sub-steps; pyOCEAN does not port that projection, so the sub-step N² differs at

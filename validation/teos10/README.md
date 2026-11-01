@@ -279,8 +279,9 @@ interfaz inicial. Volúmenes de cabbeling: agua con ρ(T, S, 0) mayor que la de 
    hiciera falta más, opciones exactas restantes: vectorizar la EOS por lotes de puntos (SIMD sin cambiar la
    aritmética por punto) y equilibrar la carga de las filas con tierra; opciones no exactas: 3 subcolumnas por cara,
    PLM de la anomalía de densidad, siempre con MOM6 como oráculo en el modo sin perfil.
-7. **BBL con el N²_bot de MOM6** (`find_N2`, `MOM_set_diffusivity.F90:1202-1258`; clase (a), aplazado hasta el OK
-   de Esteban porque cambia las corridas BBL lineales y las cifras de DOME; efecto medido en Kd ≤ 1.6 % en columnas
+7. ~~**BBL con el N²_bot de MOM6**~~ Corregido el 2026-11-01 con el OK de Esteban (`n2_bottom_bulk`, igual a `find_N2`
+   de MOM6 compilado; cifras de DOME en `validation/dome/README.md`). Antes (`find_N2`, `MOM_set_diffusivity.F90:1202-1258`;
+   clase (a)); efecto medido en Kd ≤ 1.6 % en columnas
    suaves, 2–37 % aleatorias, 100 % en una; `docs/design/teos10_refs/mom6_eos.md` §5).
 8. **Proyección de dos trazadores de Jackson** (MOM6 proyecta T y S por separado dentro de los subpasos; aquí solo el
    N² inicial es igual a MOM6, diferencia de segundo orden, (c)).
