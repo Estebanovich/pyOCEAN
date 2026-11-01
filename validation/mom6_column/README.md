@@ -43,6 +43,8 @@ Los tests de pytest (`tests/test_vertical_vs_mom6.py`) se saltan cuando falta un
 | `kappa_shear_driver` | `MOM_kappa_shear::kappa_shear_column` (privada, extraída; `nzc = nz`, EOS lineal en T, Boussinesq, valores por defecto) | `physics.mixing.kappa_shear.kappa_shear_column` | 1e-10 × max de la columna (κ y Q) |
 | `bbl_driver lotw` | `MOM_set_diffusivity::add_LOTW_BBL_diffusivity` (extraída con `set_diffusivity_CS`; Boussinesq, valores OM4) | `physics.mixing.bbl_mixing.lotw_bbl_column` | 1e-10 × max Kd de la columna |
 | `bbl_driver tke` | `MOM_set_diffusivity::set_BBL_TKE` (extraída) | factor contra C_d\|U\|³ y √C_d\|U\| | 1e-12 relativo |
+| `eos_driver eval` | `MOM_EOS::calculate_density` (sin y con `rho_ref` = 1035) y `calculate_density_derivs` (1-D), con `EOS_manual_init(form_of_EOS = EOS_WRIGHT_FULL / EOS_ROQUET_RHO)` | `physics.eos.wright_full`, `physics.eos.roquet_rho` (`density`, `density_anomaly`, `density_derivs`) | rtol 1e-12 (ρ, ∂ρ/∂T, ∂ρ/∂S), atol 1e-12 (ρ − ρ_ref); medido: bit a bit |
+| `eos_driver coef` | coeficientes `parameter` de `MOM_EOS_Wright_full.F90:23-37` y `MOM_EOS_Roquet_rho.F90:14-156`, tal como los pliega el compilador | constantes de módulo de los mismos nombres | bit a bit |
 
 Las columnas de prueba se generan en `columns.py`:
 - semilla 2026;
@@ -426,3 +428,38 @@ KV_BBL_MIN = 1e-4 (DOME). Los dos factores crecen en KV_BBL_MIN/(C_d|U_b| h_bbl)
 caso 4. Con `CORRECT_BBL_BOUNDS = True`, SV:1103-1110 recalcula bbl_thick y el u\* queda
 consistente. OM4 usa KV_BBL_MIN = 0. Solo afecta a flujos muy débiles, donde la energía es
 pequeña de todos modos.
+
+## Ecuaciones de estado no lineales (`WRIGHT_FULL` y `ROQUET_RHO` de MOM6)
+
+TEOS-10 en el núcleo 3-D, tarea 1 (`docs/superpowers/specs/2026-10-31-teos10-3d-design.md`,
+lectura de referencia `docs/design/teos10_refs/mom6_eos.md` §1-3).
+
+`eos_driver eval` evalúa las dos EOS sobre una nube de 2048 puntos (`eos_columns.py`,
+semilla 2026): 2000 puntos uniformes en T −2…32 °C, S 0…42, p 0…6e7 Pa, las 8 esquinas
+de esa caja y 40 puntos de agua dulce (S = 0, T 0…30 °C, p 0…1e7 Pa). La EOS se elige
+con `EOS_manual_init`, que crea la misma clase que `EOS_init` con
+`EQN_OF_STATE = "WRIGHT_FULL"` / `"ROQUET_RHO"` (`MOM_EOS.F90:1563-1594, 1735-1801`)
+sin archivo de parámetros; la escala de unidades queda en 1. Salidas: ρ, ρ − 1035 en la
+forma de anomalía de cada EOS (Wright: numerador reordenado, `:110-120`; Roquet: ρ_ref
+restado de ρ₀S₀ antes de los términos en p, `:305`), ∂ρ/∂T y ∂ρ/∂S.
+
+`eos_driver coef` imprime los 15 coeficientes de Wright y los 132 de Roquet (R00…R05,
+EOS000…EOS013, ALP…, BET… y los factores de escala). `build_reference.sh` copia tal cual
+las líneas `real, parameter ::` de los dos módulos a `*_params.inc` con una instrucción
+`write` por coeficiente (`*_write.inc`), así que el valor es el que pliega gfortran.
+
+`build_reference.sh` termina llamando a `eos_columns.py`, que escribe
+`tests/data/mom6_eos_reference.npz` (171 kB, versionado). `tests/test_eos_nonlinear.py`
+compara contra ese npz y no necesita la compilación.
+
+**Resultado** (2026-10-31): las cuatro salidas de las dos EOS y los 147 coeficientes son
+**bit a bit** iguales a MOM6 compilado (max |Δ| = 0 en los 2048 puntos). Los objetos de
+MOM6 están compilados con `-O0` (sin FMA) y los kernels de Python/Numba repiten la
+parentización de MOM6. Las potencias enteras de los coeficientes de Roquet se redondean una
+vez (`_pw`, como el plegado de gfortran con MPFR); para estos factores coincide con `**` de
+Python.
+
+Contra TEOS-10 de `gsw` (polinomio de 75 términos en volumen específico), Roquet difiere en
+5.4e-2 kg m⁻³ como máximo sobre los puntos con S ≥ 2 (salobre a 5500-6000 dbar, fuera del
+embudo oceánico de los ajustes), RMS 7.6e-3, mediana 3.2e-4; 3.0e-2 para 30 < S_A < 40.
+`ROQUET_FIT_MAX` = 1.1 × el máximo medido [verificar Roquet 2015, Tabla].

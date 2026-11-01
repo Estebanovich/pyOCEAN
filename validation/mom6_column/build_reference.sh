@@ -72,15 +72,28 @@ BBM=$REF/build/column/bbl_column_mom6.F90
   awk '/^subroutine set_BBL_TKE\(/{on=1} on{print} /^end subroutine set_BBL_TKE/{on=0}' "$SD_SRC"
   echo "end module bbl_column_mom6"
 } > "$BBM"
-for d in remap_driver regrid_driver hybgen_driver kappa_shear_driver bbl_driver; do
+# Nonlinear EOS (TEOS-10 in the 3-D core, task 1): the module-level parameter lines of
+# MOM_EOS_Wright_full.F90 (:23-37) and MOM_EOS_Roquet_rho.F90 (:14-156) are copied verbatim into
+# include files, with one write statement per coefficient, so eos_driver coef prints them as the
+# compiler folds the parameter expressions.
+for m in Wright_full:wright_full Roquet_rho:roquet_rho; do
+  SRC=$REF/MOM6/src/equation_of_state/MOM_EOS_${m%%:*}.F90 ; OUT=$REF/build/column/${m##*:}
+  grep '^real, parameter ::' "$SRC" > "${OUT}_params.inc"
+  sed -E 's/^real, parameter :: *([A-Za-z0-9_]+) *=.*/write(u,"(a,1x,es25.17)") "\1", \1/' \
+      "${OUT}_params.inc" > "${OUT}_write.inc"
+done
+for d in remap_driver regrid_driver hybgen_driver kappa_shear_driver bbl_driver eos_driver; do
   [ -f "$HERE/$d.F90" ] || continue
   EXTRA=""; [ "$d" = hybgen_driver ] && EXTRA="$HYB"
   # kappa_shear: preprocess MOM_memory.h; no FMA contraction, so the comparison with NumPy can
   # reach round-off (gfortran contracts a*b+c by default on arm64)
   [ "$d" = kappa_shear_driver ] && EXTRA="-ffp-contract=off -I$REF/MOM6/config_src/memory/dynamic_symmetric -I$REF/MOM6/src/framework $KSM"
   [ "$d" = bbl_driver ] && EXTRA="-ffp-contract=off -I$REF/MOM6/config_src/memory/dynamic_symmetric -I$REF/MOM6/src/framework $BBM"
+  [ "$d" = eos_driver ] && EXTRA="-ffp-contract=off -I$REF/build/column"
   mpif90 -O2 -fdefault-real-8 -fdefault-double-8 -I"$B" -I"$DEPS/include" -J"$REF/build/column" \
          $EXTRA "$HERE/$d.F90" $OBJS "$DEPS/lib/libFMS.a" "$DEPS/lib/libgsw.a" "$DEPS/lib/libcvmix.a" \
          $(nf-config --flibs) $(nc-config --libs) -o "$REF/build/column/$d"
 done
 echo "built: $(ls "$REF/build/column" | grep -v '\.mod$' | tr '\n' ' ')"
+# Reference table of the nonlinear EOS for tests/test_eos_nonlinear.py (committed, < 1 MB)
+python "$HERE/eos_columns.py" "$REF/build/column/eos_driver" "$HERE/../../tests/data/mom6_eos_reference.npz"
