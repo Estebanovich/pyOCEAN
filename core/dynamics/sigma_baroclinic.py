@@ -106,6 +106,7 @@ from core.components.pgf import PressureGradient
 from core.components.momentum import Momentum, sum_terms
 from core.components.open_boundary import CONFIG as _OB_CONFIG, OpenBoundary, convert_exterior
 from core.components.bottom_drag import LogLawBedDrag, QuadraticBedDrag
+from core.components.boundary_tides import BoundaryTides, TidalPotential, bind_copy
 from core.components.closure import BBLAddedClosure, ShearAddedClosure, find_closure, make_closure
 from physics.mixing.kpp_cvmix import KPPParams
 from physics.mixing.kappa_shear import JacksonParams
@@ -1177,6 +1178,16 @@ class SigmaBaroclinic:
         wrapped halos and are cropped (as MOM6/MITgcm halo exchanges, ``core.model.periodic``); NumPy pair
         operators compute the wrap face natively.  Pre-flight refuses an open boundary on a periodic axis.  Used by
         the doubly periodic single-column cases (CROCO 5×5, MOM6 2×2) and for channels
+    boundary_tides : ``core.components.boundary_tides.BoundaryTides`` (regional chain Task 5): TPXO barotropic tide
+        added to the Flather exterior of every ``'radiating'`` edge, η_ext + η_tide and ū_ext + ū_tide with
+        ū_tide = U_TPXO / D_model (rotated to grid axes on curvilinear grids), at tⁿ + Δt/2; u′ untouched.  Needs at
+        least one 'radiating' edge (pre-flight).  None (default): bit for bit
+    tidal_potential : False (default), True (the equilibrium tide of the ``boundary_tides`` constituents and dates)
+        or a ``TidalPotential``: g∇η_body added to the momentum tendency of every layer after the AB3 combination,
+        at tⁿ + Δt/2 (needs ``lon_t``, ``lat_t`` in the grid)
+    sal_beta : scalar self-attraction and loading β ∈ [0, 1): surface pressure gradient g(1 − β)∇η on the total η
+        (MOM6 SAL_SCALAR_VALUE, NWA12 0.05; ``core.dynamics.wetting_drying.WetDryFreeSurface``); 0: bit for bit
+    sal_flather : also use g(1 − β) in the Flather wave speed (MOM6 TIDAL_SAL_FLATHER: default False, NWA12 True)
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, n_layers: int = 10,
@@ -1206,7 +1217,9 @@ class SigmaBaroclinic:
                  shear_prandtl: float = 1.0, jackson_params: JacksonParams | None = None,
                  bbl_mixing: str | None = None, bbl_params: BBLParams | None = None,
                  surface_fluxes: BulkFluxes | None = None, eos: str = "linear", rho_pgf_ref: float | None = None,
-                 pgf_mass_weight: str = "vanished", p_ref: float = 2e7, ts_kind: str = "theta_sp") -> None:
+                 pgf_mass_weight: str = "vanished", p_ref: float = 2e7, ts_kind: str = "theta_sp",
+                 boundary_tides: BoundaryTides | None = None, tidal_potential: bool | TidalPotential = False,
+                 sal_beta: float = 0.0, sal_flather: bool = False) -> None:
         _args = {k: v for k, v in locals().items() if k != "self"}
         raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
         # equation of state (TEOS-10 in 3-D, Task 4): ρ₀ of the EOS before anything that uses it is built
@@ -1299,7 +1312,8 @@ class SigmaBaroclinic:
                                 flather_u=fl_u if self.open else None, flather_v=fl_v if self.open else None,
                                 clamped_u=cl_u, clamped_v=cl_v, gls_stratified=gls_stratified, rho0=rho0,
                                 gls_kt_min=float(kv) if kv > 0 else KT_MIN, external_closure=True,
-                                periodic=self.periodic)
+                                periodic=self.periodic, sal_beta=sal_beta, sal_flather=sal_flather)
+        self.sal_beta, self.sal_flather = float(sal_beta), bool(sal_flather)
         self.gls_stratified = self.core.gls_stratified                 # True only with closure='gls' (N2a 8c)
         self.gls_production = gls_production                           # 'croco' or 'energy' (N3 task 5)
         sponged = tuple(e for e in self.open if self.obc_mode[e] != "clamped")  # a Dirichlet edge needs no sponge
@@ -1384,6 +1398,19 @@ class SigmaBaroclinic:
         self.S_ext, self._S_in = None, None                              # salinity exterior (N2a), set by initial_state
         self._ob.bind(dt=dt, ds=self.ds, fs=self.fs, H=self.H, n_tracers=self.n_tracers, ale=self.ale,
                       remap_code=getattr(self, "remap_code", rm.PPM_H4), salinity=self.salinity)
+        # tides (regional chain Task 5): barotropic tide on the Flather exterior of the 'radiating' edges and the
+        # equilibrium tide as a body force; bound copies, so the caller's objects stay reusable
+        self.boundary_tides, self._boundary_tides = boundary_tides, None
+        if boundary_tides is not None:
+            Hu_e, Hv_e = self._ob.edge_face_depths()
+            self._boundary_tides = bind_copy(boundary_tides, h_grid,
+                                             tuple(e for e in self.open if self.obc_mode[e] == "radiating"), Hu_e, Hv_e)
+        if tidal_potential is True:
+            tidal_potential = TidalPotential.from_boundary_tides(boundary_tides)
+        self.tidal_potential = tidal_potential if tidal_potential is not False else None
+        self._tidal_potential = (None if self.tidal_potential is None else
+                                 bind_copy(self.tidal_potential, h_grid, g, np.isfinite(self.fs.H_u),
+                                           np.isfinite(self.fs.H_v), per=self.periodic))
         if self.ale:
             self._layer_transport = ALELayerTransport(fs=self.fs, H=self.H, area=self.area, dt=dt,
                                                       thickness_flux=self.thickness_flux, vi_geom=self._vi,

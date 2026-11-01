@@ -3,9 +3,11 @@ Fixed-order driver of the 3-D core (N1, spec docs/superpowers/specs/2026-10-28-n
 
 One time step is ten named phases, the same order in σ and ALE (phases 8–9 do nothing in σ):
 
- 1 prepare                    exterior state at tⁿ⁺¹ (open boundaries); ALE: face geometry of hⁿ
+ 1 prepare                    exterior state at tⁿ⁺¹ (open boundaries); ALE: face geometry of hⁿ; boundary
+                              tide of the Flather exterior at tⁿ + Δt/2 (``boundary_tides``, regional chain Task 5)
  2 explicit_momentum          named explicit terms (PGF, Coriolis or vector-invariant, advection, viscosity, …)
- 3 time_combine               AB3 (AB1, AB2 at start-up); τ/ρ₀, not extrapolated
+ 3 time_combine               AB3 (AB1, AB2 at start-up); τ/ρ₀, not extrapolated; body tide g∇η_body at
+                              tⁿ + Δt/2, not extrapolated either (``tidal_potential``)
  4 implicit_and_free_surface  closure ν, implicit vertical viscosity + bed drag + wind, free surface, Flather,
                               closure update (core.components.closure)
  5 boundary_velocity          sponge on u′, Orlanski; ALE: thin bed layers, optional blending
@@ -280,7 +282,17 @@ class Driver:
         gu_ab, gv_ab, hist = m._time_stepper.combine(ctx.st.g_hist, ctx.gu, ctx.gv)
         tu = None if ctx.tau_x is None else np.asarray(ctx.tau_x, float) / m.rho0
         tv = None if ctx.tau_y is None else np.asarray(ctx.tau_y, float) / m.rho0
+        if getattr(m, "_tidal_potential", None) is not None:
+            # body tide g∇η_body (regional chain Task 5): at tⁿ + Δt/2 on every layer, outside the AB3 history (as τ)
+            fx, fy = m._tidal_potential.force(ctx.st.time + 0.5 * m.dt)
+            gu_ab, gv_ab = gu_ab + fx[None], gv_ab + fy[None]
         ctx.set(gu_ab=gu_ab, gv_ab=gv_ab, hist=hist, tu=tu, tv=tv)
+
+    def _boundary_tide(self, ctx: StepContext) -> None:
+        """Tide of the Flather exterior at tⁿ + Δt/2 (regional chain Task 5; ``BoundaryTides``); nothing without."""
+        m = self.m
+        if getattr(m, "_boundary_tides", None) is not None:
+            ctx.set(tide=m._boundary_tides.flather_arrays(ctx.st.time + 0.5 * m.dt))
 
     _sigma_explicit_momentum = _ale_explicit_momentum = _explicit_momentum
     _sigma_time_combine = _ale_time_combine = _time_combine
@@ -499,6 +511,7 @@ class Driver:
             if m.salinity:
                 ctx.set(S_in=m._ob.exterior_S(D0[None] * ds, ext))
         ctx.set(ext=ext)
+        self._boundary_tide(ctx)
 
     def _sigma_implicit_and_free_surface(self, ctx: StepContext) -> None:
         m, st = self.m, ctx.st
@@ -511,7 +524,7 @@ class Driver:
         nu = cl.viscosity(st)                                          # ν of the current closure state (CROCO order)
         nu_u, nu_v = (None, None) if nu is None else nu
         eta_new, u_new, v_new, fluxes = m._free_surface.step(st.eta, st.u, st.v, ctx.gu_ab, ctx.gv_ab, ctx.tu, ctx.tv,
-                                                             m._ob.flather_args(ctx.ext), fw=ctx.fw, nu_u=nu_u,
+                                                             m._ob.flather_args(ctx.ext, ctx.vals.get("tide")), fw=ctx.fw, nu_u=nu_u,
                                                              nu_v=nu_v)
         # bed u*² of the closure (N3 task 4): one source, the first-layer log law at the new velocities
         ustar2_bot = m.core.bed_ustar2(eta_new, u_new, v_new)
@@ -626,6 +639,7 @@ class Driver:
         wu, wv = face_fractions(hu), face_fractions(hv)
         ext = m._ob.evaluate(st.time + m.dt, hu, hv, wu, wv)
         ctx.set(qe=qe, qw=qw, qn=qn, qs=qs, hu=hu, hv=hv, wu=wu, wv=wv, ext=ext)
+        self._boundary_tide(ctx)
 
     def _ale_implicit_and_free_surface(self, ctx: StepContext) -> None:
         m, st = self.m, ctx.st
@@ -659,7 +673,7 @@ class Driver:
         nu = cl.viscosity(st)                                          # None for the constant closures of ALE
         nu_u, nu_v = (None, None) if nu is None else nu
         eta_new, u_new, v_new, fluxes = m._free_surface.step(st.eta, st.u, st.v, ctx.gu_ab, ctx.gv_ab, ctx.tu, ctx.tv,
-                                                             m._ob.flather_args(ctx.ext), fw=ctx.fw, wu=ctx.wu,
+                                                             m._ob.flather_args(ctx.ext, ctx.vals.get("tide")), fw=ctx.fw, wu=ctx.wu,
                                                              wv=ctx.wv, nu_u=nu_u, nu_v=nu_v, **visc)
         ustar2_bot = self._ale_bed_ustar2(ctx, u_new, v_new, visc)
         ctx.set(eta_new=eta_new, u_new=u_new, v_new=v_new, fluxes=fluxes, ustar2_bot=ustar2_bot)

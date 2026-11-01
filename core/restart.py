@@ -18,6 +18,9 @@ SCHISM #140).  For ``SigmaBaroclinic`` that is:
   BBL mixing (``bbl_mixing``) has no state of its own, but its scheme and parameters are checked; the bulk
   surface fluxes (``surface_fluxes``, N2b) have none either (the atmosphere is a pure function of time): their
   scheme, averaging depths, wind choice, radiation constants, heights and the atmosphere's time origin are checked;
+  the tides of the open boundary and the tidal potential (regional chain Task 5) have no state either: their
+  constituents, reference and nodal dates, ramp and edges, and the scalar SAL ``sal_beta``/``sal_flather``, are
+  checked (the harmonic constants themselves are not);
 * the lagged-LU CG preconditioner of the free surface (the matrix it factorised and the refactor
   flag): CG stops at an iterate that depends on it;
 * ALE (``vertical_coordinate='ale'``, Plan D): the layer thicknesses h, the exterior profile kept in z
@@ -120,6 +123,17 @@ def _config(model: SigmaBaroclinic) -> dict:
                    else _text(sf.h_uv_sfc), bulk_relative_wind=int(sf.relative_wind), bulk_albedo=sf.albedo,
                    bulk_emissivity=sf.emissivity, bulk_z_u=sf.z_u, bulk_z_t=sf.z_t, bulk_z_q=sf.z_q,
                    bulk_origin="none" if org is None else str(np.datetime64(org, "ns")))
+    # tides (regional chain Task 5): no state (pure functions of t), so only the configuration is checked
+    bt = getattr(model, "_boundary_tides", None)
+    cfg.update(boundary_tides="none" if bt is None else "on", sal_beta=float(getattr(model, "sal_beta", 0.0)),
+               sal_flather=int(getattr(model, "sal_flather", False)))
+    if bt is not None:
+        cfg.update({f"tides_{k}": v for k, v in bt.config().items()})
+        cfg.update(tides_edges=",".join(bt.edges))
+    tp = getattr(model, "_tidal_potential", None)
+    cfg.update(tidal_potential="none" if tp is None else "on")
+    if tp is not None:
+        cfg.update({f"tidal_potential_{k}": v for k, v in tp.config().items()})
     if getattr(model, "ale", False):                           # ALE (Plan D): the rule and every scheme choice
         cfg.update(vertical_coordinate="ale", regrid=model.regrid_rule, remap=int(model.remap_code),
                    thickness_flux=model.thickness_flux, momentum=model.momentum, ke_scheme=model.ke_scheme,
@@ -152,7 +166,9 @@ _CONFIG_DEFAULTS = {"salinity": 0, "s_coef": 0.0, "s_ref": 35.0, "sponge_S": "no
                     "shear_mixing": "none",                                                 # no shear mixing
                     "bbl_mixing": "none",                                                   # no BBL mixing
                     "surface_fluxes": "none",                                               # no bulk fluxes
-                    "eos": "linear", "p_ref": 2e7, "pgf_mass_weight": "vanished"}           # before TEOS-10 in 3-D
+                    "eos": "linear", "p_ref": 2e7, "pgf_mass_weight": "vanished",           # before TEOS-10 in 3-D
+                    "boundary_tides": "none", "sal_beta": 0.0, "sal_flather": 0,            # before tides in 3-D
+                    "tidal_potential": "none"}
 
 # configuration entries not checked when a file lacks them: files written before TEOS-10 in 3-D did not store c_p,
 # which could be any value the run passed

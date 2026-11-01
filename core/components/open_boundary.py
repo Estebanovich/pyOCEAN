@@ -150,14 +150,26 @@ class OpenBoundary:
         sl[axis] = edge
         u_new[tuple(sl)] = np.where(open_, take(bar[None], edge) + pb, take(u_new, edge))
 
-    def flather_args(self, ext: dict | None) -> dict:
-        """Flather radiation to a resting exterior (η = 0, ū = 0) for the free-surface step; {} if closed."""
+    def flather_args(self, ext: dict | None, tide: tuple | None = None) -> dict:
+        """
+        Flather exterior for the free-surface step: the provider's (η, ū)ₑₓₜ, or a resting exterior (η = 0, ū = 0);
+        {} if closed.  ``tide`` (η_u, η_v, ū_u, v̄_v) from ``BoundaryTides.flather_arrays`` (regional chain Task 5;
+        zero away from the 'radiating' edges) is added to η and ū only — u′ₑₓₜ is not touched.  None: unchanged.
+        """
         if not self.open:
             return {}
         if ext is not None:
-            return ext["flather"]
-        zu, zv = np.zeros(self.fs.H_u.shape), np.zeros(self.fs.H_v.shape)
-        return dict(flather_eta=(zu, zv), flather_ubar=zu, flather_vbar=zv)
+            base = ext["flather"]
+        else:
+            zu, zv = np.zeros(self.fs.H_u.shape), np.zeros(self.fs.H_v.shape)
+            base = dict(flather_eta=(zu, zv), flather_ubar=zu, flather_vbar=zv)
+        if tide is None:
+            return base
+        eu, ev, uu, vv = tide
+        out = dict(base)
+        out.update(flather_eta=(base["flather_eta"][0] + eu, base["flather_eta"][1] + ev),
+                   flather_ubar=base["flather_ubar"] + uu, flather_vbar=base["flather_vbar"] + vv)
+        return out
 
     def relax_velocity(self, u_old: np.ndarray, v_old: np.ndarray, u_new: np.ndarray, v_new: np.ndarray,
                        ext: dict | None, fluxes, wu: np.ndarray | None = None,

@@ -152,6 +152,7 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
             modes[e] = mode
     if a["open_boundary_state"] is None and "clamped" in modes.values():
         err("open_boundary", "a 'clamped' open_boundary_mode needs open_boundary_state (the exterior to impose)")
+    _tide_issues(a, given, modes, err, warn)
     # ---- periodic axes (N3 task 3): an axis is periodic or has open/closed edges, not both
     per = a.get("periodic", ()) or ()
     per = (per,) if isinstance(per, str) else tuple(per)
@@ -354,6 +355,51 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
     if a["sponge_rate"] is None and ({"sponge_T", "sponge_zw", "sponge_tr", "sponge_S"} & given):
         warn("interior_sponge", "sponge_T / sponge_zw / sponge_tr / sponge_S are ignored without sponge_rate")
     return out
+
+
+def _tide_issues(a: dict, given: frozenset[str], modes: dict[str, str], err, warn) -> None:
+    """
+    Tides at the open boundary, body tide and scalar SAL (regional chain Task 5,
+    ``core.components.boundary_tides``): ``boundary_tides`` needs a 'radiating' edge (the tide is added to the
+    Flather exterior of those edges only), valid constituents/dates/ramp; ``tidal_potential=True`` takes its
+    constituents from ``boundary_tides``; ``sal_beta`` ∈ [0, 1).
+    """
+    from core.components.boundary_tides import BoundaryTides, TidalPotential
+    bt = a.get("boundary_tides")
+    if bt is not None:
+        if not isinstance(bt, BoundaryTides):
+            err("open_boundary", f"boundary_tides must be a core.components.boundary_tides.BoundaryTides, got "
+                                 f"{type(bt).__name__}")
+        else:
+            for msg in bt.issues():
+                err("open_boundary", msg)
+        if "radiating" not in modes.values():
+            err("open_boundary", "boundary_tides needs at least one 'radiating' open edge: the tide is added to the "
+                                 "Flather exterior (η, ū) of the 'radiating' edges "
+                                 f"(open edges and modes: {modes or 'none'})")
+    tp = a.get("tidal_potential", False)
+    if tp is True:
+        if bt is None:
+            err("tidal_potential", "tidal_potential=True takes its constituents and dates from boundary_tides; "
+                                   "without boundary_tides pass a TidalPotential(constituents, ref_date, ...)")
+        elif isinstance(bt, BoundaryTides):
+            for msg in TidalPotential.from_boundary_tides(bt).issues():
+                err("tidal_potential", msg)
+    elif isinstance(tp, TidalPotential):
+        for msg in tp.issues():
+            err("tidal_potential", msg)
+    elif tp is not False and tp is not None:
+        err("tidal_potential", f"tidal_potential must be False, True or a TidalPotential, got {type(tp).__name__}")
+    beta = a.get("sal_beta", 0.0)
+    try:
+        ok = bool(np.isfinite(beta) and 0.0 <= beta < 1.0)
+    except TypeError:
+        ok = False
+    if not ok:
+        err("free_surface", f"sal_beta={beta!r}: the scalar self-attraction and loading factor must be in [0, 1) "
+                            "(MOM6 SAL_SCALAR_VALUE; NWA12 0.05)")
+    elif beta == 0.0 and "sal_flather" in given and a.get("sal_flather"):
+        warn("free_surface", "sal_flather=True is ignored with sal_beta=0 (the Flather speed is √(g D) either way)")
 
 
 def _eos_issues(a: dict, given: frozenset[str], eos, nonlinear: bool, sal: bool, ale: bool, err, warn) -> None:

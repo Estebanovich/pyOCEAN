@@ -90,6 +90,37 @@ def _subset(lon: np.ndarray, lat: np.ndarray, lon_range, lat_range) -> tuple[np.
     return ii, jj
 
 
+def tpxo_atlas_files(directory: str | Path, constituents: list[str] | tuple[str, ...],
+                     transports: bool = True) -> tuple[list[Path], list[Path] | None, Path | None, list[str]]:
+    """
+    Files of a TPXO atlas directory for the requested constituents, those present only.
+
+    Looks for ``h_<c>_*.nc`` (and ``u_<c>_*.nc`` with ``transports``) and the grid file ``grid_*.nc``.  A
+    constituent without its files is skipped with a ``UserWarning`` — e.g. the long-period ``mm`` and ``mf``
+    (NWA12 forces them, docs/design/regional_refs/mom6_obc_tides.md §1) exist in TPXO10-atlas-v2 but not in
+    every atlas.  Pass the result to ``read_tpxo(h_files, u_files, grid_file, ...)``.
+
+    Returns
+    -------
+    (h_files, u_files or None, grid_file or None, names) with names the constituents found, in request order.
+    """
+    import warnings
+
+    d = Path(directory)
+    h_files, u_files, names = [], [], []
+    for c in constituents:
+        h = sorted(d.glob(f"h_{c.lower()}_*.nc"))
+        u = sorted(d.glob(f"u_{c.lower()}_*.nc")) if transports else [None]
+        if not h or not u:
+            warnings.warn(f"TPXO atlas {d} has no files for constituent {c!r}: skipped", UserWarning, stacklevel=2)
+            continue
+        h_files.append(h[0])
+        u_files.append(u[0])
+        names.append(c.lower())
+    grids = sorted(d.glob("grid_*.nc"))
+    return h_files, (u_files if transports else None), (grids[0] if grids else None), names
+
+
 def read_tpxo(
     h_files: list[str | Path],
     u_files: list[str | Path] | None,

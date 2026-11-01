@@ -225,3 +225,36 @@ class TestCoastalInterpolation:
         ds.to_netcdf(tmp_path / "h_m2_land.nc")
         tc = read_tpxo([tmp_path / "h_m2_land.nc"], None, g, lon_range=(-105, -95), lat_range=(14, 20))
         assert np.isnan(_interp_complex(tc.h, "lat", "lon", np.array([17.1]), np.array([-100.1]))[0, 0])
+
+
+# ===========================================================================
+# Long-period constituents in the atlas (regional chain Task 5)
+
+ATLAS = Path.home() / "pyOCEAN_refs" / "TPXO10_atlas_v2_nc"
+
+
+class TestAtlasFiles:
+
+    def test_present_constituents_only(self, tmp_path):
+        from forcing.sources.tpxo import tpxo_atlas_files
+        _write_tpxo(tmp_path, ("m2", "mf"))
+        with pytest.warns(UserWarning, match="'mm'"):
+            h, u, g, names = tpxo_atlas_files(tmp_path, ["m2", "mm", "mf"])
+        assert names == ["m2", "mf"]
+        assert [p.name for p in h] == ["h_m2_tpxo10_atlas_30_v2.nc", "h_mf_tpxo10_atlas_30_v2.nc"]
+        assert g.name == "grid_tpxo10atlas_v2.nc"
+        ds = read_tpxo(h, u, g, (-105.0, -95.0), (14.0, 20.0))
+        assert list(ds.constituent.values) == ["m2", "mf"]
+
+    @pytest.mark.skipif(not ATLAS.is_dir(), reason="TPXO10-atlas-v2 not on this machine")
+    def test_real_atlas_reads_mm_mf(self):
+        """TPXO10-atlas-v2 has h_mm/h_mf/u_mm/u_mf: long-period elevations are a few mm to cm."""
+        from forcing.sources.tpxo import tpxo_atlas_files
+        h, u, g, names = tpxo_atlas_files(ATLAS, ["mm", "mf"])
+        assert names == ["mm", "mf"]
+        ds = read_tpxo(h, u, g, (-75.0, -70.0), (36.0, 40.0))
+        amp = np.abs(ds["h"].values)
+        ok = np.isfinite(amp)
+        assert ok.mean() > 0.3                                       # ocean part of the box
+        assert 1e-4 < np.nanmedian(amp) < 0.05                       # [m]
+        assert np.all(np.isfinite(ds["U"].values) | np.isnan(ds["U"].values))
