@@ -212,6 +212,12 @@ def test_parity_config_preflight_clean(syn):
     assert (m.obc_tau_in, m.obc_tau_out) == (3 * 86400.0, 360 * 86400.0)
     assert b.edges == ("east", "south", "north") and set(m.obc_mode.values()) == {"radiating"}
     assert m.boundary_tides.velocity_depth == "tpxo"                # R19
+    # R21: NWA12's G_EARTH = 9.8 reaches every consumer of g; full PGF mass weighting
+    cl = m._closure
+    gs = [m.g, m.core.g, m.fs.g, m._pgf.g, m._tidal_potential.g] + [c.g for c in (cl, getattr(cl, "base", None))
+                                                                     if c is not None and hasattr(c, "g")]
+    assert all(x == 9.8 for x in gs), gs
+    assert m.pgf_mass_weight == "full" and m._pgf.mass_weight == "full"
     assert m.sal_beta == 0.05 and m.sal_flather and m.tidal_potential is not None and not m.atm_pressure
     assert m.river_input is not None and m.river_input.Q.sum() > 0
     assert np.nanmin(b.H) == 4.0                                     # MINIMUM_DEPTH

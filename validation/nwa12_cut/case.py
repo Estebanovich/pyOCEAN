@@ -15,6 +15,8 @@ Parity with NWA12 (``parity_config``; values from ``docs/design/regional_refs/*.
 |---|---|---|---|
 | vertical | z* 75 levels ``vgrid_75_2m.nc`` | ALE z*, ``dz_top`` = the same 75 Δz | — |
 | momentum | vector invariant, biharmonic Smagorinsky ``SMAG_BI_CONST`` 0.03 | vector invariant, **Laplacian** Smagorinsky 0.15 (OM4) | b (no biharmonic) |
+| gravity | ``G_EARTH`` 9.8 | ``g=9.8`` (R21; reaches the free surface and Flather, the PGF, the tidal potential/SAL, the closures and the EOS pressure; the FMS bulk keeps its own GRAV 9.80) | — |
+| PGF bottom mass weighting | ``MASS_WEIGHT_IN_PRESSURE_GRADIENT`` True (every face) | ``pgf_mass_weight='full'`` (R21; initial PGF = MOM6 to 1.2e-14, Task 10) | — |
 | EOS | ``WRIGHT_FULL`` θ, S_P, ρ₀ 1035, ``C_P`` 3992 | ``eos='wright_full'``, ``ts_kind='theta_sp'``, ρ₀ 1035, c_p 3992 | — |
 | surface | FMS coupler NCAR bulk (SIS2) | ``BulkFluxes('ncar')`` (= FMS ``surface_flux`` bit for bit), ERA5 + lsm | c (no SIS2, gusts) |
 | shortwave | ``VAR_PEN_SW`` with chlorophyll (COBALT), 3 bands | Jerlov I, Paulson & Simpson | c |
@@ -436,7 +438,7 @@ def parity_config(case: Case, hg: xr.Dataset, H: np.ndarray, dt: float, *, edges
     dz = vgrid_dz(case)
     cfg = dict(
         dt=float(dt), n_layers=dz.size, vertical_coordinate="ale", regrid="zstar", regrid_params=dict(dz_top=dz),
-        momentum="vector_invariant", pgf="fv", smagorinsky=0.15, ah=0.0,
+        momentum="vector_invariant", pgf="fv", smagorinsky=0.15, ah=0.0, g=9.8, pgf_mass_weight="full",
         eos="wright_full", ts_kind="theta_sp", rho0=None, cp=3992.0, salinity=True,
         closure="kpp", kpp_params=KPPParams(kappa_bg=1e-6, nu_bg=0.0), shear_mixing="jackson",
         shear_prandtl=1.25,

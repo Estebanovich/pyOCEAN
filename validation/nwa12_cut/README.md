@@ -68,6 +68,8 @@ R11 y R12 del registro.
 |---|---|---|---|
 | vertical | z\*, 75 niveles de `vgrid_75_2m.nc` | ALE z\*, `dz_top` = los mismos 75 Δz | — |
 | momento | vector-invariante; Smagorinsky biarmónica `SMAG_BI_CONST` 0.03 | vector-invariante; Smagorinsky **laplaciana** 0.15 (OM4) | (b) sin biarmónica |
+| gravedad | `G_EARTH` 9.8 | `g=9.8` (R21): llega a la superficie libre y Flather, al PGF, a la marea de potencial/SAL, a los cierres y a la presión de la EOS; el bulk de FMS usa su propio GRAV 9.80 | — |
+| peso de masa en el PGF | `MASS_WEIGHT_IN_PRESSURE_GRADIENT` True | `pgf_mass_weight='full'` (R21; PGF inicial = MOM6 a 1.2e-14, Tarea 10) | — |
 | EOS | `WRIGHT_FULL` (θ, S_P), ρ₀ 1035, `C_P` 3992 | `eos='wright_full'`, `ts_kind='theta_sp'`, ρ₀ 1035, c_p 3992 | — |
 | superficie | bulk NCAR del acoplador FMS, con SIS2 | `BulkFluxes('ncar')` (= `surface_flux` de FMS bit a bit), ERA5 con `lsm` | (c) sin SIS2, sin ráfagas |
 | onda corta | `VAR_PEN_SW` con clorofila (COBALT), 3 bandas | Jerlov I, Paulson & Simpson | (c) |
