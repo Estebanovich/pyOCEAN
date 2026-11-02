@@ -272,3 +272,93 @@ def boundary_data(
         eta = tp["ssh"].values - (_mean_ssh(prepared, t) if remove_mean_ssh else 0.0)
     T_b, S_b = to_model_ts(tp["temp"].values, tp["salt"].values, eos_ts_kind, ts_kind)
     return OBData(side=side, T=T_b, S=S_b, u_normal=u_normal, eta=eta)
+
+
+def source_level_grid(depth: np.ndarray) -> xr.Dataset:
+    """
+    A vertical grid whose layer centres are the data levels themselves (``z_t = −depth``), so that
+    ``prepare_ocean(..., v_grid=source_level_grid(d))`` keeps the data on its own levels (``to_model_levels`` is then
+    the identity, apart from the downward fill below the source bed).  The interfaces ``z_f`` are half-way between
+    the levels, the first at the surface and the last one level-spacing below the deepest level (CEFI ``z_to_dz``,
+    ``boundary.py:244-276``; MOM6 segment data on GLORYS levels).
+
+    depth : (n,) increasing data depths [m, positive down].  Returns ``z_t`` (k), ``z_f`` (k_f), ``dz`` (k) [m].
+    """
+    d = np.asarray(depth, float)
+    if d.ndim != 1 or d.size < 2 or not (np.diff(d) > 0).all() or d[0] <= 0:
+        raise ValueError("depth must be ≥ 2 increasing positive data depths [m]")
+    mid = 0.5 * (d[1:] + d[:-1])
+    zf = -np.concatenate([[0.0], mid, [d[-1] + (d[-1] - mid[-1])]])
+    return xr.Dataset({"z_t": ("k", -d), "z_f": ("k_f", zf), "dz": ("k", zf[:-1] - zf[1:])},
+                      coords={"k": np.arange(d.size), "k_f": np.arange(d.size + 1)})
+
+
+def exterior_provider(prepared: dict[str, dict[str, xr.Dataset]], v_grid: xr.Dataset,
+                      edge_depth: dict[str, np.ndarray], origin: np.datetime64, t0=None, t1=None,
+                      remove_mean_ssh: bool = False, ts_kind: str = "theta_sp", eos_ts_kind: str = "theta_sp"):
+    """
+    Time-varying open-boundary exterior for ``SigmaBaroclinic(open_boundary_state=...)`` from prepared ocean data:
+    a function ``t → {side: OBData}`` of the model time t [s from ``origin``], linear in time between the data
+    records (``forcing.boundary_time.interpolated_boundary``; constant beyond the first and last record).
+
+    Each record is ``boundary_data`` (T, S, the grid-normal velocity at the open face, η) with the two fields the 3-D
+    'radiating' edge needs: ``zw``, the data's own interfaces (``v_grid.z_f``, surface first, the last moved down to
+    the deepest edge cell if needed, so that the data reach every bed), and ``ubar``, the depth mean of the normal
+    velocity over the edge cell's water column D (the face depth of an open edge,
+    ``OpenBoundary.edge_face_depths``), with the data layers clipped at D and the deepest extended to it, the
+    arithmetic of ``core.dynamics.open_boundary._source_columns``:
+
+        ū = Σ_k u_k (min(−z_{k+1}, D) − min(−z_k, D)) / D,   0 where D = 0.
+
+    Parameters
+    ----------
+    prepared : {side: prepare_ocean output}
+        One prepared set per side.  It may be built on the whole model grid (the same dict for every side) or on
+        an edge strip of it (the edge row or column of T points with the two face rows/columns around it), which
+        keeps the memory of long runs small; ``remove_mean_ssh`` then needs the whole grid and must stay False.
+    v_grid : xr.Dataset
+        The vertical grid ``prepare_ocean`` used, with ``z_f`` (e.g. ``source_level_grid`` of the data levels).
+    edge_depth : {side: (n,) array}
+        Rest depth of the boundary cells along each side [m], 0 or NaN on land.
+    origin : np.datetime64
+        Model time origin.
+    t0, t1 : datetimes, optional
+        Keep only the records bracketing [t0, t1].
+    remove_mean_ssh, ts_kind, eos_ts_kind
+        As ``boundary_data``.  Default ``remove_mean_ssh=False``: the product datum is kept (MOM6 reads zos as is).
+    """
+    from forcing.boundary_time import interpolated_boundary
+
+    origin = np.datetime64(origin, "ns")
+    zf = np.asarray(v_grid["z_f"].values, float)
+    sides = tuple(prepared)
+    times = np.asarray(prepared[sides[0]]["t"]["time"].values, dtype="datetime64[ns]")
+    if t0 is not None:
+        a = np.datetime64(t0, "ns")
+        times = times[int(max(np.searchsorted(times, a, side="right") - 1, 0)):]
+    if t1 is not None:
+        b = np.datetime64(t1, "ns")
+        times = times[:int(min(np.searchsorted(times, b, side="left"), times.size - 1)) + 1]
+    deepest = max(float(np.nanmax(np.nan_to_num(np.asarray(d, float)))) for d in edge_depth.values())
+    zw1 = zf.copy()
+    zw1[-1] = min(zw1[-1], -deepest - 1.0)
+    states = []
+    for t in times:
+        st = {}
+        for side in sides:
+            ob = boundary_data(prepared[side], side, t, remove_mean_ssh=remove_mean_ssh, ts_kind=ts_kind,
+                               eos_ts_kind=eos_ts_kind)
+            n = np.shape(ob.T)[1]
+            D = np.nan_to_num(np.asarray(edge_depth[side], float))
+            if D.shape != (n,):
+                raise ValueError(f"{side}: edge_depth shape {D.shape}, expected ({n},)")
+            z = np.minimum(-zw1[:, None], D[None])                      # depth of the interfaces, clipped at D
+            z[-1] = D
+            dz = z[1:] - z[:-1]
+            u = np.nan_to_num(np.asarray(ob.u_normal, float))
+            ubar = np.where(D > 0, (u * dz).sum(axis=0) / np.where(D > 0, D, 1.0), 0.0)
+            st[side] = OBData(side=side, T=ob.T, S=ob.S, u_normal=u, eta=None if ob.eta is None else
+                              np.nan_to_num(ob.eta), zw=np.repeat(zw1[:, None], n, axis=1), ubar=ubar)
+        states.append(st)
+    secs = (times - origin).astype("timedelta64[ns]").astype(np.int64) / 1e9
+    return interpolated_boundary(secs, states)

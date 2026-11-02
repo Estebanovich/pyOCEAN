@@ -160,6 +160,10 @@ class Driver:
                                                    f"dt_tracer={self.dt_tracer}, dt_therm={self.dt_therm} must be equal")])
         self.last_terms: dict | None = None
         self.last_bflux: dict | None = None
+        # domain content budget (regional chain Task 9, ``diagnostics.domain_budget``): with ``record_content`` the
+        # freshwater substep keeps the T content its volume change carries, Σ (V_fw − V_adv) T [°C m³]
+        self.record_content = False
+        self.last_fw_T = 0.0
         if getattr(model, "_surface_fluxes", None) is not None:      # bulk fluxes (N2b task 4): see _step_bulk
             self.step = self._step_bulk
         elif getattr(model, "_runoff", None) is not None:            # river runoff alone (regional chain Task 8)
@@ -200,6 +204,8 @@ class Driver:
         ``heat`` the dict {"Q_ns", "Q_sw" (optional)} [W m⁻², into the ocean] of the surface heat flux (N3 task 2).
         """
         ctx = StepContext(st, tau_x, tau_y, fw, heat)
+        if self.record_content:
+            self.last_fw_T = 0.0
         hashes: dict[str, str] = {}
         ale = self.m.ale
         for name in PHASES:
@@ -356,6 +362,9 @@ class Driver:
         freshwater, (N, ny, nx), for the variance budget of task 6) in ``ctx.vals``.
         """
         m = self.m
+        if self.record_content:                     # T is unchanged by the substep: its content follows the volume
+            d = np.nan_to_num(V_fw - V_adv)
+            self.last_fw_T = float(np.sum(np.where(d != 0.0, d * C[0], 0.0)))
         _, n_lim, var_surf = apply_freshwater(C, lay, V_adv, V_fw, m.dt * np.nan_to_num(m.area) * ctx.fluxes.fw,
                                               dt=m.dt)
         ctx.set(n_limited_fw=n_lim, var_surf=var_surf)

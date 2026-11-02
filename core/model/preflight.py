@@ -134,6 +134,7 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
     if not (np.isfinite(smag) and smag >= 0.0):
         err("momentum", f"smagorinsky={smag!r}: the Smagorinsky coefficient must be a finite number ≥ 0 "
                         "(0 = off; OM4 uses 0.15)")
+    _curvilinear_issues(a, ale, smag, warn)
     # ---- open boundaries
     open_ = tuple(a["open_boundaries"])
     bad = set(open_) - set(EDGES)
@@ -363,6 +364,31 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
     if a["sponge_rate"] is None and ({"sponge_T", "sponge_zw", "sponge_tr", "sponge_S"} & given):
         warn("interior_sponge", "sponge_T / sponge_zw / sponge_tr / sponge_S are ignored without sponge_rate")
     return out
+
+
+def _curvilinear_issues(a: dict, ale: bool, smag: float, warn) -> None:
+    """
+    Operators without curvilinear metric terms (regional chain Task 3, ``docs/design/regional_refs/metric_audit.md``
+    §2.3, class b): on a grid built from a MOM6 supergrid (``grid_type == 'mom6_supergrid'``) the σ flux-form and
+    advective momentum and the constant-A_h Laplacian (``smagorinsky`` = 0 with ``ah`` > 0) treat the grid components
+    of the velocity as Cartesian ones and miss the curvature terms.  The invariant forms are metric-correct: use
+    ``vertical_coordinate='ale'`` with the vector-invariant momentum (the default there) and ``smagorinsky`` > 0 (the
+    stress-tensor operator, ``ah`` its floor) — the NWA12 cut configuration.  Warnings only: a run is consistent to
+    the size of the missing terms.
+    """
+    hg = a.get("h_grid")
+    attrs = getattr(hg, "attrs", None) or {}
+    if attrs.get("grid_type") != "mom6_supergrid":
+        return
+    momentum = a["momentum"] or ("vector_invariant" if ale else "flux")
+    if momentum == "flux":
+        warn("momentum", "curvilinear (supergrid) grid with the flux-form momentum: it has no curvilinear metric "
+                         "terms (metric_audit.md §2.3, class b); use vertical_coordinate='ale' with the "
+                         "vector-invariant momentum")
+    if smag == 0.0 and a.get("ah", 0.0) > 0.0:
+        warn("momentum", "curvilinear (supergrid) grid with the constant-A_h Laplacian (smagorinsky = 0, ah > 0): it "
+                         "is not the stress-tensor divergence and misses the metric terms (metric_audit.md §2.3, class "
+                         "b); use smagorinsky > 0 (ah becomes its floor)")
 
 
 def _atm_pressure_issues(a: dict, given: frozenset[str], sf, err, warn) -> None:
