@@ -4,7 +4,9 @@ NWA12 cut: one case definition for pyOCEAN and MOM6 (spec docs/superpowers/specs
 
 The Mid-Atlantic Bight and southern New England on the NWA12 grid of CEFI (``ocean_hgrid.nc``, ``ocean_topog.nc``,
 Zenodo 7893727): the T cells inside 75.5–68.5 °W, 36.5–42.0 °N (ruling R13: north limit 42.0 °N so Narragansett
-Bay / Blackstone and Buzzards Bay are inside), 2017-05-01 → 2017-09-01.  Every edge with a wet cell is open
+Bay / Blackstone and Buzzards Bay are inside), 2017-05-01 → 2017-09-01.  Edge runs of fewer than 4 wet cells are
+land in the case topography (``edit_edges``, ruling R14: upper Delaware Bay on the west edge).  Every edge with a
+wet cell is open
 ('radiating' with the GLORYS exterior and the TPXO10 tide); the others are coast.
 
 Parity with NWA12 (``parity_config``; values from ``docs/design/regional_refs/*.md`` and rulings R3–R5, R7, R11, R12):
@@ -16,14 +18,14 @@ Parity with NWA12 (``parity_config``; values from ``docs/design/regional_refs/*.
 | EOS | ``WRIGHT_FULL`` θ, S_P, ρ₀ 1035, ``C_P`` 3992 | ``eos='wright_full'``, ``ts_kind='theta_sp'``, ρ₀ 1035, c_p 3992 | — |
 | surface | FMS coupler NCAR bulk (SIS2) | ``BulkFluxes('ncar')`` (= FMS ``surface_flux`` bit for bit), ERA5 + lsm | c (no SIS2, gusts) |
 | shortwave | ``VAR_PEN_SW`` with chlorophyll (COBALT), 3 bands | Jerlov I, Paulson & Simpson | c |
-| mixing | ePBL + Jackson + double diffusion, ``KD`` 1e-6, ``KV`` 0 | KPP (CVMix) + Jackson, κ_bg 1e-6, ν_bg 0 | b (no ePBL, no double diffusion) |
+| mixing | ePBL + Jackson + double diffusion, ``KD`` 1e-6, ``KV`` 0 | KPP (CVMix) + Jackson, κ_bg 1e-6 (parity value, R16; pyOCEAN default 0), ν_bg 0 | b (no ePBL, no double diffusion) |
 | drag | quadratic ``CDRAG`` 0.003, ``HBBL`` 10, ``DRAG_BG_VEL`` 0, ``CHANNEL_DRAG`` | quadratic cd 0.003, hbbl 10, U_bg 0 | b/c (no channel drag, R5) |
 | open edges | Flather + Orlanski + nudging 3 d / 360 d (by Orlanski phase speed), reservoir 9 km | 'radiating': Flather + Orlanski + nudging τ_in 3 d, τ_out 360 d (by flow direction, R7), no reservoir/sponge | c |
 | boundary tide | TPXO, 10 constituents, η and u added to the segment, nodal fixed at a date | ``BoundaryTides`` TPXO10, 10 constituents, u = U/D_model (R3), OTPS nodal at each time, ramp 0 | c |
 | body tide | ``TIDES``, scalar SAL 0.05, SAL in Flather | ``tidal_potential=True``, ``sal_beta`` 0.05, ``sal_flather`` | c (legacy SAL path, R4) |
 | atm. pressure | off (``MAX_P_SURF`` = 0) | ``atm_pressure=False`` | — |
 | rivers | GloFAS v3 (CEFI ``write_runoff_glofas.py``), ePBL ``DO_RIVERMIX`` | GloFAS v4 with the CEFI ldd rule (R11, R12), real freshwater at the top layer | c (version; no river mixing without ePBL, b) |
-| Δt | ``DT`` 600 s, ``DT_THERM`` 1800 s | one Δt, the largest stable one measured (600, then 300) | c |
+| Δt | ``DT`` 600 s, ``DT_THERM`` 1800 s | one Δt: 300 s (full; 600 s grows the known θ_bc = ½ mode, R15), 600 s (tides) | c (the instability: a, own plan) |
 
 Why ALE z* + vector-invariant momentum + Smagorinsky (not σ or the constant Laplacian): the σ flux-form momentum and
 the constant-A_h Laplacian have no curvilinear metric terms (Task 3, ``docs/design/regional_refs/metric_audit.md``
@@ -55,6 +57,9 @@ CONSTITUENTS = ("m2", "s2", "n2", "k2", "k1", "o1", "p1", "q1", "mm", "mf")   # 
 #: fixed observing points that every open edge must stay ≥ ``MIN_EDGE_CELLS`` cells away from
 BUOY = {"ndbc_44025": (40.251, -73.164), "ooi_pioneer": (40.1, -70.8)}
 MIN_EDGE_CELLS = 10
+#: shortest run of wet edge cells kept as an open boundary (ruling R14): shorter runs are estuary or inlet interiors
+#: that the 1/12° exterior (GLORYS) does not resolve; they become land in the case topography
+MIN_EDGE_RUN = 4
 EDGES = ("west", "east", "south", "north")
 
 
@@ -113,6 +118,49 @@ def mom6_depth(depth: np.ndarray) -> np.ndarray:
     return np.where(d > MASKING_DEPTH, np.clip(d, MINIMUM_DEPTH, MAXIMUM_DEPTH), np.nan)
 
 
+def _runs(row: np.ndarray) -> list[tuple[int, int]]:
+    """(start, length) of the runs of True in a 1-D boolean array."""
+    out, i, n = [], 0, row.size
+    while i < n:
+        if row[i]:
+            j = i
+            while j < n and row[j]:
+                j += 1
+            out.append((i, j - i))
+            i = j
+        else:
+            i += 1
+    return out
+
+
+def edit_edges(H: np.ndarray, min_run: int = MIN_EDGE_RUN) -> tuple[np.ndarray, list[tuple[int, int]]]:
+    """
+    Case topography edit of ruling R14 (class c): every run of fewer than ``min_run`` contiguous wet cells along an
+    edge of the window is set to land (NaN), so that no open boundary cuts across an estuary interior (e.g. the 2
+    wet cells of upper Delaware Bay on the NWA12 cut's west edge; the Delaware enters as GloFAS runoff).  Removing
+    edge cells exposes no new edge cell, so one pass suffices.  The edited depth is the case topography for every
+    model (pyOCEAN and MOM6, Task 10).  Runs of ``min_run`` cells or more stay open even when they are not connected
+    inside the window to the edge's other runs: such a run (Cape Cod Bay on the north edge, 6 cells) exchanges with
+    open water outside the cut (Massachusetts Bay), and closing it would turn it into a closed basin.
+
+    Returns (edited H, [(j, i), …] of the cells set to land).
+    """
+    H = np.array(H, float)
+    ny, nx = H.shape
+    edges = {"west": [(j, 0) for j in range(ny)], "east": [(j, nx - 1) for j in range(ny)],
+             "south": [(0, i) for i in range(nx)], "north": [(ny - 1, i) for i in range(nx)]}
+    cells = []
+    for pts in edges.values():
+        row = np.array([np.isfinite(H[p]) for p in pts])
+        for a, n in _runs(row):
+            if n < min_run:
+                cells.extend(pts[a:a + n])
+    cells = sorted(set(cells))
+    for p in cells:
+        H[p] = np.nan
+    return H, cells
+
+
 def open_edges(H: np.ndarray) -> tuple[str, ...]:
     """Edges with at least one wet cell (they are open; the others are coast)."""
     wet = np.isfinite(H)
@@ -134,7 +182,8 @@ def choose_window(lon: np.ndarray, lat: np.ndarray, depth: np.ndarray,
     °N], ``depth`` (nj, ni) [m, positive down]) inside ``box`` = (lon0, lon1, lat0, lat1), with the spec rules:
 
     1. the window is the index bounding box of the T points inside the box;
-    2. every edge with a wet cell (``mom6_depth``) is open, and each open edge is ≥ ``min_cells`` cells from every
+    2. edge runs of fewer than ``MIN_EDGE_RUN`` wet cells are land (``edit_edges``, ruling R14); every edge with a
+       wet cell left is open, and each open edge is ≥ ``min_cells`` cells from every
        point of ``points`` (default ``BUOY``: NDBC 44025 and OOI Pioneer); an edge that is too close is moved
        outward until it is not, and the open edges are re-evaluated;
     3. no open-edge cell has H ≤ 0 (the ALE open boundary does not admit floodable cells): ValueError otherwise.
@@ -149,7 +198,7 @@ def choose_window(lon: np.ndarray, lat: np.ndarray, depth: np.ndarray,
     nj, ni = lon.shape
     cells = {name: _nearest_cell(lon, lat, la, lo) for name, (la, lo) in points.items()}
     for _ in range(4 * (ni + nj)):
-        H = mom6_depth(depth[j0:j1, i0:i1])
+        H = edit_edges(mom6_depth(depth[j0:j1, i0:i1]))[0]
         moved = False
         for e in open_edges(H):
             for name, (jc, ic) in cells.items():
@@ -175,7 +224,7 @@ def choose_window(lon: np.ndarray, lat: np.ndarray, depth: np.ndarray,
             break
     else:
         raise ValueError("choose_window did not converge")
-    H = mom6_depth(depth[j0:j1, i0:i1])
+    H = edit_edges(mom6_depth(depth[j0:j1, i0:i1]))[0]
     for e, row in (("west", H[:, 0]), ("east", H[:, -1]), ("south", H[0, :]), ("north", H[-1, :])):
         if e in open_edges(H) and (np.isfinite(row) & (row <= 0.0)).any():
             raise ValueError(f"open edge {e} has cells with H ≤ 0")
@@ -203,12 +252,24 @@ def window_of(case: Case) -> tuple[int, int, int, int]:
 
 
 def grid(case: Case) -> tuple[xr.Dataset, np.ndarray]:
-    """(horizontal grid of the cut, H (ny, nx) [m] with NaN on land), MOM6 metrics (core.grid.supergrid)."""
+    """(horizontal grid of the cut, H (ny, nx) [m] with NaN on land), MOM6 metrics (core.grid.supergrid); H is the
+    case topography: MOM6 depth rules, then the edge edit of ruling R14 (``edit_edges``)."""
     from core.grid.supergrid import grid_from_supergrid
     i0, i1, j0, j1 = window_of(case)
-    H = mom6_depth(load_depth(case)[j0:j1, i0:i1])
+    H, cells = edit_edges(mom6_depth(load_depth(case)[j0:j1, i0:i1]))
     hg = grid_from_supergrid(load_hgrid(case), depth=np.nan_to_num(H), window=(i0, i1, j0, j1))
+    hg.attrs["topography_edits"] = ";".join(f"{j},{i}" for j, i in cells)     # (j, i) of the cut set to land, R14
     return hg, H
+
+
+def topography_edits(hg: xr.Dataset) -> list[dict]:
+    """The R14 edits recorded by ``grid``: [{'j', 'i', 'lat', 'lon'}] in the cut's indices."""
+    txt = hg.attrs.get("topography_edits", "")
+    out = []
+    for item in filter(None, txt.split(";")):
+        j, i = (int(x) for x in item.split(","))
+        out.append(dict(j=j, i=i, lat=float(hg["lat_t"].values[j, i]), lon=float(hg["lon_t"].values[j, i])))
+    return out
 
 
 def vgrid_dz(case: Case) -> np.ndarray:

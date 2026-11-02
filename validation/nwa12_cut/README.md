@@ -31,16 +31,26 @@ Datos y salidas en `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/nwa12_cut/` (`data/`, `inp
    (40.251 °N, 73.164 °W) y de OOI Pioneer (40.1 °N, 70.8 °W); un borde más cerca se mueve hacia afuera;
 3. ningún borde abierto tiene celdas con H ≤ 0.
 
-Resultado: **i = 282…368, j = 425…513 (`window = (282, 369, 425, 514)`), 87 × 89 columnas × 75 niveles, 6201
-columnas mojadas**, H de 5 a 4811 m. La malla es lon/lat regular en este recorte (ángulo cero). Distancias a los
+Resultado: **i = 282…368, j = 425…513 (`window = (282, 369, 425, 514)`), 87 × 89 columnas × 75 niveles, 6199
+columnas mojadas** (6201 antes de la edición R14), H de 5 a 4811 m. La malla es lon/lat regular en este recorte (ángulo cero). Distancias a los
 bordes: 44025 a 28 celdas del oeste y 29 del norte; Pioneer a 28 del este y 31 del norte.
 
-Los **cuatro bordes son abiertos** por la regla 2:
+**Edición de la topografía del caso (decisión R14, clase c).** Una frontera abierta de GLORYS a 1/12° no puede
+cortar el interior de un estuario. `edit_edges()` pone como tierra cada tramo de menos de 4 celdas mojadas
+contiguas sobre un borde de la ventana. En el recorte eso cierra **2 celdas de la parte alta de la bahía de
+Delaware en el borde oeste**: (j = 43, i = 0) en 39.236 °N, 75.440 °W y (j = 44, i = 0) en 39.298 °N, 75.440 °W
+(índices del recorte; i = 282, j = 468–469 de la malla completa). El río Delaware entra como descarga de GloFAS. La
+profundidad editada **es la topografía del caso** para pyOCEAN y para MOM6: `build_inputs.py` escribe
+`ocean_topog_cut.nc` y `ocean_mask_cut.nc`, y la Tarea 10 los usa. Quedan 6199 columnas mojadas; la bahía de
+Delaware sigue unida al mar por su boca.
+
+Los **cuatro bordes siguen abiertos** por la regla 2:
 - sur (87 celdas mojadas de 87) y este (89 de 89): océano abierto;
-- norte, 25 celdas: la bahía de Cape Cod y el golfo de Maine, al este de 70.56 °W (el "tramo noreste" del spec);
-- oeste, 25 celdas: el Atlántico frente a la península de Delmarva al sur de 37.9 °N y **2 celdas en la parte alta de
-  la bahía de Delaware** (39.24–39.30 °N). La regla del spec las abre; con GLORYS y TPXO en esas caras es una
-  frontera abierta dentro de un estuario (clase c, a revisar en el proyecto 4 si la bahía de Delaware importa).
+- oeste, 23 celdas: el Atlántico frente a la península de Delmarva, al sur de 37.9 °N;
+- norte, 25 celdas en dos tramos: la bahía de Cape Cod (6 celdas, 70.56–70.16 °W) y el golfo de Maine al este de
+  70.0 °W (19). El tramo de Cape Cod no está unido al resto dentro de la ventana (24 celdas, 41.79–41.97 °N), pero
+  intercambia con la bahía de Massachusetts fuera del recorte: con 6 celdas queda abierto (cerrarlo lo volvería una
+  cuenca cerrada).
 
 Profundidades como MOM6 (`MASKING_DEPTH` 1, `MINIMUM_DEPTH` 4, `MAXIMUM_DEPTH` 6500): tierra donde la profundidad es
 ≤ 1 m, las de 1 a 4 m suben a 4 m.
@@ -61,7 +71,7 @@ R11 y R12 del registro.
 | EOS | `WRIGHT_FULL` (θ, S_P), ρ₀ 1035, `C_P` 3992 | `eos='wright_full'`, `ts_kind='theta_sp'`, ρ₀ 1035, c_p 3992 | — |
 | superficie | bulk NCAR del acoplador FMS, con SIS2 | `BulkFluxes('ncar')` (= `surface_flux` de FMS bit a bit), ERA5 con `lsm` | (c) sin SIS2, sin ráfagas |
 | onda corta | `VAR_PEN_SW` con clorofila (COBALT), 3 bandas | Jerlov I, Paulson & Simpson | (c) |
-| mezcla vertical | ePBL + Jackson + doble difusión, `KD` 1e-6, `KV` 0 | KPP (CVMix) + Jackson, κ_bg 1e-6, ν_bg 0 | (b) sin ePBL ni doble difusión |
+| mezcla vertical | ePBL + Jackson + doble difusión, `KD` 1e-6, `KV` 0 | KPP (CVMix) + Jackson, κ_bg 1e-6 (el `KD` de NWA12, pasado como parámetro; el valor por defecto de pyOCEAN sigue en 0), ν_bg 0 | (b) sin ePBL ni doble difusión |
 | fricción de fondo | cuadrática `CDRAG` 0.003, `HBBL` 10 m, `DRAG_BG_VEL` 0, `CHANNEL_DRAG` | cuadrática cd 0.003, hbbl 10, U_bg 0 | (b/c) sin `CHANNEL_DRAG` (R5) |
 | bordes abiertos | Flather + Orlanski + nudging 3 d / 360 d (según la velocidad de fase de Orlanski), reservorio de trazadores de 9 km | `'radiating'`: Flather + Orlanski + nudging τ_in 3 d / τ_out 360 d (según el sentido del flujo, R7), sin reservorio ni esponja | (c) |
 | exterior | GLORYS diario en sus niveles (`z_to_dz` de CEFI), remapeado con PPM_H4 | GLORYS diario en sus niveles (`source_level_grid`, interfaces a medio camino), remapeado a las capas, lineal en el tiempo; ū = media de la columna de la celda de borde | — |
@@ -77,6 +87,12 @@ A_h constante no tienen los términos métricos curvilíneos (Tarea 3, `docs/des
 §2.3, clase b). Las formas invariantes sí son correctas en una malla curvilínea, como en MOM6. `parity_config()`
 rechaza otra combinación, y el pre-flight avisa (`PyOceanConfigWarning`) si una malla de supergrid se usa con la
 forma de flujo o con la laplaciana constante.
+
+**Decisiones aceptadas (R15, R16).** Δt = 300 s para la corrida completa: es la inestabilidad conocida de
+θ_bc = ½ (clase a, con su plan aparte; MOM6 corre con 600 s), no un ajuste de física. κ_bg = 1e-6 es el valor de
+paridad con NWA12; el punto (2) de "qué debe mejorar" de N2b prefiere decidir la mezcla de fondo contra la boya
+44025, así que se revisa en el proyecto 4. Sin banda de esponja (NWA12 no tiene) y velocidades iniciales
+interpoladas en la vertical (MOM6 las remapea): aceptadas, clase c.
 
 **Física de NWA12 que pyOCEAN no tiene (clase b o c, para el proyecto 4):** ePBL, doble difusión, Smagorinsky
 biarmónica, `CHANNEL_DRAG`, el reservorio de trazadores de los segmentos (9 km), la mezcla de ríos de ePBL y SIS2.

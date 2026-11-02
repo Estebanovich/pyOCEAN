@@ -165,6 +165,33 @@ def test_choose_window_rules():
         cs.choose_window(lon, lat, depth, (-79.5, -73.1, 31.0, 35.0), points={"p": (32.0, -73.5)})
 
 
+def test_edge_runs_shorter_than_four_cells_become_land():
+    # Ruling R14: a 2-cell inlet on the west edge (an estuary interior) is land; a 4-cell run and the open sea stay.
+    H = np.full((12, 8), 50.0)
+    H[:, 0] = np.nan
+    H[3:5, 0] = 20.0                                                 # 2-cell estuary run → land
+    H[7:11, 0] = 30.0                                                # 4-cell run → open
+    H[0, 2:4] = np.nan                                               # south edge: runs of 1 and 4 cells
+    H2, cells = cs.edit_edges(H)
+    assert cells == [(0, 1), (3, 0), (4, 0)]
+    assert np.isnan(H2[3:5, 0]).all() and np.isfinite(H2[7:11, 0]).all() and np.isfinite(H2[0, 4:]).all()
+    assert np.array_equal(np.isfinite(H2[1:-1, 1:]), np.isfinite(H[1:-1, 1:]))      # the interior is untouched
+    lone = np.full((6, 6), np.nan)
+    lone[:, 2:] = 10.0
+    lone[2:4, :2] = 10.0                                             # the only west-edge water: a 2-cell inlet
+    assert cs.open_edges(lone) == ("west", "east", "south", "north")
+    assert cs.open_edges(cs.edit_edges(lone)[0]) == ("east", "south", "north")      # west closes: nothing remains
+
+
+@pytest.mark.skipif(not cs.CASE.hgrid.exists(), reason="NWA12 grid not on disk")
+def test_case_topography_edit_closes_upper_delaware_bay():
+    hg, H = cs.grid(cs.CASE)
+    edits = cs.topography_edits(hg)
+    assert [(e["j"], e["i"]) for e in edits] == [(43, 0), (44, 0)]
+    assert all(39.2 < e["lat"] < 39.31 and abs(e["lon"] + 75.44) < 1e-3 for e in edits)
+    assert np.isfinite(H[:, 0]).sum() == 23 and cs.open_edges(H) == ("west", "east", "south", "north")
+
+
 @pytest.mark.skipif(not cs.CASE.hgrid.exists(), reason="NWA12 grid not on disk")
 def test_case_window_is_choose_window():
     hg = cs.load_hgrid(cs.CASE)

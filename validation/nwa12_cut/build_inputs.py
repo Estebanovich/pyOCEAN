@@ -5,6 +5,9 @@ pyOCEAN inputs of the NWA12 cut, written once from the case definition (case.py)
 
   grid.nc      the C grid of the cut (core.grid.supergrid.grid_from_supergrid, MOM6 metrics) with H [m] (NaN land,
                MOM6 depth rules) and the open edges in the attributes
+  ocean_topog_cut.nc, ocean_mask_cut.nc
+               THE case topography (MOM6 depth rules + the edge edit of ruling R14, ``case.edit_edges``) in the MOM6
+               layout (depth positive down, 0 on land; mask 1/0), for MOM6 on the same cut (Task 10)
   vgrid.nc     the 75 z* thicknesses (surface first) of vgrid_75_2m.nc
   rivers.nc    the GloFAS v4 river input for t0 → t1 (cells, daily-mean times, Q per cell, mouths; CEFI ldd rule)
   stations.nc  the series points (CO-OPS gauges, NDBC 44025, OOI Pioneer) and their nearest wet T cell
@@ -37,6 +40,14 @@ def write(case: cs.Case, t1: np.datetime64 | None = None) -> Path:
     g["H"] = (("j_t", "i_t"), H, {"units": "m", "long_name": "rest depth, MOM6 depth rules (NaN = land)"})
     g.attrs.update(open_edges=",".join(edges), case=case.name, window=list(cs.window_of(case)))
     g.to_netcdf(out / "grid.nc")
+    edits = cs.topography_edits(hg)
+    note = "; ".join(f"(j={e['j']}, i={e['i']}) {e['lat']:.3f}N {e['lon']:.3f}E" for e in edits)
+    xr.Dataset({"depth": (("ny", "nx"), np.nan_to_num(H).astype("f4"),
+                          {"units": "meters", "standard_name": "topographic depth at Arakawa C h-points"})},
+               attrs={"comment": "NWA12 ocean_topog.nc cut to the case window, MOM6 depth rules (MASKING_DEPTH 1, "
+                                 "MINIMUM_DEPTH 4, MAXIMUM_DEPTH 6500) applied, edge runs < 4 wet cells set to land "
+                                 f"(ruling R14): {note or 'none'}"}).to_netcdf(out / "ocean_topog_cut.nc")
+    xr.Dataset({"mask": (("ny", "nx"), np.isfinite(H).astype("f8"))}).to_netcdf(out / "ocean_mask_cut.nc")
     xr.Dataset({"dz": ("nz", cs.vgrid_dz(case), {"units": "m", "comment": "z* nominal thickness, surface first"})}
                ).to_netcdf(out / "vgrid.nc")
     t1 = case.t1 if t1 is None else np.datetime64(t1, "ns")
