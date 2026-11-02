@@ -19,7 +19,7 @@ What is written and how (CEFI tools: docs/design/regional_refs/cefi_tools.md; MO
 | ``{uv,thetao,so,zos}_00n.nc`` | GLORYS segments, CEFI ``write_glorys_boundary.py`` algorithm (below) |
 | ``{tu,tz}_00n.nc`` | TPXO10 tidal segments, CEFI ``write_tpxo_boundary.py`` algorithm on TPXO10 (ruling R3/R19) |
 | ``ERA5_{var}_2017_padded.nc`` | CEFI ``tools/atmos`` layout for FMS ``data_override`` (below) |
-| ``seawifs-clim-1997-2010.nwa12_cut.nc`` | NWA12's SeaWiFS chlorophyll climatology cut to the window, for MANIZZA_05 in the reference run (ruling R23) |
+| ``seawifs-clim-1997-2010.nwa12_cut.nc`` | SeaWiFS chlorophyll for MANIZZA_05 in the reference run: the OM4 climatology flooded and regridded conservatively to the cut as CEFI ``tools/opacity/regrid_opacity.py`` makes NWA12's file (rulings R23, R25; ``write_chl``) |
 | ``glofas_runoff_2017.nc`` | the case's GloFAS v4 river input (``inputs/pyocean/rivers.nc``, CEFI ldd rule, R11/R12/R17) as runoff [kg m⁻² s⁻¹] on the cut (ruling R8, below) |
 
 **CEFI tools without xesmf / HCtFlood.**  ``xesmf`` and ``HCtFlood`` are not installed and no conda environment has
@@ -96,10 +96,11 @@ SEGMENT_STRING = {"south": "J=0,I=0:N", "north": "J=N,I=N:0", "east": "I=N,J=0:N
 TIME_UNITS = "days since 1950-01-01 00:00:00"
 FILL = 1.0e20
 CHL_FILE = "seawifs-clim-1997-2010.nwa12_cut.nc"
-#: NWA12's SeaWiFS chlorophyll climatology (exps/NWA12.COBALT/INPUT and the Zenodo settings' MOM_input:640-642:
-#: CHL_FROM_FILE = True, CHL_FILE = "seawifs-clim-1997-2010.nwa12.nc", CHL_VARNAME = "chlor_a"); in the local CEFI
-#: clone it is a link into ../../datasets/, which is not on disk
-CHL_SOURCE = cs.REFS / "nwa12_grid" / "seawifs-clim-1997-2010.nwa12.nc"
+#: NWA12's chlorophyll (Zenodo 7893727 settings, physics-only MOM_input:640-642: CHL_FROM_FILE = True, CHL_FILE =
+#: "seawifs-clim-1997-2010.nwa12.nc", CHL_VARNAME = "chlor_a") is not public; it is made by CEFI
+#: tools/opacity/regrid_opacity.py from this OM4 tripolar climatology (ruling R25; CESM inputdata
+#: ocn/mom/tx0.25v1/), which ``write_chl`` regrids the same way onto the cut
+CHL_SOURCE = cs.REFS / "nwa12_grid" / "seawifs-clim-1997-2010.1440x1080.v20180328.nc"
 
 
 # ------------------------------------------------------------------------------------------------ CEFI functions
@@ -550,22 +551,90 @@ def write_runoff(case: cs.Case, out: Path) -> dict:
 
 
 # ------------------------------------------------------------------------------------------------ chlorophyll
-def write_chl(case: cs.Case, out: Path, src: Path = CHL_SOURCE) -> dict:
-    """NWA12's SeaWiFS chlorophyll climatology cut to the window (ruling R23), every other variable and attribute
-    kept (the monthly time axis included).  The file is on the full NWA12 T grid (845 × 775): the last two
-    dimensions of ``chlor_a`` are sliced by the window, as ``ocean_topog.nc``."""
+def _overlap(src_b: np.ndarray, dst_b: np.ndarray) -> np.ndarray:
+    """1-D overlap lengths (n_dst, n_src) of intervals with edges src_b (n_src + 1), dst_b (n_dst + 1), increasing."""
+    lo = np.maximum(dst_b[:-1, None], src_b[None, :-1])
+    hi = np.minimum(dst_b[1:, None], src_b[None, 1:])
+    return np.clip(hi - lo, 0.0, None)
+
+
+def write_chl(case: cs.Case, out: Path, src: Path = CHL_SOURCE, margin: float = 2.0) -> dict:
+    """
+    NWA12's chlorophyll for MANIZZA_05 on the cut, built as CEFI ``tools/opacity/regrid_opacity.py`` builds
+    ``seawifs-clim-1997-2010.nwa12.nc`` (rulings R23, R25): the OM4 SeaWiFS climatology flooded over land
+    (``flood_kara``, regrid_opacity.py:26; here the 8-neighbour flood stand-in, ``flood``), then regridded
+    **conservatively** from its cell corners (``lon_crnr``, ``lat_crnr``) to the model cells bounded by the supergrid
+    corners ``x[::2, ::2]``, ``y[::2, ::2]`` (regrid_opacity.py:10-15, 28-36; xesmf 'conservative'), written as
+    ``chlor_a(time, yh, xh)`` with ``area``, ``lon_crnr``, ``lat_crnr`` and integer ``xh``, ``yh`` axes
+    (:37-55) and the source's monthly modulo time axis.
+
+    Without xesmf (class c): over the cut (and ``margin`` degrees around it) both grids are exactly rectilinear in
+    longitude and latitude (checked here: the OM4 tripolar grid is regular Mercator south of 65 °N, the cut has angle
+    0), so each overlap is a spherical rectangle with area R² Δλ Δ(sin φ) and the conservative weights are the exact
+    separable product w = Δλ_overlap · Δ(sin φ)_overlap / (Δλ · Δ(sin φ))_target.  ESMF's cells have great-circle
+    edges instead of parallels, a difference of second order in the cell size (c).  Every target cell is fully
+    covered, so normalised and unnormalised conservative remapping agree.
+    """
     if not Path(src).exists():
-        raise FileNotFoundError(f"{src} not on disk: NWA12's SeaWiFS chlorophyll climatology (CEFI exps/NWA12.COBALT/"
-                                "INPUT/seawifs-clim-1997-2010.nwa12.nc) must be downloaded first (ruling R23)")
-    i0, i1, j0, j1 = cs.window_of(case)
+        raise FileNotFoundError(f"{src} not on disk (ruling R25: OM4 SeaWiFS climatology, CESM inputdata "
+                                "ocn/mom/tx0.25v1/seawifs-clim-1997-2010.1440x1080.v20180328.nc)")
+    with netCDF4.Dataset(out / "ocean_hgrid.nc") as h:
+        xb, yb, area_sg = (np.asarray(h[v][:], float) for v in ("x", "y", "area"))
+    xq, yq = xb[::2, ::2], yb[::2, ::2]
+    if np.abs(xq - xq[:1]).max() > 0 or np.abs(yq - yq[:, :1]).max() > 0:
+        raise ValueError("the cut is not rectilinear in lon/lat: the separable conservative remap does not apply")
+    lon_t_b, lat_t_b = xq[0], yq[:, 0]
     with netCDF4.Dataset(src) as ds:
-        ydim, xdim = ds["chlor_a"].dimensions[-2:]
-        if (len(ds.dimensions[ydim]), len(ds.dimensions[xdim])) != (845, 775):
-            raise ValueError(f"{src}: chlor_a is not on the NWA12 T grid (845 × 775)")
-        with netCDF4.Dataset(out / CHL_FILE, "w") as dst:
-            _copy_vars(ds, dst, {ydim: slice(j0, j1), xdim: slice(i0, i1)})
-            dst.history = f"NWA12 SeaWiFS climatology cut to the window {(i0, i1, j0, j1)} (pyOCEAN Task 10, R23)"
-    return dict(file=CHL_FILE, source=str(src), dims=[ydim, xdim])
+        lc = np.asarray(ds["lon_crnr"][:], float)
+        la = np.asarray(ds["lat_crnr"][:], float)
+        lc = ((lc - lon_t_b.min() + 180.0) % 360.0) + lon_t_b.min() - 180.0     # same longitude branch as the cut
+        box = ((lc >= lon_t_b.min() - margin) & (lc <= lon_t_b.max() + margin)
+               & (la >= lat_t_b.min() - margin) & (la <= lat_t_b.max() + margin))
+        J, I = np.nonzero(box)
+        j0, j1, i0, i1 = J.min(), J.max() + 1, I.min(), I.max() + 1      # corner indices
+        lcs, las = lc[j0:j1, i0:i1], la[j0:j1, i0:i1]
+        if np.abs(lcs - lcs[:1]).max() > 0 or np.abs(las - las[:, :1]).max() > 0:
+            raise ValueError("source cells are not rectilinear around the cut")
+        chl = np.asarray(ds["chlor_a"][:, j0:j1 - 1, i0:i1 - 1].filled(np.nan), float)
+        tvar = ds["time"]
+        t_attrs = {k: tvar.getncattr(k) for k in tvar.ncattrs()}
+        times = np.asarray(tvar[:], float)
+        c_attrs = {k: ds["chlor_a"].getncattr(k) for k in ds["chlor_a"].ncattrs()
+                   if k not in ("_FillValue", "missing_value", "coordinates", "mesh_coordinates")}
+    src_lon_b, src_lat_b = lcs[0], las[:, 0]
+    if src_lon_b[0] > lon_t_b[0] or src_lon_b[-1] < lon_t_b[-1] or src_lat_b[0] > lat_t_b[0] \
+            or src_lat_b[-1] < lat_t_b[-1]:
+        raise ValueError("source subset does not cover the cut")
+    flooded = flood(chl)                                         # regrid_opacity.py:26 (flood_kara)
+    wx = _overlap(src_lon_b, lon_t_b) / np.diff(lon_t_b)[:, None]
+    s_src, s_dst = np.sin(np.deg2rad(src_lat_b)), np.sin(np.deg2rad(lat_t_b))
+    wy = _overlap(s_src, s_dst) / np.diff(s_dst)[:, None]
+    if not (np.allclose(wx.sum(1), 1.0, atol=1e-12) and np.allclose(wy.sum(1), 1.0, atol=1e-12)):
+        raise ValueError("conservative weights do not sum to 1 (target not covered)")
+    reg = np.einsum("ja,tab,ib->tji", wy, flooded, wx)             # (time, yh, xh)
+    area = (area_sg[::2, ::2] + area_sg[1::2, 1::2]) + (area_sg[1::2, ::2] + area_sg[::2, 1::2])  # :18
+    ny, nx = reg.shape[1:]
+    with netCDF4.Dataset(out / CHL_FILE, "w", format="NETCDF3_64BIT_OFFSET") as d:
+        d.createDimension("time", None)
+        for n, m in (("yh", ny), ("xh", nx), ("yq", ny + 1), ("xq", nx + 1)):
+            d.createDimension(n, m)
+        tv = d.createVariable("time", "f8", ("time",))
+        tv.setncatts(t_attrs)
+        tv[:] = times
+        for n, m in (("xh", nx), ("yh", ny)):
+            v = d.createVariable(n, "i4", (n,))
+            v.cartesian_axis = n[0].upper()
+            v[:] = np.arange(m, dtype="i4")
+        c = d.createVariable("chlor_a", "f8", ("time", "yh", "xh"))
+        c.setncatts(c_attrs)
+        c[:] = reg
+        d.createVariable("area", "f8", ("yh", "xh"))[:] = area
+        d.createVariable("lon_crnr", "f8", ("yq", "xq"))[:] = xq
+        d.createVariable("lat_crnr", "f8", ("yq", "xq"))[:] = yq
+        d.history = ("OM4 SeaWiFS climatology flooded and regridded conservatively to the NWA12 cut as CEFI "
+                     "tools/opacity/regrid_opacity.py (pyOCEAN Task 10, R25; exact rectilinear overlaps, no xesmf)")
+    return dict(file=CHL_FILE, source=str(src), chl_range=[float(reg.min()), float(reg.max())],
+                chl_mean_may_aug=float(reg[4:8].mean()))
 
 
 # ------------------------------------------------------------------------------------------------ run directories
@@ -644,8 +713,8 @@ def run_dir(mode: str, root: Path | None = None, inputs: Path = OUT, case: cs.Ca
         raise ValueError(f"unknown mode {mode!r}; use {', '.join(MODES)}")
     c = MODES[mode]
     if c["sw"] == "manizza" and not (Path(inputs) / CHL_FILE).exists():
-        raise FileNotFoundError(f"{Path(inputs) / CHL_FILE} missing: run mom6_inputs.py --only chl with NWA12's "
-                                f"SeaWiFS climatology at {CHL_SOURCE} (ruling R23)")
+        raise FileNotFoundError(f"{Path(inputs) / CHL_FILE} missing: run mom6_inputs.py --only chl (source "
+                                f"{CHL_SOURCE}, rulings R23, R25)")
     d = (cs.RUNS / "runs" if root is None else Path(root)) / f"mom6_{mode}"
     if d.exists():
         shutil.rmtree(d, ignore_errors=True)          # macOS ._* files vanish with their originals

@@ -259,14 +259,22 @@ los 8 vecinos [verificar contra HCtFlood: su código no está en `~/pyOCEAN_refs
 **Diferencias con NWA12 (`MOM_override`).** Malla 87 × 89 y cuatro segmentos; `OBC_HOR_INDEXING_BUG = False` (R6);
 sin COBALT; estado inicial común (R24, abajo); `TIDE_REF_DATE` 2017-05-01, `TIDE_NODAL_REF_DATE` 2017-07-01 (R3).
 
-**Onda corta (R23).** NWA12 usa MANIZZA_05 (3 bandas, opacidad según la clorofila, que en NWA12 da COBALT). La
-corrida de **referencia** `mom6_full` es NWA12 sin COBALT: MANIZZA_05 con `CHL_FROM_FILE` y la climatología SeaWiFS
-de NWA12 (`seawifs-clim-1997-2010.nwa12.nc`, la que usa la configuración física de Zenodo, `MOM_input:640-642`)
-cortada a la ventana (`mom6_inputs.py --only chl`). El **control de paridad** `mom6_full_jerlov` usa la onda corta de
-pyOCEAN: doble exponencial de Jerlov I (0.58 a 0.35 m, 0.42 a 23 m). pyOCEAN no tiene la onda corta de Manizza ni
-clorofila: **clase (b)**, para el proyecto 4 (en la plataforma del MAB, con 0.5–3 mg m⁻³ de clorofila, Jerlov I
-deposita el calor demasiado hondo: SST más fría). `pgf0` y `tides` usan Jerlov (no entra en el PGF del primer paso y
-el modo de mareas no tiene onda corta).
+**Onda corta (R23, R25).** NWA12 usa MANIZZA_05 (3 bandas, opacidad según la clorofila). En la configuración de
+CEFI 2025_04 con COBALT, `CHL_FROM_FILE = False` porque la clorofila la da COBALT; la configuración **sólo física**
+de NWA12 (settings de Zenodo 7893727, `MOM_input:639-644`) usa `VAR_PEN_SW = True`, `CHL_FROM_FILE = True`,
+`CHL_FILE = "seawifs-clim-1997-2010.nwa12.nc"`, `CHL_VARNAME = "chlor_a"`, 3 bandas: eso es lo que corre la referencia
+`mom6_full`. El archivo de NWA12 no es público (sólo en ncrc de NOAA), así que `mom6_inputs.write_chl` lo hace como
+CEFI `tools/opacity/regrid_opacity.py` desde la misma fuente (`seawifs-clim-1997-2010.1440x1080.v20180328.nc`, la
+climatología SeaWiFS de OM4, `~/pyOCEAN_refs/nwa12_grid/`): inundación de tierra (`flood_kara`, :26; aquí el sustituto
+de 8 vecinos) y regrid **conservativo** de las esquinas de las celdas fuente a las del supergrid (:10-15, 28-36),
+`chlor_a(time, yh, xh)` con `area`, `lon_crnr`, `lat_crnr`, ejes enteros y el eje de tiempo mensual `modulo` (:37-55).
+Sin xesmf: alrededor del recorte las dos mallas son rectilíneas exactas en lon/lat (lo comprueba el código), así que
+cada solapamiento es un rectángulo esférico R² Δλ Δ(sen φ) y los pesos conservativos son exactos y separables; ESMF
+usa lados de círculo máximo (diferencia de segundo orden, clase c). Clorofila de mayo–agosto en el recorte: media
+1.80 mg m⁻³, rango 0.07–13.4. El **control de paridad** `mom6_full_jerlov` usa la onda corta de pyOCEAN: doble
+exponencial de Jerlov I (0.58 a 0.35 m, 0.42 a 23 m). pyOCEAN no tiene la onda corta de Manizza ni clorofila: **clase
+(b)**, para el proyecto 4 (con 0.5–3 mg m⁻³ en la plataforma, Jerlov I deposita el calor demasiado hondo). `pgf0` y
+`tides` usan Jerlov (no entra en el PGF del primer paso y el modo de mareas no tiene onda corta).
 
 **Estado inicial común (R24).** Los dos modelos arrancan del mismo archivo, `ic_full.nc` = el estado inicial de
 pyOCEAN (h, θ, S_P, u, v); `write_glorys_initial.py` de CEFI no se usa (con él MOM6 remapearía GLORYS por su cuenta y
@@ -318,10 +326,7 @@ onda corta ni lluvia, aire a 10 °C, q = 0.98 q_sat, onda larga σT⁴); T se qu
 - **Corrida completa de MOM6 con Jerlov I (`mom6_full_jerlov`, control de paridad, R23) ✅ (criterio 7, primera parte):** 123 días desde el 2017-05-01, mismas entradas, DT 600
   / DT_THERM 1800 de NWA12 sin cambios: termina sin truncamientos (`ocean.stats`, CFL máx 0.28), salidas diarias 3-D y
   η horaria. La mirada a SST contra OISST y a η en mareógrafos queda para la Tarea 11 (OISST no está bajado).
-- **Corrida de referencia `mom6_full` (MANIZZA_05, R23): pendiente.** La climatología SeaWiFS de NWA12 no está en
-  disco: en el clon de CEFI `INPUT/seawifs-clim-1997-2010.nwa12.nc` es un enlace a `../../datasets/`, que no se bajó,
-  y no está en el tarball de malla ni en el de settings de Zenodo 7893727. Hay que bajarla (autorización de Esteban) a
-  `~/pyOCEAN_refs/nwa12_grid/`; luego `mom6_inputs.py --only chl` y `run_mom6.sh full` (≈ 55 min en 5 núcleos).
+- **Corrida de referencia `mom6_full` (MANIZZA_05, R23, R25):** RESULTADO_MANIZZA
 - **Costo en 5 núcleos P (5 rangos MPI):** MOM6 + SIS2 **26.4 s por día simulado** (`mom6_full_jerlov`) (123 días en 54 min); mareas solas
   27.4 s/día; pyOCEAN, la misma corrida completa a Δt 300 s con 5 hilos, 208.5 s/día (7.9× MOM6; con Δt 600 sería
   ≈ 106 s/día, 4×).
