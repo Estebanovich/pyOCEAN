@@ -9,13 +9,13 @@ pyOCEAN inputs of the NWA12 cut, written once from the case definition (case.py)
                THE case topography (MOM6 depth rules + the edge edit of ruling R14, ``case.edit_edges``) in the MOM6
                layout (depth positive down, 0 on land; mask 1/0), for MOM6 on the same cut (Task 10)
   vgrid.nc     the 75 z* thicknesses (surface first) of vgrid_75_2m.nc
-  rivers.nc    the GloFAS v4 river input for t0 → t1 (cells, daily-mean times, Q per cell, mouths; CEFI ldd rule)
+  rivers.nc    the GloFAS v4 river input over the case period (ruling R17; cells, daily-mean times, Q per cell, mouths; CEFI ldd rule)
   stations.nc  the series points (CO-OPS gauges, NDBC 44025, OOI Pioneer) and their nearest wet T cell
 
 ``run_pyocean.py`` builds the same objects from the raw files at start-up (the build is a few seconds); these files
 are the record of what the runs used, for MOM6 (Task 10) and later models.
 
-Usage: python validation/nwa12_cut/build_inputs.py [--t1 2017-09-01]
+Usage: python validation/nwa12_cut/build_inputs.py
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from validation.nwa12_cut import case as cs  # noqa: E402
 
 
-def write(case: cs.Case, t1: np.datetime64 | None = None) -> Path:
+def write(case: cs.Case) -> Path:
     out = case.inputs
     out.mkdir(parents=True, exist_ok=True)
     hg, H = cs.grid(case)
@@ -50,8 +50,7 @@ def write(case: cs.Case, t1: np.datetime64 | None = None) -> Path:
     xr.Dataset({"mask": (("ny", "nx"), np.isfinite(H).astype("f8"))}).to_netcdf(out / "ocean_mask_cut.nc")
     xr.Dataset({"dz": ("nz", cs.vgrid_dz(case), {"units": "m", "comment": "z* nominal thickness, surface first"})}
                ).to_netcdf(out / "vgrid.nc")
-    t1 = case.t1 if t1 is None else np.datetime64(t1, "ns")
-    r = cs.rivers(case, hg, H, case.t0, t1)
+    r = cs.rivers(case, hg, H)
     xr.Dataset({"j": ("cell", r.cells[:, 0]), "i": ("cell", r.cells[:, 1]),
                 "Q": (("time", "cell"), r.Q, {"units": "m3 s-1", "long_name": "river discharge into the T cell"}),
                 "mouth_lat": ("mouth", r.mouth_lat), "mouth_lon": ("mouth", r.mouth_lon),
@@ -72,10 +71,8 @@ def write(case: cs.Case, t1: np.datetime64 | None = None) -> Path:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--t1", default=None, help="end of the river input (default: the case end, 2017-09-01)")
-    a = ap.parse_args()
-    print(write(cs.CASE, None if a.t1 is None else np.datetime64(a.t1)))
+    argparse.ArgumentParser(description=__doc__).parse_args()
+    print(write(cs.CASE))
 
 
 if __name__ == "__main__":

@@ -495,7 +495,7 @@ def build(case: Case, mode: str, dt: float, days: float, hg: xr.Dataset | None =
     atm = era5_atmosphere(era5_files(case), hg, t0, _dt(t0), _dt(t1),
                           lsm=None if case.era5_lsm is None else case.era5_lsm)
     if river is None:
-        river = rivers(case, hg, H, t0, t1)
+        river = rivers(case, hg, H)
     cfg = parity_config(case, hg, H, dt, edges=edges, boundary_tides=bt, surface_fluxes=BulkFluxes(atm, "ncar"),
                         runoff=river, open_boundary_state=obs, **overrides)
     m = SigmaBaroclinic(hg, H, **cfg)
@@ -503,14 +503,19 @@ def build(case: Case, mode: str, dt: float, days: float, hg: xr.Dataset | None =
     return Built(m, st, hg, H, edges, cells, river)
 
 
-def rivers(case: Case, hg: xr.Dataset, H: np.ndarray, t0: np.datetime64, t1: np.datetime64):
-    """GloFAS v4 river mouths on the cut's coast cells, CEFI ldd rule (R11, R12), origin = case.t0."""
+def rivers(case: Case, hg: xr.Dataset, H: np.ndarray):
+    """
+    GloFAS v4 river mouths on the cut's coast cells, CEFI ldd rule (R11, R12), origin = case.t0.  The pour points
+    are selected (mean discharge ≥ 1 m³ s⁻¹) over the **whole case period** ``case.t0 → case.t1``, not over a run's
+    own window (ruling R17): every run and every restart of the case has the same river set (the restart checks it),
+    whatever its ``--days``.
+    """
     from forcing.sources.glofas import glofas_mouths, open_ldd
     files = _files(case.glofas, case.glofas_pattern)
     ds = xr.open_mfdataset(files, combine="by_coords") if len(files) > 1 else xr.open_dataset(files[0])
     try:
         ldd = None if case.ldd is None else open_ldd(case.ldd)
-        return glofas_mouths(ds.load(), hg, t0, t1, origin=case.t0, ldd=ldd, wet=np.isfinite(H))
+        return glofas_mouths(ds.load(), hg, case.t0, case.t1, origin=case.t0, ldd=ldd, wet=np.isfinite(H))
     finally:
         ds.close()
 

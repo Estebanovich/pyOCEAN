@@ -50,7 +50,7 @@ Los **cuatro bordes siguen abiertos** por la regla 2:
 - norte, 25 celdas en dos tramos: la bahía de Cape Cod (6 celdas, 70.56–70.16 °W) y el golfo de Maine al este de
   70.0 °W (19). El tramo de Cape Cod no está unido al resto dentro de la ventana (24 celdas, 41.79–41.97 °N), pero
   intercambia con la bahía de Massachusetts fuera del recorte: con 6 celdas queda abierto (cerrarlo lo volvería una
-  cuenca cerrada).
+  cuenca cerrada). Decisión R18: la regla es solo la longitud del tramo, no la conectividad dentro de la ventana.
 
 Profundidades como MOM6 (`MASKING_DEPTH` 1, `MINIMUM_DEPTH` 4, `MAXIMUM_DEPTH` 6500): tierra donde la profundidad es
 ≤ 1 m, las de 1 a 4 m suben a 4 m.
@@ -78,7 +78,7 @@ R11 y R12 del registro.
 | marea de borde | TPXO, 10 constituyentes, η y u sumados al segmento, nodal fijo en una fecha | `BoundaryTides` con TPXO10 (10 constituyentes), u = U/D del modelo (R3), nodal OTPS en cada instante, sin rampa | (c) |
 | marea de potencial | `TIDES`, SAL escalar 0.05, SAL en Flather | `tidal_potential=True`, `sal_beta` 0.05, `sal_flather` | (c) camino SAL antiguo de MOM6 (R4) |
 | presión atmosférica | apagada (`MAX_P_SURF` = 0) | `atm_pressure=False` | — |
-| ríos | GloFAS v3 con la regla de CEFI; mezcla de ríos de ePBL (`DO_RIVERMIX`) | GloFAS v4 con la regla `ldd` de CEFI (R11, R12), agua dulce real en la capa superior | (c) versión; (b) sin mezcla de ríos |
+| ríos | GloFAS v3 con la regla de CEFI; mezcla de ríos de ePBL (`DO_RIVERMIX`) | GloFAS v4 con la regla `ldd` de CEFI (R11, R12), agua dulce real en la capa superior; desembocaduras elegidas (caudal medio ≥ 1 m³/s) sobre todo el periodo del caso, 72 celdas, igual para toda corrida y todo restart (R17) | (c) versión; (b) sin mezcla de ríos |
 | Δt | `DT` 600 s, `DT_THERM` 1800 s | un solo Δt, el estable más grande medido (600, luego 300) | (c) |
 | estado inicial | T, S, SSH y velocidades de GLORYS, remapeo desde z | T, S remapeados desde los niveles de GLORYS (contenido exacto por columna), η = zos (sin quitar la media, como MOM6), u, v rotados e interpolados linealmente en la vertical a cada cara | (c) velocidades interpoladas, no remapeadas |
 

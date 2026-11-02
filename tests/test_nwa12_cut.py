@@ -110,7 +110,7 @@ def _write_case(tmp: Path) -> cs.Case:
                    glorys=(tmp / "glorys.nc",), era5=tmp / "era5", era5_lsm=tmp / "era5" / "lsm.nc",
                    glofas=tmp / "glofas", ldd=None, tpxo=_tpxo(lo, la), tides=None, runs=tmp / "runs",
                    window=(0, NX, 0, NY), points={"p": (float(lat_n.mean()), float(lon_n.mean()))},
-                   tide_ramp_days=0.5)
+                   tide_ramp_days=0.5, t1=T0 + np.timedelta64(4, "D"))
 
 
 def _tpxo(lo: np.ndarray, la: np.ndarray) -> xr.Dataset:
@@ -311,6 +311,13 @@ def test_domain_budget_closes_small(syn):
         assert r[k]["rel_gross"] <= 1e-10, (k, r[k])
     assert r["V"]["surf"] != 0.0 and r["V"]["open"] != 0.0 and r["T"]["surf"] != 0.0 and r["T"]["fw"] != 0.0
     assert r["S"]["open"] != 0.0
+
+
+def test_river_set_is_independent_of_run_length(syn):
+    # Ruling R17: the pour points are chosen over the case period, so runs of any length (and their restarts)
+    # have the same rivers.
+    a, b = _build(syn, days=0.5).river, _build(syn, days=2.0).river
+    assert np.array_equal(a.cells, b.cells) and np.array_equal(a.Q, b.Q) and a.cells.shape[0] > 0
 
 
 def test_domain_budget_refuses_uncovered_terms(syn):
