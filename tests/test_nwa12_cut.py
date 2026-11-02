@@ -366,3 +366,62 @@ def test_domain_budget_refuses_uncovered_terms(syn):
     b = _build(syn, days=0.5, dt=1800.0, kh=10.0)
     with pytest.raises(ValueError, match="kh > 0"):
         DomainBudget(b.model)
+
+
+# ---------------------------------------------------------------------------------------------------- MOM6 (Task 10)
+from validation.nwa12_cut import check_mom6 as cm  # noqa: E402
+from validation.nwa12_cut import mom6_inputs as mi  # noqa: E402
+
+_PGF0 = cm.RUNS / "mom6_pgf0"
+
+
+def _has(run: Path, stem: str) -> bool:
+    return run.exists() and any(not p.name.startswith("._") for p in run.glob(f"*{stem}*.nc"))
+
+
+def test_cefi_functions_compile_from_cefi_source():
+    """CEFI's pure-NumPy helpers are taken from tools/boundary/boundary.py itself (no xesmf needed)."""
+    if not (mi.CEFI / "tools" / "boundary" / "boundary.py").exists():
+        pytest.skip("CEFI-regional-MOM6 not on disk")
+    f = mi._cefi()
+    u = xr.DataArray(np.array([[1.0, 0.0]]), dims=("time", "locations"))
+    v = xr.DataArray(np.array([[0.0, 1.0]]), dims=("time", "locations"))
+    ur, vr = f["rotate_uv"](u, v, xr.DataArray(np.array([np.pi / 2, 0.0]), dims=("locations",)))
+    np.testing.assert_allclose(ur.transpose("time", "locations").values, [[0.0, 0.0]], atol=1e-15)
+    np.testing.assert_allclose(vr.transpose("time", "locations").values, [[-1.0, 1.0]], atol=1e-15)
+    # ellipse round trip without rotation returns the amplitudes and phases (Xu 2000)
+    uc = np.array([[0.3 * np.exp(-0.4j), 0.1 * np.exp(1.1j)]])
+    vc = np.array([[0.2 * np.exp(0.9j), 0.05 * np.exp(-2.0j)]])
+    ua, va, up, vp = f["ep2ap"](*f["ap2ep"](uc, vc))
+    np.testing.assert_allclose(ua * np.exp(-1j * up), uc, atol=1e-14)
+    np.testing.assert_allclose(va * np.exp(-1j * vp), vc, atol=1e-14)
+
+
+def test_nearest_fill_and_flood():
+    """nearest_s2d / setmisstonn / flood stand-ins for xesmf, cdo and HCtFlood."""
+    lon, lat = np.meshgrid(np.arange(5.0), np.arange(4.0))
+    k = mi.nearest_s2d(lon, lat, np.array([0.1, 3.9]), np.array([0.2, 2.8]))
+    assert list(k) == [0, 3 * 5 + 4]
+    f = np.arange(20.0).reshape(4, 5)
+    f[1:3, 1:3] = np.nan
+    g = mi.setmisstonn(f[None], lon, lat)[0]
+    assert np.isfinite(g).all() and g[1, 1] in (f[0, 1], f[1, 0])
+    fl = mi.flood(f)
+    assert np.isfinite(fl).all()
+    np.testing.assert_array_equal(fl[np.isfinite(f)], f[np.isfinite(f)])
+
+
+@pytest.mark.skipif(not _has(_PGF0, "ocean_static"), reason="MOM6 ocean_static.nc not on disk (run_mom6.sh pgf0)")
+def test_static_metrics_match_mom6():
+    """Criterion 1: MOM6's static grid on the cut = grid_from_supergrid to ≤ 1e-12 relative (f_t excluded, R9)."""
+    r = cm.static_check(_PGF0)
+    bad = {k: e for k, (e, n) in r.items() if e > cm.TOL_GRID or n == 0}
+    assert not bad, bad
+
+
+@pytest.mark.skipif(not _has(_PGF0, "pgf0"), reason="MOM6 pgf0 output not on disk (run_mom6.sh pgf0)")
+def test_initial_pgf_matches_mom6():
+    """Criterion 7: MOM6's initial PFu, PFv = pyOCEAN's on the same file (ic_full.nc) to ≤ 1e-11 m s⁻², with the
+    NWA12 PGF settings (G_EARTH 9.8, full mass weighting)."""
+    r = cm.pgf_check(_PGF0)
+    assert max(r["max_du"], r["max_dv"]) <= cm.TOL_PGF, r

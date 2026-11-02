@@ -1,0 +1,17 @@
+# NWA12 field_table (CEFI exps/NWA12.COBALT/field_table) without the COBALT namelists: the atmosphere and land
+# tracers the FMS coupler exchanges (specific humidity, cloud fields).
+"TRACER", "atmos_mod", "sphum"
+          "longname",     "specific humidity"
+          "units",        "kg/kg" /
+"TRACER", "atmos_mod", "liq_wat"
+          "longname",     "cloud liquid specific humidity"
+          "units",        "kg/kg" /
+"TRACER", "atmos_mod", "ice_wat"
+          "longname",     "cloud ice water specific humidity"
+          "units",        "kg/kg" /
+"TRACER", "atmos_mod", "cld_amt"
+          "longname",     "cloud fraction"
+          "units",        "none" /
+"TRACER", "land_mod",     "sphum"
+          "longname",     "specific humidity"
+          "units",        "kg/kg" /

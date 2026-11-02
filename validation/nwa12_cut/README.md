@@ -210,3 +210,91 @@ Atlantic City −4.0°, Lewes −4.6°. La velocidad de la marea en el borde no 
 y u = U/h_TPXO las fases difieren ≤ 0.4° (16 días: error medio 0.185 contra 0.183 m). El adelanto es interior
 (batimetría de 1/12° en NY Harbor–LIS, sin `CHANNEL_DRAG`; clase b/c); no se afina nada y se compara con MOM6 en el
 mismo recorte.
+
+## MOM6 + SIS2 en el mismo recorte (Tarea 10)
+
+| archivo | qué hace |
+|---|---|
+| `mom6_inputs.py` | escribe las entradas de MOM6 en `RUNS/inputs/mom6/` desde la misma definición de caso; `--run-dir MODO` arma el directorio de una corrida |
+| `build_mom6.sh` | compila MOM6 + SIS2 + acoplador FMS (`full`) + `atmos_null` + `land_null` en `~/pyOCEAN_refs/build/nwa12_cut/` |
+| `run_mom6.sh {pgf0,tides,full}` | corre en ≤ 5 rangos MPI y escribe `timing.json` |
+| `check_mom6.py` | criterio 1 (malla), criterio 7 (PGF inicial), serie horaria de η en los mareógrafos para `tide_check.py`, costo |
+| `MOM_input`, `SIS_input` | los de NWA12 (`exps/NWA12.COBALT/INPUT`) sin comentarios, valores tal cual |
+| `MOM_override`, `SIS_override` | **todas** las diferencias con NWA12 (abajo); `run_mom6.sh` agrega el bloque del modo |
+| `diag_table`, `data_table`, `data_table_tides`, `input.nml`, `field_table` | plantillas de la corrida |
+
+**Compilación.** MOM6 `0e9a561` (GFDL; CEFI fija su fork `dev/cefi` af82618, que no está en local), SIS2 c287b24,
+icebergs fd6478f, ice_param 1d19a57, atmos_null fc39f82, land_null 57e5942, FMScoupler 175a9da, todos con los
+commits de los submódulos de CEFI. **FMS 16bb3af** (`~/pyOCEAN_refs/FMS_2025.03`, el commit de CEFI; `git describe`
+dice 2026.01.01): el FMS local 2025.02.01 no puede compilar este acoplador (usa `fms_error_mesg` y
+`fms_check_nml_error`, que `libFMS.F90` exporta desde 2025.03), así que se clonó al lado según la decisión del
+controlador; el FMS 2025.02.01 no se tocó. Dependencias con `ac/makedep` de MOM6, memoria `dynamic_symmetric`, `-O2`
+con reales de 8 bytes, sin COBALT (stubs `GFDL_ocean_BGC`), sin Icepack (stubs de SIS2), sin `use_yaml` (tablas de
+texto). 3 min con 5 trabajos. No hizo falta FRE-NCtools (abajo).
+
+**Entradas (`mom6_inputs.py`).** `xesmf` y `HCtFlood` no están instalados en ningún entorno, así que las
+herramientas de CEFI no corren tal cual. Las funciones puras de CEFI (`rotate_uv`, `fill_missing`, `z_to_dz`,
+`ap2ep`, `ep2ap`) se compilan desde `tools/boundary/boundary.py` mismo; los pasos de xesmf/HCtFlood/CDO se
+reimplementan (clase c): `nearest_s2d` = punto fuente más cercano en distancia cartesiana sobre la esfera,
+`cdo setmisstonn` = vecino válido más cercano en el mismo nivel, `flood_kara` = inundación iterativa con la media de
+los 8 vecinos [verificar contra HCtFlood].
+
+- malla: `ocean_hgrid.nc` cortado con desplazamientos pares; `ocean_topog.nc` = la topografía del caso (reglas de
+  MOM6 + R14), float64; máscaras desde ella; `ocean_mosaic.nc`, `grid_spec.nc` de NWA12; las tres mallas de
+  intercambio de NWA12 reindexadas a la ventana (atmósfera = tierra = océano, una celda de intercambio por celda; las
+  2 celdas de R14 pasan de atm×océano a atm×tierra). Sin FRE-NCtools.
+- **estado inicial = el de pyOCEAN** (`ic_full.nc`, `ic_tides.nc`: h, θ, S_P, u, v de `case.build`, superficie
+  primero), leído capa por capa (`THICKNESS_CONFIG = "thickness_file"`, `REMAP_AFTER_INITIALIZATION = False`), así
+  que los dos modelos arrancan del mismo archivo. `write_glorys_initial.py` de CEFI no se usa (daría otro estado).
+- segmentos: 4 (NWA12 numera sur 1, norte 2, este 3; el oeste es el 4, `I=0,J=N:0`), GLORYS con el algoritmo de
+  `write_glorys_boundary.py` (vecino más cercano en los nodos del supergrid, `z_to_dz`), TPXO10 con el de
+  `write_tpxo_boundary.py` (velocidad propia de TPXO, u = U/h_TPXO, R19; elipse rotada con `angle_dx` = 0 aquí).
+- ERA5 para `data_override`: meses concatenados, latitud sur → norte, sin empaquetar; humedad específica de `d2m` y
+  **`msl`** (CEFI usa `sp`, que no se bajó), lluvia = `tp` y nieve 0 (no se bajó `sf`; verano) — clase c.
+- ríos (R8): el `rivers.nc` del caso (regla ldd de CEFI) como runoff Q·1000/A_t; MOM6 lo vuelve volumen con
+  ρ₀ = 1035, pyOCEAN suma Q: el volumen de ríos de MOM6 es 1000/1035 del de pyOCEAN (clase c).
+
+**Diferencias con NWA12 (`MOM_override`).** Malla 87 × 89 y cuatro segmentos; `OBC_HOR_INDEXING_BUG = False` (R6);
+sin COBALT; estado inicial de pyOCEAN; `TIDE_REF_DATE` 2017-05-01, `TIDE_NODAL_REF_DATE` 2017-07-01 (R3); onda corta
+sin la clorofila de COBALT: doble exponencial de Jerlov I (0.58 a 0.35 m, 0.42 a 23 m), la misma que pyOCEAN (clase
+c). Modo `tides`: océano homogéneo (10 °C, 35) en reposo, segmentos sólo con marea (`value:` para U, V, SSH, T, S),
+`WIND_STRESS_MULTIPLIER = 0` y una atmósfera constante en equilibrio con 10 °C (`data_table_tides`: sin viento ni
+onda corta ni lluvia, aire a 10 °C, q = 0.98 q_sat, onda larga σT⁴); T se queda en 10.0000 los 30 días
+(`ocean.stats`). Modo `pgf0`: un paso acoplado de 600 s con `TIDES` y `CALCULATE_SAL` apagados. Parámetros de
+NWA12 que este MOM6 no usa o declara obsoletos: `PHA_MLD_*`, `HREF_FOR_MLD`, `BETTER_BOUND_AH`,
+`CFL_BASED_TRUNCATIONS`, `USE_DIABATIC_TIME_BUG` y los `OBC_*_STRAIN/VORTICITY` viejos (versión de MOM6 distinta de
+la de CEFI, clase c).
+
+### Resultados MOM6 (2026-11-02)
+
+- **Criterio 1 ✅:** las 23 variables estáticas de `ocean_static.nc` (geolon/lat de T, u, v, q; dxt, dyt, dxCu, dyCu,
+  dxCv, dyCv, dyCuo, dxCvo, area_t/u/v/q, Coriolis, cos_rot, sin_rot) son **iguales bit a bit** a
+  `grid_from_supergrid` en el recorte (error relativo máximo 0). `f_t` no entra (R9); dxBu, dyBu no son
+  diagnósticos estáticos de MOM6.
+- **Criterio 7 (PGF inicial) ✅:** con el mismo archivo inicial, max |PFu − pyOCEAN| = 1.16e-14 y |PFv − pyOCEAN| =
+  1.22e-14 m s⁻² (|PF| ≤ 1.9e-4) en todas las caras interiores mojadas y todas las capas. pyOCEAN deja fuera −g∇η
+  (es del solver barotrópico) y se suma para comparar. **Hay que usar los ajustes de NWA12:** `g` = 9.8 (G_EARTH) y
+  `pgf_mass_weight='full'` (MASS_WEIGHT_IN_PRESSURE_GRADIENT = True, VANISHED_ONLY = False). Con lo que
+  `parity_config()` usa hoy (g = 9.81 por defecto, 'vanished') la diferencia es 5.2e-7 m s⁻²: dos diferencias de
+  paridad de la Tarea 9 (clase a de la configuración del caso, no del núcleo).
+- **Mareas solas (30 días, 600 s, sin rampa):** error vectorial de M2 en 11 mareógrafos (`tide_check.py`, días
+  1–30), **MOM6 0.218 m de media (mediana 0.193)**, pyOCEAN 0.229 m (0.200). MOM6 tiene mejor la fase en la bahía de
+  Nueva York (Sandy Hook +1.8° contra −18.6°, Battery −8.6° contra −31.3°) y peor la amplitud en Long Island Sound
+  (Bridgeport 0.57 contra 0.92 m, obs. 0.98). La clasificación (criterio 4) es de la Tarea 11.
+- **Corrida completa de MOM6 ✅ (criterio 7, primera parte):** 123 días desde el 2017-05-01, mismas entradas, DT 600
+  / DT_THERM 1800 de NWA12 sin cambios: termina sin truncamientos (`ocean.stats`, CFL máx 0.28), salidas diarias 3-D y
+  η horaria. La mirada a SST contra OISST y a η en mareógrafos queda para la Tarea 11 (OISST no está bajado).
+- **Costo en 5 núcleos P (5 rangos MPI):** MOM6 + SIS2 **26.4 s por día simulado** (123 días en 54 min); mareas solas
+  27.4 s/día; pyOCEAN, la misma corrida completa a Δt 300 s con 5 hilos, 208.5 s/día (7.9× MOM6; con Δt 600 sería
+  ≈ 106 s/día, 4×).
+
+**Qué debe mejorar pyOCEAN (de esta tarea):** (1) `parity_config()` debe pasar `g=9.8` y `pgf_mass_weight='full'`
+para ser NWA12 (hoy 9.81 y 'vanished'; 5e-7 m s⁻² en el PGF inicial); (2) el costo por día (×8 contra MOM6 en los
+mismos núcleos): Δt 300 por la inestabilidad de θ_bc = ½ (factor 2) y la parte en serie del paso (1.6× de 1 a 5
+hilos); (3) la fase de M2 en la bahía de Nueva York (MOM6 la tiene bien con la misma batimetría y la misma marea de
+borde, así que no es sólo la resolución; a juzgar en la Tarea 11).
+
+Reproducir: `python validation/nwa12_cut/mom6_inputs.py` → `validation/nwa12_cut/build_mom6.sh` →
+`validation/nwa12_cut/run_mom6.sh pgf0|tides|full` → `python validation/nwa12_cut/check_mom6.py --static --pgf
+--series --cost RUNS/runs/mom6_tides RUNS/runs/mom6_full` → `python validation/nwa12_cut/tide_check.py
+RUNS/runs/mom6_tides`.

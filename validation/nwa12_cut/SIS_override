@@ -1,0 +1,3 @@
+! NWA12 cut (pyOCEAN regional chain, Task 10): SIS2 on the cut's grid; everything else is NWA12's SIS_input.
+#override NIGLOBAL = 87
+#override NJGLOBAL = 89
