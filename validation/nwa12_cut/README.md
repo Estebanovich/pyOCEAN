@@ -219,7 +219,7 @@ mismo recorte.
 |---|---|
 | `mom6_inputs.py` | escribe las entradas de MOM6 en `RUNS/inputs/mom6/` desde la misma definición de caso; `--run-dir MODO` arma el directorio de una corrida |
 | `build_mom6.sh` | compila MOM6 + SIS2 + acoplador FMS (`full`) + `atmos_null` + `land_null` en `~/pyOCEAN_refs/build/nwa12_cut/` |
-| `run_mom6.sh {pgf0,tides,full}` | corre en ≤ 5 rangos MPI y escribe `timing.json` |
+| `run_mom6.sh {pgf0,tides,full,full_jerlov}` | corre en ≤ 5 rangos MPI y escribe `timing.json` |
 | `check_mom6.py` | criterio 1 (malla), criterio 7 (PGF inicial), serie horaria de η en los mareógrafos para `tide_check.py`, costo |
 | `MOM_input`, `SIS_input` | los de NWA12 (`exps/NWA12.COBALT/INPUT`) sin comentarios, valores tal cual |
 | `MOM_override`, `SIS_override` | **todas** las diferencias con NWA12 (abajo); `run_mom6.sh` agrega el bloque del modo |
@@ -239,7 +239,7 @@ herramientas de CEFI no corren tal cual. Las funciones puras de CEFI (`rotate_uv
 `ap2ep`, `ep2ap`) se compilan desde `tools/boundary/boundary.py` mismo; los pasos de xesmf/HCtFlood/CDO se
 reimplementan (clase c): `nearest_s2d` = punto fuente más cercano en distancia cartesiana sobre la esfera,
 `cdo setmisstonn` = vecino válido más cercano en el mismo nivel, `flood_kara` = inundación iterativa con la media de
-los 8 vecinos [verificar contra HCtFlood].
+los 8 vecinos [verificar contra HCtFlood: su código no está en `~/pyOCEAN_refs`].
 
 - malla: `ocean_hgrid.nc` cortado con desplazamientos pares; `ocean_topog.nc` = la topografía del caso (reglas de
   MOM6 + R14), float64; máscaras desde ella; `ocean_mosaic.nc`, `grid_spec.nc` de NWA12; las tres mallas de
@@ -257,15 +257,47 @@ los 8 vecinos [verificar contra HCtFlood].
   ρ₀ = 1035, pyOCEAN suma Q: el volumen de ríos de MOM6 es 1000/1035 del de pyOCEAN (clase c).
 
 **Diferencias con NWA12 (`MOM_override`).** Malla 87 × 89 y cuatro segmentos; `OBC_HOR_INDEXING_BUG = False` (R6);
-sin COBALT; estado inicial de pyOCEAN; `TIDE_REF_DATE` 2017-05-01, `TIDE_NODAL_REF_DATE` 2017-07-01 (R3); onda corta
-sin la clorofila de COBALT: doble exponencial de Jerlov I (0.58 a 0.35 m, 0.42 a 23 m), la misma que pyOCEAN (clase
-c). Modo `tides`: océano homogéneo (10 °C, 35) en reposo, segmentos sólo con marea (`value:` para U, V, SSH, T, S),
+sin COBALT; estado inicial común (R24, abajo); `TIDE_REF_DATE` 2017-05-01, `TIDE_NODAL_REF_DATE` 2017-07-01 (R3).
+
+**Onda corta (R23).** NWA12 usa MANIZZA_05 (3 bandas, opacidad según la clorofila, que en NWA12 da COBALT). La
+corrida de **referencia** `mom6_full` es NWA12 sin COBALT: MANIZZA_05 con `CHL_FROM_FILE` y la climatología SeaWiFS
+de NWA12 (`seawifs-clim-1997-2010.nwa12.nc`, la que usa la configuración física de Zenodo, `MOM_input:640-642`)
+cortada a la ventana (`mom6_inputs.py --only chl`). El **control de paridad** `mom6_full_jerlov` usa la onda corta de
+pyOCEAN: doble exponencial de Jerlov I (0.58 a 0.35 m, 0.42 a 23 m). pyOCEAN no tiene la onda corta de Manizza ni
+clorofila: **clase (b)**, para el proyecto 4 (en la plataforma del MAB, con 0.5–3 mg m⁻³ de clorofila, Jerlov I
+deposita el calor demasiado hondo: SST más fría). `pgf0` y `tides` usan Jerlov (no entra en el PGF del primer paso y
+el modo de mareas no tiene onda corta).
+
+**Estado inicial común (R24).** Los dos modelos arrancan del mismo archivo, `ic_full.nc` = el estado inicial de
+pyOCEAN (h, θ, S_P, u, v); `write_glorys_initial.py` de CEFI no se usa (con él MOM6 remapearía GLORYS por su cuenta y
+el criterio 7, mismo estado inicial, no se podría cumplir). Una corrida de MOM6 con el estado inicial de CEFI sería
+sólo una sensibilidad opcional.
+
+**Ríos (R8, R22).** Los dos modelos usan el mismo `rivers.nc` del caso (regla ldd de CEFI), no
+`tools/rivers/write_runoff_glofas.py` (necesita xesmf y GloFAS de todo NWA12; sólo se bajó la caja del recorte); MOM6
+convierte el flujo de masa Q·1000/A_t en volumen con ρ₀ = 1035, así que su volumen de ríos es 1000/1035 del de
+pyOCEAN (R22, clase c).
+
+**FMS 16bb3af (= 2026.01.01).** Decisión del controlador para la Tarea 10: el commit del submódulo de CEFI, en
+`~/pyOCEAN_refs/FMS_2025.03` (el nombre del directorio viene del brief; `git describe` dice 2026.01.01), porque FMS
+2025.02.01 no exporta `fms_error_mesg`/`fms_check_nml_error` que usa el acoplador 175a9da.
+
+**Configuración efectiva contra NWA12.** El `MOM_parameter_doc.all` de la corrida del recorte comparado con el de
+NWA12 (revisión de la Tarea 10) sólo difiere en lo de arriba: NIGLOBAL/NJGLOBAL, el segmento 4 y su `_DATA`,
+`OBC_HOR_INDEXING_BUG`, `USE_generic_tracer` (y los parámetros de COBALT que dependen de él), las fechas de marea (y
+las fases `TIDE_*_PHASE_T0` derivadas), el estado inicial desde archivo (`THICKNESS_CONFIG`, `TS_FILE`, `SALT_FILE`,
+`VELOCITY_FILE`, `DEPRESS_INITIAL_SURFACE`, `REMAP_AFTER_INITIALIZATION`), la onda corta del modo y
+`DATE_STAMPED_STDOUT`; más `PHA_MLD_*`, parámetros del fork de CEFI que el MOM6 de GFDL 0e9a561 no tiene (sólo un
+diagnóstico). Así que MOM6 0e9a561 corre el mismo juego de parámetros que NWA12. `BETTER_BOUND_AH`,
+`CFL_BASED_TRUNCATIONS`, `USE_DIABATIC_TIME_BUG`, `HREF_FOR_MLD` y los `OBC_*_STRAIN/VORTICITY` viejos, que MOM6 avisa
+como no usados u obsoletos, **tampoco están en el `MOM_parameter_doc.all` de NWA12**: son entradas viejas del
+`MOM_input` de NWA12 que NWA12 mismo no usa, no una diferencia de versión.
+
+Modo `tides`: océano homogéneo (10 °C, 35) en reposo, segmentos sólo con marea (`value:` para U, V, SSH, T, S),
 `WIND_STRESS_MULTIPLIER = 0` y una atmósfera constante en equilibrio con 10 °C (`data_table_tides`: sin viento ni
 onda corta ni lluvia, aire a 10 °C, q = 0.98 q_sat, onda larga σT⁴); T se queda en 10.0000 los 30 días
-(`ocean.stats`). Modo `pgf0`: un paso acoplado de 600 s con `TIDES` y `CALCULATE_SAL` apagados. Parámetros de
-NWA12 que este MOM6 no usa o declara obsoletos: `PHA_MLD_*`, `HREF_FOR_MLD`, `BETTER_BOUND_AH`,
-`CFL_BASED_TRUNCATIONS`, `USE_DIABATIC_TIME_BUG` y los `OBC_*_STRAIN/VORTICITY` viejos (versión de MOM6 distinta de
-la de CEFI, clase c).
+(`ocean.stats`). Modo `pgf0`: un paso acoplado de 600 s con `TIDES` y `CALCULATE_SAL` apagados y
+`SAVE_INITIAL_CONDS` (`MOM_IC.nc`: `check_mom6.ic_check` compara h, T, S, u y v que MOM6 leyó con `ic_full.nc`).
 
 ### Resultados MOM6 (2026-11-02)
 
@@ -283,10 +315,14 @@ la de CEFI, clase c).
   1–30), **MOM6 0.218 m de media (mediana 0.193)**, pyOCEAN 0.229 m (0.200). MOM6 tiene mejor la fase en la bahía de
   Nueva York (Sandy Hook +1.8° contra −18.6°, Battery −8.6° contra −31.3°) y peor la amplitud en Long Island Sound
   (Bridgeport 0.57 contra 0.92 m, obs. 0.98). La clasificación (criterio 4) es de la Tarea 11.
-- **Corrida completa de MOM6 ✅ (criterio 7, primera parte):** 123 días desde el 2017-05-01, mismas entradas, DT 600
+- **Corrida completa de MOM6 con Jerlov I (`mom6_full_jerlov`, control de paridad, R23) ✅ (criterio 7, primera parte):** 123 días desde el 2017-05-01, mismas entradas, DT 600
   / DT_THERM 1800 de NWA12 sin cambios: termina sin truncamientos (`ocean.stats`, CFL máx 0.28), salidas diarias 3-D y
   η horaria. La mirada a SST contra OISST y a η en mareógrafos queda para la Tarea 11 (OISST no está bajado).
-- **Costo en 5 núcleos P (5 rangos MPI):** MOM6 + SIS2 **26.4 s por día simulado** (123 días en 54 min); mareas solas
+- **Corrida de referencia `mom6_full` (MANIZZA_05, R23): pendiente.** La climatología SeaWiFS de NWA12 no está en
+  disco: en el clon de CEFI `INPUT/seawifs-clim-1997-2010.nwa12.nc` es un enlace a `../../datasets/`, que no se bajó,
+  y no está en el tarball de malla ni en el de settings de Zenodo 7893727. Hay que bajarla (autorización de Esteban) a
+  `~/pyOCEAN_refs/nwa12_grid/`; luego `mom6_inputs.py --only chl` y `run_mom6.sh full` (≈ 55 min en 5 núcleos).
+- **Costo en 5 núcleos P (5 rangos MPI):** MOM6 + SIS2 **26.4 s por día simulado** (`mom6_full_jerlov`) (123 días en 54 min); mareas solas
   27.4 s/día; pyOCEAN, la misma corrida completa a Δt 300 s con 5 hilos, 208.5 s/día (7.9× MOM6; con Δt 600 sería
   ≈ 106 s/día, 4×).
 
@@ -297,6 +333,6 @@ hilos); (3) la fase de M2 en la bahía de Nueva York (MOM6 la tiene bien con la 
 borde, así que no es sólo la resolución; a juzgar en la Tarea 11).
 
 Reproducir: `python validation/nwa12_cut/mom6_inputs.py` → `validation/nwa12_cut/build_mom6.sh` →
-`validation/nwa12_cut/run_mom6.sh pgf0|tides|full` → `python validation/nwa12_cut/check_mom6.py --static --pgf
---series --cost RUNS/runs/mom6_tides RUNS/runs/mom6_full` → `python validation/nwa12_cut/tide_check.py
+`validation/nwa12_cut/run_mom6.sh pgf0|tides|full|full_jerlov` → `python validation/nwa12_cut/check_mom6.py --static --pgf
+--series --cost RUNS/runs/mom6_tides RUNS/runs/mom6_full RUNS/runs/mom6_full_jerlov` → `python validation/nwa12_cut/tide_check.py
 RUNS/runs/mom6_tides`.

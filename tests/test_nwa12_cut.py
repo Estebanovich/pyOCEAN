@@ -425,6 +425,13 @@ def test_static_metrics_match_mom6():
     assert not bad, bad
 
 
+@pytest.mark.skipif(not (_PGF0 / "MOM_IC.nc").exists(), reason="MOM6 MOM_IC.nc not on disk (run_mom6.sh pgf0)")
+def test_mom6_reads_the_shared_initial_state():
+    """Review M3: MOM6's initial state (MOM_IC.nc) is ic_full.nc bit for bit, velocities included."""
+    r = cm.ic_check(_PGF0)
+    assert max(r.values()) == 0.0, r
+
+
 @pytest.mark.skipif(not _has(_PGF0, "pgf0"), reason="MOM6 pgf0 output not on disk (run_mom6.sh pgf0)")
 def test_initial_pgf_matches_mom6():
     """Criterion 7: MOM6's initial PFu, PFv = pyOCEAN's on the same file (ic_full.nc) to ≤ 1e-11 m s⁻², with the

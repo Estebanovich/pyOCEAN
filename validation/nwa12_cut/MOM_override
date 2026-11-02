@@ -33,15 +33,10 @@ THICKNESS_IC_VAR = "h"
 #override TIDE_REF_DATE = 2017, 5, 1
 #override TIDE_NODAL_REF_DATE = 2017, 7, 1
 
-! --- shortwave without COBALT's chlorophyll: Jerlov type I, Paulson & Simpson (1977) double exponential, the same
-!     as pyOCEAN's parity configuration (physics/surface/shortwave.py: R = 0.58, ζ1 = 0.35 m, ζ2 = 23 m);
-!     MOM_opacity.F90:155-177 (band 1 = SW_1ST_EXP_RATIO with PEN_SW_SCALE, band 2 the rest with PEN_SW_SCALE_2ND)
-#override VAR_PEN_SW = False
-EXP_OPACITY_SCHEME = "DOUBLE_EXP"
-#override PEN_SW_NBANDS = 2
-PEN_SW_SCALE = 0.35
-SW_1ST_EXP_RATIO = 0.58
-PEN_SW_SCALE_2ND = 23.0
+! --- shortwave: NWA12's MANIZZA_05 (3 bands, opacity from chlorophyll; MOM_input) with the chlorophyll that COBALT
+!     gave NWA12 replaced by NWA12's own SeaWiFS climatology cut to the window (ruling R23; mode 'full'), or the
+!     Jerlov-I parity control (mode 'full_jerlov'): run_mom6.sh adds the block of the mode
+!     (mom6_inputs.SHORTWAVE)
 
 ! --- output and bookkeeping on this machine
 #override DATE_STAMPED_STDOUT = False

@@ -31,6 +31,9 @@ settings where they differ (``PGF_SETTINGS``: G_EARTH = 9.8 and MASS_WEIGHT_IN_P
 MASS_WEIGHT_IN_PGF_VANISHED_ONLY = False ↔ ``pgf_mass_weight='full'``); the parity configuration itself (g = 9.81,
 'vanished') is reported too.  Faces: both columns wet, not on the domain edge.
 
+``ic_check``: MOM6's MOM_IC.nc (SAVE_INITIAL_CONDS in the pgf0 run) against ic_full.nc for h, T, S, u, v, so that
+MOM6 is shown to read the velocities of the shared initial state too (review M3).
+
 Criterion 4 (tides, helper): ``mom6_series`` turns MOM6's hourly SSH snapshots at the gauges' cells
 (``inputs/pyocean/stations.nc``) into a ``series.npz`` that ``tide_check.py`` analyses like a pyOCEAN run.
 
@@ -101,7 +104,10 @@ def static_check(run: Path = RUNS / "mom6_pgf0", case: cs.Case = cs.CASE) -> dic
             b = sign * hg[pyo].values
             if a.shape != b.shape:
                 raise ValueError(f"{mom} {a.shape} vs {pyo} {b.shape}")
-            sel = np.isfinite(a) & (masks[where] if where != "all" else True)
+            want = masks[where] if where != "all" else np.ones(a.shape, bool)
+            sel = np.isfinite(a) & want
+            if sel.sum() != want.sum():      # a masked static field must not drop points silently (review M2)
+                raise ValueError(f"{mom}: {int(want.sum() - sel.sum())} of {int(want.sum())} points missing")
             d = np.abs(a - b)[sel]
             den = np.abs(b)[sel]
             rel = np.where(den > 0, d / np.where(den > 0, den, 1.0), d)
@@ -181,6 +187,22 @@ def pgf_check(run: Path = RUNS / "mom6_pgf0", ic_path: Path = INPUTS / "ic_full.
                 h_mom6_step_mean_minus_ic=float(np.abs(hm - h).max()))
 
 
+def ic_check(run: Path = RUNS / "mom6_pgf0", ic_path: Path = INPUTS / "ic_full.nc", case: cs.Case = cs.CASE) -> dict:
+    """Max |MOM6 − ic_full.nc| of h, T, S, u, v as MOM6 read them (``MOM_IC.nc``, SAVE_INITIAL_CONDS of the pgf0
+    run): wet columns for h, T, S; faces with both columns wet for u, v (the land and edge faces MOM6 masks)."""
+    ic = read_ic(ic_path)
+    hg, H = cs.grid(case)
+    wet = np.isfinite(H)
+    mu, mv = _interior_faces(H)
+    out = {}
+    with netCDF4.Dataset(Path(run) / "MOM_IC.nc") as ds:
+        for mom, mine, mask in (("h", "h", wet), ("Temp", "temp", wet), ("Salt", "salt", wet),
+                                ("u", "u", mu), ("v", "v", mv)):
+            a = np.nan_to_num(_read(ds, mom))[::-1]
+            out[mom] = float((np.abs(a - ic[mine]) * mask[None]).max())
+    return out
+
+
 # ------------------------------------------------------------------------------------------------ criterion 4
 def mom6_series(run: Path = RUNS / "mom6_tides", case: cs.Case = cs.CASE) -> Path:
     """series.npz (t [s from case.t0], names, eta (nt, n)) of MOM6's hourly SSH snapshots at the gauges' cells, the
@@ -222,6 +244,10 @@ def main() -> None:
         for k, (e, n) in r.items():
             print(f"{k:>10}: max rel {e:.2e} ({n} points) {'ok' if e <= TOL_GRID else 'FAIL'}")
     if a.pgf:
+        try:
+            print("MOM_IC vs ic_full.nc:", ic_check(a.pgf))
+        except FileNotFoundError as e:
+            print(e)
         for s in (PGF_SETTINGS, {}):
             r = pgf_check(a.pgf, settings=s)
             print(json.dumps(r, indent=1))

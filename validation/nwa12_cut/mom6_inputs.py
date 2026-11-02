@@ -19,6 +19,7 @@ What is written and how (CEFI tools: docs/design/regional_refs/cefi_tools.md; MO
 | ``{uv,thetao,so,zos}_00n.nc`` | GLORYS segments, CEFI ``write_glorys_boundary.py`` algorithm (below) |
 | ``{tu,tz}_00n.nc`` | TPXO10 tidal segments, CEFI ``write_tpxo_boundary.py`` algorithm on TPXO10 (ruling R3/R19) |
 | ``ERA5_{var}_2017_padded.nc`` | CEFI ``tools/atmos`` layout for FMS ``data_override`` (below) |
+| ``seawifs-clim-1997-2010.nwa12_cut.nc`` | NWA12's SeaWiFS chlorophyll climatology cut to the window, for MANIZZA_05 in the reference run (ruling R23) |
 | ``glofas_runoff_2017.nc`` | the case's GloFAS v4 river input (``inputs/pyocean/rivers.nc``, CEFI ldd rule, R11/R12/R17) as runoff [kg m⁻² s⁻¹] on the cut (ruling R8, below) |
 
 **CEFI tools without xesmf / HCtFlood.**  ``xesmf`` and ``HCtFlood`` are not installed and no conda environment has
@@ -64,8 +65,8 @@ nearest coast cell) with runoff = Q ρ_fw / A_t, ρ_fw = 1000 kg m⁻³ (CEFI's 
 (``grid_from_supergrid`` = MOM6 areaT), at the daily times of ``rivers.nc``.  MOM6 (Boussinesq) turns the mass flux
 into volume with RHO_0 = 1035, pyOCEAN adds the volume Q: MOM6's river volume is 1000/1035 of pyOCEAN's (class c).
 
-Usage: python validation/nwa12_cut/mom6_inputs.py [--only grid,ic,obc,tides,era5,runoff]
-       python validation/nwa12_cut/mom6_inputs.py --run-dir {pgf0,tides,full}   (run_mom6.sh calls it)
+Usage: python validation/nwa12_cut/mom6_inputs.py [--only grid,ic,obc,tides,era5,runoff,chl]
+       python validation/nwa12_cut/mom6_inputs.py --run-dir {pgf0,tides,full,full_jerlov}   (run_mom6.sh calls it)
 Index order: pyOCEAN (k, j, i) with k = 0 at the bed; MOM6 files are surface first, (z, y, x).
 """
 from __future__ import annotations
@@ -94,6 +95,11 @@ SEGMENTS = {"south": 1, "north": 2, "east": 3, "west": 4}
 SEGMENT_STRING = {"south": "J=0,I=0:N", "north": "J=N,I=N:0", "east": "I=N,J=0:N", "west": "I=0,J=N:0"}
 TIME_UNITS = "days since 1950-01-01 00:00:00"
 FILL = 1.0e20
+CHL_FILE = "seawifs-clim-1997-2010.nwa12_cut.nc"
+#: NWA12's SeaWiFS chlorophyll climatology (exps/NWA12.COBALT/INPUT and the Zenodo settings' MOM_input:640-642:
+#: CHL_FROM_FILE = True, CHL_FILE = "seawifs-clim-1997-2010.nwa12.nc", CHL_VARNAME = "chlor_a"); in the local CEFI
+#: clone it is a link into ../../datasets/, which is not on disk
+CHL_SOURCE = cs.REFS / "nwa12_grid" / "seawifs-clim-1997-2010.nwa12.nc"
 
 
 # ------------------------------------------------------------------------------------------------ CEFI functions
@@ -543,14 +549,47 @@ def write_runoff(case: cs.Case, out: Path) -> dict:
                 times=[str(r["time"].values[0]), str(r["time"].values[-1]), int(r["time"].size)])
 
 
+# ------------------------------------------------------------------------------------------------ chlorophyll
+def write_chl(case: cs.Case, out: Path, src: Path = CHL_SOURCE) -> dict:
+    """NWA12's SeaWiFS chlorophyll climatology cut to the window (ruling R23), every other variable and attribute
+    kept (the monthly time axis included).  The file is on the full NWA12 T grid (845 × 775): the last two
+    dimensions of ``chlor_a`` are sliced by the window, as ``ocean_topog.nc``."""
+    if not Path(src).exists():
+        raise FileNotFoundError(f"{src} not on disk: NWA12's SeaWiFS chlorophyll climatology (CEFI exps/NWA12.COBALT/"
+                                "INPUT/seawifs-clim-1997-2010.nwa12.nc) must be downloaded first (ruling R23)")
+    i0, i1, j0, j1 = cs.window_of(case)
+    with netCDF4.Dataset(src) as ds:
+        ydim, xdim = ds["chlor_a"].dimensions[-2:]
+        if (len(ds.dimensions[ydim]), len(ds.dimensions[xdim])) != (845, 775):
+            raise ValueError(f"{src}: chlor_a is not on the NWA12 T grid (845 × 775)")
+        with netCDF4.Dataset(out / CHL_FILE, "w") as dst:
+            _copy_vars(ds, dst, {ydim: slice(j0, j1), xdim: slice(i0, i1)})
+            dst.history = f"NWA12 SeaWiFS climatology cut to the window {(i0, i1, j0, j1)} (pyOCEAN Task 10, R23)"
+    return dict(file=CHL_FILE, source=str(src), dims=[ydim, xdim])
+
+
 # ------------------------------------------------------------------------------------------------ run directories
 HERE = Path(__file__).resolve().parent
 MODES = {
     # one coupling step of 600 s: PFu, PFv of the initial state (criterion 7); tides and SAL off so that the
-    # force is the pressure gradient of (h, θ, S_P) only (MOM_PressureForce_FV.F90:1185-1196 adds them otherwise)
-    "pgf0": dict(days=0, seconds=600, dt_cpld=600, ic="full", data="full"),
-    "tides": dict(days=30, seconds=0, dt_cpld=3600, ic="tides", data="tides"),       # criterion 4
-    "full": dict(days=123, seconds=0, dt_cpld=3600, ic="full", data="full"),         # criterion 7
+    # force is the pressure gradient of (h, θ, S_P) only (MOM_PressureForce_FV.F90:1185-1196 adds them otherwise);
+    # SAVE_INITIAL_CONDS writes MOM_IC.nc, the state MOM6 read (u, v check of check_mom6.ic_check).  The shortwave
+    # does not enter the first step's PGF, so pgf0 uses the Jerlov control (no chlorophyll file needed)
+    "pgf0": dict(days=0, seconds=600, dt_cpld=600, ic="full", data="full", sw="jerlov"),
+    "tides": dict(days=30, seconds=0, dt_cpld=3600, ic="tides", data="tides", sw="jerlov"),   # criterion 4
+    # the MOM6 reference (ruling R23): NWA12's MANIZZA_05 shortwave with the cut SeaWiFS chlorophyll climatology
+    "full": dict(days=123, seconds=0, dt_cpld=3600, ic="full", data="full", sw="manizza"),
+    # parity control (ruling R23): the same run with pyOCEAN's Jerlov-I shortwave
+    "full_jerlov": dict(days=123, seconds=0, dt_cpld=3600, ic="full", data="full", sw="jerlov"),
+}
+SHORTWAVE = {
+    # NWA12 minus COBALT: MANIZZA_05 (in MOM_input) with the chlorophyll from file (MOM_diabatic_driver / opacity)
+    "manizza": ["#override CHL_FROM_FILE = True", f'CHL_FILE = "{CHL_FILE}"', 'CHL_VARNAME = "chlor_a"'],
+    # Jerlov type I, Paulson & Simpson (1977) double exponential, the same as pyOCEAN's parity configuration
+    # (physics/surface/shortwave.py: R = 0.58, ζ1 = 0.35 m, ζ2 = 23 m); MOM_opacity.F90:155-177 (band 1 =
+    # SW_1ST_EXP_RATIO with PEN_SW_SCALE, band 2 the rest with PEN_SW_SCALE_2ND)
+    "jerlov": ["#override VAR_PEN_SW = False", 'EXP_OPACITY_SCHEME = "DOUBLE_EXP"', "#override PEN_SW_NBANDS = 2",
+               "PEN_SW_SCALE = 0.35", "SW_1ST_EXP_RATIO = 0.58", "PEN_SW_SCALE_2ND = 23.0"],
 }
 LAYOUT = (1, 5)                                     # (i, j) PEs: 5 MPI ranks, 87 × 18 columns each
 
@@ -576,9 +615,10 @@ def mode_override(mode: str, edges: tuple[str, ...]) -> str:
         num = SEGMENTS[e]
         pre = "#override " if num <= 3 else ""
         L.append(f'{pre}OBC_SEGMENT_{num:03d}_DATA = "{_segment_data(num, c["data"])}"')
+    L += [f"! shortwave: {c['sw']}"] + SHORTWAVE[c["sw"]]
     if mode == "pgf0":
         L += ["#override TIDES = False", "#override CALCULATE_SAL = False", "#override DT_THERM = 600.0",
-              "#override DT_TRACER_ADVECT = 600.0"]
+              "#override DT_TRACER_ADVECT = 600.0", "#override SAVE_INITIAL_CONDS = True"]
     if mode == "tides":
         L += ["! no wind stress: a homogeneous ocean forced by the tide only (pyOCEAN 'tides' mode)",
               "#override WIND_STRESS_MULTIPLIER = 0.0"]
@@ -590,6 +630,8 @@ DIAG_EXTRA = {
              "\n".join(f'"ocean_model", "{v}", "{v}", "pgf0", "all", .true., "none", 1'
                        for v in ("PFu", "PFv", "h", "u", "v", "temp", "salt", "SSH"))),
     "tides": ("", ""),
+    "full_jerlov": ("", "\n".join(f'"ocean_model", "{v}", "{v}", "ocean_daily", "all", .true., "none", 2'
+                                  for v in ("temp", "salt", "u", "v", "h"))),
     "full": ("", "\n".join(f'"ocean_model", "{v}", "{v}", "ocean_daily", "all", .true., "none", 2'
                            for v in ("temp", "salt", "u", "v", "h"))),
 }
@@ -601,6 +643,9 @@ def run_dir(mode: str, root: Path | None = None, inputs: Path = OUT, case: cs.Ca
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}; use {', '.join(MODES)}")
     c = MODES[mode]
+    if c["sw"] == "manizza" and not (Path(inputs) / CHL_FILE).exists():
+        raise FileNotFoundError(f"{Path(inputs) / CHL_FILE} missing: run mom6_inputs.py --only chl with NWA12's "
+                                f"SeaWiFS climatology at {CHL_SOURCE} (ruling R23)")
     d = (cs.RUNS / "runs" if root is None else Path(root)) / f"mom6_{mode}"
     if d.exists():
         shutil.rmtree(d, ignore_errors=True)          # macOS ._* files vanish with their originals
@@ -628,7 +673,7 @@ def run_dir(mode: str, root: Path | None = None, inputs: Path = OUT, case: cs.Ca
 
 
 # ------------------------------------------------------------------------------------------------ main
-def write(case: cs.Case = cs.CASE, only: tuple[str, ...] = ("grid", "ic", "obc", "tides", "era5", "runoff"),
+def write(case: cs.Case = cs.CASE, only: tuple[str, ...] = ("grid", "ic", "obc", "tides", "era5", "runoff", "chl"),
           out: Path = OUT) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     man_path = out / "manifest.json"
@@ -645,6 +690,8 @@ def write(case: cs.Case = cs.CASE, only: tuple[str, ...] = ("grid", "ic", "obc",
         man["era5"] = write_era5(case, out)
     if "runoff" in only:
         man["runoff"] = write_runoff(case, out)
+    if "chl" in only:
+        man["chl"] = write_chl(case, out)
     man["segments"] = {e: dict(num=SEGMENTS[e], string=SEGMENT_STRING[e]) for e in cs.open_edges(cs.grid(case)[1])}
     man_path.write_text(json.dumps(man, indent=1, default=str))
     return out
@@ -652,7 +699,7 @@ def write(case: cs.Case = cs.CASE, only: tuple[str, ...] = ("grid", "ic", "obc",
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--only", default="grid,ic,obc,tides,era5,runoff")
+    ap.add_argument("--only", default="grid,ic,obc,tides,era5,runoff,chl")
     ap.add_argument("--run-dir", choices=tuple(MODES), help="write the run directory of a mode instead")
     a = ap.parse_args()
     if a.run_dir:

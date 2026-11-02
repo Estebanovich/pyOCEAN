@@ -3,7 +3,8 @@
 #
 #   validation/nwa12_cut/run_mom6.sh pgf0     # one coupling step of 600 s: PFu, PFv of the initial state (criterion 7)
 #   validation/nwa12_cut/run_mom6.sh tides    # tides only, 30 days (criterion 4)
-#   validation/nwa12_cut/run_mom6.sh full     # parity run, 123 days from 2017-05-01 (criterion 7)
+#   validation/nwa12_cut/run_mom6.sh full     # MOM6 reference, NWA12's MANIZZA_05 shortwave, 123 days (R23)
+#   validation/nwa12_cut/run_mom6.sh full_jerlov   # parity control: the same with pyOCEAN's Jerlov-I shortwave
 #
 # The run directory /Volumes/ESTEBAN_MIT/pyOCEAN_runs/nwa12_cut/runs/mom6_<mode>/ is written by
 # mom6_inputs.py --run-dir (INPUT/ links to inputs/mom6/, templates of this directory filled for the mode).
@@ -13,7 +14,7 @@
 # Writes timing.json (wall seconds, simulated days, ranks) next to the outputs.
 set -euo pipefail
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 MKL_NUM_THREADS=1
-[[ $# -eq 1 ]] || { echo "usage: $0 {pgf0|tides|full}" >&2; exit 2; }
+[[ $# -eq 1 ]] || { echo "usage: $0 {pgf0|tides|full|full_jerlov}" >&2; exit 2; }
 MODE=$1
 NP=${NP:-5}
 (( NP <= 5 )) || { echo "NP ≤ 5 (P-cores only)" >&2; exit 2; }
@@ -28,7 +29,7 @@ mpirun -n "$NP" "$EXE" > stdout.txt 2> stderr.txt &
 pid=$!
 while kill -0 "$pid" 2>/dev/null; do
   grep -q "Total runtime" stdout.txt 2>/dev/null && break
-  grep -q "FATAL" stdout.txt stderr.txt 2>/dev/null && break
+  grep -qE "FATAL from PE|^ *FATAL:" stdout.txt stderr.txt 2>/dev/null && break   # mpp_error / MOM_error markers
   sleep 20
 done
 t1=$(date +%s)
@@ -46,4 +47,4 @@ ok = "Total runtime" in (d / "stdout.txt").read_text(errors="replace")
 days = r["days"] if r["days"] > 0 else r["seconds"] / 86400.0
 print(f"{d.name}: {'completed' if ok else 'FAILED'} in {wall} s ({wall / days:.1f} s per simulated day, {n} ranks)")
 EOF
-grep -q "Total runtime" stdout.txt || { grep -h -m5 -A3 "FATAL" stdout.txt stderr.txt || tail -20 stderr.txt; exit 1; }
+grep -q "Total runtime" stdout.txt || { grep -h -m5 -A3 -E "FATAL from PE|^ *FATAL:" stdout.txt stderr.txt || tail -20 stderr.txt; exit 1; }
