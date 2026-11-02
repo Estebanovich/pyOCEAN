@@ -72,8 +72,11 @@ R11 y R12 del registro.
 | superficie | bulk NCAR del acoplador FMS, con SIS2 | `BulkFluxes('ncar')` (= `surface_flux` de FMS bit a bit), ERA5 con `lsm` | (c) sin SIS2, sin ráfagas |
 | onda corta | `VAR_PEN_SW` con clorofila (COBALT), 3 bandas | Jerlov I, Paulson & Simpson | (c) |
 | mezcla vertical | ePBL + Jackson + doble difusión, `KD` 1e-6, `KV` 0 | KPP (CVMix) + Jackson, κ_bg 1e-6 (el `KD` de NWA12, pasado como parámetro; el valor por defecto de pyOCEAN sigue en 0), ν_bg 0 | (b) sin ePBL ni doble difusión |
+| mezcla por cizalla | Jackson, `PRANDTL_TURB` 1.25 (ν = 1.25 κ; `MOM_kappa_shear.F90:393, 773`) | `shear_mixing='jackson'`, `shear_prandtl=1.25` | — |
+| Coriolis | `BOUND_CORIOLIS = False` | flujo de PV de Sadourny con el acotado de BOUND_CORIOLIS siempre activo (`core/components/momentum.py:210`, no es parámetro) | (c) |
 | fricción de fondo | cuadrática `CDRAG` 0.003, `HBBL` 10 m, `DRAG_BG_VEL` 0, `CHANNEL_DRAG` | cuadrática cd 0.003, hbbl 10, U_bg 0 | (b/c) sin `CHANNEL_DRAG` (R5) |
 | bordes abiertos | Flather + Orlanski + nudging 3 d / 360 d (según la velocidad de fase de Orlanski), reservorio de trazadores de 9 km | `'radiating'`: Flather + Orlanski + nudging τ_in 3 d / τ_out 360 d (según el sentido del flujo, R7), sin reservorio ni esponja | (c) |
+| velocidad tangencial en los bordes abiertos | `ORLANSKI_TAN`, `NUDGED_TAN`: radiada y relajada hacia la velocidad tangencial exterior | no se radía ni se relaja: las velocidades tangenciales junto al borde son incógnitas interiores del momento; la vorticidad y la deformación de corte en las esquinas de las caras abiertas son de deslizamiento libre (sin tendencia viscosa en las caras abiertas, D_S = 0 en sus esquinas) | (c) |
 | exterior | GLORYS diario en sus niveles (`z_to_dz` de CEFI), remapeado con PPM_H4 | GLORYS diario en sus niveles (`source_level_grid`, interfaces a medio camino), remapeado a las capas, lineal en el tiempo; ū = media de la columna de la celda de borde | — |
 | marea de borde | TPXO, 10 constituyentes, η y u sumados al segmento, nodal fijo en una fecha | `BoundaryTides` con TPXO10 (10 constituyentes), u = U/D del modelo (R3), nodal OTPS en cada instante, sin rampa | (c) |
 | marea de potencial | `TIDES`, SAL escalar 0.05, SAL en Flather | `tidal_potential=True`, `sal_beta` 0.05, `sal_flather` | (c) camino SAL antiguo de MOM6 (R4) |
@@ -118,11 +121,14 @@ arrancar si ERA5 no cubre la corrida y dice hasta cuándo cubre):
 
 ```bash
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=5
-python validation/nwa12_cut/run_pyocean.py --mode full --days 123 --dt 300 --threads 5 --restart-at 60
+python validation/nwa12_cut/run_pyocean.py --mode full --days 123 --dt 300 --threads 5 --restart-at 60.5
 ```
 
 Δt = 300 s es el estable medido (abajo); tarda ≈ 6.8 h. Para el chequeo del restart a la mitad:
-`--start-from …/runs/full_dt300/restart_day60.nc --tag from_restart` y luego `--compare` de los dos `final.nc`.
+`--start-from …/runs/full_dt300/restart_day60.5.nc --tag from_restart` y luego `--compare` de los dos `final.nc`.
+El restart cae a las 12:00, entre dos registros diarios de GLORYS y GloFAS y entre dos horas de ERA5, y se escribe con
+`restart_day60.5_budget.npz`, los acumuladores del presupuesto, que `--start-from` recarga (si no existen, el
+presupuesto de la continuación empieza en el restart y `meta.json` lo dice en `budget_scope`).
 
 Cada corrida escribe en `RUNS/runs/<modo>_dt<Δt>[_<tag>]/`: `out/out_<fecha>.nc` (NetCDF4 CF, un archivo por
 registro: η, T, S, u, v y el grosor de capa, cada 24 h por defecto; un archivo por registro porque la consolidación
@@ -141,8 +147,12 @@ SSS en las estaciones, cada paso), `budget.npz` (modo `full`), `final.nc` (resta
 
 F_abierto es el flujo efectivo del FCT en las caras abiertas (F_L + C·A, Zalesak 1979), que el paso de advección
 registra con `TracerAdvection.record_open_flux`; el resto de los operadores (remapeo, difusión vertical, término no
-local de KPP) conserva el contenido. El residuo acumulado se mide contra el flujo bruto Σ|términos| (la medida
-estricta) y contra el contenido.
+local de KPP) conserva el contenido. El
+residuo acumulado se mide contra los términos del propio presupuesto, max(|Δ|, max |término acumulado|)
+(`rel_terms`, la medida estricta), contra el flujo bruto Σ|términos| (`rel_gross`, que el flujo de marea por las
+caras abiertas infla) y contra el contenido.
+
+Análisis armónico en los mareógrafos: `python validation/nwa12_cut/tide_check.py RUN_DIR … [--boundary]`.
 
 ## Resultados (2026-11-01; Tarea 9)
 
@@ -167,17 +177,21 @@ el día 30, igual que la de 300 s (1.73 y 1.50). Clase (a) del núcleo, con su p
 **Costo de los 123 días:** a 300 s, 123 × 198 s ≈ 6.8 h; a 600 s, 3.6 h (pero con el modo inestable). La aceleración
 de 1 a 5 hilos es solo 1.6× (1.04 → 0.64 s/paso a 600 s): el paso tiene mucha parte en serie.
 
-**Presupuestos del dominio** (residuo acumulado / flujo bruto; criterio ≤ 1e-10):
+**Presupuestos del dominio** (residuo acumulado; criterio ≤ 1e-10 relativo). Contra el flujo bruto (`rel_gross`) y
+contra los términos del propio presupuesto (`rel_terms`, la medida estricta):
 
-| corrida | volumen | calor | sal |
+| corrida | volumen gross / terms | calor gross / terms | sal gross / terms |
 |---|---|---|---|
-| completa, 600 s, 30 días | 8.0e-15 | 8.5e-14 | 3.0e-13 |
-| desde el restart del día 15, 600 s | 8.7e-15 | 7.3e-14 | 2.9e-13 |
-| completa, 300 s, 30 días | 1.2e-14 | 2.2e-13 | 1.0e-12 |
+| completa, 600 s, 30 días | 8.0e-15 / 2.7e-12 | 8.5e-14 / 2.5e-12 | 3.0e-13 / 3.2e-11 |
+| desde el restart del día 15, 600 s | 8.7e-15 / 1.5e-12 | 7.3e-14 / 2.1e-13 | 2.9e-13 / **1.7e-10** |
+| completa, 300 s, 30 días | 1.2e-14 / 5.0e-12 | 2.2e-13 / 1.1e-12 | 1.0e-12 / 8.9e-11 |
+| completa, 300 s, 10 días (R17) | 1.9e-14 / 1.0e-12 | 1.6e-13 / 2.0e-13 | 9.9e-13 / **1.1e-10** |
 
-Relativos al contenido: ≤ 6e-14. El peor paso suelto llega a 3e-7 del bruto de ese paso, en pasos con flujo neto
-casi nulo (marea en repunte): es el redondeo de las sumas del contenido (ε · 5e14 m³ ≈ 0.06 m³), no un término que
-falte.
+Relativos al contenido: ≤ 6e-14. La sal queda justa con la medida estricta en los tramos de 10–15 días: el flujo
+neto de sal es chico (3e12 g kg⁻¹ m³ en 10 días) y el residuo, ~150–1100 g kg⁻¹ m³ (≈ 2e-14 del contenido de sal), es
+redondeo de la aritmética del modelo: crece con el tamaño del campo (calor ~17, sal ~350 en los mismos 10 días), no
+con los flujos, y no viene de las sumas del dominio (llevar el presupuesto como Σ V (S − S₀) no lo cambia: 339 →
+350). No falta ningún término.
 
 **Restart y hilos:** 30 días seguidos contra 15 días + restart + 15 días (600 s, con GLORYS, mareas, ERA5 y ríos
 variando): las 19 variables del restart final y todas las series por paso de las estaciones son idénticas bit a bit.

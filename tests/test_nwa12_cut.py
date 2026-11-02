@@ -273,15 +273,17 @@ def test_restart_mid_run_bit_for_bit_small(syn, tmp_path):
     from core.dynamics.sigma_baroclinic import set_threads
     from core.restart import read_restart, write_restart
     set_threads(2)
-    dt, n = 1800.0, 96                                                  # 2 days
+    dt, n, k = 1800.0, 96, 15                                           # 2 days; restart at 7.5 h:
+    assert k * dt < syn.tide_ramp_days * 86400.0                        # during the tidal ramp,
+    assert (k * dt) % 86400.0 != 0.0 and (k * dt) % 3600.0 != 0.0       # between daily GLORYS/GloFAS and hourly ERA5
     b = _build(syn, days=2.0, dt=dt)
     ref = _run(b, b.state, 0, n)
     assert ref.n_trunc == 0 and np.isfinite(ref.T).all()
     b1 = _build(syn, days=2.0, dt=dt)
-    half = _run(b1, b1.state, 0, n // 2)
+    half = _run(b1, b1.state, 0, k)
     write_restart(tmp_path / "r.nc", b1.model, half)
     b2 = _build(syn, days=2.0, dt=dt)
-    st = _run(b2, read_restart(tmp_path / "r.nc", b2.model), n // 2, n)
+    st = _run(b2, read_restart(tmp_path / "r.nc", b2.model), k, n)
     _assert_identical(ref, st)
     assert float(np.abs(ref.eta).max()) > 1e-3                          # the tide is in
 
@@ -308,7 +310,7 @@ def test_domain_budget_closes_small(syn):
     _run(b, b.state, 0, 48, bud)
     r = bud.residuals()
     for k in ("V", "T", "S"):
-        assert r[k]["rel_gross"] <= 1e-10, (k, r[k])
+        assert r[k]["rel_terms"] <= 1e-10 and r[k]["rel_gross"] <= r[k]["rel_terms"], (k, r[k])
     assert r["V"]["surf"] != 0.0 and r["V"]["open"] != 0.0 and r["T"]["surf"] != 0.0 and r["T"]["fw"] != 0.0
     assert r["S"]["open"] != 0.0
 
@@ -318,6 +320,43 @@ def test_river_set_is_independent_of_run_length(syn):
     # have the same rivers.
     a, b = _build(syn, days=0.5).river, _build(syn, days=2.0).river
     assert np.array_equal(a.cells, b.cells) and np.array_equal(a.Q, b.Q) and a.cells.shape[0] > 0
+
+
+def test_domain_budget_accumulators_survive_a_restart(syn, tmp_path):
+    # run_pyocean saves DomainBudget.state() next to a restart and reloads it on --start-from: the split
+    # accumulation equals the straight one bit for bit.
+    from core.restart import read_restart, write_restart
+    from diagnostics.domain_budget import DomainBudget
+    b = _build(syn, days=1.0, dt=1800.0)
+    ref = DomainBudget(b.model)
+    ref.start(b.state)
+    _run(b, b.state, 0, 20, ref)
+    b1 = _build(syn, days=1.0, dt=1800.0)
+    first = DomainBudget(b1.model)
+    first.start(b1.state)
+    st = _run(b1, b1.state, 0, 9, first)
+    write_restart(tmp_path / "r.nc", b1.model, st)
+    np.savez(tmp_path / "r_budget.npz", **first.state())
+    b2 = _build(syn, days=1.0, dt=1800.0)
+    second = DomainBudget(b2.model)
+    with np.load(tmp_path / "r_budget.npz") as d:
+        second.load(d)
+    _run(b2, read_restart(tmp_path / "r.nc", b2.model), 9, 20, second)
+    assert second.residuals() == ref.residuals() and second.n_steps == 20
+
+
+def test_output_writes_layer_thickness(syn, tmp_path):
+    # The new output field h_layer (ALE layer thickness; 'h' is the static bathymetry) round-trips through
+    # OutputWriter with its CF standard name.
+    from diagnostics.output import OutputWriter
+    b = _build(syn, days=0.5, dt=1800.0)
+    st = b.state
+    w = OutputWriter(tmp_path / "o.nc", b.hg, b.H, n_layers=b.model.n, fmt="netcdf", model=b.model)
+    w.write(0.0, eta=st.eta, T=st.T, h_layer=st.h)
+    w.close()
+    with xr.open_dataset(tmp_path / "o.nc") as d:
+        np.testing.assert_array_equal(d["h_layer"].values[0], st.h)
+        assert d["h_layer"].attrs["standard_name"] == "cell_thickness" and "h" in d     # static bathymetry kept
 
 
 def test_domain_budget_refuses_uncovered_terms(syn):

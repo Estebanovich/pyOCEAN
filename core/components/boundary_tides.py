@@ -121,10 +121,18 @@ class BoundaryTides(_TideClock):
         Fix f, u at this date (MOM6 TIDE_NODAL_REF_DATE); None: OTPS, at each time.
     ramp_days : float
         Linear ramp of the tide over this many days from t = 0 (0: none, NWA12).
+    velocity_depth : {'model', 'tpxo'}
+        Depth that turns the TPXO transports into the tidal velocity: 'model' (default, ruling R3) u = U/D with the
+        model's rest depth of the face; 'tpxo' u = U/h_TPXO, the atlas's own velocity (U/hu at the U nodes, V/hv at
+        the V nodes, then interpolated to the face and rotated) — the velocity MOM6/NWA12 prescribe (CEFI
+        write_tpxo_boundary.py), so the tidal volume flux follows the model depth.  Needs ``hu``/``hv`` in the
+        constants (``read_tpxo`` with the atlas grid file).
     """
 
-    def __init__(self, constants, constituents, ref_date, nodal_ref_date=None, ramp_days: float = 0.0) -> None:
+    def __init__(self, constants, constituents, ref_date, nodal_ref_date=None, ramp_days: float = 0.0,
+                 velocity_depth: str = "model") -> None:
         super().__init__(constituents, ref_date, nodal_ref_date, ramp_days)
+        self.velocity_depth = velocity_depth
         self.constants = constants
         self.edges: tuple[str, ...] = ()
         self._faces: dict[str, tuple] = {}
@@ -140,6 +148,18 @@ class BoundaryTides(_TideClock):
             out.append(f"{name}: the constants need the elevation 'h' (constituent, lat, lon)")
         if ("U" in self.constants) != ("V" in self.constants):
             out.append(f"{name}: give both transports 'U' and 'V' (or neither)")
+        if self.velocity_depth not in ("model", "tpxo"):
+            out.append(f"{name}: velocity_depth={self.velocity_depth!r}: use 'model' or 'tpxo'")
+        elif self.velocity_depth == "tpxo" and not ("hu" in self.constants and "hv" in self.constants):
+            out.append(f"{name}: velocity_depth='tpxo' needs the atlas depths 'hu' and 'hv' in the constants "
+                       "(read_tpxo with the TPXO grid file)")
+        return out
+
+    def config(self) -> dict[str, str | float]:
+        """Restart check values; ``velocity_depth`` only when it is not the default (old restarts stay valid)."""
+        out = super().config()
+        if self.velocity_depth != "model":
+            out["velocity_depth"] = self.velocity_depth
         return out
 
     # ------------------------------------------------------------------ set-up
@@ -173,15 +193,21 @@ class BoundaryTides(_TideClock):
                 hc_eta[ok] = _fill_from_nearest(_interp_complex(c["h"], "lat", "lon", lat[ok], lon[ok]),
                                                 lat[ok], lon[ok])
                 if "U" in c and "V" in c:
-                    Ue = _fill_from_nearest(_interp_complex(c["U"], "lat", "lon_u", lat[ok], lon[ok]), lat[ok], lon[ok])
-                    Vn = _fill_from_nearest(_interp_complex(c["V"], "lat_v", "lon", lat[ok], lon[ok]), lat[ok], lon[ok])
+                    cU, cV = c["U"], c["V"]
+                    if self.velocity_depth == "tpxo":                   # the atlas's own velocities U/hu, V/hv
+                        cU, cV = cU / c["hu"], cV / c["hv"]
+                    Ue = _fill_from_nearest(_interp_complex(cU, "lat", "lon_u", lat[ok], lon[ok]), lat[ok], lon[ok])
+                    Vn = _fill_from_nearest(_interp_complex(cV, "lat_v", "lon", lat[ok], lon[ok]), lat[ok], lon[ok])
                     if rotate:                                          # earth → grid axes (ruling R1 convention)
                         cs = np.asarray(h_grid["cos_t"].values, float)[sl_c][ok][:, None]
                         sn = np.asarray(h_grid["sin_t"].values, float)[sl_c][ok][:, None]
                         Ux, Vy = to_grid(Ue, Vn, cs, sn)
                     else:
                         Ux, Vy = Ue, Vn
-                    hc_vel[ok] = (Ux if kind == "u" else Vy) / depth[ok][:, None]     # u = U / D (model depth)
+                    if self.velocity_depth == "tpxo":
+                        hc_vel[ok] = Ux if kind == "u" else Vy                       # already a velocity
+                    else:
+                        hc_vel[ok] = (Ux if kind == "u" else Vy) / depth[ok][:, None]   # u = U / D (model depth)
             if not (np.all(np.isfinite(hc_eta)) and np.all(np.isfinite(hc_vel))):
                 raise ValueError(f"boundary_tides: edge {e!r} has faces without valid harmonic constants (the atlas "
                                  "holds only land around the whole edge)")

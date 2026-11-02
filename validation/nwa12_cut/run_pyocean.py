@@ -16,7 +16,9 @@ Each run writes to ``RUNS/runs/<mode>_dt<Δt>[_<tag>]/``:
                   largest |u|, |v| of the domain (the upper-ocean mode of θ_bc = ½ shows here, README)
   budget.npz      domain volume, heat and salt budgets (diagnostics.domain_budget; full mode), per-run sums
   meta.json       Δt, steps, CFL truncations, limiter events, Smagorinsky-limited points, cost per simulated day
-  restart_dayD.nc with ``--restart-at D`` (core.restart, bit-for-bit)
+  restart_dayD.nc with ``--restart-at D`` (core.restart, bit-for-bit; D may be fractional, e.g. 60.5 = between two
+                  daily GLORYS/GloFAS records), with restart_dayD_budget.npz (the budget accumulators, reloaded
+                  by ``--start-from``)
 
 Checks
 ------
@@ -30,12 +32,12 @@ dumps the state (blowup.npz).
 The 123-day parity run, once ERA5 is complete (README):
 
     export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=5
-    python validation/nwa12_cut/run_pyocean.py --mode full --days 123 --dt 300 --threads 5 --restart-at 60
+    python validation/nwa12_cut/run_pyocean.py --mode full --days 123 --dt 300 --threads 5 --restart-at 60.5
 
 Restart check of a run with ``--restart-at D`` (continue from the restart, then compare the two final states):
 
     python validation/nwa12_cut/run_pyocean.py --mode full --days 123 --dt 300 \
-        --start-from RUNS/runs/full_dt300/restart_day60.nc --tag from_restart
+        --start-from RUNS/runs/full_dt300/restart_day60.5.nc --tag from_restart
     python validation/nwa12_cut/run_pyocean.py --mode full --compare RUNS/runs/full_dt300/final.nc \
         RUNS/runs/full_dt300_from_restart/final.nc
 """
@@ -112,6 +114,11 @@ class Recorder:
                  eta=np.array(self.eta), sst=np.array(self.sst), sss=np.array(self.sss), umax=np.array(self.umax))
 
 
+def budget_path(restart_path: Path) -> Path:
+    """Domain-budget accumulators saved next to a restart file (``<stem>_budget.npz``)."""
+    return Path(restart_path).with_name(Path(restart_path).stem + "_budget.npz")
+
+
 def integrate(b: cs.Built, st, n0: int, n1: int, *, budget: DomainBudget | None = None, rec: Recorder | None = None,
               guard: BlowupGuard | None = None, restart_at: int | None = None, restart_path: Path | None = None,
               log=print):
@@ -133,6 +140,8 @@ def integrate(b: cs.Built, st, n0: int, n1: int, *, budget: DomainBudget | None 
             guard.check(step=n, time=st.time, eta=st.eta, u=st.u, v=st.v, T=st.T)
         if restart_at is not None and n == restart_at:
             write_restart(restart_path, m, st)
+            if budget is not None:                                    # the budget accumulators go with it
+                np.savez(budget_path(restart_path), **budget.state())
             log(f"restart written at step {n} ({st.time / 86400:g} d): {restart_path}")
         if time.perf_counter() - t_last > 600.0:
             t_last = time.perf_counter()
@@ -175,10 +184,17 @@ def run(case: cs.Case, mode: str, days: float, dt: float, threads: int = 5, rest
         st = read_restart(start_from, b.model)
         n0 = int(round(st.time / dt))
         log(f"started from {start_from} at step {n0}")
-    budget = None
+    budget, budget_scope = None, None
     if mode == "full":
         budget = DomainBudget(b.model)
-        budget.start(st)
+        bp = None if start_from is None else budget_path(start_from)
+        if bp is not None and bp.exists():                           # continue the accumulation of the first leg
+            with np.load(bp) as d:
+                budget.load(d)
+            budget_scope = f"from t0, accumulators reloaded from {bp.name}"
+        else:
+            budget.start(st)
+            budget_scope = "from t0" if start_from is None else "from the restart only (no saved accumulators)"
     rec = Recorder(b, out, max(1, int(round(out_hours * 3600.0 / dt))), str(case.t0)) if write else None
     if rec is not None and n0 == 0:
         rec(0, st)
@@ -191,6 +207,7 @@ def run(case: cs.Case, mode: str, days: float, dt: float, threads: int = 5, rest
         meta["u_absmax_run"] = float(np.max(rec.umax))
     if budget is not None:
         meta["budget"] = budget.residuals()
+        meta["budget_scope"] = budget_scope
     if write:
         rec.save(out / "series.npz")
         if budget is not None:
@@ -284,6 +301,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--out-hours", type=float, default=24.0)
     ap.add_argument("--restart-check", action="store_true")
     ap.add_argument("--threads-check", type=float, default=None, metavar="HOURS")
+    ap.add_argument("--tide-velocity-depth", choices=("model", "tpxo"), default="model",
+                    help="BoundaryTides velocity_depth (default 'model', ruling R3; 'tpxo' = diagnostic of the M2 phase)")
     ap.add_argument("--compare", nargs=2, type=Path, default=None, metavar=("A", "B"),
                     help="compare two restart files bit for bit and exit")
     return ap
@@ -293,17 +312,19 @@ def main() -> None:
     a = parser().parse_args()
     days = a.days if a.days is not None else (30.0 if a.mode == "tides" else 123.0)
     a.dt = a.dt if a.dt is not None else DEFAULT_DT[a.mode]
+    case = cs.CASE if a.tide_velocity_depth == "model" else cs.with_paths(cs.CASE,
+                                                                             tide_velocity_depth=a.tide_velocity_depth)
 
     def log(msg: str) -> None:
         print(msg, flush=True)
     if a.compare is not None:
         res = compare_restarts(*a.compare)
     elif a.threads_check is not None:
-        res = threads_check(cs.CASE, a.mode, a.threads_check, a.dt, a.threads, log=log)
+        res = threads_check(case, a.mode, a.threads_check, a.dt, a.threads, log=log)
     elif a.restart_check:
-        res = restart_check(cs.CASE, a.mode, days, a.dt, a.threads, log=log)
+        res = restart_check(case, a.mode, days, a.dt, a.threads, log=log)
     else:
-        res = run(cs.CASE, a.mode, days, a.dt, a.threads, a.restart_at, a.tag, a.out_hours, start_from=a.start_from,
+        res = run(case, a.mode, days, a.dt, a.threads, a.restart_at, a.tag, a.out_hours, start_from=a.start_from,
                   log=log)
     print(json.dumps(res, indent=1, default=float))
 

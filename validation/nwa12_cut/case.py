@@ -19,8 +19,11 @@ Parity with NWA12 (``parity_config``; values from ``docs/design/regional_refs/*.
 | surface | FMS coupler NCAR bulk (SIS2) | ``BulkFluxes('ncar')`` (= FMS ``surface_flux`` bit for bit), ERA5 + lsm | c (no SIS2, gusts) |
 | shortwave | ``VAR_PEN_SW`` with chlorophyll (COBALT), 3 bands | Jerlov I, Paulson & Simpson | c |
 | mixing | ePBL + Jackson + double diffusion, ``KD`` 1e-6, ``KV`` 0 | KPP (CVMix) + Jackson, κ_bg 1e-6 (parity value, R16; pyOCEAN default 0), ν_bg 0 | b (no ePBL, no double diffusion) |
+| shear mixing | Jackson, ``PRANDTL_TURB`` 1.25 (ν = 1.25 κ, MOM_kappa_shear.F90:393, 773) | ``shear_prandtl=1.25`` | — |
+| Coriolis | ``BOUND_CORIOLIS`` False | Sadourny energy PV flux with BOUND_CORIOLIS always on (core/components/momentum.py:210, not a parameter) | c |
 | drag | quadratic ``CDRAG`` 0.003, ``HBBL`` 10, ``DRAG_BG_VEL`` 0, ``CHANNEL_DRAG`` | quadratic cd 0.003, hbbl 10, U_bg 0 | b/c (no channel drag, R5) |
 | open edges | Flather + Orlanski + nudging 3 d / 360 d (by Orlanski phase speed), reservoir 9 km | 'radiating': Flather + Orlanski + nudging τ_in 3 d, τ_out 360 d (by flow direction, R7), no reservoir/sponge | c |
+| tangential velocity at open edges | ``ORLANSKI_TAN``, ``NUDGED_TAN`` (radiated and nudged toward the exterior tangential velocity) | not radiated or nudged: the tangential velocities next to an edge are interior unknowns of the momentum equations; the corner vorticity and shear strain on open faces are free-slip (no viscous tendency on open faces, D_S = 0 at their corners) | c |
 | boundary tide | TPXO, 10 constituents, η and u added to the segment, nodal fixed at a date | ``BoundaryTides`` TPXO10, 10 constituents, u = U/D_model (R3), OTPS nodal at each time, ramp 0 | c |
 | body tide | ``TIDES``, scalar SAL 0.05, SAL in Flather | ``tidal_potential=True``, ``sal_beta`` 0.05, ``sal_flather`` | c (legacy SAL path, R4) |
 | atm. pressure | off (``MAX_P_SURF`` = 0) | ``atm_pressure=False`` | — |
@@ -86,6 +89,7 @@ class Case:
     glofas_pattern: str = "glofas_v4_consolidated_*.nc"
     points: dict = field(default_factory=dict)  # extra series points {name: (lat, lon)}
     tide_ramp_days: float = 0.0                  # NWA12: RAMP_OBCS = False (R3); tests ramp
+    tide_velocity_depth: str = "model"           # BoundaryTides velocity_depth: 'model' (R3, parity) or 'tpxo'
 
     @property
     def inputs(self) -> Path:
@@ -434,6 +438,7 @@ def parity_config(case: Case, hg: xr.Dataset, H: np.ndarray, dt: float, *, edges
         momentum="vector_invariant", pgf="fv", smagorinsky=0.15, ah=0.0,
         eos="wright_full", ts_kind="theta_sp", rho0=None, cp=3992.0, salinity=True,
         closure="kpp", kpp_params=KPPParams(kappa_bg=1e-6, nu_bg=0.0), shear_mixing="jackson",
+        shear_prandtl=1.25,
         z0=None, bottom_drag="quadratic", cd=0.003, hbbl=10.0, drag_bg_vel=0.0,
         open_boundaries=tuple(edges), open_boundary_mode={e: "radiating" for e in edges},
         open_boundary_state=open_boundary_state, obc_tau_in=3.0 * 86400.0, obc_tau_out=360.0 * 86400.0,
@@ -477,7 +482,8 @@ def build(case: Case, mode: str, dt: float, days: float, hg: xr.Dataset | None =
     edges = open_edges(H)
     t0 = case.t0
     t1 = t0 + np.timedelta64(int(round(days * 86400)), "s")
-    bt = BoundaryTides(tide_constants(case, hg), list(CONSTITUENTS), ref_date=t0, ramp_days=case.tide_ramp_days)
+    bt = BoundaryTides(tide_constants(case, hg), list(CONSTITUENTS), ref_date=t0, ramp_days=case.tide_ramp_days,
+                       velocity_depth=case.tide_velocity_depth)
     cells = station_cells(hg, H, stations(case))
     if mode == "tides":
         cfg = parity_config(case, hg, H, dt, edges=edges, boundary_tides=bt, **overrides)

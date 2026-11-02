@@ -147,7 +147,8 @@ def read_tpxo(
     xr.Dataset
         ``h`` (constituent, lat, lon) complex [m], NaN on land; with ``u_files`` also
         ``U`` (constituent, lat, lon_u) and ``V`` (constituent, lat_v, lon)
-        complex transports [m² s⁻¹].  Longitudes in −180–180 °E.
+        complex transports [m² s⁻¹], and, when the grid file holds them, the atlas depths ``hu`` (lat, lon_u) and
+        ``hv`` (lat_v, lon) [m] (land NaN; ``BoundaryTides(velocity_depth='tpxo')``).  Longitudes in −180–180 °E.
     """
     grid = xr.open_dataset(grid_file) if grid_file is not None else None
     try:
@@ -183,6 +184,14 @@ def read_tpxo(
                     V_list.append(np.where(V == 0, np.nan + 0j, V))
                     lon_u = lu.values.astype(float)[ii]
                     lat_v = lvat.values.astype(float)[jj]
+        depths = {}
+        if u_files is not None and grid is not None and all(
+                n in {v.lower() for v in grid.variables} for n in ("hu", "hv")):
+            # the atlas's own depths at the U and V nodes [m] (land 0 → NaN), for velocity = transport / depth
+            for name in ("hu", "hv"):
+                var = _var(grid, name)
+                d = _read_region(var, var.dims[0], var.dims[1], ii, jj)
+                depths[name] = np.where(d > 0, d, np.nan)
     finally:
         if grid is not None:
             grid.close()
@@ -197,5 +206,10 @@ def read_tpxo(
                                 coords={"lon_u": to180(lon_u)}, attrs={"units": "m2 s-1"})
         out["V"] = xr.DataArray(np.stack(V_list), dims=("constituent", "lat_v", "lon"),
                                 coords={"lat_v": lat_v}, attrs={"units": "m2 s-1"})
+        if depths:
+            out["hu"] = xr.DataArray(depths["hu"], dims=("lat", "lon_u"), attrs={"units": "m",
+                                     "long_name": "TPXO bathymetry at U nodes"})
+            out["hv"] = xr.DataArray(depths["hv"], dims=("lat_v", "lon"), attrs={"units": "m",
+                                     "long_name": "TPXO bathymetry at V nodes"})
     out.attrs["source_files"] = ", ".join(Path(p).name for p in h_files)
     return out

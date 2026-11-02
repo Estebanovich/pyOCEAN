@@ -17,8 +17,10 @@ Q_ns, Q_sw the surface heat flux of the step on the wet columns (``Driver.last_b
 heat carried by the freshwater volume at the top-layer temperature (``Driver.last_fw_T``).  Every other operator
 of the step (remap, vertical diffusion, the KPP non-local term, the shortwave remainder) conserves the content.
 
-The residual of each budget, accumulated over the run, is reported relative to the gross flux Σ_n Σ |terms| (the
-strict measure: content round-off alone would make a content-relative error small) and relative to the content.
+The residual of each budget, accumulated over the run, is reported relative to the budget's own terms
+(max(|ΔC|, max |accumulated term|), the strictest), to the gross flux Σ_n Σ |terms| and to the content.  The residual
+is round-off of the model arithmetic: it scales with the size of the field (salt ≈ 20 × heat on the NWA12 cut), not
+with the fluxes, and keeping the budgets in anomaly form Σ V (S − S₀) does not reduce it (checked on the NWA12 cut).
 
 Requires ``vertical_coordinate='ale'`` with the FCT tracer limiter, no tracer sponge band and no interior sponge
 (those relax toward the exterior and are not boundary fluxes) and no horizontal tracer diffusion through open faces
@@ -118,15 +120,19 @@ class DomainBudget:
 
     def residuals(self) -> dict[str, dict[str, float]]:
         """
-        Per budget: the content change, the accumulated terms, the residual and its size relative to the gross flux
-        Σ_n Σ |terms| (``rel_gross``) and to the start content (``rel_content``); ``max_step_rel`` is the worst step.
+        Per budget: the content change, the accumulated terms, the residual and its size relative to the budget's own
+        terms, max(|change|, max |accumulated term|) (``rel_terms``, the strictest), to the gross flux Σ_n Σ |terms|
+        (``rel_gross``; the oscillating tidal open-face flux inflates it) and to the start content (``rel_content``);
+        ``max_step_rel`` is the worst step relative to its gross flux.
         """
         out = {}
         for k, ts in TERMS.items():
             change = self.content[k] - self.start_content[k]
             terms = {t: self.sums[f"{k}_{t}"] for t in ts}
             r = change - sum(terms.values())
+            scale = max([abs(change)] + [abs(v) for v in terms.values()])
             out[k] = dict(change=change, **terms, residual=r,
+                          rel_terms=abs(r) / scale if scale > 0 else 0.0,
                           rel_gross=abs(r) / self.gross[k] if self.gross[k] > 0 else 0.0,
                           rel_content=abs(r) / abs(self.start_content[k]) if self.start_content[k] else 0.0,
                           max_step_rel=self.max_step[k], gross=self.gross[k])

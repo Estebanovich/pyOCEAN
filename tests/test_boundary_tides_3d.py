@@ -283,6 +283,30 @@ def test_transport_over_model_depth_and_rotation():
     np.testing.assert_allclose(b["west"][0], a["west"][0], rtol=0, atol=0)   # η is a scalar: not rotated
 
 
+def test_velocity_depth_tpxo_uses_the_atlas_depth():
+    """velocity_depth='tpxo': ū_tide = U/h_TPXO (the atlas's own velocity, independent of the model face depth);
+    the default 'model' (U/D_model) is unchanged and needs no depths; 'tpxo' without hu/hv is refused."""
+    nx, ny, dx = 6, 5, 2000.0
+    hg = _channel_grid(nx, ny, dx)
+    U, V = 40.0 - 10.0j, 15.0 + 5.0j
+    c = _constants(U=U, V=V)
+    ct = c.assign(hu=(("lat", "lon_u"), np.full((c.lat.size, c.lon_u.size), 25.0)),
+                  hv=(("lat_v", "lon"), np.full((c.lat_v.size, c.lon.size), 20.0)))
+    Hu, Hv = np.full((ny, nx + 1), 80.0), np.full((ny + 1, nx), 50.0)
+    t = 4321.0
+    model = BoundaryTides(c, ["m2"], REF).bind(hg, ("west", "south"), Hu, Hv).at(t)
+    model_t = BoundaryTides(ct, ["m2"], REF).bind(hg, ("west", "south"), Hu, Hv).at(t)
+    tpxo = BoundaryTides(ct, ["m2"], REF, velocity_depth="tpxo").bind(hg, ("west", "south"), Hu, Hv).at(t)
+    for e in ("west", "south"):
+        np.testing.assert_array_equal(model_t[e][1], model[e][1])           # extra depths change nothing
+    np.testing.assert_allclose(tpxo["west"][1], model["west"][1] * 80.0 / 25.0, rtol=1e-12)
+    np.testing.assert_allclose(tpxo["south"][1], model["south"][1] * 50.0 / 20.0, rtol=1e-12)
+    np.testing.assert_array_equal(tpxo["west"][0], model["west"][0])
+    assert BoundaryTides(c, ["m2"], REF, velocity_depth="tpxo").issues()
+    assert "velocity_depth" not in BoundaryTides(c, ["m2"], REF).config()
+    assert BoundaryTides(ct, ["m2"], REF, velocity_depth="tpxo").config()["velocity_depth"] == "tpxo"
+
+
 def test_ramp_and_nodal_reference():
     c = _constants(names=("m2", "mf", "mm"))
     bt = BoundaryTides(c, ["m2", "mf", "mm"], REF, ramp_days=2.0)
