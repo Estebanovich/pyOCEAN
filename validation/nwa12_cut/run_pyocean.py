@@ -301,8 +301,8 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--out-hours", type=float, default=24.0)
     ap.add_argument("--restart-check", action="store_true")
     ap.add_argument("--threads-check", type=float, default=None, metavar="HOURS")
-    ap.add_argument("--tide-velocity-depth", choices=("model", "tpxo"), default="model",
-                    help="BoundaryTides velocity_depth (default 'model', ruling R3; 'tpxo' = diagnostic of the M2 phase)")
+    ap.add_argument("--tide-velocity-depth", choices=("model", "tpxo"), default=None,
+                    help="BoundaryTides velocity_depth (default: the case's, 'tpxo' (R19); 'model' = U/D_model, R3)")
     ap.add_argument("--compare", nargs=2, type=Path, default=None, metavar=("A", "B"),
                     help="compare two restart files bit for bit and exit")
     return ap
@@ -312,8 +312,8 @@ def main() -> None:
     a = parser().parse_args()
     days = a.days if a.days is not None else (30.0 if a.mode == "tides" else 123.0)
     a.dt = a.dt if a.dt is not None else DEFAULT_DT[a.mode]
-    case = cs.CASE if a.tide_velocity_depth == "model" else cs.with_paths(cs.CASE,
-                                                                             tide_velocity_depth=a.tide_velocity_depth)
+    case = cs.CASE if a.tide_velocity_depth is None else cs.with_paths(cs.CASE,
+                                                                          tide_velocity_depth=a.tide_velocity_depth)
 
     def log(msg: str) -> None:
         print(msg, flush=True)

@@ -78,7 +78,7 @@ R11 y R12 del registro.
 | bordes abiertos | Flather + Orlanski + nudging 3 d / 360 d (según la velocidad de fase de Orlanski), reservorio de trazadores de 9 km | `'radiating'`: Flather + Orlanski + nudging τ_in 3 d / τ_out 360 d (según el sentido del flujo, R7), sin reservorio ni esponja | (c) |
 | velocidad tangencial en los bordes abiertos | `ORLANSKI_TAN`, `NUDGED_TAN`: radiada y relajada hacia la velocidad tangencial exterior | no se radía ni se relaja: las velocidades tangenciales junto al borde son incógnitas interiores del momento; la vorticidad y la deformación de corte en las esquinas de las caras abiertas son de deslizamiento libre (sin tendencia viscosa en las caras abiertas, D_S = 0 en sus esquinas) | (c) |
 | exterior | GLORYS diario en sus niveles (`z_to_dz` de CEFI), remapeado con PPM_H4 | GLORYS diario en sus niveles (`source_level_grid`, interfaces a medio camino), remapeado a las capas, lineal en el tiempo; ū = media de la columna de la celda de borde | — |
-| marea de borde | TPXO, 10 constituyentes, η y u sumados al segmento, nodal fijo en una fecha | `BoundaryTides` con TPXO10 (10 constituyentes), u = U/D del modelo (R3), nodal OTPS en cada instante, sin rampa | (c) |
+| marea de borde | TPXO, 10 constituyentes, η y la velocidad de TPXO sumadas al segmento, nodal fijo en una fecha | `BoundaryTides` con TPXO10 (10 constituyentes), `velocity_depth='tpxo'`: u = U/h_TPXO, la velocidad propia de TPXO (R19, revisa R3 para el caso; u = U/D del modelo daba hasta 3.8 m/s en caras de 5 m), nodal OTPS en cada instante, sin rampa | (c) nodal |
 | marea de potencial | `TIDES`, SAL escalar 0.05, SAL en Flather | `tidal_potential=True`, `sal_beta` 0.05, `sal_flather` | (c) camino SAL antiguo de MOM6 (R4) |
 | presión atmosférica | apagada (`MAX_P_SURF` = 0) | `atm_pressure=False` | — |
 | ríos | GloFAS v3 con la regla de CEFI; mezcla de ríos de ePBL (`DO_RIVERMIX`) | GloFAS v4 con la regla `ldd` de CEFI (R11, R12), agua dulce real en la capa superior; desembocaduras elegidas (caudal medio ≥ 1 m³/s) sobre todo el periodo del caso, 72 celdas, igual para toda corrida y todo restart (R17) | (c) versión; (b) sin mezcla de ríos |
@@ -160,7 +160,7 @@ Todas en 5 núcleos P (`NUMBA_NUM_THREADS=5`), 87 × 89 × 75.
 
 | corrida | Δt | días | truncamientos CFL | eventos del limitador | puntos limitados de Smagorinsky | costo |
 |---|---|---|---|---|---|---|
-| mareas solas | 600 s | 30 | 0 | 0 | 26 222 (≈ 6 por paso) | 0.675 s/paso, 97 s por día simulado |
+| mareas solas (R19, `velocity_depth='tpxo'`) | 600 s | 30 | 0 | 0 | 25 991 (≈ 6 por paso) | 0.70 s/paso, 101 s por día simulado |
 | completa (paridad) | 600 s | 30 (mayo; ERA5 cubría solo mayo) | 0 | 0 | 25 218 | 0.736 s/paso, 106 s/día |
 | completa (paridad) | 300 s | 30 | 0 | 0 | 0 | 0.689 s/paso, 198 s/día |
 
@@ -177,29 +177,36 @@ el día 30, igual que la de 300 s (1.73 y 1.50). Clase (a) del núcleo, con su p
 **Costo de los 123 días:** a 300 s, 123 × 198 s ≈ 6.8 h; a 600 s, 3.6 h (pero con el modo inestable). La aceleración
 de 1 a 5 hilos es solo 1.6× (1.04 → 0.64 s/paso a 600 s): el paso tiene mucha parte en serie.
 
-**Presupuestos del dominio** (residuo acumulado; criterio ≤ 1e-10 relativo). Contra el flujo bruto (`rel_gross`) y
-contra los términos del propio presupuesto (`rel_terms`, la medida estricta):
+**Presupuestos del dominio — criterio 6 ✅** (R20: "≤ 1e-10 relativo" se lee contra el contenido del dominio y
+contra el flujo bruto, es decir, cierre a redondeo). Residuo acumulado relativo al contenido / al flujo bruto
+Σ|términos| (`rel_gross`) / al término más grande del propio presupuesto, max(|Δ|, max |término acumulado|)
+(`rel_terms`, la medida más estricta, informativa):
 
-| corrida | volumen gross / terms | calor gross / terms | sal gross / terms |
+| corrida | volumen | calor | sal |
 |---|---|---|---|
-| completa, 600 s, 30 días | 8.0e-15 / 2.7e-12 | 8.5e-14 / 2.5e-12 | 3.0e-13 / 3.2e-11 |
-| desde el restart del día 15, 600 s | 8.7e-15 / 1.5e-12 | 7.3e-14 / 2.1e-13 | 2.9e-13 / **1.7e-10** |
-| completa, 300 s, 30 días | 1.2e-14 / 5.0e-12 | 2.2e-13 / 1.1e-12 | 1.0e-12 / 8.9e-11 |
-| completa, 300 s, 10 días (R17) | 1.9e-14 / 1.0e-12 | 1.6e-13 / 2.0e-13 | 9.9e-13 / **1.1e-10** |
+| completa, 600 s, 30 días | 4.5e-16 / 8.0e-15 / 2.7e-12 | 1.0e-14 / 8.5e-14 / 2.5e-12 | 1.7e-14 / 3.0e-13 / 3.2e-11 |
+| desde el restart del día 15, 600 s | 2.6e-16 / 8.7e-15 / 1.5e-12 | 5.3e-15 / 7.3e-14 / 2.1e-13 | 8.6e-15 / 2.9e-13 / 1.7e-10 |
+| completa, 300 s, 30 días | 6.6e-16 / 1.2e-14 / 5.0e-12 | 2.0e-14 / 2.2e-13 / 1.1e-12 | 5.8e-14 / 1.0e-12 / 8.9e-11 |
+| completa, 300 s, 10 días (R17) | 3.5e-16 / 1.9e-14 / 1.0e-12 | 5.9e-15 / 1.6e-13 / 2.0e-13 | 1.8e-14 / 9.9e-13 / 1.1e-10 |
 
-Relativos al contenido: ≤ 6e-14. La sal queda justa con la medida estricta en los tramos de 10–15 días: el flujo
-neto de sal es chico (3e12 g kg⁻¹ m³ en 10 días) y el residuo, ~150–1100 g kg⁻¹ m³ (≈ 2e-14 del contenido de sal), es
-redondeo de la aritmética del modelo: crece con el tamaño del campo (calor ~17, sal ~350 en los mismos 10 días), no
-con los flujos, y no viene de las sumas del dominio (llevar el presupuesto como Σ V (S − S₀) no lo cambia: 339 →
-350). No falta ningún término.
+Contra el contenido y el flujo bruto todo cierra a ≤ 1e-12. Con la medida más estricta la sal llega a 1.1–1.7e-10
+en los tramos de 10–15 días: el flujo neto de sal es chico (3e12 g kg⁻¹ m³ en 10 días) y el residuo, ~150–1100
+g kg⁻¹ m³ (≈ 2e-14 del contenido de sal), es redondeo de la aritmética del modelo. Crece con el tamaño del campo
+(calor ~17, sal ~350 en los mismos 10 días), no con los flujos, y no viene de las sumas del dominio (llevar el
+presupuesto como Σ V (S − S₀) no lo cambia: 339 → 350). No falta ningún término.
 
 **Restart y hilos:** 30 días seguidos contra 15 días + restart + 15 días (600 s, con GLORYS, mareas, ERA5 y ríos
 variando): las 19 variables del restart final y todas las series por paso de las estaciones son idénticas bit a bit.
 1 contra 5 hilos en 3 horas de la corrida completa: idénticos (η, u, v, T, S, h, estado del cierre, contadores).
 
-**Mareas (vistazo, sin puntaje; el criterio 4 se juzga contra MOM6 en la Tarea 10):** M2 en 11 mareógrafos de
-CO-OPS, días 1–30 de la corrida de mareas solas: error vectorial medio 0.23 m (mediana 0.20 m); TPXO10 en los mismos
-puntos, 0.15 m (casi todo Nantucket y Woods Hole, que la malla de 1/12° no resuelve). Las amplitudes están cerca
-(Bridgeport 0.93 contra 0.98 m, Atlantic City 0.63 contra 0.58), pero la fase de pyOCEAN se adelanta 12–31° en la
-bahía de Nueva York y Long Island Sound (Sandy Hook −19°, Battery −31°, Montauk −27°, Bridgeport −12°) y solo
-2–4° en Atlantic City y Lewes. No se afina nada; se compara con MOM6 en el mismo recorte.
+**Mareas (vistazo, sin puntaje; el criterio 4 se juzga contra MOM6 en la Tarea 10):** corrida de mareas solas de 30
+días a 600 s con la configuración de paridad (`velocity_depth='tpxo'`, R19; tag `r19`): 0 truncamientos, 0 eventos
+del limitador, 101 s/día, |u|máx de la corrida 1.57 m/s (3.39 m/s con u = U/D del modelo). M2 en 11 mareógrafos de
+CO-OPS (`tide_check.py`, días 1–30, M2 S2 N2 K1 O1 Q1): **error vectorial medio 0.229 m, mediana 0.200 m**; TPXO10 en
+los mismos puntos, 0.15 m (casi todo Nantucket y Woods Hole, que la malla de 1/12° no resuelve). Las amplitudes
+están cerca (Bridgeport 0.92 contra 0.98 m, Atlantic City 0.63 contra 0.58), pero la fase de pyOCEAN se adelanta en
+la bahía de Nueva York y Long Island Sound: **Sandy Hook −18.6°, Battery −31.3°, Montauk −27.0°**, Bridgeport −11.6°;
+Atlantic City −4.0°, Lewes −4.6°. La velocidad de la marea en el borde no es la causa: con u = U/D del modelo (R3)
+y u = U/h_TPXO las fases difieren ≤ 0.4° (16 días: error medio 0.185 contra 0.183 m). El adelanto es interior
+(batimetría de 1/12° en NY Harbor–LIS, sin `CHANNEL_DRAG`; clase b/c); no se afina nada y se compara con MOM6 en el
+mismo recorte.

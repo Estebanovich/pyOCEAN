@@ -123,7 +123,8 @@ def _tpxo(lo: np.ndarray, la: np.ndarray) -> xr.Dataset:
     U = 20.0 * h * np.exp(-0.5j)
     V = 10.0 * h
     return xr.Dataset({"h": (("constituent", "lat", "lon"), h), "U": (("constituent", "lat", "lon_u"), U),
-                       "V": (("constituent", "lat_v", "lon"), V)},
+                       "V": (("constituent", "lat_v", "lon"), V),
+                       "hu": (("lat", "lon_u"), 60.0 + 0.0 * X), "hv": (("lat_v", "lon"), 55.0 + 0.0 * X)},
                       coords={"constituent": list(cs.CONSTITUENTS), "lat": la, "lon": lo, "lon_u": lo - 1 / 24,
                               "lat_v": la - 1 / 24})
 
@@ -210,6 +211,7 @@ def test_parity_config_preflight_clean(syn):
     assert m.eos_name == "wright_full" and m.cp == 3992.0 and m.rho0 == 1035.0
     assert (m.obc_tau_in, m.obc_tau_out) == (3 * 86400.0, 360 * 86400.0)
     assert b.edges == ("east", "south", "north") and set(m.obc_mode.values()) == {"radiating"}
+    assert m.boundary_tides.velocity_depth == "tpxo"                # R19
     assert m.sal_beta == 0.05 and m.sal_flather and m.tidal_potential is not None and not m.atm_pressure
     assert m.river_input is not None and m.river_input.Q.sum() > 0
     assert np.nanmin(b.H) == 4.0                                     # MINIMUM_DEPTH

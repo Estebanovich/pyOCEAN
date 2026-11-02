@@ -24,7 +24,7 @@ Parity with NWA12 (``parity_config``; values from ``docs/design/regional_refs/*.
 | drag | quadratic ``CDRAG`` 0.003, ``HBBL`` 10, ``DRAG_BG_VEL`` 0, ``CHANNEL_DRAG`` | quadratic cd 0.003, hbbl 10, U_bg 0 | b/c (no channel drag, R5) |
 | open edges | Flather + Orlanski + nudging 3 d / 360 d (by Orlanski phase speed), reservoir 9 km | 'radiating': Flather + Orlanski + nudging τ_in 3 d, τ_out 360 d (by flow direction, R7), no reservoir/sponge | c |
 | tangential velocity at open edges | ``ORLANSKI_TAN``, ``NUDGED_TAN`` (radiated and nudged toward the exterior tangential velocity) | not radiated or nudged: the tangential velocities next to an edge are interior unknowns of the momentum equations; the corner vorticity and shear strain on open faces are free-slip (no viscous tendency on open faces, D_S = 0 at their corners) | c |
-| boundary tide | TPXO, 10 constituents, η and u added to the segment, nodal fixed at a date | ``BoundaryTides`` TPXO10, 10 constituents, u = U/D_model (R3), OTPS nodal at each time, ramp 0 | c |
+| boundary tide | TPXO, 10 constituents, η and TPXO's velocity added to the segment, nodal fixed at a date | ``BoundaryTides`` TPXO10, 10 constituents, ``velocity_depth='tpxo'``: u = U/h_TPXO, TPXO's own velocity (R19, revises R3 for the case; u = U/D_model gave up to 3.8 m/s on 5-m faces), OTPS nodal at each time, ramp 0 | c (nodal) |
 | body tide | ``TIDES``, scalar SAL 0.05, SAL in Flather | ``tidal_potential=True``, ``sal_beta`` 0.05, ``sal_flather`` | c (legacy SAL path, R4) |
 | atm. pressure | off (``MAX_P_SURF`` = 0) | ``atm_pressure=False`` | — |
 | rivers | GloFAS v3 (CEFI ``write_runoff_glofas.py``), ePBL ``DO_RIVERMIX`` | GloFAS v4 with the CEFI ldd rule (R11, R12), real freshwater at the top layer | c (version; no river mixing without ePBL, b) |
@@ -89,7 +89,8 @@ class Case:
     glofas_pattern: str = "glofas_v4_consolidated_*.nc"
     points: dict = field(default_factory=dict)  # extra series points {name: (lat, lon)}
     tide_ramp_days: float = 0.0                  # NWA12: RAMP_OBCS = False (R3); tests ramp
-    tide_velocity_depth: str = "model"           # BoundaryTides velocity_depth: 'model' (R3, parity) or 'tpxo'
+    tide_velocity_depth: str = "tpxo"            # BoundaryTides velocity_depth: TPXO's own velocity (R19, as CEFI/
+                                                 # MOM6); 'model' = U/D_model (R3, the library default)
 
     @property
     def inputs(self) -> Path:
