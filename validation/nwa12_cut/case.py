@@ -14,7 +14,7 @@ Parity with NWA12 (``parity_config``; values from ``docs/design/regional_refs/*.
 | item | NWA12 (MOM6) | pyOCEAN | class of the difference |
 |---|---|---|---|
 | vertical | z* 75 levels ``vgrid_75_2m.nc`` | ALE z*, ``dz_top`` = the same 75 Δz | — |
-| momentum | vector invariant, biharmonic Smagorinsky ``SMAG_BI_CONST`` 0.03 | vector invariant, **Laplacian** Smagorinsky 0.15 (OM4) | b (no biharmonic) |
+| momentum | vector invariant, ``LAPLACIAN`` False, ``BIHARMONIC`` True, ``SMAGORINSKY_AH`` with ``SMAG_BI_CONST`` 0.03, ``AH_VEL_SCALE`` 0.01, ``AH`` 0, ``BOUND_AH``, ``HORVISC_BOUND_COEF`` 0.8, ``USE_LAND_MASK_FOR_HVISC``, ``OBC_ZERO_BIHARMONIC``, no ``BOUND_CORIOLIS_BIHARM``/Leith | vector invariant, ``smagorinsky_bi=0.03``, ``ah_vel_scale=0.01``, ``ah_bi=0``, Laplacian off (``smagorinsky=0``, ``ah=0``) (``core.dynamics.hor_visc.biharmonic``, Gulf Stream fix step 4, ``docs/design/regional_refs/mom6_biharmonic.md``); was Laplacian Smagorinsky 0.15 until 2026-11-03 | c (bound × 6/11 for AB3; thin-layer ratio on wet faces only; biharmonic shear stress 0 at the open-edge corners, MOM6 takes it from the halo) |
 | gravity | ``G_EARTH`` 9.8 | ``g=9.8`` (R21; reaches the free surface and Flather, the PGF, the tidal potential/SAL, the closures and the EOS pressure; the FMS bulk keeps its own GRAV 9.80) | — |
 | PGF bottom mass weighting | ``MASS_WEIGHT_IN_PRESSURE_GRADIENT`` True (every face) | ``pgf_mass_weight='full'`` (R21; initial PGF = MOM6 to 1.2e-14, Task 10) | — |
 | EOS | ``WRIGHT_FULL`` θ, S_P, ρ₀ 1035, ``C_P`` 3992 | ``eos='wright_full'``, ``ts_kind='theta_sp'``, ρ₀ 1035, c_p 3992 | — |
@@ -32,8 +32,9 @@ Parity with NWA12 (``parity_config``; values from ``docs/design/regional_refs/*.
 | rivers | GloFAS v3 (CEFI ``write_runoff_glofas.py``), ePBL ``DO_RIVERMIX`` | GloFAS v4 with the CEFI ldd rule (R11, R12), real freshwater at the top layer | c (version; no river mixing without ePBL, b) |
 | Δt | ``DT`` 600 s, ``DT_THERM`` 1800 s | one Δt: 300 s (full; 600 s grows the known θ_bc = ½ mode, R15), 600 s (tides) | c (the instability: a, own plan) |
 
-Why ALE z* + vector-invariant momentum + Smagorinsky (not σ or the constant Laplacian): the σ flux-form momentum and
-the constant-A_h Laplacian have no curvilinear metric terms (Task 3, ``docs/design/regional_refs/metric_audit.md``
+Why ALE z* + vector-invariant momentum + a Smagorinsky stress-tensor operator (biharmonic as NWA12, or the Laplacian;
+not σ or the constant Laplacian): the σ flux-form momentum and the constant-A_h Laplacian have no curvilinear metric
+terms (Task 3, ``docs/design/regional_refs/metric_audit.md``
 §2.3, class b); the invariant forms are metric-correct, as MOM6's.  ``parity_config`` enforces it and the pre-flight
 warns for the other choices on a supergrid grid.
 
@@ -434,13 +435,16 @@ def parity_config(case: Case, hg: xr.Dataset, H: np.ndarray, dt: float, *, edges
     """
     Keyword arguments of ``SigmaBaroclinic`` for the NWA12 parity configuration (module docstring table).  The
     forcing objects are built by ``build``; ``overrides`` replace single entries (tests) but the coordinate, the
-    momentum form and the Smagorinsky viscosity are enforced (curvilinear grid, Task 3 limitation).
+    momentum form and a Smagorinsky stress-tensor viscosity (biharmonic, NWA12's, or Laplacian) are enforced
+    (curvilinear grid, Task 3 limitation).
     """
     from physics.mixing.kpp_cvmix import KPPParams
     dz = vgrid_dz(case)
     cfg = dict(
         dt=float(dt), n_layers=dz.size, vertical_coordinate="ale", regrid="zstar", regrid_params=dict(dz_top=dz),
-        momentum="vector_invariant", pgf="fv", smagorinsky=0.15, ah=0.0, g=9.8, pgf_mass_weight="full",
+        momentum="vector_invariant", pgf="fv", g=9.8, pgf_mass_weight="full",
+        # NWA12 LAPLACIAN False, BIHARMONIC True, SMAG_BI_CONST 0.03, AH_VEL_SCALE 0.01, AH 0 (Gulf Stream fix step 4)
+        smagorinsky=0.0, ah=0.0, smagorinsky_bi=0.03, ah_vel_scale=0.01, ah_bi=0.0,
         eos="wright_full", ts_kind="theta_sp", rho0=None, cp=3992.0, salinity=True,
         closure="kpp", kpp_params=KPPParams(kappa_bg=1e-6, nu_bg=0.0), shear_mixing="jackson",
         shear_prandtl=1.25,
@@ -453,10 +457,11 @@ def parity_config(case: Case, hg: xr.Dataset, H: np.ndarray, dt: float, *, edges
         surface_fluxes=surface_fluxes, runoff=runoff, mix_diagnostic=False,
     )
     cfg.update(overrides)
-    if cfg["vertical_coordinate"] != "ale" or cfg["momentum"] != "vector_invariant" or not cfg["smagorinsky"] > 0:
+    stress_tensor = cfg["smagorinsky"] > 0 or cfg.get("smagorinsky_bi", 0.0) > 0
+    if cfg["vertical_coordinate"] != "ale" or cfg["momentum"] != "vector_invariant" or not stress_tensor:
         raise ValueError("the NWA12 cut needs vertical_coordinate='ale', momentum='vector_invariant' and "
-                         "smagorinsky > 0: the σ flux form and the constant Laplacian lack curvilinear metric terms "
-                         "(metric_audit.md §2.3)")
+                         "smagorinsky_bi > 0 (or smagorinsky > 0): the σ flux form and the constant Laplacian lack "
+                         "curvilinear metric terms (metric_audit.md §2.3)")
     return cfg
 
 

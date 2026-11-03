@@ -207,7 +207,8 @@ def test_parity_config_preflight_clean(syn):
         b = _build(syn, days=1.0)
     assert not [w for w in rec if issubclass(w.category, PyOceanConfigWarning)], [str(w.message) for w in rec]
     m = b.model
-    assert m.ale and m.regrid_rule == "zstar" and m.momentum == "vector_invariant" and m.smagorinsky == 0.15
+    assert m.ale and m.regrid_rule == "zstar" and m.momentum == "vector_invariant"
+    assert (m.smagorinsky, m.ah, m.smagorinsky_bi, m.ah_vel_scale, m.ah_bi) == (0.0, 0.0, 0.03, 0.01, 0.0)  # NWA12
     assert m.eos_name == "wright_full" and m.cp == 3992.0 and m.rho0 == 1035.0
     assert (m.obc_tau_in, m.obc_tau_out) == (3 * 86400.0, 360 * 86400.0)
     assert b.edges == ("east", "south", "north") and set(m.obc_mode.values()) == {"radiating"}
@@ -221,9 +222,12 @@ def test_parity_config_preflight_clean(syn):
     assert m.sal_beta == 0.05 and m.sal_flather and m.tidal_potential is not None and not m.atm_pressure
     assert m.river_input is not None and m.river_input.Q.sum() > 0
     assert np.nanmin(b.H) == 4.0                                     # MINIMUM_DEPTH
-    for bad in (dict(vertical_coordinate="sigma_eulerian"), dict(momentum="flux"), dict(smagorinsky=0.0)):
+    for bad in (dict(vertical_coordinate="sigma_eulerian"), dict(momentum="flux"), dict(smagorinsky_bi=0.0)):
         with pytest.raises(ValueError, match="curvilinear metric terms"):
             cs.parity_config(syn, b.hg, b.H, 600.0, edges=b.edges, **bad)
+    lap = cs.parity_config(syn, b.hg, b.H, 600.0, edges=b.edges, smagorinsky=0.15, smagorinsky_bi=0.0,
+                           ah_vel_scale=0.0)                                 # the Laplacian is still accepted
+    assert lap["smagorinsky"] == 0.15
 
 
 def test_preflight_warns_flux_form_on_supergrid(syn):
