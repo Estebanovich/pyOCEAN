@@ -353,6 +353,44 @@ def test_domain_budget_accumulators_survive_a_restart(syn, tmp_path):
     assert second.residuals() == ref.residuals() and second.n_steps == 20
 
 
+def test_parse_overrides():
+    from validation.nwa12_cut.run_pyocean import parse_overrides
+    assert parse_overrides(["theta_bc=1.0", "regrid=zstar", "cd = 0.002"]) == {"theta_bc": 1.0, "regrid": "zstar",
+                                                                             "cd": 0.002}
+    with pytest.raises(SystemExit):
+        parse_overrides(["theta_bc"])
+
+
+def test_restart_with_allowed_theta_bc_change(syn, tmp_path):
+    # read_restart is strict by default; allow_changed=("theta_bc",) lets a diagnostic run continue a restart with a
+    # different θ_bc (warning), and the runner's --override/--allow-restart-change path does it end to end.
+    import dataclasses
+    from core.restart import read_restart, write_restart
+    from validation.nwa12_cut import run_pyocean as rp
+    b = _build(syn, days=1.0, dt=1800.0)
+    st = _run(b, b.state, 0, 4)
+    write_restart(tmp_path / "r.nc", b.model, st)
+    b1 = _build(syn, days=1.0, dt=1800.0, theta_bc=1.0)
+    assert b1.model.theta_bc == 1.0
+    with pytest.raises(ValueError, match="theta_bc"):
+        read_restart(tmp_path / "r.nc", b1.model)
+    with pytest.raises(ValueError, match="allow_changed"):
+        read_restart(tmp_path / "r.nc", b1.model, allow_changed=("no_such_entry",))
+    with pytest.warns(UserWarning, match="theta_bc changed"):
+        st1 = read_restart(tmp_path / "r.nc", b1.model, allow_changed=("theta_bc",))
+    st1 = _run(b1, st1, 4, 6)
+    assert np.isfinite(st1.u).all() and st1.n_trunc == 0
+    case = dataclasses.replace(syn, runs=tmp_path / "runs")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        rp.run(case, "full", 0.25, 1800.0, threads=2, restart_at=0.125, tag="base", out_hours=6.0, log=lambda m: None)
+        meta = rp.run(case, "full", 0.25, 1800.0, threads=2, tag="tbc1", out_hours=6.0, log=lambda m: None,
+                      start_from=rp.run_dir(case, "full", 1800.0, "base") / "restart_day0.125.nc",
+                      overrides={"theta_bc": 1.0}, allow_restart_change=("theta_bc",))
+    assert meta["overrides"] == {"theta_bc": "1.0"} and meta["allow_restart_change"] == ["theta_bc"]
+    assert meta["n_steps"] == 6 and meta["n_trunc"] == 0 and meta["budget_scope"].startswith("from t0")
+
+
 def test_output_writes_layer_thickness(syn, tmp_path):
     # The new output field h_layer (ALE layer thickness; 'h' is the static bathymetry) round-trips through
     # OutputWriter with its CF standard name.

@@ -170,18 +170,24 @@ def meta_of(b: cs.Built, st, mode: str, dt: float, n_steps: int, wall: float, ti
 
 def run(case: cs.Case, mode: str, days: float, dt: float, threads: int = 5, restart_at: float | None = None,
         tag: str = "", out_hours: float = 24.0, write: bool = True, start_from: Path | None = None,
-        log=print) -> dict:
-    """One run (module docstring); returns the metadata (and writes them)."""
+        log=print, overrides: dict | None = None, allow_restart_change: tuple[str, ...] = ()) -> dict:
+    """
+    One run (module docstring); returns the metadata (and writes them).  ``overrides``: ``SigmaBaroclinic``
+    arguments replacing the parity values (``--override KEY=VALUE``; diagnostics only, recorded in ``meta.json``);
+    ``allow_restart_change``: restart configuration entries allowed to differ on ``start_from``
+    (``core.restart.read_restart(allow_changed=...)``).
+    """
+    overrides = dict(overrides or {})
     set_threads(threads)
     out = run_dir(case, mode, dt, tag) if write else None
     if out is not None:
         out.mkdir(parents=True, exist_ok=True)
     n_steps = int(round(days * 86400.0 / dt))
     check_coverage(case, mode, days)
-    b = cs.build(case, mode, dt, days)
+    b = cs.build(case, mode, dt, days, **overrides)
     st, n0 = b.state, 0
     if start_from is not None:
-        st = read_restart(start_from, b.model)
+        st = read_restart(start_from, b.model, allow_changed=tuple(allow_restart_change))
         n0 = int(round(st.time / dt))
         log(f"started from {start_from} at step {n0}")
     budget, budget_scope = None, None
@@ -205,6 +211,10 @@ def run(case: cs.Case, mode: str, days: float, dt: float, threads: int = 5, rest
     meta = meta_of(b, st, mode, dt, n_steps - n0, wall, timed, threads)
     if rec is not None and rec.umax:
         meta["u_absmax_run"] = float(np.max(rec.umax))
+    if overrides:
+        meta["overrides"] = {k: repr(v) for k, v in overrides.items()}
+    if allow_restart_change:
+        meta["allow_restart_change"] = list(allow_restart_change)
     if budget is not None:
         meta["budget"] = budget.residuals()
         meta["budget_scope"] = budget_scope
@@ -288,6 +298,22 @@ def compare_restarts(a: Path, b: Path) -> dict:
                 different=[n for n, ok in same.items() if not ok], n_variables=len(names))
 
 
+def parse_overrides(items: list[str]) -> dict:
+    """``["theta_bc=1.0", …]`` → {"theta_bc": 1.0, …}; values parsed with ``ast.literal_eval`` (strings stay strings
+    when they are not literals)."""
+    import ast
+    out = {}
+    for item in items:
+        if "=" not in item:
+            raise SystemExit(f"--override {item!r}: use KEY=VALUE")
+        k, v = item.split("=", 1)
+        try:
+            out[k.strip()] = ast.literal_eval(v.strip())
+        except (ValueError, SyntaxError):
+            out[k.strip()] = v.strip()
+    return out
+
+
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--mode", choices=("tides", "full"), required=True)
@@ -303,6 +329,11 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--threads-check", type=float, default=None, metavar="HOURS")
     ap.add_argument("--tide-velocity-depth", choices=("model", "tpxo"), default=None,
                     help="BoundaryTides velocity_depth (default: the case's, 'tpxo' (R19); 'model' = U/D_model, R3)")
+    ap.add_argument("--override", action="append", default=[], metavar="KEY=VALUE",
+                    help="replace a parity SigmaBaroclinic argument (value parsed with ast.literal_eval), repeatable; "
+                         "diagnostics only, e.g. --override theta_bc=1.0")
+    ap.add_argument("--allow-restart-change", action="append", default=[], metavar="NAME",
+                    help="restart configuration entry allowed to differ on --start-from (e.g. theta_bc), repeatable")
     ap.add_argument("--compare", nargs=2, type=Path, default=None, metavar=("A", "B"),
                     help="compare two restart files bit for bit and exit")
     return ap
@@ -325,7 +356,7 @@ def main() -> None:
         res = restart_check(case, a.mode, days, a.dt, a.threads, log=log)
     else:
         res = run(case, a.mode, days, a.dt, a.threads, a.restart_at, a.tag, a.out_hours, start_from=a.start_from,
-                  log=log)
+                  log=log, overrides=parse_overrides(a.override), allow_restart_change=tuple(a.allow_restart_change))
     print(json.dumps(res, indent=1, default=float))
 
 

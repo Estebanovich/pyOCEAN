@@ -299,8 +299,19 @@ def _n_visc_limited(ds: xr.Dataset, model: SigmaBaroclinic) -> int | None:
     return 0 if getattr(model, "smagorinsky", 0.0) > 0 else None
 
 
-def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
-    """Read a restart into a ``SigmaState`` and restore the hidden state of ``model``."""
+def read_restart(path: str | Path, model: SigmaBaroclinic, allow_changed: tuple[str, ...] = ()) -> SigmaState:
+    """
+    Read a restart into a ``SigmaState`` and restore the hidden state of ``model``.
+
+    ``allow_changed``: names of configuration entries (``_config`` keys, e.g. ``("theta_bc",)``) that may differ
+    between the restart and the model — a deliberate change at the restart, for diagnostics (regional chain Task 9,
+    θ_bc test of the NWA12 cut).  The model's value is used and a ``UserWarning`` names each change.  Default empty:
+    every entry must match (strict, as before).  Unknown names raise ValueError.
+    """
+    allow_changed = tuple(allow_changed)
+    unknown = [k for k in allow_changed if k not in _config(model)]
+    if unknown:
+        raise ValueError(f"allow_changed {unknown}: not restart configuration entries (have {sorted(_config(model))})")
     with xr.open_dataset(path, engine="netcdf4") as ds:
         ds = ds.load()
     if ds.attrs.get("model") != type(model).__name__:
@@ -326,6 +337,11 @@ def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
         else:
             same = stored is not None and np.isclose(float(stored), float(v), rtol=0, atol=0)
         if not same:
+            if k in allow_changed:
+                import warnings
+                warnings.warn(f"read_restart: {k} changed at the restart ({stored!r} → {v!r}), allowed by allow_changed",
+                              UserWarning, stacklevel=2)
+                continue
             bad.append(f"{k}: restart {stored!r} vs model {v!r}")
     if bad:
         raise ValueError("restart incompatible with the model configuration — " + "; ".join(bad))

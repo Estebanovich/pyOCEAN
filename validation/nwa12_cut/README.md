@@ -162,9 +162,10 @@ Todas en 5 núcleos P (`NUMBA_NUM_THREADS=5`), 87 × 89 × 75.
 
 | corrida | Δt | días | truncamientos CFL | eventos del limitador | puntos limitados de Smagorinsky | costo |
 |---|---|---|---|---|---|---|
-| mareas solas (R19, `velocity_depth='tpxo'`) | 600 s | 30 | 0 | 0 | 25 991 (≈ 6 por paso) | 0.70 s/paso, 101 s por día simulado |
+| mareas solas (R19 + R21) | 600 s | 30 | 0 | 0 | 25 885 (≈ 6 por paso) | 0.71 s/paso, 102 s por día simulado |
 | completa (paridad) | 600 s | 30 (mayo; ERA5 cubría solo mayo) | 0 | 0 | 25 218 | 0.736 s/paso, 106 s/día |
 | completa (paridad) | 300 s | 30 | 0 | 0 | 0 | 0.689 s/paso, 198 s/día |
+| **completa (paridad, R19 + R21), 2017-05-01 → 09-01** | 300 s | 123 | 0 | 0 | 0 | 0.706 s/paso, **203 s/día** (6.9 h) |
 
 **Δt estable más grande: 300 s para la corrida completa; 600 s para mareas solas.** Con 600 s la corrida completa
 termina sin truncamientos, pero desde el día ~25 crece un modo de la capa superior en la zona de la Corriente del
@@ -190,6 +191,7 @@ contra el flujo bruto, es decir, cierre a redondeo). Residuo acumulado relativo 
 | desde el restart del día 15, 600 s | 2.6e-16 / 8.7e-15 / 1.5e-12 | 5.3e-15 / 7.3e-14 / 2.1e-13 | 8.6e-15 / 2.9e-13 / 1.7e-10 |
 | completa, 300 s, 30 días | 6.6e-16 / 1.2e-14 / 5.0e-12 | 2.0e-14 / 2.2e-13 / 1.1e-12 | 5.8e-14 / 1.0e-12 / 8.9e-11 |
 | completa, 300 s, 10 días (R17) | 3.5e-16 / 1.9e-14 / 1.0e-12 | 5.9e-15 / 1.6e-13 / 2.0e-13 | 1.8e-14 / 9.9e-13 / 1.1e-10 |
+| **completa, 300 s, 123 días (R21)** | 3.8e-16 / 1.7e-15 / 1.6e-12 | 9.8e-14 / 1.1e-13 / 2.9e-12 | 2.2e-13 / 9.8e-13 / 4.4e-10 |
 
 Contra el contenido y el flujo bruto todo cierra a ≤ 1e-12. Con la medida más estricta la sal llega a 1.1–1.7e-10
 en los tramos de 10–15 días: el flujo neto de sal es chico (3e12 g kg⁻¹ m³ en 10 días) y el residuo, ~150–1100
@@ -197,14 +199,25 @@ g kg⁻¹ m³ (≈ 2e-14 del contenido de sal), es redondeo de la aritmética de
 (calor ~17, sal ~350 en los mismos 10 días), no con los flujos, y no viene de las sumas del dominio (llevar el
 presupuesto como Σ V (S − S₀) no lo cambia: 339 → 350). No falta ningún término.
 
+**Restart a mitad de la corrida de 123 días (criterio 6 ✅):** 123 días seguidos contra 60.5 días + restart (a las
+12:00, entre registros diarios de GLORYS/GloFAS y entre horas de ERA5) + 62.5 días: las 19 variables del restart final
+y todas las series por paso de las estaciones (η, SST, SSS, max |u|) son idénticas bit a bit, y los acumuladores del
+presupuesto, recargados en el restart, dan el mismo residuo.
+
+**El modo de θ_bc = ½ también aparece a 300 s** en la corrida de 123 días: crece desde el día ~40–45 (oscilación de
+18.9 h en max |u|) y desde el día ~75 la capa superior de la Corriente del Golfo llega a 5.5–7.2 m/s (max |u| de la
+corrida 7.25 m/s, sin truncamientos). Diagnóstico en `figs/gs_diag/README.md`; prueba con θ_bc = 1 en la sección 14
+del informe de la Tarea 9.
+
 **Restart y hilos:** 30 días seguidos contra 15 días + restart + 15 días (600 s, con GLORYS, mareas, ERA5 y ríos
 variando): las 19 variables del restart final y todas las series por paso de las estaciones son idénticas bit a bit.
 1 contra 5 hilos en 3 horas de la corrida completa: idénticos (η, u, v, T, S, h, estado del cierre, contadores).
 
 **Mareas (vistazo, sin puntaje; el criterio 4 se juzga contra MOM6 en la Tarea 10):** corrida de mareas solas de 30
-días a 600 s con la configuración de paridad (`velocity_depth='tpxo'`, R19; tag `r19`): 0 truncamientos, 0 eventos
-del limitador, 101 s/día, |u|máx de la corrida 1.57 m/s (3.39 m/s con u = U/D del modelo). M2 en 11 mareógrafos de
-CO-OPS (`tide_check.py`, días 1–30, M2 S2 N2 K1 O1 Q1): **error vectorial medio 0.229 m, mediana 0.200 m**; TPXO10 en
+días a 600 s con la configuración de paridad (`velocity_depth='tpxo'` R19, g = 9.8 y `pgf_mass_weight='full'` R21;
+tag `r21`): 0 truncamientos, 0 eventos del limitador, 102 s/día, |u|máx de la corrida 1.57 m/s (3.39 m/s con u = U/D
+del modelo). M2 en 11 mareógrafos de
+CO-OPS (`tide_check.py`, días 1–30, M2 S2 N2 K1 O1 Q1): **error vectorial medio 0.228 m, mediana 0.199 m**; TPXO10 en
 los mismos puntos, 0.15 m (casi todo Nantucket y Woods Hole, que la malla de 1/12° no resuelve). Las amplitudes
 están cerca (Bridgeport 0.92 contra 0.98 m, Atlantic City 0.63 contra 0.58), pero la fase de pyOCEAN se adelanta en
 la bahía de Nueva York y Long Island Sound: **Sandy Hook −18.6°, Battery −31.3°, Montauk −27.0°**, Bridgeport −11.6°;
