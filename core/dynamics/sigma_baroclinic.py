@@ -1034,6 +1034,15 @@ class SigmaBaroclinic:
           land and dry faces, no tendency on open-boundary faces.  Points where the bound reduced ν are counted in
           ``SigmaState.n_visc_limited``; ``self._momentum.last_nu_t`` holds the last step's ν at h points.
           Assignable after construction, as ``ah``
+    smagorinsky_bi, ah_vel_scale, ah_bi : biharmonic Smagorinsky viscosity (regional chain, Gulf Stream fix step 4;
+          MOM6 BIHARMONIC with SMAG_BI_CONST [-], AH_VEL_SCALE [m s⁻¹] and AH [m⁴ s⁻¹]; NWA12 0.03, 0.01, 0).  All 0
+          (default): off, bit for bit as before.  Any > 0: the "hviscosity" term becomes −∇·(A_h h ∇(∇²u))/h in
+          MOM6's stress-tensor form with A_h = max(ah_bi, ah_vel_scale Δ³, smagorinsky_bi Δ⁴ |S|), bounded for AB3
+          (MOM6 BOUND_AH × 6/11), Del2 = 0 on open faces (OBC_ZERO_BIHARMONIC), free slip at land
+          (``core.dynamics.hor_visc.biharmonic``, docs/design/regional_refs/mom6_biharmonic.md).  Not together with
+          the Laplacian (``smagorinsky`` = ``ah`` = 0; pre-flight).  Limited points counted in
+          ``SigmaState.n_visc_limited``; ``self._momentum.last_ah_t`` holds A_h at h points.  Assignable after
+          construction
     kv : vertical tracer diffusivity [m² s⁻¹] (implicit; 0 = none).  With closure='gls' and ``gls_stratified``
           it is not a constant but the floor (background) of the GLS diffusivity, κ_t = max(c_μ′ k²/ε, kv), and
           kv = 0 (default) keeps CROCO's floor nuws = 1e-6 (gls_mixing.F:152, 872-880; CROCO does not read Akt_bak
@@ -1252,7 +1261,8 @@ class SigmaBaroclinic:
                  boundary_tides: BoundaryTides | None = None, tidal_potential: bool | TidalPotential = False,
                  sal_beta: float = 0.0, sal_flather: bool = False, atm_pressure: bool = False,
                  atm_pressure_ref: float | None = None, runoff: RiverInput | None = None,
-                 obc_tangential: str = "none") -> None:
+                 obc_tangential: str = "none", smagorinsky_bi: float = 0.0, ah_vel_scale: float = 0.0,
+                 ah_bi: float = 0.0) -> None:
         _args = {k: v for k, v in locals().items() if k != "self"}
         raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
         # equation of state (TEOS-10 in 3-D, Task 4): ρ₀ of the EOS before anything that uses it is built
@@ -1379,6 +1389,8 @@ class SigmaBaroclinic:
         self.hg, self.dt, self.n, self.g = h_grid, dt, n_layers, g
         self.rho0, self.t_coef, self.t_ref, self.ah, self.adv = rho0, t_coef, t_ref, ah, adv
         self.smagorinsky = float(smagorinsky)                          # Smagorinsky C (0 = off, the default)
+        self.smagorinsky_bi = float(smagorinsky_bi)                    # biharmonic Smagorinsky (0 = off, the default)
+        self.ah_vel_scale, self.ah_bi = float(ah_vel_scale), float(ah_bi)
         self.salinity, self.s_coef, self.s_ref = bool(salinity), float(s_coef), float(s_ref)
         self.eos_name, self.p_ref, self.pgf_mass_weight = eos, float(p_ref), pgf_mass_weight
         self._eos = _eos                                                # EOS protocol (core.components.eos)
@@ -1405,7 +1417,9 @@ class SigmaBaroclinic:
                                   adv=adv, ah=ah, ke_scheme=self.ke_scheme, ale=self.ale, dt=dt, hg=h_grid, fq=self._fq,
                                   fs=self.fs, ds=self.ds, vi_geom=getattr(self, "_vi", None),
                                   mean_face_thickness=self._mean_face_thickness, layer_volumes=self.layer_volumes,
-                                  smagorinsky=self.smagorinsky, open_u=fl_u.copy(), open_v=fl_v.copy())
+                                  smagorinsky=self.smagorinsky, open_u=fl_u.copy(), open_v=fl_v.copy(),
+                                  smagorinsky_bi=self.smagorinsky_bi, ah_vel_scale=self.ah_vel_scale,
+                                  ah_bi=self.ah_bi)
         if tracer_limiter is None:
             tracer_limiter = ("fct" if self.ale and self.tracer_time == "ssprk3"
                               and self.tracer_scheme in ("weno5", "weno5js") else "none")
@@ -2129,6 +2143,9 @@ _PARAMS = {
     "ke_scheme": ((("_momentum", "ke_scheme"),), None, _ke_spelling),
     "ah": ((("_momentum", "ah"),), None, None),
     "smagorinsky": ((("_momentum", "smagorinsky"),), lambda m, v: float(v), None),
+    "smagorinsky_bi": ((("_momentum", "smagorinsky_bi"),), lambda m, v: float(v), None),
+    "ah_vel_scale": ((("_momentum", "ah_vel_scale"),), lambda m, v: float(v), None),
+    "ah_bi": ((("_momentum", "ah_bi"),), lambda m, v: float(v), None),
     "adv": ((("_momentum", "adv"),), None, None),
     "momentum": ((("_momentum", "form"),),
                  lambda m, v: "vector_invariant" if m.ale and v == "vector_invariant" else "flux", None),

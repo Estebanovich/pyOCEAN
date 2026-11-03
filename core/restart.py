@@ -100,7 +100,9 @@ def _config(model: SigmaBaroclinic) -> dict:
                 periodic=",".join(model.periodic.axes) or "none",              # N3 task 3: periodic axes
                 eos=eos, cp=model.cp, p_ref=getattr(model, "p_ref", 2e7),       # TEOS-10 in 3-D, Task 4
                 pgf_mass_weight=getattr(model, "pgf_mass_weight", "vanished"),
-                obc_tangential=str(getattr(model, "obc_tangential", "none")))
+                obc_tangential=str(getattr(model, "obc_tangential", "none")),
+                smagorinsky_bi=getattr(model, "smagorinsky_bi", 0.0), ah_vel_scale=getattr(model, "ah_vel_scale", 0.0),
+                ah_bi=getattr(model, "ah_bi", 0.0))
     if eos != "linear":
         cfg.update(rho_pgf_ref=model.rho_pgf_ref)
     if core.closure == "gls":                                   # N2a task 8c: stratified or homogeneous k-ε
@@ -181,7 +183,8 @@ _CONFIG_DEFAULTS = {"salinity": 0, "s_coef": 0.0, "s_ref": 35.0, "sponge_S": "no
                     "tidal_potential": "none",
                     "atm_pressure": "none",                                                 # before p_a forcing
                     "runoff": "none",                                                       # before river runoff
-                    "obc_tangential": "none"}                                               # before MOM6 tangential OBC
+                    "obc_tangential": "none",
+                    "smagorinsky_bi": 0.0, "ah_vel_scale": 0.0, "ah_bi": 0.0}                # before biharmonic                                               # before MOM6 tangential OBC
 
 # configuration entries not checked when a file lacks them: files written before TEOS-10 in 3-D did not store c_p,
 # which could be any value the run passed
@@ -300,7 +303,9 @@ def _n_visc_limited(ds: xr.Dataset, model: SigmaBaroclinic) -> int | None:
     n = ds.attrs.get("n_visc_limited")
     if n is not None:
         return int(n)
-    return 0 if getattr(model, "smagorinsky", 0.0) > 0 else None
+    mo = getattr(model, "_momentum", None)
+    on = mo.visc_counted if mo is not None else getattr(model, "smagorinsky", 0.0) > 0
+    return 0 if on else None
 
 
 def read_restart(path: str | Path, model: SigmaBaroclinic, allow_changed: tuple[str, ...] = ()) -> SigmaState:

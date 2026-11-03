@@ -30,7 +30,7 @@ import numba
 import numpy as np
 
 from core.dynamics import vector_invariant as vi
-from core.dynamics.hor_visc import open_corner_strain, smag_geometry, smagorinsky
+from core.dynamics.hor_visc import biharmonic, open_corner_strain, smag_geometry, smagorinsky
 from core.dynamics.nonlinear import _spacings_u, _spacings_v, advection_u, advection_v, laplacian_3d
 from core.model import threads
 from core.model.contract import BuildContext, Issue, Role
@@ -125,6 +125,10 @@ class Momentum:
     OBC faces, MOM_grid_initialize.F90:1270-1288, MOM_hor_visc.F90:708-715), they get no viscous tendency
     (MOM_hor_visc.F90:1761-1793) and their corners are free slip unless ``obc_tangential='mom6'``.  After each call of ``terms`` with C > 0: ``last_nu_t`` (N, ny, nx) ν at h points
     [m² s⁻¹] and ``last_n_limited`` (points where the stability bound reduced ν this step).
+    ``smagorinsky_bi`` [-], ``ah_vel_scale`` [m s⁻¹], ``ah_bi`` [m⁴ s⁻¹] (all 0 = off): the biharmonic Smagorinsky
+    operator instead (``core.dynamics.hor_visc.biharmonic``; MOM6 SMAG_BI_CONST, AH_VEL_SCALE, AH; not together with
+    the Laplacian, pre-flight); after each call ``last_ah_t`` (N, ny, nx) A_h at h points [m⁴ s⁻¹] and
+    ``last_n_limited``.
     """
     name = "momentum"
     role = Role.MOMENTUM
@@ -135,19 +139,33 @@ class Momentum:
     def __init__(self, *, form: str, adv: str, ah: float, ke_scheme: str, ale: bool, dt: float, hg, fq: np.ndarray,
                  fs, ds: np.ndarray, vi_geom: dict | None, mean_face_thickness: Callable,
                  layer_volumes: Callable, smagorinsky: float = 0.0, open_u: np.ndarray | None = None,
-                 open_v: np.ndarray | None = None) -> None:
+                 open_v: np.ndarray | None = None, smagorinsky_bi: float = 0.0, ah_vel_scale: float = 0.0,
+                 ah_bi: float = 0.0) -> None:
         self.form, self.adv, self.ah, self.ke_scheme, self.ale, self.dt = form, adv, ah, ke_scheme, ale, dt
         self.hg, self.fq, self.fs, self.ds, self.vi_geom = hg, fq, fs, ds, vi_geom
         self.mean_face_thickness, self.layer_volumes = mean_face_thickness, layer_volumes
         self._lap = None
         self.smagorinsky = float(smagorinsky)
+        self.smagorinsky_bi, self.ah_vel_scale, self.ah_bi = float(smagorinsky_bi), float(ah_vel_scale), float(ah_bi)
         ny, nx = fs.H.shape
         self.open_u = np.zeros((ny, nx + 1), bool) if open_u is None else np.asarray(open_u, bool)
         self.open_v = np.zeros((ny + 1, nx), bool) if open_v is None else np.asarray(open_v, bool)
         self._smag_geom = None
+        self._bih_geom = None
         self._cor_metrics = coriolis_metrics(hg)                        # None: unweighted (uniform grid)
         self.last_nu_t: np.ndarray | None = None
+        self.last_ah_t: np.ndarray | None = None
         self.last_n_limited = 0
+
+    @property
+    def biharmonic_on(self) -> bool:
+        """The biharmonic Smagorinsky operator is on (any of its coefficients > 0)."""
+        return self.smagorinsky_bi > 0 or self.ah_vel_scale > 0 or self.ah_bi > 0
+
+    @property
+    def visc_counted(self) -> bool:
+        """A bounded (Smagorinsky-type) viscosity is on: its limited points are counted (``n_visc_limited``)."""
+        return self.smagorinsky > 0 or self.biharmonic_on
 
     def check(self, ctx: BuildContext) -> list[Issue]:
         return []
@@ -297,9 +315,11 @@ class Momentum:
                 h_v[:, J, ov[J]] = h_t[:, j, ov[J]]
         return h_u, h_v
 
-    def _smag_call(self, u, v, h_t, h_u, h_v, wet_u, wet_v, open_u, open_v, geom: dict, obc_tan: tuple | None = None):
+    def _smag_call(self, u, v, h_t, h_u, h_v, wet_u, wet_v, open_u, open_v, geom: dict, obc_tan: tuple | None = None,
+                   bih: bool = False):
         """
-        ``hor_visc.smagorinsky`` on the given (possibly padded) arrays.  The corner mask is derived here, the only
+        ``hor_visc.smagorinsky`` (or, ``bih``, ``hor_visc.biharmonic``) on the given (possibly padded) arrays.  The
+        corner mask is derived here, the only
         place: a corner is active when its four faces (u south/north, v west/east) are wet this step, so it follows
         wetting and drying (free slip, D_S = 0, at every other corner; MOM_hor_visc.F90:927).
         """
@@ -309,13 +329,18 @@ class Momentum:
         if obc_tan is not None:                                    # MOM6 OBC_STRAIN_COMPUTED at open-edge corners
             flags, vt = obc_tan
             kw = dict(obc_q=flags, obc_strain=open_corner_strain(u, v, vt, flags, h_t, h_u, h_v, geom))
-        fu, fv, nu_t, _, n_lim = smagorinsky(u, v, h_t, h_u, h_v, wet_u, wet_v, mask_q, open_u, open_v, geom,
-                                             self.smagorinsky, self.ah, self.dt, **kw)
+        if bih:
+            fu, fv, nu_t, _, n_lim = biharmonic(u, v, h_t, h_u, h_v, wet_u, wet_v, mask_q, open_u, open_v, geom,
+                                                self.smagorinsky_bi, self.ah_vel_scale, self.ah_bi, self.dt, **kw)
+        else:
+            fu, fv, nu_t, _, n_lim = smagorinsky(u, v, h_t, h_u, h_v, wet_u, wet_v, mask_q, open_u, open_v, geom,
+                                                 self.smagorinsky, self.ah, self.dt, **kw)
         self.last_n_limited = n_lim
         return fu, fv, nu_t
 
     def smagorinsky_terms(self, st, Du: np.ndarray, Dv: np.ndarray, wet_u: np.ndarray,
-                          wet_v: np.ndarray, obc_tan: tuple | None = None) -> tuple[np.ndarray, np.ndarray]:
+                          wet_v: np.ndarray, obc_tan: tuple | None = None,
+                          bih: bool = False) -> tuple[np.ndarray, np.ndarray]:
         """
         Smagorinsky viscous tendencies at u- and v-faces [m s⁻²] of the state ``st`` (layer velocities at tⁿ,
         explicit in the AB3 tendency): F = ∇·(ν h D)/h, ν = max(A_h, C Δ² |S|) bounded for AB3
@@ -323,6 +348,8 @@ class Momentum:
         pad–crop with halos of 2 (the stencil reaches the tension of the neighbour cell through the corner shear),
         geometry padded once.  Sets ``last_nu_t`` and ``last_n_limited``.  ``obc_tan``: as ``vector_invariant``
         (the corner shear strain of MOM6 OBC_STRAIN_COMPUTED; not with periodic axes, pre-flight).
+        ``bih``: the biharmonic operator (``hor_visc.biharmonic``, same thicknesses and masks; periodic halo 3, the
+        reach of ∇·(A_h ∇(∇²u)) through the corners); sets ``last_ah_t`` instead of ``last_nu_t``.
         """
         # MOM6 keeps mask2dCu = mask2dCv = 1 on open-boundary faces (MOM_grid_initialize.F90:1270-1288): their
         # normal velocity enters the tension D_T and |S| of the boundary cells whatever OBC_STRAIN_* is (the tension
@@ -334,19 +361,24 @@ class Momentum:
         wet_u, wet_v = wet_u | self.open_u, wet_v | self.open_v
         h_t, h_u, h_v = self._smag_thickness(st, Du, Dv, wet_u, wet_v)
         per = self.per
+        attr = "_bih_geom" if bih else "_smag_geom"
         if per:
-            H = 2
-            if self._smag_geom is None:
-                self._smag_geom = smag_geometry(per.pad_dataset(self.hg, H))
-            fu, fv, nu_t = per.apply(lambda *a: self._smag_call(*a, self._smag_geom),
+            H = 3 if bih else 2
+            if getattr(self, attr) is None:
+                setattr(self, attr, smag_geometry(per.pad_dataset(self.hg, H)))
+            geom = getattr(self, attr)
+            fu, fv, nu_t = per.apply(lambda *a: self._smag_call(*a, geom, bih=bih),
                                      (st.u, st.v, h_t, h_u, h_v, wet_u, wet_v, self.open_u, self.open_v),
                                      ("u", "v", "c", "u", "v", "u", "v", "u", "v"), ("u", "v", "c"), H)
         else:
-            if self._smag_geom is None:
-                self._smag_geom = smag_geometry(self.hg)
+            if getattr(self, attr) is None:
+                setattr(self, attr, smag_geometry(self.hg))
             fu, fv, nu_t = self._smag_call(st.u, st.v, h_t, h_u, h_v, wet_u, wet_v, self.open_u, self.open_v,
-                                           self._smag_geom, obc_tan)
-        self.last_nu_t = nu_t
+                                           getattr(self, attr), obc_tan, bih=bih)
+        if bih:
+            self.last_ah_t = nu_t
+        else:
+            self.last_nu_t = nu_t
         return fu, fv
 
     def terms(self, st, pgf_xy: tuple[np.ndarray, np.ndarray], Du: np.ndarray, Dv: np.ndarray,
@@ -392,7 +424,10 @@ class Momentum:
             if per:
                 au, av = per.crop(au, "u", H), per.crop(av, "v", H)
             out.append(("advection", au, av, "-"))
-        if self.smagorinsky > 0:                                        # Smagorinsky stress divergence (ah = floor)
+        if self.biharmonic_on:                                          # biharmonic Smagorinsky (MOM6 BIHARMONIC)
+            fu, fv = self.smagorinsky_terms(st, Du, Dv, wet_u, wet_v, obc_tan, bih=True)
+            out.append(("hviscosity", fu, fv, "+"))
+        elif self.smagorinsky > 0:                                      # Smagorinsky stress divergence (ah = floor)
             fu, fv = self.smagorinsky_terms(st, Du, Dv, wet_u, wet_v, obc_tan)
             out.append(("hviscosity", fu, fv, "+"))
         elif self.ah > 0:                                               # spacings built once (performance task 5.2)

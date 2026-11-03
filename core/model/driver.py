@@ -279,7 +279,7 @@ class Driver:
             self.last_terms = {name: (tu, tv) for name, tu, tv, _ in terms}
         gu, gv = sum_terms(terms, wet_u, wet_v)
         ctx.set(gu=gu, gv=gv)
-        if self.m._momentum.smagorinsky > 0:          # points where the AB3 bound reduced the Smagorinsky ν
+        if self.m._momentum.visc_counted:             # points where the AB3 bound reduced the Smagorinsky ν (A_h)
             ctx.set(n_visc_limited=self.m._momentum.last_n_limited)
 
     def _n_below_freezing(self, eta: np.ndarray, T: np.ndarray, S: np.ndarray | None, h: np.ndarray) -> int:

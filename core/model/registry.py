@@ -48,9 +48,13 @@ _SPECS = [
             "wet cell-layers whose T is below the freezing point at the layer-centre pressure, last step "
             "(counted only; nonlinear EOS with salinity, 0 otherwise)"),
     VarSpec("n_visc_limited", (), "scalar", "1", None, "diagnostic",
-            "h and q points whose Smagorinsky viscosity the AB3 stability bound reduced, summed over steps"),
+            "h and q points whose Smagorinsky (Laplacian or biharmonic) viscosity the AB3 stability bound reduced, "
+            "summed over steps"),
     VarSpec("nu_smag", ("k", "y", "x"), "t", "m2 s-1", None, "diagnostic",
             "Smagorinsky horizontal viscosity at h points of the last step (output on request)"),
+    VarSpec("ah_bi", ("k", "y", "x"), "t", "m4 s-1", None, "diagnostic",
+            "biharmonic Smagorinsky viscosity A_h at h points of the last step (smagorinsky_bi/ah_vel_scale/ah_bi; "
+            "Momentum.last_ah_t)"),
     VarSpec("obc_rtan", ("k", "yq", "xq"), "q", "1", None, "history",
             "Orlanski ratio (grid points per step) at the open-edge corners of the last step, the phase speed of the "
             "radiated tangential velocity (obc_tangential='mom6'; MOM_open_boundary.F90:3031-3036)"),

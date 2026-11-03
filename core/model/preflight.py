@@ -134,7 +134,8 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
     if not (np.isfinite(smag) and smag >= 0.0):
         err("momentum", f"smagorinsky={smag!r}: the Smagorinsky coefficient must be a finite number ≥ 0 "
                         "(0 = off; OM4 uses 0.15)")
-    _curvilinear_issues(a, ale, smag, warn)
+    bih = _biharmonic_issues(a, smag, err)
+    _curvilinear_issues(a, ale, smag or bih, warn)
     # ---- open boundaries
     open_ = tuple(a["open_boundaries"])
     bad = set(open_) - set(EDGES)
@@ -154,7 +155,7 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
     if a["open_boundary_state"] is None and "clamped" in modes.values():
         err("open_boundary", "a 'clamped' open_boundary_mode needs open_boundary_state (the exterior to impose)")
     _tide_issues(a, given, modes, err, warn)
-    _tangential_issues(a, ale, smag, modes, err, warn)
+    _tangential_issues(a, ale, smag or bih, modes, err, warn)
     # ---- periodic axes (N3 task 3): an axis is periodic or has open/closed edges, not both
     per = a.get("periodic", ()) or ()
     per = (per,) if isinstance(per, str) else tuple(per)
@@ -367,6 +368,31 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
     return out
 
 
+def _biharmonic_issues(a: dict, smag: float, err) -> float:
+    """
+    Biharmonic Smagorinsky viscosity (regional chain, Gulf Stream fix step 4; ``core.dynamics.hor_visc.biharmonic``):
+    ``smagorinsky_bi`` [-], ``ah_vel_scale`` [m s⁻¹] and ``ah_bi`` [m⁴ s⁻¹] are finite numbers ≥ 0; with any of them
+    > 0 the Laplacian must be off (``smagorinsky`` = ``ah`` = 0): MOM6's joint Laplacian + biharmonic stability
+    bound (``visc_bound_rem``, MOM_hor_visc.F90:1121-1133, 1248-1252) is not ported.  Returns the largest of the
+    three (0 = off).
+    """
+    vals = {k: a.get(k, 0.0) for k in ("smagorinsky_bi", "ah_vel_scale", "ah_bi")}
+    bad = False
+    for k, x in vals.items():
+        if not (isinstance(x, (int, float, np.floating, np.integer)) and np.isfinite(x) and x >= 0.0):
+            err("momentum", f"{k}={x!r}: must be a finite number ≥ 0 (0 = off; NWA12: smagorinsky_bi 0.03, "
+                            "ah_vel_scale 0.01 m/s, ah_bi 0)")
+            bad = True
+    if bad:
+        return 0.0
+    on = max(vals.values())
+    if on > 0 and (smag > 0 or a.get("ah", 0.0) > 0):
+        err("momentum", "the biharmonic viscosity (smagorinsky_bi/ah_vel_scale/ah_bi > 0) cannot run together with "
+                        f"the Laplacian one (smagorinsky={smag!r}, ah={a.get('ah', 0.0)!r}): MOM6's joint stability "
+                        "bound is not ported; set smagorinsky = ah = 0")
+    return float(on)
+
+
 def _curvilinear_issues(a: dict, ale: bool, smag: float, warn) -> None:
     """
     Operators without curvilinear metric terms (regional chain Task 3, ``docs/design/regional_refs/metric_audit.md``
@@ -417,8 +443,8 @@ def _tangential_issues(a: dict, ale: bool, smag: float, modes: dict[str, str], e
         warn("open_boundary", "obc_tangential='mom6' acts on the 'radiating' edges only and there is none: it does "
                               "nothing")
     if smag == 0.0:
-        warn("open_boundary", "obc_tangential='mom6' without smagorinsky > 0: the corner vorticity is computed, but "
-                              "the constant Laplacian has no corner shear strain")
+        warn("open_boundary", "obc_tangential='mom6' without smagorinsky > 0 or the biharmonic viscosity: the corner "
+                              "vorticity is computed, but the constant Laplacian has no corner shear strain")
 
 
 def _atm_pressure_issues(a: dict, given: frozenset[str], sf, err, warn) -> None:
