@@ -187,14 +187,21 @@ class Momentum:
     def vector_invariant(self, st: SigmaState) -> tuple[np.ndarray, np.ndarray]:
         """
         Vector-invariant momentum terms of the ALE step (spec 2026-10-12 §3): Sadourny (1975) energy
-        PV flux q·(vh, −uh) with BOUND_CORIOLIS, minus ∇K (core.dynamics.vector_invariant).  The
-        transports are those of the last Lagrangian step (as MOM6 uses the uh of its last continuity);
-        the first step uses L u h̄.  Periodic: on halos of 2 (ζ and q at corners, then the faces).
+        PV flux q·(vh, −uh) with BOUND_CORIOLIS, minus ∇K (core.dynamics.vector_invariant).  Periodic:
+        on halos of 2 (ζ and q at corners, then the faces).
+
+        PV-flux transport: built every step from the current state, Q = L uⁿ h̄ⁿ (``mean_face_thickness``
+        of hⁿ), never from the stored ``st.Qx, st.Qy`` of the last continuity.  Those carry
+        θ_bc uⁿ + (1−θ_bc) uⁿ⁻¹; AB3 then put Coriolis at n + θ_bc − ½ (forward Euler at θ_bc = ½) and a
+        near-inertial mode grew at σ = (1−θ_bc) f² Δt (docs/design/theta_bc_inertial/root_cause.md,
+        class a, fixed 2026-11-02).  MOM6 uses the lagged uh only in its predictor
+        (MOM_dynamics_split_RK2.F90:566, :1103, git 0e9a561); its corrector recomputes Coriolis with the
+        predicted transports (continuity of up :793, CorAdCalc :903, update :968).  ``st.Qx, st.Qy`` keep
+        their meaning for the tracers and the flux form.  The other inputs here (ζ, q, K, BOUND_CORIOLIS
+        bounds (f+ζ)·u) already use uⁿ, vⁿ, hⁿ.
         """
-        Qx, Qy = st.Qx, st.Qy
-        if Qx is None or Qy is None:
-            hu, hv = self.mean_face_thickness(st.h)
-            Qx, Qy = self.fs.Lu[None] * st.u * hu, self.fs.Lv[None] * st.v * hv
+        hu, hv = self.mean_face_thickness(st.h)
+        Qx, Qy = self.fs.Lu[None] * st.u * hu, self.fs.Lv[None] * st.v * hv
         if self.per:
             g = self._padded_vi_geometry()
             return self.per.apply(lambda u, v, h, qx, qy: self._vector_invariant(u, v, h, qx, qy, g, g["fq"],

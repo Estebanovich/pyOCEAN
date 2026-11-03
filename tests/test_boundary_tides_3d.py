@@ -205,7 +205,9 @@ def test_tides_off_bit_for_bit():
     With the Task 5 arguments at their off values (boundary_tides=None, tidal_potential=False, sal_beta=0,
     sal_flather=False) a z* channel with a 'radiating' edge and the 2-D WetDryFreeSurface with a Flather edge give,
     bit for bit, the arrays the code before Task 5 produced (commit 71e848c, tests/data/task5_base_reference.npz
-    from validation/tides/make_task5_base_reference.py).  The N1 goldens and the smoke hashes cover the rest.
+    from validation/tides/make_task5_base_reference.py; regenerated 2026-11-02 at 71e848c with the PV-flux transport fix
+    of core/components/momentum.py applied, docs/design/theta_bc_inertial/root_cause.md: off3d η, u, v moved by
+    ≤ 4e-17).  The N1 goldens and the smoke hashes cover the rest.
     """
     from validation.tides.make_task5_base_reference import run_off_2d, run_off_case
     base = np.load(Path(__file__).parent / "data" / "task5_base_reference.npz")

@@ -14,6 +14,10 @@ Run in a worktree of the old commit, writing into this repository:
     cp validation/tides/make_task5_base_reference.py /tmp/base/validation/tides/
     (cd /tmp/base && PYTHONPATH=/tmp/base python validation/tides/make_task5_base_reference.py --out <repo>/tests/data/task5_base_reference.npz)
 
+2026-11-02: regenerated at 71e848c with the vector-invariant PV-flux transport fix (``git diff`` of
+core/components/momentum.py, docs/design/theta_bc_inertial/root_cause.md) applied in the worktree, so the reference
+is "the code before Task 5 with the fix"; only off3d η, u, v changed (≤ 4e-17).
+
 ``run_off_case`` and ``run_off_2d`` are imported by tests/test_boundary_tides_3d.py, so the test runs the same
 configuration with the current code.  Index order (k, j, i), k = 0 at the bed.
 """
