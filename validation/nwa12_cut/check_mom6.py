@@ -224,6 +224,16 @@ def mom6_series(run: Path = RUNS / "mom6_tides", case: cs.Case = cs.CASE) -> Pat
     return p
 
 
+# ------------------------------------------------------------------------------------------------ SST
+def sst_mean(run: Path, case: cs.Case = cs.CASE) -> np.ndarray:
+    """Area-weighted mean over the wet cells of MOM6's daily-mean ``tos`` [°C], one value per day."""
+    hg, H = cs.grid(case)
+    a = np.where(np.isfinite(H), hg["area_t"].values, 0.0)
+    with netCDF4.Dataset(_find(run, "ocean_daily")) as ds:
+        tos = np.nan_to_num(_read(ds, "tos"))
+    return (tos * a).sum(axis=(1, 2)) / a.sum()
+
+
 # ------------------------------------------------------------------------------------------------ cost
 def cost(run: Path) -> dict:
     """Wall time and seconds per simulated day of a finished run (``timing.json`` written by run_mom6.sh)."""

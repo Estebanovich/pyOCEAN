@@ -339,7 +339,12 @@ onda corta ni lluvia, aire a 10 °C, q = 0.98 q_sat, onda larga σT⁴); T se qu
 - **Corrida completa de MOM6 con Jerlov I (`mom6_full_jerlov`, control de paridad, R23) ✅ (criterio 7, primera parte):** 123 días desde el 2017-05-01, mismas entradas, DT 600
   / DT_THERM 1800 de NWA12 sin cambios: termina sin truncamientos (`ocean.stats`, CFL máx 0.28), salidas diarias 3-D y
   η horaria. La mirada a SST contra OISST y a η en mareógrafos queda para la Tarea 11 (OISST no está bajado).
-- **Corrida de referencia `mom6_full` (MANIZZA_05, R23, R25):** RESULTADO_MANIZZA
+- **Corrida de referencia `mom6_full` (MANIZZA_05, R23, R25):** 123 días, DT 600 / DT_THERM 1800, 0 truncamientos, CFL máx 0.26, 26.0 s por día simulado en 5 rangos.
+  SST media del dominio (tos diaria, ponderada por área): MANIZZA − Jerlov = **+0.30 °C el día 123** (24.03 contra
+  23.73 °C); −0.10 °C el día 31, +0.06 el día 93, +0.05 de media en los 123 días. Es el sentido esperado: con
+  clorofila de plataforma el calor queda más arriba al final del verano (Jerlov I lo deposita más hondo).
+- **MOM6 lee el estado inicial común bit a bit (revisión M3) ✅:** `MOM_IC.nc` de `pgf0` (`SAVE_INITIAL_CONDS`) contra
+  `ic_full.nc`: |Δ| = 0 en h, T, S (columnas mojadas) y u, v (caras interiores mojadas).
 - **Costo en 5 núcleos P (5 rangos MPI):** MOM6 + SIS2 **26.4 s por día simulado** (`mom6_full_jerlov`) (123 días en 54 min); mareas solas
   27.4 s/día; pyOCEAN, la misma corrida completa a Δt 300 s con 5 hilos, 208.5 s/día (7.9× MOM6; con Δt 600 sería
   ≈ 106 s/día, 4×).
