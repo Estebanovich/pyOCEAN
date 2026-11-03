@@ -13,7 +13,8 @@ Strain rates (Smagorinsky 1963, 1993; Griffies & Hallberg 2000), orthogonal curv
 
 with the metric forms of MOM6, e.g. ∂u/∂x|_h = (Δy_T/Δx_T)(u_{i+½}/Δy_{u,i+½} − u_{i−½}/Δy_{u,i−½}).
 Free slip: D_S = 0 at corners that are not surrounded by four wet faces (land, dry faces of
-wetting–drying) and at the corners of open-boundary faces (MOM6 ``OBC_STRAIN_ZERO``).
+wetting–drying) and at the corners of open-boundary faces (MOM6 ``OBC_STRAIN_ZERO``).  The normal velocity of an
+open-boundary face enters D_T like any wet face (the caller marks open faces wet; MOM_hor_visc.F90:708-715).
 
 Shear magnitude without the divergence (MOM6, MITgcm; MOM_hor_visc.F90:1018-1022, 1355-1359):
 
@@ -178,9 +179,13 @@ def smagorinsky_numpy(u: np.ndarray, v: np.ndarray, h_t: np.ndarray, h_u: np.nda
     ----------
     u, v : layer velocities [m s⁻¹], (N, ny, nx+1) and (N, ny+1, nx).
     h_t, h_u, h_v : layer thickness at cells and faces [m].
-    wet_u, wet_v : bool face masks (False = land or dry face: u treated as 0, no tendency).
+    wet_u, wet_v : bool face masks (False = land or dry face: u treated as 0, no tendency).  Open-boundary faces
+        must be included (True): their normal velocity is a real boundary value and enters D_T and |S| of the
+        boundary cells, as MOM6's mask2dCu = 1 on OBC faces (MOM_grid_initialize.F90:1270-1288; the tension loop
+        MOM_hor_visc.F90:708-715 has no OBC branch); ``Momentum.smagorinsky_terms`` does so (fix of 2026-11-03).
     mask_q : bool (ny+1, nx+1), True where the corner has its four faces wet.
-    open_u, open_v : bool, open-boundary faces (no tendency, D_S = 0 at their corners).
+    open_u, open_v : bool, open-boundary faces (no tendency, D_S = 0 at their corners = MOM6 OBC_STRAIN_ZERO unless
+        ``obc_q`` gives them OBC_STRAIN_COMPUTED).
     geom : ``smag_geometry`` output.
     C : Smagorinsky coefficient (dimensionless, MOM6 SMAG_LAP_CONST; 0.15 in OM4).
     ah : background viscosity A_h [m² s⁻¹].

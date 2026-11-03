@@ -120,8 +120,10 @@ class Momentum:
     Coriolis) or 'vector_invariant' (ALE only).  ``adv`` 'flux', 'upwind3' or 'centred' (flux form only),
     ``ah`` [m² s⁻¹] Laplacian viscosity, ``ke_scheme`` 'arakawa' or 'gudonov' (vector-invariant KE).
     ``smagorinsky`` C [-] (0 = off): Smagorinsky viscosity in place of the constant Laplacian, ``ah`` its
-    background; ``open_u``/``open_v`` (ny, nx+1)/(ny+1, nx) bool, the open-boundary faces (no viscous tendency,
-    free-slip corners).  After each call of ``terms`` with C > 0: ``last_nu_t`` (N, ny, nx) ν at h points
+    background; ``open_u``/``open_v`` (ny, nx+1)/(ny+1, nx) bool, the open-boundary faces: their normal velocity
+    enters the viscous operators as a real boundary value (Smagorinsky tension, A_h Laplacian; MOM6 mask2dCu = 1 on
+    OBC faces, MOM_grid_initialize.F90:1270-1288, MOM_hor_visc.F90:708-715), they get no viscous tendency
+    (MOM_hor_visc.F90:1761-1793) and their corners are free slip unless ``obc_tangential='mom6'``.  After each call of ``terms`` with C > 0: ``last_nu_t`` (N, ny, nx) ν at h points
     [m² s⁻¹] and ``last_n_limited`` (points where the stability bound reduced ν this step).
     """
     name = "momentum"
@@ -268,11 +270,32 @@ class Momentum:
         """
         if self.ale:
             hu, hv = self._unclipped_face_thickness(st.h)
-            return st.h, np.where(wet_u[None], hu, 0.0), np.where(wet_v[None], hv, 0.0)
-        ds = self.ds[:, None, None]
-        D = np.maximum(np.nan_to_num(self.fs.H + st.eta, nan=0.0), 0.0)
-        return (D[None] * ds, np.maximum(np.nan_to_num(Du, nan=0.0), 0.0)[None] * ds,
-                np.maximum(np.nan_to_num(Dv, nan=0.0), 0.0)[None] * ds)
+            h_t, h_u, h_v = st.h, np.where(wet_u[None], hu, 0.0), np.where(wet_v[None], hv, 0.0)
+        else:
+            ds = self.ds[:, None, None]
+            D = np.maximum(np.nan_to_num(self.fs.H + st.eta, nan=0.0), 0.0)
+            h_t, h_u, h_v = (D[None] * ds, np.maximum(np.nan_to_num(Du, nan=0.0), 0.0)[None] * ds,
+                             np.maximum(np.nan_to_num(Dv, nan=0.0), 0.0)[None] * ds)
+        return (h_t,) + self._open_face_thickness(h_t, h_u, h_v)
+
+    def _open_face_thickness(self, h_t: np.ndarray, h_u: np.ndarray,
+                             h_v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Thickness [m] of the open-boundary faces for the viscous operator: that of their boundary (interior) cell,
+        as MOM6 projects it outward (MOM_hor_visc.F90:857-880; h_u(I) = h(i+1) on a west segment, h(i) on an east
+        one, likewise h_v).  Domain-edge faces only: a west open face is column 0, an east one column nx.  No
+        open face: the arrays are returned as they are (bit for bit).
+        """
+        ou, ov = self.open_u, self.open_v
+        if ou.any():
+            h_u = h_u.copy()
+            for I, i in ((0, 0), (-1, -1)):
+                h_u[:, ou[:, I], I] = h_t[:, ou[:, I], i]
+        if ov.any():
+            h_v = h_v.copy()
+            for J, j in ((0, 0), (-1, -1)):
+                h_v[:, J, ov[J]] = h_t[:, j, ov[J]]
+        return h_u, h_v
 
     def _smag_call(self, u, v, h_t, h_u, h_v, wet_u, wet_v, open_u, open_v, geom: dict, obc_tan: tuple | None = None):
         """
@@ -301,12 +324,14 @@ class Momentum:
         geometry padded once.  Sets ``last_nu_t`` and ``last_n_limited``.  ``obc_tan``: as ``vector_invariant``
         (the corner shear strain of MOM6 OBC_STRAIN_COMPUTED; not with periodic axes, pre-flight).
         """
-        if obc_tan is not None:
-            # MOM6 keeps mask2dCu = mask2dCv = 1 on open-boundary faces (MOM_grid_initialize.F90:1270-1288): their
-            # normal velocity enters the tension and |S| of the boundary cells and their thickness is the boundary
-            # cell's (MOM_hor_visc.F90:857-880); they still get no tendency (``open_u``/``open_v``, :1761-1793).
-            # Without it the open face is a wall in D_T, (u₁ − 0)/Δx for an inflow jet
-            wet_u, wet_v = wet_u | self.open_u, wet_v | self.open_v
+        # MOM6 keeps mask2dCu = mask2dCv = 1 on open-boundary faces (MOM_grid_initialize.F90:1270-1288): their
+        # normal velocity enters the tension D_T and |S| of the boundary cells whatever OBC_STRAIN_* is (the tension
+        # loop has no OBC branch, MOM_hor_visc.F90:708-715; OBC_STRAIN_* only sets D_S at the corners, :790-842),
+        # and their thickness is the boundary cell's (:857-880); they still get no tendency (``open_u``/``open_v``,
+        # :1761-1793).  Without it the open face is a wall in D_T, (u₁ − 0)/Δx even for a uniform through-flow
+        # (class-(a) fix of 2026-11-03; before it only obc_tangential='mom6' did this).  Corners: D_S = 0 at the
+        # open-edge corners with 'none' (= OBC_STRAIN_ZERO), computed with 'mom6' (``obc_tan``).
+        wet_u, wet_v = wet_u | self.open_u, wet_v | self.open_v
         h_t, h_u, h_v = self._smag_thickness(st, Du, Dv, wet_u, wet_v)
         per = self.per
         if per:
@@ -375,13 +400,22 @@ class Momentum:
                 hg = per.pad_dataset(self.hg, 1) if per else self.hg   # periodic: spacings on halos of 1
                 self._lap = (_spacings_u(hg), _spacings_v(hg))
             numba.set_num_threads(threads._THREADS[0])
+            # open-boundary faces: their normal velocity is the neighbour value of the stencil (a real boundary
+            # value, as MOM6's mask2dCu = 1 on OBC faces), not a free-slip land neighbour; no tendency on them
+            # (class-(a) fix of 2026-11-03: the zero-gradient neighbour gave A_h b/Δx next to the edge for u = b x)
+            ou, ov = self.open_u, self.open_v
+            lwu, lwv = (wet_u | ou, wet_v | ov) if (ou.any() or ov.any()) else (wet_u, wet_v)
             if per:
-                lu = per.crop(laplacian_3d(per.pad(st.u, "u", 1), per.pad(wet_u, "u", 1), *self._lap[0]), "u", 1)
-                lv = per.crop(laplacian_3d(per.pad(st.v, "v", 1), per.pad(wet_v, "v", 1), *self._lap[1]), "v", 1)
-                out.append(("hviscosity", self.ah * lu, self.ah * lv, "+"))
+                lu = per.crop(laplacian_3d(per.pad(st.u, "u", 1), per.pad(lwu, "u", 1), *self._lap[0]), "u", 1)
+                lv = per.crop(laplacian_3d(per.pad(st.v, "v", 1), per.pad(lwv, "v", 1), *self._lap[1]), "v", 1)
             else:
-                out.append(("hviscosity", self.ah * laplacian_3d(st.u, wet_u, *self._lap[0]),
-                            self.ah * laplacian_3d(st.v, wet_v, *self._lap[1]), "+"))
+                lu = laplacian_3d(st.u, lwu, *self._lap[0])
+                lv = laplacian_3d(st.v, lwv, *self._lap[1])
+            if ou.any():
+                lu = np.where(ou[None], 0.0, lu)
+            if ov.any():
+                lv = np.where(ov[None], 0.0, lv)
+            out.append(("hviscosity", self.ah * lu, self.ah * lv, "+"))
         if st.omega is not None and self.adv != "flux":
             om_u = np.zeros((n + 1,) + Du.shape)
             om_u[:, :, 1:-1] = 0.5 * (st.omega[:, :, 1:] + st.omega[:, :, :-1])

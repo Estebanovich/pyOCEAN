@@ -348,7 +348,9 @@ def test_x_uniform_jet_has_no_edge_tendency_with_mom6():
     # With the computed corner vorticity/strain and the open-face velocity in the tension (MOM6, mask2dCu = 1 on
     # OBC faces), the x-uniform jet feels at the edge column exactly what it feels in the interior: every explicit
     # term at the first interior faces equals its value at the middle column.  With 'none' (ζ = 0, D_S = 0 at the
-    # edge corners, the open face a wall in the tension) it does not.
+    # edge corners) the v tendency does not; the u tendency does since the open-face velocity enters the tension in
+    # every mode (class-(a) fix of 2026-11-03, tests/test_hor_visc_open_faces.py; before it the open face was a
+    # wall in the 'none' tension and u differed too).
     sb.set_threads(1)
     res = {}
     for mode in ("none", "mom6"):
@@ -361,7 +363,7 @@ def test_x_uniform_jet_has_no_edge_tendency_with_mom6():
         res[mode] = (np.abs(gu[:, :, 1] - gu[:, :, nx // 2]).max(), np.abs(gv[:, 1:-1, 0] - gv[:, 1:-1, nx // 2]).max())
     scale = 0.5 * 1e-4                                          # f U [m s⁻²]
     assert res["mom6"][0] < 1e-9 * scale and res["mom6"][1] < 1e-9 * scale, res
-    assert res["none"][0] > 1e-2 * scale and res["none"][1] > 1e-2 * scale, res
+    assert res["none"][0] < 1e-9 * scale and res["none"][1] > 1e-2 * scale, res
 
 
 def test_jet_entering_through_the_west_edge_keeps_its_profile():
