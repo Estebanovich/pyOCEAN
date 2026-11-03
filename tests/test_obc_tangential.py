@@ -369,7 +369,8 @@ def test_x_uniform_jet_has_no_edge_tendency_with_mom6():
 def test_jet_entering_through_the_west_edge_keeps_its_profile():
     # Three inertial periods (52 h): with 'mom6' the jet next to the inflow edge stays within 2 % (RMS, first
     # interior u-faces) and 5 % (fifth faces) of the exterior profile; with 'none' it degrades by > 10 % / > 30 %
-    # (measured 0.7 % / 2.9 % against 19 % / 49 %; spurious cross-jet v 0.22 m/s at the edge against 0.006).
+    # (measured 0.7 % / 2.9 % against 19 % / 49 %; spurious cross-jet v 0.22 m/s at the edge against 0.006; after
+    # the open-face tension fix of 2026-11-03 'none' gives 13.7 % / 33.7 % and 0.15 m/s, the rest is ζ = D_S = 0).
     sb.set_threads(1)
     err = {}
     for mode in ("none", "mom6"):
