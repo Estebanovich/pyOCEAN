@@ -51,6 +51,9 @@ _SPECS = [
             "h and q points whose Smagorinsky viscosity the AB3 stability bound reduced, summed over steps"),
     VarSpec("nu_smag", ("k", "y", "x"), "t", "m2 s-1", None, "diagnostic",
             "Smagorinsky horizontal viscosity at h points of the last step (output on request)"),
+    VarSpec("obc_rtan", ("k", "yq", "xq"), "q", "1", None, "history",
+            "Orlanski ratio (grid points per step) at the open-edge corners of the last step, the phase speed of the "
+            "radiated tangential velocity (obc_tangential='mom6'; MOM_open_boundary.F90:3031-3036)"),
     VarSpec("closure", (), "scalar", "", None, "component_state", "state of the turbulence closure"),
     VarSpec("closure.tke", ("kw", "y", "x"), "w", "m2 s-2", None, "component_state",
             "turbulent kinetic energy (GLS k-ε)"),

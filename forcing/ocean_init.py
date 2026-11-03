@@ -50,7 +50,8 @@ _SIDES = {
 }
 
 
-def prepare_ocean(ocean: xr.Dataset, h_grid: xr.Dataset, v_grid: xr.Dataset) -> dict[str, xr.Dataset]:
+def prepare_ocean(ocean: xr.Dataset, h_grid: xr.Dataset, v_grid: xr.Dataset,
+                  q_points: bool = False) -> dict[str, xr.Dataset]:
     """
     Canonical ocean → model C-grid points and z levels (all times).
 
@@ -62,11 +63,16 @@ def prepare_ocean(ocean: xr.Dataset, h_grid: xr.Dataset, v_grid: xr.Dataset) -> 
     h_grid, v_grid : xr.Dataset
         pyOCEAN horizontal (spherical) and vertical grids.
 
+    q_points : bool
+        Also give both grid components at the cell corners, ``"q"``: u, v on (time, k, j_v, i_u), rotated with the
+        corner angle — the tangential exterior velocity at the corners of an open edge (``OBData.u_tangential``,
+        ``obc_tangential='mom6'``; MOM6 segment V/U data on the segment q-points).  Needs u and v.
+
     Returns
     -------
     dict
         ``"t"``: temp, salt, ssh on (time, k, j_t, i_t) / (time, j_t, i_t);
-        ``"u"``: u on (time, k, j_t, i_u); ``"v"``: v on (time, k, j_v, i_t).
+        ``"u"``: u on (time, k, j_t, i_u); ``"v"``: v on (time, k, j_v, i_t); ``"q"`` (``q_points``).
     """
     filled = xr.Dataset({name: fill_land(da) for name, da in ocean.data_vars.items()},
                         attrs=dict(ocean.attrs))
@@ -85,12 +91,23 @@ def prepare_ocean(ocean: xr.Dataset, h_grid: xr.Dataset, v_grid: xr.Dataset) -> 
             else:
                 on_grid = to_model_grid(filled[names], h_grid, point=point)
             out[point] = to_model_levels(on_grid, v_grid)
+    if q_points:
+        if not ("u" in filled and "v" in filled):
+            raise ValueError("q_points=True needs both velocity components u and v")
+        on_q = to_model_grid(filled[["u", "v"]], h_grid, point="q")
+        if rotate:
+            cos_a, sin_a = _face_angle(h_grid, "q")
+            u_x, v_y = to_grid(on_q["u"].values, on_q["v"].values, cos_a, sin_a)
+            on_q["u"] = on_q["u"].copy(data=u_x)
+            on_q["v"] = on_q["v"].copy(data=v_y)
+        out["q"] = to_model_levels(on_q, v_grid)
     return out
 
 
 def _face_angle(h_grid: xr.Dataset, point: str) -> tuple[np.ndarray, np.ndarray]:
     """
-    cos α, sin α at the u (``point='u'``, shape (ny, nx+1)) or v (``'v'``, (ny+1, nx)) faces.
+    cos α, sin α at the u (``point='u'``, shape (ny, nx+1)) or v (``'v'``, (ny+1, nx)) faces, or at the corners
+    (``'q'``, (ny+1, nx+1): the mean of the four cells around the corner, edge cells repeated outside).
 
     The angle lives at the T points (``cos_t``, ``sin_t``: counter-clockwise angle α of grid-x from east,
     ``core.grid.supergrid``).  A face takes the mean of the two T points it separates (one-sided at the
@@ -99,6 +116,13 @@ def _face_angle(h_grid: xr.Dataset, point: str) -> tuple[np.ndarray, np.ndarray]
     normal velocity of the open boundary is the grid-normal component at the face where the model holds it.
     """
     c, s = h_grid["cos_t"].values, h_grid["sin_t"].values
+    if point == "q":                                        # corners: the four cells around (one-sided at edges)
+        cp = np.pad(c, 1, mode="edge")
+        sp = np.pad(s, 1, mode="edge")
+        cq = 0.25 * ((cp[:-1, :-1] + cp[1:, 1:]) + (cp[1:, :-1] + cp[:-1, 1:]))
+        sq = 0.25 * ((sp[:-1, :-1] + sp[1:, 1:]) + (sp[1:, :-1] + sp[:-1, 1:]))
+        norm = np.hypot(cq, sq)
+        return cq / norm, sq / norm
     axis = 1 if point == "u" else 0
 
     def face(a: np.ndarray) -> np.ndarray:
@@ -256,7 +280,8 @@ def boundary_data(
     Returns
     -------
     OBData
-        T, S, u_normal of shape (nz, n_bdy) and η of shape (n_bdy,).
+        T, S, u_normal of shape (nz, n_bdy) and η of shape (n_bdy,); u_tangential (nz, n_bdy + 1) at the corners of
+        the edge when ``prepared`` has q points (``prepare_ocean(..., q_points=True)``), else None.
     """
     if side not in _SIDES:
         raise ValueError(f"side must be one of {sorted(_SIDES)}, got {side!r}")
@@ -271,7 +296,12 @@ def boundary_data(
     if "ssh" in tp:
         eta = tp["ssh"].values - (_mean_ssh(prepared, t) if remove_mean_ssh else 0.0)
     T_b, S_b = to_model_ts(tp["temp"].values, tp["salt"].values, eos_ts_kind, ts_kind)
-    return OBData(side=side, T=T_b, S=S_b, u_normal=u_normal, eta=eta)
+    u_tan = None
+    if "q" in prepared:                     # the grid component parallel to the edge at its n+1 corners
+        tan_name, tan_sel = {"west": ("v", {"i_u": 0}), "east": ("v", {"i_u": -1}),
+                             "south": ("u", {"j_v": 0}), "north": ("u", {"j_v": -1})}[side]
+        u_tan = interp_time(prepared["q"], t)[tan_name].isel(tan_sel).values
+    return OBData(side=side, T=T_b, S=S_b, u_normal=u_normal, eta=eta, u_tangential=u_tan)
 
 
 def source_level_grid(depth: np.ndarray) -> xr.Dataset:
@@ -358,7 +388,8 @@ def exterior_provider(prepared: dict[str, dict[str, xr.Dataset]], v_grid: xr.Dat
             u = np.nan_to_num(np.asarray(ob.u_normal, float))
             ubar = np.where(D > 0, (u * dz).sum(axis=0) / np.where(D > 0, D, 1.0), 0.0)
             st[side] = OBData(side=side, T=ob.T, S=ob.S, u_normal=u, eta=None if ob.eta is None else
-                              np.nan_to_num(ob.eta), zw=np.repeat(zw1[:, None], n, axis=1), ubar=ubar)
+                              np.nan_to_num(ob.eta), zw=np.repeat(zw1[:, None], n, axis=1), ubar=ubar,
+                              u_tangential=None if ob.u_tangential is None else np.nan_to_num(ob.u_tangential))
         states.append(st)
     secs = (times - origin).astype("timedelta64[ns]").astype(np.int64) / 1e9
     return interpolated_boundary(secs, states)

@@ -401,3 +401,33 @@ def kinetic_energy(u: np.ndarray, v: np.ndarray, area_u: np.ndarray, area_v: np.
     _ke_kernel(c(u, dtype=float), c(v, dtype=float), c(area_u, dtype=float), c(area_v, dtype=float),
                c(area_t, dtype=float), scheme == "gudonov", K)
     return K
+
+
+def open_corner_vorticity(u: np.ndarray, v: np.ndarray, vt: np.ndarray, flags: np.ndarray, dx_u: np.ndarray,
+                          dy_v: np.ndarray, area_q: np.ndarray) -> np.ndarray:
+    """
+    Relative vorticity [s⁻¹] at the open-edge corners ``flags`` (N, ny+1, nx+1), 0 elsewhere, MOM6
+    ``OBC_VORTICITY_COMPUTED`` (MOM_CoriolisAdv.F90:470-478, 516-524): the cross-boundary derivative of the
+    tangential velocity is a one-sided half-cell difference to the boundary value vt
+    (``core.dynamics.open_boundary.tangential_velocity``), the along-boundary derivative of the normal velocity is
+    the ordinary circulation difference of the two boundary faces:
+
+        west  δx(vΔy) = 2 (v[J, 0] − vt) Δy_v[J, 0]          east  δx(vΔy) = 2 (vt − v[J, nx−1]) Δy_v[J, nx−1]
+        south δy(uΔx) = 2 (u[0, I] − vt) Δx_u[0, I]          north δy(uΔx) = 2 (vt − u[ny−1, I]) Δx_u[ny−1, I]
+
+    and ζ = (δx(vΔy) − δy(uΔx))/A_q.
+    """
+    flags = np.asarray(flags, bool)
+    N, ny, nx1 = u.shape
+    nx = nx1 - 1
+    dvdx = np.zeros((N, ny + 1, nx + 1))
+    dudy = np.zeros((N, ny + 1, nx + 1))
+    J = np.s_[1:-1]
+    for I, col, sgn in ((0, 0, 1.0), (nx, nx - 1, -1.0)):                      # west, east
+        dvdx[:, J, I] = 2.0 * sgn * (v[:, J, col] - vt[:, J, I]) * dy_v[None, J, col]
+        dudy[:, J, I] = u[:, 1:, I] * dx_u[None, 1:, I] - u[:, :-1, I] * dx_u[None, :-1, I]
+    I = np.s_[1:-1]
+    for Jr, row, sgn in ((0, 0, 1.0), (ny, ny - 1, -1.0)):                    # south, north
+        dudy[:, Jr, I] = 2.0 * sgn * (u[:, row, I] - vt[:, Jr, I]) * dx_u[None, row, I]
+        dvdx[:, Jr, I] = v[:, Jr, 1:] * dy_v[None, Jr, 1:] - v[:, Jr, :-1] * dy_v[None, Jr, :-1]
+    return np.where(flags[None], (dvdx - dudy) / area_q[None], 0.0)

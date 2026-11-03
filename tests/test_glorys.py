@@ -245,3 +245,24 @@ def test_real_file_matches_copernicusmarine():
     vn = np.array([float(r10["vo"].interp(longitude=a, latitude=b, depth=zc)) for a, b in zip(lo, la)])
     ux, _ = to_grid(ue, vn, cos_f, sin_f)
     assert np.max(np.abs(ob.u_normal[0] - ux)) < 1e-7
+
+
+@pytest.mark.parametrize("alpha", [0.0, 30.0])
+def test_boundary_tangential_velocity_at_edge_corners(tmp_path, alpha):
+    # obc_tangential='mom6' (docs/design/regional_refs/mom6_obc_tangential.md): OBData.u_tangential is the grid
+    # component parallel to the edge at the n+1 corners (q points) of the edge line, rotated with the corner angle
+    # (MOM6 segment V/U data on the segment q-points): v_y on west/east, u_x on south/north.
+    sg = _rotated_supergrid(8, 6, 10_000.0, alpha, lon0=-70.0, lat0=35.0)
+    h = grid_from_supergrid(sg)
+    v = create_z_grid(3, [2.0, 10.0, 50.0])
+    ocean = _load(_write(tmp_path, land=False, uv=(0.4, 0.3)))
+    prep = prepare_ocean(ocean, h, v, q_points=True)
+    a = np.deg2rad(alpha)
+    ux = 0.4 * np.cos(a) + 0.3 * np.sin(a)
+    vy = -0.4 * np.sin(a) + 0.3 * np.cos(a)
+    t = np.datetime64("2017-05-02")
+    for side, val, n in (("west", vy, 6), ("east", vy, 6), ("south", ux, 8), ("north", ux, 8)):
+        ob = boundary_data(prep, side, t)
+        assert ob.u_tangential.shape == (3, n + 1)
+        np.testing.assert_allclose(ob.u_tangential, val, atol=1e-6)
+    assert boundary_data(prepare_ocean(ocean, h, v), "west", t).u_tangential is None   # q points not asked

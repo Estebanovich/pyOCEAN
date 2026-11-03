@@ -36,6 +36,7 @@ _POINT_DIMS: dict[str, tuple[str, str]] = {
     "t": ("j_t", "i_t"),
     "u": ("j_t", "i_u"),
     "v": ("j_v", "i_t"),
+    "q": ("j_v", "i_u"),
 }
 
 
@@ -64,8 +65,8 @@ def to_model_grid(ds: xr.Dataset, grid: xr.Dataset, point: str = "t") -> xr.Data
     grid : xr.Dataset
         pyOCEAN horizontal grid (``create_spherical_grid``), providing
         ``lon_{point}`` and ``lat_{point}``.
-    point : {'t', 'u', 'v'}
-        Target C-grid location.
+    point : {'t', 'u', 'v', 'q'}
+        Target C-grid location (q: cell corners, e.g. the tangential velocity at open-edge corners).
 
     Returns
     -------

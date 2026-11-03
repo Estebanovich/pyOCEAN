@@ -119,11 +119,57 @@ def _bound_factor(dt: float) -> float:
     return (BOUND_COEF * AB3_STABILITY) / (4.0 * dt)
 
 
+def open_corner_strain(u: np.ndarray, v: np.ndarray, vt: np.ndarray, flags: np.ndarray, h_t: np.ndarray,
+                       h_u: np.ndarray, h_v: np.ndarray, geom: dict[str, np.ndarray], h_neglect: float = H_NEGLECT,
+                       ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Shearing strain D_S [s⁻¹], corner thickness h_q [m] and thinnest face h_min [m] at the open-edge corners
+    ``flags`` (N, ny+1, nx+1; 0 elsewhere), MOM6 ``OBC_STRAIN_COMPUTED`` (MOM_hor_visc.F90:795-807, 824-836):
+
+        west  ∂v/∂x = 2 (Δy/Δx)_q (v[J, 0]/Δy_v − vt/Δy_v)      east  2 (Δy/Δx)_q (vt − v[J, nx−1])/Δy_v
+        south ∂u/∂y = 2 (Δx/Δy)_q (u[0, I] − vt)/Δx_u            north 2 (Δx/Δy)_q (vt − u[ny−1, I])/Δx_u
+
+    plus the ordinary along-boundary derivative of the normal velocity at the two boundary faces (their own u, v:
+    MOM6 keeps mask2dCu = 1 on OBC faces).  Thicknesses projected from the interior (MOM_hor_visc.F90:857-880): the
+    open boundary faces take the thickness of their boundary cell ``h_t``, the face beyond the edge mirrors the
+    interior one; h_q is the harmonic form of the interior corners (:1362-1367).  ``vt``:
+    ``core.dynamics.open_boundary.tangential_velocity``.
+    """
+    g = geom
+    flags = np.asarray(flags, bool)
+    N, ny, nx1 = u.shape
+    nx = nx1 - 1
+    hn3 = float(h_neglect) ** 3
+    dvdx, dudy = np.zeros((N, ny + 1, nx + 1)), np.zeros((N, ny + 1, nx + 1))
+    hus, hun, hvw, hve = (np.ones((N, ny + 1, nx + 1)) for _ in range(4))
+    J = np.s_[1:-1]
+    for I, col, sgn in ((0, 0, 1.0), (nx, nx - 1, -1.0)):                      # west, east
+        dvdx[:, J, I] = 2.0 * g["dy_dx_q"][None, J, I] * (sgn * (v[:, J, col] - vt[:, J, I])) * g["idy_v"][None, J, col]
+        dudy[:, J, I] = g["dx_dy_q"][None, J, I] * ((u[:, 1:, I] * g["idx_u"][None, 1:, I])
+                                                    - (u[:, :-1, I] * g["idx_u"][None, :-1, I]))
+        hus[:, J, I], hun[:, J, I] = h_t[:, :-1, col], h_t[:, 1:, col]
+        hvw[:, J, I] = hve[:, J, I] = h_v[:, J, col]
+    I = np.s_[1:-1]
+    for Jr, row, sgn in ((0, 0, 1.0), (ny, ny - 1, -1.0)):                    # south, north
+        dudy[:, Jr, I] = 2.0 * g["dx_dy_q"][None, Jr, I] * (sgn * (u[:, row, I] - vt[:, Jr, I])) * g["idx_u"][None, row, I]
+        dvdx[:, Jr, I] = g["dy_dx_q"][None, Jr, I] * ((v[:, Jr, 1:] * g["idy_v"][None, Jr, 1:])
+                                                      - (v[:, Jr, :-1] * g["idy_v"][None, Jr, :-1]))
+        hvw[:, Jr, I], hve[:, Jr, I] = h_t[:, row, :-1], h_t[:, row, 1:]
+        hus[:, Jr, I] = hun[:, Jr, I] = h_u[:, row, I]
+    h2uq = 4.0 * (hus * hun)
+    h2vq = 4.0 * (hvw * hve)
+    hq = (2.0 * (h2uq * h2vq)) / (hn3 + (h2uq + h2vq) * ((hus + hun) + (hvw + hve)))
+    hmin = np.minimum(np.minimum(hus, hun), np.minimum(hvw, hve))
+    z = flags[None]
+    return np.where(z, dvdx + dudy, 0.0), np.where(z, hq, 0.0), np.where(z, hmin, 0.0)
+
+
 # ---------------------------------------------------------------- NumPy oracle
 def smagorinsky_numpy(u: np.ndarray, v: np.ndarray, h_t: np.ndarray, h_u: np.ndarray, h_v: np.ndarray,
                       wet_u: np.ndarray, wet_v: np.ndarray, mask_q: np.ndarray,
                       open_u: np.ndarray, open_v: np.ndarray, geom: dict[str, np.ndarray],
                       C: float, ah: float, dt: float, h_neglect: float = H_NEGLECT,
+                      obc_q: np.ndarray | None = None, obc_strain: tuple | None = None,
                       ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
     """
     Smagorinsky viscous tendencies (reference implementation; the module docstring has the equations).
@@ -140,6 +186,9 @@ def smagorinsky_numpy(u: np.ndarray, v: np.ndarray, h_t: np.ndarray, h_u: np.nda
     ah : background viscosity A_h [m² s⁻¹].
     dt : time step of the explicit (AB3) momentum step [s], for the stability bound.
     h_neglect : negligible thickness [m] (``core.vertical.remap.H_NEGLECT``).
+    obc_q, obc_strain : open-edge corners with MOM6 ``OBC_STRAIN_COMPUTED`` (``obc_tangential='mom6'``) and their
+        (D_S, h_q, h_min) from ``open_corner_strain``; there ν_q and σ_xy are computed as at an interior corner, with
+        the two tensions beyond the edge mirrored from the interior cells.  None: no such corners (as before).
 
     Returns
     -------
@@ -167,6 +216,9 @@ def smagorinsky_numpy(u: np.ndarray, v: np.ndarray, h_t: np.ndarray, h_u: np.nda
     dvdx = g["dy_dx_q"][1:-1, 1:-1] * ((vm[:, 1:-1, 1:] * idy_v[1:-1, 1:]) - (vm[:, 1:-1, :-1] * idy_v[1:-1, :-1]))
     dudy = g["dx_dy_q"][1:-1, 1:-1] * ((um[:, 1:, 1:-1] * idx_u[1:, 1:-1]) - (um[:, :-1, 1:-1] * idx_u[:-1, 1:-1]))
     DS[:, 1:-1, 1:-1] = np.where(act_q[None, 1:-1, 1:-1], dvdx + dudy, 0.0)
+    if obc_q is not None and np.any(obc_q):
+        ob = np.asarray(obc_q, bool)
+        DS = np.where(ob[None], obc_strain[0], DS)
 
     bf = _bound_factor(dt)
     # ---- h points
@@ -205,6 +257,21 @@ def smagorinsky_numpy(u: np.ndarray, v: np.ndarray, h_t: np.ndarray, h_u: np.nda
     nu_q[:, 1:-1, 1:-1] = np.where(aq, np.where(raw_q > bnd_q, bnd_q, raw_q), 0.0)
     sxy = np.zeros((n, ny + 1, nx + 1))
     sxy[:, 1:-1, 1:-1] = (nu_q[:, 1:-1, 1:-1] * DS[:, 1:-1, 1:-1]) * hq
+    n_obc = 0
+    if obc_q is not None and np.any(obc_q):                       # open-edge corners: tensions mirrored outside
+        for J, I in zip(*np.nonzero(ob)):
+            jm, jp = min(max(J - 1, 0), ny - 1), min(J, ny - 1)
+            im, ip = min(max(I - 1, 0), nx - 1), min(I, nx - 1)
+            a, b, c, d = DT2[:, jm, im], DT2[:, jp, ip], DT2[:, jp, im], DT2[:, jm, ip]
+            ds = DS[:, J, I]
+            Sq = np.sqrt((ds * ds) + 0.25 * ((a + b) + (c + d)))
+            hqo, hmo = obc_strain[1][:, J, I], obc_strain[2][:, J, I]
+            hrat = np.minimum(1.0, hmo / (hqo + hn))
+            raw = np.maximum(ah, (C * g["delta2_q"][J, I]) * Sq)
+            bnd = (bf * g["inv_lap_q"][J, I]) * hrat
+            n_obc += int((raw > bnd).sum())
+            nu_q[:, J, I] = np.where(raw > bnd, bnd, raw)
+            sxy[:, J, I] = (nu_q[:, J, I] * ds) * hqo
 
     # ---- divergence of the stress (MOM_hor_visc.F90:1757-1760, 1779-1781)
     fu = np.zeros((n, ny, nx + 1))
@@ -218,17 +285,19 @@ def smagorinsky_numpy(u: np.ndarray, v: np.ndarray, h_t: np.ndarray, h_u: np.nda
     xx = (g["dx2_t"][1:] * sxx[:, 1:]) - (g["dx2_t"][:-1] * sxx[:, :-1])
     fv[:, 1:-1] = (((idy_v[1:-1] * xy) - (g["idx_v"][1:-1] * xx)) * g["iarea_v"][1:-1]) / (h_v[:, 1:-1] + hn)
     fv = np.where((wet_v & ~open_v)[None], fv, 0.0)
-    return fu, fv, nu_t, nu_q, int(lim_t.sum() + lim_q.sum())
+    return fu, fv, nu_t, nu_q, int(lim_t.sum() + lim_q.sum()) + n_obc
 
 
 # ---------------------------------------------------------------- Numba kernel
 @numba.njit(parallel=True, cache=True)
-def _smag_kernel(u, v, h_t, h_u, h_v, wet_u, wet_v, act_q, fuok, fvok,
+def _smag_kernel(u, v, h_t, h_u, h_v, wet_u, wet_v, act_q, obc_q, ds_obc, hq_obc, hmin_obc, fuok, fvok,
                  dy_dx_t, dx_dy_t, dy_dx_q, dx_dy_q, idx_u, idy_u, idx_v, idy_v,
                  dx2_t, dy2_t, dx2_q, dy2_q, iarea_u, iarea_v, delta2_t, delta2_q, inv_lap_t, inv_lap_q,
                  C, ah, bf, hn, DT, DS, nu_t, nu_q, sxx, sxy, fu, fv, lim_t, lim_q):  # pragma: no cover
     """smagorinsky_numpy with the same per-element arithmetic, parallel over (layer, row).
-    Pass 1: D_T and D_S; pass 2: ν and σ at h and at q (needs neighbour strains); pass 3: F_u, F_v."""
+    Pass 1: D_T and D_S; pass 2: ν and σ at h and at q (needs neighbour strains); pass 3: F_u, F_v.
+    ``obc_q`` corners (open-edge, MOM6 OBC_STRAIN_COMPUTED) take D_S, h_q, h_min from the precomputed arrays and
+    their tensions at clamped (mirrored) cell indices."""
     n, ny, nx1 = u.shape
     nx = nx1 - 1
     hn3 = hn * hn * hn
@@ -247,7 +316,9 @@ def _smag_kernel(u, v, h_t, h_u, h_v, wet_u, wet_v, act_q, fuok, fvok,
     for p in numba.prange(n * (ny + 1)):
         k, J = p // (ny + 1), p % (ny + 1)
         for I in range(nx1):
-            if act_q[J, I]:
+            if obc_q[J, I]:
+                DS[k, J, I] = ds_obc[k, J, I]
+            elif act_q[J, I]:
                 ve = v[k, J, I] if wet_v[J, I] else 0.0
                 vw = v[k, J, I - 1] if wet_v[J, I - 1] else 0.0
                 un = u[k, J, I] if wet_u[J, I] else 0.0
@@ -319,6 +390,26 @@ def _smag_kernel(u, v, h_t, h_u, h_v, wet_u, wet_v, act_q, fuok, fvok,
                     nu = raw
                 nu_q[k, J, I] = nu
                 sxy[k, J, I] = (nu * ds) * hq
+            elif obc_q[J, I]:
+                jm, jp = min(max(J - 1, 0), ny - 1), min(J, ny - 1)
+                im, ip = min(max(I - 1, 0), nx - 1), min(I, nx - 1)
+                a = DT[k, jm, im] * DT[k, jm, im]
+                b = DT[k, jp, ip] * DT[k, jp, ip]
+                c = DT[k, jp, im] * DT[k, jp, im]
+                d = DT[k, jm, ip] * DT[k, jm, ip]
+                ds = DS[k, J, I]
+                S = np.sqrt((ds * ds) + 0.25 * ((a + b) + (c + d)))
+                hq = hq_obc[k, J, I]
+                hrat = min(1.0, hmin_obc[k, J, I] / (hq + hn))
+                raw = max(ah, (C * delta2_q[J, I]) * S)
+                bnd = (bf * inv_lap_q[J, I]) * hrat
+                if raw > bnd:
+                    nu = bnd
+                    cnt += 1
+                else:
+                    nu = raw
+                nu_q[k, J, I] = nu
+                sxy[k, J, I] = (nu * ds) * hq
             else:
                 nu_q[k, J, I] = 0.0
                 sxy[k, J, I] = 0.0
@@ -349,6 +440,7 @@ def smagorinsky(u: np.ndarray, v: np.ndarray, h_t: np.ndarray, h_u: np.ndarray, 
                 wet_u: np.ndarray, wet_v: np.ndarray, mask_q: np.ndarray,
                 open_u: np.ndarray, open_v: np.ndarray, geom: dict[str, np.ndarray],
                 C: float, ah: float, dt: float, h_neglect: float = H_NEGLECT,
+                obc_q: np.ndarray | None = None, obc_strain: tuple | None = None,
                 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
     """
     Smagorinsky viscous tendencies, Numba kernel (same signature, outputs and bits as
@@ -368,6 +460,12 @@ def smagorinsky(u: np.ndarray, v: np.ndarray, h_t: np.ndarray, h_u: np.ndarray, 
     act_q = np.zeros((ny + 1, nx + 1), np.bool_)
     act_q[1:-1, 1:-1] = (np.asarray(mask_q, bool)[1:-1, 1:-1] & ~open_u[:-1, 1:-1] & ~open_u[1:, 1:-1]
                          & ~open_v[1:-1, :-1] & ~open_v[1:-1, 1:])
+    if obc_q is None:
+        obc_q = np.zeros((ny + 1, nx + 1), np.bool_)
+        ds_obc = hq_obc = hmin_obc = np.zeros((1, 1, 1))
+    else:
+        obc_q = np.ascontiguousarray(obc_q, dtype=np.bool_)
+        ds_obc, hq_obc, hmin_obc = (np.ascontiguousarray(a, dtype=float) for a in obc_strain)
     fuok = np.ascontiguousarray(wet_u & ~open_u)
     fvok = np.ascontiguousarray(wet_v & ~open_v)
     DT, sxx, nu_t = (np.empty((n, ny, nx)) for _ in range(3))
@@ -376,7 +474,8 @@ def smagorinsky(u: np.ndarray, v: np.ndarray, h_t: np.ndarray, h_u: np.ndarray, 
     lim_t = np.zeros(n * ny, np.int64)
     lim_q = np.zeros(n * (ny + 1), np.int64)
     _smag_kernel(u, v, np.ascontiguousarray(h_t, dtype=float), np.ascontiguousarray(h_u, dtype=float),
-                 np.ascontiguousarray(h_v, dtype=float), wet_u, wet_v, act_q, fuok, fvok,
+                 np.ascontiguousarray(h_v, dtype=float), wet_u, wet_v, act_q, obc_q, ds_obc, hq_obc, hmin_obc,
+                 fuok, fvok,
                  g["dy_dx_t"], g["dx_dy_t"], g["dy_dx_q"], g["dx_dy_q"], g["idx_u"], g["idy_u"],
                  g["idx_v"], g["idy_v"], g["dx2_t"], g["dy2_t"], g["dx2_q"], g["dy2_q"],
                  g["iarea_u"], g["iarea_v"], g["delta2_t"], g["delta2_q"], g["inv_lap_t"], g["inv_lap_q"],

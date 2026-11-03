@@ -154,6 +154,7 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
     if a["open_boundary_state"] is None and "clamped" in modes.values():
         err("open_boundary", "a 'clamped' open_boundary_mode needs open_boundary_state (the exterior to impose)")
     _tide_issues(a, given, modes, err, warn)
+    _tangential_issues(a, ale, smag, modes, err, warn)
     # ---- periodic axes (N3 task 3): an axis is periodic or has open/closed edges, not both
     per = a.get("periodic", ()) or ()
     per = (per,) if isinstance(per, str) else tuple(per)
@@ -389,6 +390,35 @@ def _curvilinear_issues(a: dict, ale: bool, smag: float, warn) -> None:
         warn("momentum", "curvilinear (supergrid) grid with the constant-A_h Laplacian (smagorinsky = 0, ah > 0): it "
                          "is not the stress-tensor divergence and misses the metric terms (metric_audit.md §2.3, class "
                          "b); use smagorinsky > 0 (ah becomes its floor)")
+
+
+def _tangential_issues(a: dict, ale: bool, smag: float, modes: dict[str, str], err, warn) -> None:
+    """
+    MOM6 tangential open-boundary velocity (``obc_tangential='mom6'``: ORLANSKI_TAN + NUDGED_TAN and the
+    "computed" vorticity/strain at the open-edge corners, docs/design/regional_refs/mom6_obc_tangential.md): the
+    corner vorticity is that of the vector-invariant momentum, so ALE with ``momentum='vector_invariant'``; not with
+    periodic axes (the corner arrays are not padded); it acts on the 'radiating' edges only; the corner strain needs
+    the Smagorinsky stress-tensor operator (``smagorinsky`` > 0).
+    """
+    ot = a.get("obc_tangential", "none")
+    if ot not in ("none", "mom6"):
+        err("open_boundary", f"unknown obc_tangential {ot!r}; use 'none' or 'mom6'")
+        return
+    if ot == "none":
+        return
+    momentum = a["momentum"] or ("vector_invariant" if ale else "flux")
+    if not ale or momentum != "vector_invariant":
+        err("open_boundary", "obc_tangential='mom6' needs vertical_coordinate='ale' with momentum='vector_invariant' "
+                             "(the corner vorticity enters the PV flux of the vector-invariant form)")
+    per = a.get("periodic", ()) or ()
+    if per:
+        err("open_boundary", f"obc_tangential='mom6' is not available with periodic axes {per!r}")
+    if "radiating" not in modes.values():
+        warn("open_boundary", "obc_tangential='mom6' acts on the 'radiating' edges only and there is none: it does "
+                              "nothing")
+    if smag == 0.0:
+        warn("open_boundary", "obc_tangential='mom6' without smagorinsky > 0: the corner vorticity is computed, but "
+                              "the constant Laplacian has no corner shear strain")
 
 
 def _atm_pressure_issues(a: dict, given: frozenset[str], sf, err, warn) -> None:

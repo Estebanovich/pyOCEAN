@@ -66,6 +66,8 @@ _OPTIONAL = {
     "mix_num": (("layer", "y", "x"), "degC2 m3 s-1", "online numerical mixing (Burchard & Rennau 2008)"),
     "h": (("layer", "y", "x"), "m", "layer thickness (ALE), bed first"),
     "S": (("layer", "y", "x"), "1e-3", "salinity"),
+    "obc_rtan": (("layer", "yv", "xu"), "1", "Orlanski ratio at the open-edge corners of the last step "
+                                           "(obc_tangential='mom6')"),
 }
 
 
@@ -97,7 +99,8 @@ def _config(model: SigmaBaroclinic) -> dict:
                 ny=int(model.H.shape[0]), nx=int(model.H.shape[1]),
                 periodic=",".join(model.periodic.axes) or "none",              # N3 task 3: periodic axes
                 eos=eos, cp=model.cp, p_ref=getattr(model, "p_ref", 2e7),       # TEOS-10 in 3-D, Task 4
-                pgf_mass_weight=getattr(model, "pgf_mass_weight", "vanished"))
+                pgf_mass_weight=getattr(model, "pgf_mass_weight", "vanished"),
+                obc_tangential=str(getattr(model, "obc_tangential", "none")))
     if eos != "linear":
         cfg.update(rho_pgf_ref=model.rho_pgf_ref)
     if core.closure == "gls":                                   # N2a task 8c: stratified or homogeneous k-ε
@@ -177,7 +180,8 @@ _CONFIG_DEFAULTS = {"salinity": 0, "s_coef": 0.0, "s_ref": 35.0, "sponge_S": "no
                     "boundary_tides": "none", "sal_beta": 0.0, "sal_flather": 0,            # before tides in 3-D
                     "tidal_potential": "none",
                     "atm_pressure": "none",                                                 # before p_a forcing
-                    "runoff": "none"}                                                       # before river runoff
+                    "runoff": "none",                                                       # before river runoff
+                    "obc_tangential": "none"}                                               # before MOM6 tangential OBC
 
 # configuration entries not checked when a file lacks them: files written before TEOS-10 in 3-D did not store c_p,
 # which could be any value the run passed

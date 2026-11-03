@@ -11,7 +11,7 @@ import numpy as np
 
 from boundaries.obcs import OBData
 
-_FIELDS = ("T", "S", "u_normal", "eta", "ubar")
+_FIELDS = ("T", "S", "u_normal", "eta", "ubar", "u_tangential")
 
 
 def interpolated_boundary(times: Sequence[float], states: Sequence[dict[str, OBData]]

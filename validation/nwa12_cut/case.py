@@ -25,7 +25,7 @@ Parity with NWA12 (``parity_config``; values from ``docs/design/regional_refs/*.
 | Coriolis | ``BOUND_CORIOLIS`` False | Sadourny energy PV flux with BOUND_CORIOLIS always on (core/components/momentum.py:210, not a parameter) | c |
 | drag | quadratic ``CDRAG`` 0.003, ``HBBL`` 10, ``DRAG_BG_VEL`` 0, ``CHANNEL_DRAG`` | quadratic cd 0.003, hbbl 10, U_bg 0 | b/c (no channel drag, R5) |
 | open edges | Flather + Orlanski + nudging 3 d / 360 d (by Orlanski phase speed), reservoir 9 km | 'radiating': Flather + Orlanski + nudging τ_in 3 d, τ_out 360 d (by flow direction, R7), no reservoir/sponge | c |
-| tangential velocity at open edges | ``ORLANSKI_TAN``, ``NUDGED_TAN`` (radiated and nudged toward the exterior tangential velocity) | not radiated or nudged: the tangential velocities next to an edge are interior unknowns of the momentum equations; the corner vorticity and shear strain on open faces are free-slip (no viscous tendency on open faces, D_S = 0 at their corners) | c |
+| tangential velocity at open edges | ``ORLANSKI_TAN``, ``NUDGED_TAN`` (radiated and nudged toward the exterior tangential velocity), ``OBC_COMPUTED_VORTICITY``/``STRAIN`` | default ``obc_tangential='none'``: not radiated or nudged, ζ = 0 and D_S = 0 at the open-edge corners (MOM6's ZERO configuration, not free slip) and the open face is a wall in the Smagorinsky tension; ``obc_tangential='mom6'`` ports the MOM6 treatment (``docs/design/regional_refs/mom6_obc_tangential.md``), exterior ``OBData.u_tangential`` from GLORYS at the edge corners | c ('none') / — ('mom6') |
 | boundary tide | TPXO, 10 constituents, η and TPXO's velocity added to the segment, nodal fixed at a date | ``BoundaryTides`` TPXO10, 10 constituents, ``velocity_depth='tpxo'``: u = U/h_TPXO, TPXO's own velocity (R19, revises R3 for the case; u = U/D_model gave up to 3.8 m/s on 5-m faces), OTPS nodal at each time, ramp 0 | c (nodal) |
 | body tide | ``TIDES``, scalar SAL 0.05, SAL in Flather | ``tidal_potential=True``, ``sal_beta`` 0.05, ``sal_flather`` | c (legacy SAL path, R4) |
 | atm. pressure | off (``MAX_P_SURF`` = 0) | ``atm_pressure=False`` | — |
@@ -374,7 +374,9 @@ def exterior(case: Case, hg: xr.Dataset, H: np.ndarray, edges: tuple[str, ...], 
     """GLORYS exterior t → {edge: OBData} on the data's own levels (MOM6 segment data, CEFI ``z_to_dz``)."""
     from forcing.ocean_init import exterior_provider, prepare_ocean, source_level_grid
     vsrc = source_level_grid(ocean["depth"].values)
-    prep = {e: prepare_ocean(ocean, _edge_strip(hg, e), vsrc) for e in edges}
+    # q_points: the tangential velocity at the edge corners (OBData.u_tangential, NUDGED_TAN target of
+    # obc_tangential='mom6'; ignored otherwise)
+    prep = {e: prepare_ocean(ocean, _edge_strip(hg, e), vsrc, q_points=True) for e in edges}
     depth = {"west": H[:, 0], "east": H[:, -1], "south": H[0, :], "north": H[-1, :]}
     return exterior_provider(prep, vsrc, {e: depth[e] for e in edges}, case.t0, t0, t1, remove_mean_ssh=False)
 

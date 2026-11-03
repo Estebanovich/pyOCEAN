@@ -271,7 +271,10 @@ class Driver:
 
     # ------------------------------------------------------------------ phases shared by σ and ALE
     def _explicit_momentum(self, ctx: StepContext) -> None:
-        terms, wet_u, wet_v = self.m._momentum_terms(ctx.st)
+        m, st = self.m, ctx.st
+        obc_tan = (m._ob.tangential_velocity(st.u, st.v, st.obc_rtan, ctx.ext)        # MOM6 ORLANSKI_TAN +
+                   if m._ob.tangential else None)                                    # NUDGED_TAN corners
+        terms, wet_u, wet_v = self.m._momentum_terms(ctx.st, obc_tan)
         if self.keep_terms:
             self.last_terms = {name: (tu, tv) for name, tu, tv, _ in terms}
         gu, gv = sum_terms(terms, wet_u, wet_v)
@@ -850,7 +853,9 @@ class Driver:
         m, st = self.m, ctx.st
         wu, wv, hu, hv = ctx.wu, ctx.wv, ctx.hu, ctx.hv
         u_new, v_new = ctx.u_new, ctx.v_new
-        m._ob.relax_velocity(st.u, st.v, u_new, v_new, ctx.ext, ctx.fluxes, wu, wv)   # sponge on u′, Orlanski
+        rtan = m._ob.relax_velocity(st.u, st.v, u_new, v_new, ctx.ext, ctx.fluxes, wu, wv)  # sponge on u′, Orlanski
+        if rtan is not None:
+            ctx.set(obc_rtan=rtan)                                    # corner Orlanski ratio for the next step
         u_new = zero_thin_bed_velocity(u_new, hu, wu, m.h_thin_bed)
         v_new = zero_thin_bed_velocity(v_new, hv, wv, m.h_thin_bed)
         if m.thin_layer_cutoff > 0.0:                                   # HYCOM blending of thin layers (spec §3, 1B)
@@ -1003,4 +1008,5 @@ class Driver:
                                    n_limited=st.n_limited + lf.n_limited + ctx.vals.get("n_limited_fw", 0),
                                    n_visc_limited=self._n_visc_limited(ctx),
                                    tr=ctx.tr_new, closure=ctx.vals.get("closure"),
-                                   S=ctx.S_new, budget=self._budget_terms(ctx)))
+                                   S=ctx.S_new, budget=self._budget_terms(ctx),
+                                   obc_rtan=ctx.vals.get("obc_rtan")))

@@ -105,6 +105,7 @@ from core.components.geometry import LayerGeometry
 from core.components.pgf import PressureGradient
 from core.components.momentum import Momentum, sum_terms
 from core.components.open_boundary import CONFIG as _OB_CONFIG, OpenBoundary, convert_exterior
+from core.dynamics.open_boundary import tangential_corners as obc_tangential_corners
 from core.components.bottom_drag import LogLawBedDrag, QuadraticBedDrag
 from core.components.boundary_tides import BoundaryTides, TidalPotential, bind_copy
 from core.components.atm_pressure import AtmosphericPressure
@@ -156,6 +157,8 @@ class SigmaState:
     budget: dict | None = None                               # variance budget of the last step (N2a, variance_budget)
     n_visc_limited: int | None = None                        # active h/q points whose Smagorinsky ν the stability
                                                              # bound reduced, summed over steps; None while off
+    obc_rtan: np.ndarray | None = None                       # Orlanski ratio at the open-edge corners of the last
+                                                             # step (N, ny+1, nx+1), obc_tangential='mom6' (ALE)
 
 
 def _up3_faces(c: np.ndarray, flux: np.ndarray, ok: np.ndarray, axis: int, order: int = 3) -> np.ndarray:
@@ -1124,6 +1127,14 @@ class SigmaBaroclinic:
           conserved exactly — core.dynamics.wetting_drying.WetDryFreeSurface ``clamped_u``; u′, tracers and the
           sponge as 'radiating')}
     obc_tau_in, obc_tau_out : nudging time scales [s] of 'radiating' (CROCO typical 1 and 10 days)
+    obc_tangential : 'none' (default, the open-edge corners as before: ζ = 0 and D_S = 0, MOM6's ZERO
+        configuration) or 'mom6': MOM6 ORLANSKI_TAN + NUDGED_TAN on the 'radiating' edges — the tangential velocity
+        at the corners of the edge line is radiated from the interior with the corner mean of the normal Orlanski
+        ratio of the last step (``SigmaState.obc_rtan``) and nudged once per step toward ``OBData.u_tangential``
+        (γ = Δt/(τ + Δt), τ = ``obc_tau_in`` when the ratio is 0, else ``obc_tau_out``), and the vorticity and
+        shear strain there are "computed" from it (OBC_COMPUTED_VORTICITY/STRAIN; MOM_open_boundary.F90:3026-3062,
+        MOM_CoriolisAdv.F90:470-524, MOM_hor_visc.F90:795-836; docs/design/regional_refs/mom6_obc_tangential.md).
+        ALE with the vector-invariant momentum, no periodic axes.
     theta_bc : time weight of the baroclinic part u′ of the layer transport (None = ½ in every coordinate:
         time-centred, as the AB3 momentum tendency is centred at n + ½); the depth mean keeps the free-surface
         ``theta`` so the layer fluxes add up to the free-surface flux.  Before 2026-10-13 u′ took ``theta`` too,
@@ -1240,7 +1251,8 @@ class SigmaBaroclinic:
                  pgf_mass_weight: str = "vanished", p_ref: float = 2e7, ts_kind: str = "theta_sp",
                  boundary_tides: BoundaryTides | None = None, tidal_potential: bool | TidalPotential = False,
                  sal_beta: float = 0.0, sal_flather: bool = False, atm_pressure: bool = False,
-                 atm_pressure_ref: float | None = None, runoff: RiverInput | None = None) -> None:
+                 atm_pressure_ref: float | None = None, runoff: RiverInput | None = None,
+                 obc_tangential: str = "none") -> None:
         _args = {k: v for k, v in locals().items() if k != "self"}
         raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
         # equation of state (TEOS-10 in 3-D, Task 4): ρ₀ of the EOS before anything that uses it is built
@@ -1319,6 +1331,12 @@ class SigmaBaroclinic:
             fl_v[0, :] = act[0, :]
         if "north" in self.open:
             fl_v[-1, :] = act[-1, :]
+        # MOM6 ORLANSKI_TAN + NUDGED_TAN with the "computed" corner vorticity/strain on the 'radiating' edges
+        # (docs/design/regional_refs/mom6_obc_tangential.md); 'none' leaves the open-edge corners as before
+        self.obc_tangential = obc_tangential
+        self._tan_q = (obc_tangential_corners(fl_u, fl_v, tuple(e for e in self.open
+                                                              if self.obc_mode[e] == "radiating"))
+                       if obc_tangential == "mom6" else None)
         if solver is None:                     # ALE: CG with the lagged-LU preconditioner (1–3 iterations); the
             solver = "cg" if vertical_coordinate == "ale" else "direct"   # σ mode keeps the direct solve, bit-identical
         cl_u = cl_v = None                     # 'eta' edges: prescribed (clamped) η at the boundary cells
@@ -1858,13 +1876,14 @@ class SigmaBaroclinic:
         """(ω/h) ∂u/∂k, centred (``core.components.momentum``)."""
         return self._momentum.vertical_advection(vel, omega_f, h_f)
 
-    def _momentum_terms(self, st: SigmaState) -> tuple[list, np.ndarray, np.ndarray]:
-        """Named explicit momentum terms of ``st`` in summation order, and the wet u- and v-faces."""
+    def _momentum_terms(self, st: SigmaState, obc_tan: tuple | None = None) -> tuple[list, np.ndarray, np.ndarray]:
+        """Named explicit momentum terms of ``st`` in summation order, and the wet u- and v-faces; ``obc_tan``:
+        the open-edge corner tangential velocity of ``obc_tangential='mom6'`` (``OpenBoundary.tangential_velocity``)."""
         Du, Dv = self.core.face_depths(st.eta)
         wet_u = np.isfinite(self.fs.H_u) & np.isfinite(Du) & (Du > self.fs.d_min)
         wet_v = np.isfinite(self.fs.H_v) & np.isfinite(Dv) & (Dv > self.fs.d_min)
         pgf_xy = self._baroclinic_pgf(st.eta, st.T, st.h, st.S)
-        return self._momentum.terms(st, pgf_xy, Du, Dv, wet_u, wet_v), wet_u, wet_v
+        return self._momentum.terms(st, pgf_xy, Du, Dv, wet_u, wet_v, obc_tan), wet_u, wet_v
 
     def _tendencies(self, st: SigmaState) -> tuple[np.ndarray, np.ndarray]:
         """Explicit momentum tendencies at u- and v-faces [m s⁻²]: Σ of the named terms (fixed order)."""

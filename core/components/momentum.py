@@ -30,7 +30,7 @@ import numba
 import numpy as np
 
 from core.dynamics import vector_invariant as vi
-from core.dynamics.hor_visc import smag_geometry, smagorinsky
+from core.dynamics.hor_visc import open_corner_strain, smag_geometry, smagorinsky
 from core.dynamics.nonlinear import _spacings_u, _spacings_v, advection_u, advection_v, laplacian_3d
 from core.model import threads
 from core.model.contract import BuildContext, Issue, Role
@@ -184,7 +184,7 @@ class Momentum:
             self._vi_pad = out
         return self._vi_pad
 
-    def vector_invariant(self, st: SigmaState) -> tuple[np.ndarray, np.ndarray]:
+    def vector_invariant(self, st: SigmaState, obc_tan: tuple | None = None) -> tuple[np.ndarray, np.ndarray]:
         """
         Vector-invariant momentum terms of the ALE step (spec 2026-10-12 §3): Sadourny (1975) energy
         PV flux q·(vh, −uh) with BOUND_CORIOLIS, minus ∇K (core.dynamics.vector_invariant).  Periodic:
@@ -199,6 +199,10 @@ class Momentum:
         predicted transports (continuity of up :793, CorAdCalc :903, update :968).  ``st.Qx, st.Qy`` keep
         their meaning for the tracers and the flux form.  The other inputs here (ζ, q, K, BOUND_CORIOLIS
         bounds (f+ζ)·u) already use uⁿ, vⁿ, hⁿ.
+
+        ``obc_tan`` (flags, vt) from ``OpenBoundary.tangential_velocity`` (``obc_tangential='mom6'``): ζ at those
+        open-edge corners is MOM6's "computed" vorticity (``vi.open_corner_vorticity``, MOM_CoriolisAdv.F90:470-524)
+        instead of 0, and q is rebuilt with it.
         """
         hu, hv = self.mean_face_thickness(st.h)
         Qx, Qy = self.fs.Lu[None] * st.u * hu, self.fs.Lv[None] * st.v * hv
@@ -207,13 +211,19 @@ class Momentum:
             return self.per.apply(lambda u, v, h, qx, qy: self._vector_invariant(u, v, h, qx, qy, g, g["fq"],
                                                                                  g["active"]),
                                   (st.u, st.v, st.h, Qx, Qy), ("u", "v", "c", "u", "v"), ("u", "v"), 2)
-        return self._vector_invariant(st.u, st.v, st.h, Qx, Qy, self.vi_geom, self.fq, self.fs.active)
+        return self._vector_invariant(st.u, st.v, st.h, Qx, Qy, self.vi_geom, self.fq, self.fs.active, obc_tan)
 
-    def _vector_invariant(self, u, v, h, Qx, Qy, g: dict, fq: np.ndarray, active: np.ndarray):
+    def _vector_invariant(self, u, v, h, Qx, Qy, g: dict, fq: np.ndarray, active: np.ndarray,
+                          obc_tan: tuple | None = None):
         """The terms of ``vector_invariant`` on the given arrays and geometry (unchanged arithmetic)."""
         numba.set_num_threads(threads._THREADS[0])                                 # vector-invariant kernels
         zeta, q = vi.vorticity_and_pv(u, v, g["dx_u"], g["dy_v"], g["area_q"], g["mask_q"], fq, h, g["area_t"],
                                       active)
+        if obc_tan is not None:                                    # MOM6 OBC_VORTICITY_COMPUTED at open-edge corners
+            flags, vt = obc_tan
+            zeta = np.where(flags[None], vi.open_corner_vorticity(u, v, vt, flags, g["dx_u"], g["dy_v"],
+                                                                  g["area_q"]), zeta)
+            q = vi.pv_q(zeta, fq, h, g["area_t"], active)
         cu, cv = vi.coriolis_pv(q, fq[None] + zeta, Qx, Qy, u, v, g["dx_u"], g["dy_v"], bound=True)
         ke = "gudonov" if self.ke_scheme == "godunov" else self.ke_scheme              # kernel spelling
         K = vi.kinetic_energy(u, v, g["area_u"], g["area_v"], g["area_t"], ke)
@@ -264,7 +274,7 @@ class Momentum:
         return (D[None] * ds, np.maximum(np.nan_to_num(Du, nan=0.0), 0.0)[None] * ds,
                 np.maximum(np.nan_to_num(Dv, nan=0.0), 0.0)[None] * ds)
 
-    def _smag_call(self, u, v, h_t, h_u, h_v, wet_u, wet_v, open_u, open_v, geom: dict):
+    def _smag_call(self, u, v, h_t, h_u, h_v, wet_u, wet_v, open_u, open_v, geom: dict, obc_tan: tuple | None = None):
         """
         ``hor_visc.smagorinsky`` on the given (possibly padded) arrays.  The corner mask is derived here, the only
         place: a corner is active when its four faces (u south/north, v west/east) are wet this step, so it follows
@@ -272,20 +282,31 @@ class Momentum:
         """
         mask_q = np.zeros((wet_v.shape[0], wet_u.shape[1]), bool)
         mask_q[1:-1, 1:-1] = wet_u[:-1, 1:-1] & wet_u[1:, 1:-1] & wet_v[1:-1, :-1] & wet_v[1:-1, 1:]
+        kw = {}
+        if obc_tan is not None:                                    # MOM6 OBC_STRAIN_COMPUTED at open-edge corners
+            flags, vt = obc_tan
+            kw = dict(obc_q=flags, obc_strain=open_corner_strain(u, v, vt, flags, h_t, h_u, h_v, geom))
         fu, fv, nu_t, _, n_lim = smagorinsky(u, v, h_t, h_u, h_v, wet_u, wet_v, mask_q, open_u, open_v, geom,
-                                             self.smagorinsky, self.ah, self.dt)
+                                             self.smagorinsky, self.ah, self.dt, **kw)
         self.last_n_limited = n_lim
         return fu, fv, nu_t
 
     def smagorinsky_terms(self, st, Du: np.ndarray, Dv: np.ndarray, wet_u: np.ndarray,
-                          wet_v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+                          wet_v: np.ndarray, obc_tan: tuple | None = None) -> tuple[np.ndarray, np.ndarray]:
         """
         Smagorinsky viscous tendencies at u- and v-faces [m s⁻²] of the state ``st`` (layer velocities at tⁿ,
         explicit in the AB3 tendency): F = ∇·(ν h D)/h, ν = max(A_h, C Δ² |S|) bounded for AB3
         (``core.dynamics.hor_visc``; Smagorinsky 1963, Griffies & Hallberg 2000, MOM_hor_visc.F90).  Periodic axes:
         pad–crop with halos of 2 (the stencil reaches the tension of the neighbour cell through the corner shear),
-        geometry padded once.  Sets ``last_nu_t`` and ``last_n_limited``.
+        geometry padded once.  Sets ``last_nu_t`` and ``last_n_limited``.  ``obc_tan``: as ``vector_invariant``
+        (the corner shear strain of MOM6 OBC_STRAIN_COMPUTED; not with periodic axes, pre-flight).
         """
+        if obc_tan is not None:
+            # MOM6 keeps mask2dCu = mask2dCv = 1 on open-boundary faces (MOM_grid_initialize.F90:1270-1288): their
+            # normal velocity enters the tension and |S| of the boundary cells and their thickness is the boundary
+            # cell's (MOM_hor_visc.F90:857-880); they still get no tendency (``open_u``/``open_v``, :1761-1793).
+            # Without it the open face is a wall in D_T, (u₁ − 0)/Δx for an inflow jet
+            wet_u, wet_v = wet_u | self.open_u, wet_v | self.open_v
         h_t, h_u, h_v = self._smag_thickness(st, Du, Dv, wet_u, wet_v)
         per = self.per
         if per:
@@ -299,18 +320,19 @@ class Momentum:
             if self._smag_geom is None:
                 self._smag_geom = smag_geometry(self.hg)
             fu, fv, nu_t = self._smag_call(st.u, st.v, h_t, h_u, h_v, wet_u, wet_v, self.open_u, self.open_v,
-                                           self._smag_geom)
+                                           self._smag_geom, obc_tan)
         self.last_nu_t = nu_t
         return fu, fv
 
     def terms(self, st, pgf_xy: tuple[np.ndarray, np.ndarray], Du: np.ndarray, Dv: np.ndarray,
-              wet_u: np.ndarray, wet_v: np.ndarray) -> list[Term]:
-        """Named explicit terms in summation order (module docstring); ``pgf_xy`` from the PGF component."""
+              wet_u: np.ndarray, wet_v: np.ndarray, obc_tan: tuple | None = None) -> list[Term]:
+        """Named explicit terms in summation order (module docstring); ``pgf_xy`` from the PGF component;
+        ``obc_tan`` (flags, vt): the tangential velocity at the open-edge corners (``obc_tangential='mom6'``)."""
         n = st.u.shape[0]
         out: list[Term] = [("pgf", pgf_xy[0], pgf_xy[1], "+")]
         vinv = self.form == "vector_invariant"
         if vinv:
-            cu, cv = self.vector_invariant(st)
+            cu, cv = self.vector_invariant(st, obc_tan)
             out.append(("vector_invariant", cu, cv, "+"))
         else:
             cu, cv = self.coriolis(st.u, st.v)
@@ -346,7 +368,7 @@ class Momentum:
                 au, av = per.crop(au, "u", H), per.crop(av, "v", H)
             out.append(("advection", au, av, "-"))
         if self.smagorinsky > 0:                                        # Smagorinsky stress divergence (ah = floor)
-            fu, fv = self.smagorinsky_terms(st, Du, Dv, wet_u, wet_v)
+            fu, fv = self.smagorinsky_terms(st, Du, Dv, wet_u, wet_v, obc_tan)
             out.append(("hviscosity", fu, fv, "+"))
         elif self.ah > 0:                                               # spacings built once (performance task 5.2)
             if self._lap is None:

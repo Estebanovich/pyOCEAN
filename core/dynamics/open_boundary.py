@@ -43,6 +43,9 @@ def validate_state(state: dict[str, OBData], open_edges: tuple[str, ...], shape:
             a = getattr(ob, name)
             if a is not None and np.shape(a) != (n,):
                 raise ValueError(f"{edge}: {name} shape {np.shape(a)}, expected ({n},)")
+        if ob.u_tangential is not None and np.shape(ob.u_tangential) != (nz, n + 1):
+            raise ValueError(f"{edge}: u_tangential shape {np.shape(ob.u_tangential)}, expected ({nz}, {n + 1}) "
+                             "(the corners of the edge line)")
         if ob.tracers is not None and (np.ndim(ob.tracers) != 3 or np.shape(ob.tracers)[1:] != (nz, n)):
             raise ValueError(f"{edge}: tracers shape {np.shape(ob.tracers)}, expected (ntr, {nz}, {n})")
 
@@ -234,3 +237,121 @@ def flather_targets(state: dict[str, OBData], shape_u: tuple[int, int], shape_v:
         else:
             zv[-1, :], vbar[-1, :], qv[-1, :] = eta, ub, q
     return dict(flather_eta=(zu, zv), flather_ubar=ubar, flather_vbar=vbar, flather_q=(qu, qv))
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Tangential velocity at the open-edge corners (MOM6 ORLANSKI_TAN + NUDGED_TAN, obc_tangential='mom6'; reading notes
+# docs/design/regional_refs/mom6_obc_tangential.md).  Corners (ny+1, nx+1), corner [J, I] shared by cells
+# (J−1, J) × (I−1, I); the corners of an open edge lie on the edge line (I = 0 west, I = nx east, J = 0 south,
+# J = ny north).
+# ---------------------------------------------------------------------------------------------------------------
+def tangential_corners(open_u: np.ndarray, open_v: np.ndarray, edges) -> np.ndarray:
+    """
+    Corners (ny+1, nx+1) where the tangential velocity is radiated and the vorticity and shear strain are
+    "computed": on the line of each edge in ``edges``, the corners between two open wet boundary faces (MOM6
+    ``mask2dBu`` = 1 between two OBC faces of the same orientation, MOM_grid_initialize.F90:1296-1311).  The outer
+    corners of the domain stay closed (MOM6 without ``OBC_OPEN_CORNERS``, :1312-1323).  ``open_u`` (ny, nx+1),
+    ``open_v`` (ny+1, nx): the open wet boundary faces.
+    """
+    open_u, open_v = np.asarray(open_u, bool), np.asarray(open_v, bool)
+    ny, nx = open_u.shape[0], open_v.shape[1]
+    q = np.zeros((ny + 1, nx + 1), bool)
+    if "west" in edges:
+        q[1:-1, 0] = open_u[:-1, 0] & open_u[1:, 0]
+    if "east" in edges:
+        q[1:-1, -1] = open_u[:-1, -1] & open_u[1:, -1]
+    if "south" in edges:
+        q[0, 1:-1] = open_v[0, :-1] & open_v[0, 1:]
+    if "north" in edges:
+        q[-1, 1:-1] = open_v[-1, :-1] & open_v[-1, 1:]
+    return q
+
+
+def corner_phase_speed(r: np.ndarray) -> np.ndarray:
+    """
+    Orlanski ratio r (grid points per step) at the n+1 corners of an edge from its value at the n boundary faces
+    (…, n): ½(r_{J−1} + r_J) inside, the single face at the two ends (MOM6 ``rx_tang_rad`` with ``OBC_RAD_VEL_WT``
+    < 1, MOM_open_boundary.F90:3031-3036).
+    """
+    r = np.asarray(r, float)
+    out = np.empty(r.shape[:-1] + (r.shape[-1] + 1,))
+    out[..., 1:-1] = 0.5 * (r[..., :-1] + r[..., 1:])
+    out[..., 0], out[..., -1] = r[..., 0], r[..., -1]
+    return out
+
+
+def tangential_velocity(u: np.ndarray, v: np.ndarray, r: np.ndarray, ext: np.ndarray, flags: np.ndarray,
+                        dt: float, tau_in: float, tau_out: float) -> np.ndarray:
+    """
+    Tangential layer velocity at the open-edge corners ``flags`` [m s⁻¹] (N, ny+1, nx+1), 0 elsewhere (MOM6
+    ORLANSKI_TAN + NUDGED_TAN, MOM_open_boundary.F90:3045-3062 east, :3290-3307 west, :3534-3551 north,
+    :3779-3794 south):
+
+        v_B = (v₁ + r v₂)/(1 + r)                                   (radiated, upstream extrapolation)
+        v_B ← (1 − γ) v_B + γ v_ext,   γ = Δt/(τ + Δt),   τ = τ_in if r ≤ 0 else τ_out
+
+    with v₁, v₂ the tangential velocities of the first and second interior column/row at the corner's position
+    (v at the west/east edges, u at the south/north edges), r the corner Orlanski ratio (``corner_phase_speed``) and
+    v_ext the exterior tangential velocity on the corner layers.  The nudging is a one-call blend, not an
+    accumulated relaxation (MOM6 overwrites the value with the radiated one at every call).
+    """
+    u, v, r, ext = (np.asarray(a, float) for a in (u, v, r, ext))
+    flags = np.asarray(flags, bool)
+    N, ny, nx1 = u.shape
+    nx = nx1 - 1
+    v1 = np.zeros((N, ny + 1, nx + 1))
+    v2 = np.zeros((N, ny + 1, nx + 1))
+    v1[:, :, 0], v2[:, :, 0] = v[:, :, 0], v[:, :, 1]
+    v1[:, :, nx], v2[:, :, nx] = v[:, :, nx - 1], v[:, :, nx - 2]
+    v1[:, 0, 1:-1], v2[:, 0, 1:-1] = u[:, 0, 1:-1], u[:, 1, 1:-1]
+    v1[:, ny, 1:-1], v2[:, ny, 1:-1] = u[:, ny - 1, 1:-1], u[:, ny - 2, 1:-1]
+    rad = (v1 + r * v2) / (1.0 + r)
+    gamma = np.where(r <= 0.0, dt / (tau_in + dt), dt / (tau_out + dt))
+    return np.where(flags[None], (1.0 - gamma) * rad + gamma * ext, 0.0)
+
+
+def corner_layers(hu: np.ndarray, hv: np.ndarray, flags: np.ndarray) -> np.ndarray:
+    """Layer thickness at the open-edge corners [m] (N, ny+1, nx+1): the mean of the two boundary faces of the
+    corner (bed first), 0 elsewhere."""
+    N, ny, nx1 = hu.shape
+    out = np.zeros((N, ny + 1, nx1))
+    out[:, 1:-1, 0] = 0.5 * (hu[:, :-1, 0] + hu[:, 1:, 0])
+    out[:, 1:-1, -1] = 0.5 * (hu[:, :-1, -1] + hu[:, 1:, -1])
+    out[:, 0, 1:-1] = 0.5 * (hv[:, 0, :-1] + hv[:, 0, 1:])
+    out[:, -1, 1:-1] = 0.5 * (hv[:, -1, :-1] + hv[:, -1, 1:])
+    return np.where(np.asarray(flags, bool)[None], out, 0.0)
+
+
+def exterior_tangential(state: dict[str, OBData], hq: np.ndarray, flags: np.ndarray, scheme: int) -> np.ndarray:
+    """
+    Exterior tangential velocity on the corner layers ``hq`` (N, ny+1, nx+1) at the ``flags`` corners [m s⁻¹]:
+    ``OBData.u_tangential`` (nz, n+1) on the data's own interfaces (``zw`` of the neighbouring edge cell, clipped to
+    the corner depth Σ hq and the deepest layer extended), remapped conservatively onto the corner layers (as the
+    normal velocity, ``exterior_velocity``; MOM6 segment V/U data on the segment q-points, remapped to the
+    segment layers).  The full layer velocity, not a baroclinic part.  0 where the edge gives none (resting
+    exterior).
+    """
+    N, ny1, nx1 = hq.shape
+    out = np.zeros(hq.shape)
+    for e, ob in state.items():
+        if ob.u_tangential is None:
+            continue
+        line = {"west": np.s_[:, 0], "east": np.s_[:, -1], "south": np.s_[0, :], "north": np.s_[-1, :]}[e]
+        sel = np.asarray(flags, bool)[line]
+        idx = np.nonzero(sel)[0]
+        if idx.size == 0:
+            continue
+        n = np.shape(ob.T)[1]
+        cell = np.clip(idx, 0, n - 1)                                        # corner J: the cell above it
+        h_t = np.ascontiguousarray(hq[(slice(None),) + line][:, idx])        # (N, npts) bed first
+        D = h_t.sum(axis=0)
+        zw = np.asarray(ob.zw, float)[:, cell]
+        z = np.maximum(zw, -D[None])
+        z[-1] = -D
+        h_src = (z[:-1] - z[1:])[::-1]
+        f_src = np.asarray(ob.u_tangential, float)[:, idx][::-1]
+        res = _remap_stretched(np.ascontiguousarray(h_src)[:, :, None], np.ascontiguousarray(f_src)[:, :, None],
+                               h_t[:, :, None], (D > 0)[:, None], scheme)
+        tgt = out[(slice(None),) + line]
+        tgt[:, idx] = res[:, :, 0]
+    return out

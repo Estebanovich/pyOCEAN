@@ -148,6 +148,10 @@ class OBData:
     transport : np.ndarray (n_bdy,) or None
         Prescribed normal volume flux per face [m³ s⁻¹], model sign; replaces Flather there (MOM6 SIMPLE segment): the
         free surface takes exactly this flux, with no radiation term.
+    u_tangential : np.ndarray (nz, n_bdy + 1) or None
+        Exterior velocity **parallel** to the edge [m/s] on the ``zw`` grid, at the n_bdy + 1 corners of the edge
+        line (v for west/east, u for south/north, grid components): the nudging target of MOM6 NUDGED_TAN
+        (``obc_tangential='mom6'``, docs/design/regional_refs/mom6_obc_tangential.md).  None = 0 (resting exterior).
     """
     side: Literal["west", "east", "south", "north"]
     T: np.ndarray | None = field(default=None)
@@ -158,6 +162,7 @@ class OBData:
     ubar: np.ndarray | None = field(default=None)
     tracers: np.ndarray | None = field(default=None)
     transport: np.ndarray | None = field(default=None)
+    u_tangential: np.ndarray | None = field(default=None)
 
 
 # ---------------------------------------------------------------------------
