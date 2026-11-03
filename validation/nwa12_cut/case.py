@@ -447,6 +447,7 @@ def parity_config(case: Case, hg: xr.Dataset, H: np.ndarray, dt: float, *, edges
         z0=None, bottom_drag="quadratic", cd=0.003, hbbl=10.0, drag_bg_vel=0.0,
         open_boundaries=tuple(edges), open_boundary_mode={e: "radiating" for e in edges},
         open_boundary_state=open_boundary_state, obc_tau_in=3.0 * 86400.0, obc_tau_out=360.0 * 86400.0,
+        obc_tangential="mom6",  # NWA12 ORLANSKI_TAN, NUDGED_TAN, computed ζ/D_S (ruling R27, 2026-11-03)
         boundary_tides=boundary_tides, tidal_potential=boundary_tides is not None, sal_beta=0.05,
         sal_flather=boundary_tides is not None, atm_pressure=False,
         surface_fluxes=surface_fluxes, runoff=runoff, mix_diagnostic=False,
