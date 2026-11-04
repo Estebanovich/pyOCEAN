@@ -66,7 +66,7 @@ Python `I` (both start at 0 in symmetric memory). The translation of each Fortra
 | `areaT(i,j)` `:296-297` | `(a[2j,2i] + a[2j+1,2i+1]) + (a[2j+1,2i] + a[2j,2i+1])` | `area_t` | four supergrid sub-cells (`a` = `area`) |
 | `areaBu(I,J)` `:300-301` | `(a[2J-1,2I-1] + a[2J,2I]) + (a[2J,2I-1] + a[2J-1,2I])` | `area_q` | four sub-cells around q |
 | `areaCu(I,j)` | **not from the supergrid**: `dxCu · dy_Cu` (`MOM_grid_initialize.F90:1334`) | `area_u` | see below |
-| `areaCv(i,J)` | **not from the supergrid**: `dyCv · dx_Cv` (`MOM_grid_initialize.F90:1341`) | `area_v` | see below |
+| `areaCv(i,J)` | **not from the supergrid**: `dyCv · dx_Cv` (`MOM_grid_initialize.F90:1342`; 1341 in the first version of these notes, corrected in Task 11) | `area_v` | see below |
 
 The parentheses in the area sums are MOM6's order of summation (pairs of diagonal sub-cells first);
 reproduce them to be bit for bit. CEFI computes the T area with the same grouping

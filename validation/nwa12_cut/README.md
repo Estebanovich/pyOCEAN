@@ -1,7 +1,8 @@
-# Recorte de NWA12: caso regional real (cadena regional, Tarea 9)
+# Recorte de NWA12: caso regional real (cadena regional, Tareas 9–11)
 
 - **Spec:** `docs/superpowers/specs/2026-11-01-regional-chain-design.md` (criterios 4, 6 y 8; "Decisiones del caso")
-- **Plan:** `docs/superpowers/plans/2026-11-01-regional-chain.md`, Tarea 9
+- **Plan:** `docs/superpowers/plans/2026-11-01-regional-chain.md`, Tareas 9 (caso), 10 (MOM6) y 11 (comparación)
+- **Estado (2026-11-03):** 🔶 — criterios 1–5 y 7 ✅, 6 ✅ salvo el costo (4× MOM6), 8 ✅; resumen al final ("Tarea 11")
 - **Lecturas de referencia:** `docs/design/regional_refs/` (malla, OBC y mareas, presión y ríos, herramientas de CEFI)
 
 ## Qué es
@@ -18,6 +19,9 @@ solo vive lo propio del caso:
 | `case.py` | ventana, periodo, rutas, reglas de profundidad de MOM6, `parity_config()`, `build()` |
 | `build_inputs.py` | escribe la malla, la vgrid, los ríos y las estaciones a `RUNS/inputs/pyocean/` |
 | `run_pyocean.py` | corridas `tides` y `full`, chequeo de restart y de hilos, presupuestos, costo |
+| `obs_qc.py` | control de calidad de las observaciones (mareógrafos CO-OPS, boya NDBC 44025) antes de cualquier número |
+| `compare.py` | modelos contra observaciones (Tarea 11): mareas, η, SST contra GLORYS, OISST y 44025 |
+| `tide_check.py` | vistazo armónico de una corrida en los mareógrafos (lee la SSH de MOM6 como promedio de la hora de acople) |
 
 Datos y salidas en `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/nwa12_cut/` (`data/`, `inputs/`, `runs/`), nunca en el repo.
 
@@ -67,7 +71,7 @@ R11 y R12 del registro.
 | tema | NWA12 (MOM6) | pyOCEAN | diferencia |
 |---|---|---|---|
 | vertical | z\*, 75 niveles de `vgrid_75_2m.nc` | ALE z\*, `dz_top` = los mismos 75 Δz | — |
-| momento | vector-invariante; Smagorinsky biarmónica `SMAG_BI_CONST` 0.03 | vector-invariante; Smagorinsky **laplaciana** 0.15 (OM4) | (b) sin biarmónica |
+| momento | vector-invariante; Smagorinsky biarmónica `SMAG_BI_CONST` 0.03, `AH_VEL_SCALE` 0.01, `BOUND_AH`, `OBC_ZERO_BIHARMONIC` | vector-invariante; Smagorinsky **biarmónica** `smagorinsky_bi` 0.03, `ah_vel_scale` 0.01, laplaciana apagada (desde `1789e9f`, 2026-11-03; antes laplaciana 0.15 de OM4) | (c) cota × 6/11 para AB3 |
 | gravedad | `G_EARTH` 9.8 | `g=9.8` (R21): llega a la superficie libre y Flather, al PGF, a la marea de potencial/SAL, a los cierres y a la presión de la EOS; el bulk de FMS usa su propio GRAV 9.80 | — |
 | peso de masa en el PGF | `MASS_WEIGHT_IN_PRESSURE_GRADIENT` True | `pgf_mass_weight='full'` (R21; PGF inicial = MOM6 a 1.2e-14, Tarea 10) | — |
 | EOS | `WRIGHT_FULL` (θ, S_P), ρ₀ 1035, `C_P` 3992 | `eos='wright_full'`, `ts_kind='theta_sp'`, ρ₀ 1035, c_p 3992 | — |
@@ -78,13 +82,13 @@ R11 y R12 del registro.
 | Coriolis | `BOUND_CORIOLIS = False` | flujo de PV de Sadourny con el acotado de BOUND_CORIOLIS siempre activo (`core/components/momentum.py:210`, no es parámetro) | (c) |
 | fricción de fondo | cuadrática `CDRAG` 0.003, `HBBL` 10 m, `DRAG_BG_VEL` 0, `CHANNEL_DRAG` | cuadrática cd 0.003, hbbl 10, U_bg 0 | (b/c) sin `CHANNEL_DRAG` (R5) |
 | bordes abiertos | Flather + Orlanski + nudging 3 d / 360 d (según la velocidad de fase de Orlanski), reservorio de trazadores de 9 km | `'radiating'`: Flather + Orlanski + nudging τ_in 3 d / τ_out 360 d (según el sentido del flujo, R7), sin reservorio ni esponja | (c) |
-| velocidad tangencial en los bordes abiertos | `ORLANSKI_TAN`, `NUDGED_TAN`: radiada y relajada hacia la velocidad tangencial exterior | no se radía ni se relaja: las velocidades tangenciales junto al borde son incógnitas interiores del momento; la vorticidad y la deformación de corte en las esquinas de las caras abiertas son de deslizamiento libre (sin tendencia viscosa en las caras abiertas, D_S = 0 en sus esquinas) | (c) |
+| velocidad tangencial en los bordes abiertos | `ORLANSKI_TAN`, `NUDGED_TAN`: radiada y relajada hacia la velocidad tangencial exterior | `obc_tangential='mom6'` (R27, desde `2f80d5a`): la misma radiación y relajación, ζ y D_S calculadas en las esquinas del borde (antes ζ = D_S = 0, el ZERO de MOM6) | — |
 | exterior | GLORYS diario en sus niveles (`z_to_dz` de CEFI), remapeado con PPM_H4 | GLORYS diario en sus niveles (`source_level_grid`, interfaces a medio camino), remapeado a las capas, lineal en el tiempo; ū = media de la columna de la celda de borde | — |
 | marea de borde | TPXO, 10 constituyentes, η y la velocidad de TPXO sumadas al segmento, nodal fijo en una fecha | `BoundaryTides` con TPXO10 (10 constituyentes), `velocity_depth='tpxo'`: u = U/h_TPXO, la velocidad propia de TPXO (R19, revisa R3 para el caso; u = U/D del modelo daba hasta 3.8 m/s en caras de 5 m), nodal OTPS en cada instante, sin rampa | (c) nodal |
 | marea de potencial | `TIDES`, SAL escalar 0.05, SAL en Flather | `tidal_potential=True`, `sal_beta` 0.05, `sal_flather` | (c) camino SAL antiguo de MOM6 (R4) |
 | presión atmosférica | apagada (`MAX_P_SURF` = 0) | `atm_pressure=False` | — |
 | ríos | GloFAS v3 con la regla de CEFI; mezcla de ríos de ePBL (`DO_RIVERMIX`) | GloFAS v4 con la regla `ldd` de CEFI (R11, R12), agua dulce real en la capa superior; desembocaduras elegidas (caudal medio ≥ 1 m³/s) sobre todo el periodo del caso, 72 celdas, igual para toda corrida y todo restart (R17) | (c) versión; (b) sin mezcla de ríos |
-| Δt | `DT` 600 s, `DT_THERM` 1800 s | un solo Δt, el estable más grande medido (600, luego 300) | (c) |
+| Δt | `DT` 600 s, `DT_THERM` 1800 s | un solo Δt de 600 s (300 s hasta la corrección del flujo de PV, `e1ffbbb`) | (c) |
 | estado inicial | T, S, SSH y velocidades de GLORYS, remapeo desde z | T, S remapeados desde los niveles de GLORYS (contenido exacto por columna), η = zos (sin quitar la media, como MOM6), u, v rotados e interpolados linealmente en la vertical a cada cara | (c) velocidades interpoladas, no remapeadas |
 
 **Por qué ALE z\* + momento vector-invariante + Smagorinsky.** El momento en forma de flujo de σ y la laplaciana de
@@ -93,14 +97,16 @@ A_h constante no tienen los términos métricos curvilíneos (Tarea 3, `docs/des
 rechaza otra combinación, y el pre-flight avisa (`PyOceanConfigWarning`) si una malla de supergrid se usa con la
 forma de flujo o con la laplaciana constante.
 
-**Decisiones aceptadas (R15, R16).** Δt = 300 s para la corrida completa: es la inestabilidad conocida de
-θ_bc = ½ (clase a, con su plan aparte; MOM6 corre con 600 s), no un ajuste de física. κ_bg = 1e-6 es el valor de
+**Decisiones aceptadas (R15, R16).** Δt = 300 s para la corrida completa: era la inestabilidad conocida de
+θ_bc = ½ (clase a; MOM6 corre con 600 s), no un ajuste de física. **Corregida el 2026-11-02 (`e1ffbbb`):** el
+flujo de PV tomaba el transporte del paso anterior; desde entonces la paridad corre con 600 s. κ_bg = 1e-6 es el valor de
 paridad con NWA12; el punto (2) de "qué debe mejorar" de N2b prefiere decidir la mezcla de fondo contra la boya
 44025, así que se revisa en el proyecto 4. Sin banda de esponja (NWA12 no tiene) y velocidades iniciales
 interpoladas en la vertical (MOM6 las remapea): aceptadas, clase c.
 
-**Física de NWA12 que pyOCEAN no tiene (clase b o c, para el proyecto 4):** ePBL, doble difusión, Smagorinsky
-biarmónica, `CHANNEL_DRAG`, el reservorio de trazadores de los segmentos (9 km), la mezcla de ríos de ePBL y SIS2.
+**Física de NWA12 que pyOCEAN no tiene (clase b o c, para el proyecto 4):** ePBL, doble difusión, la onda corta de
+Manizza con clorofila, `CHANNEL_DRAG`, el reservorio de trazadores de los segmentos (9 km), la mezcla de ríos de ePBL
+y SIS2. (La Smagorinsky biarmónica y la velocidad tangencial de MOM6 en los bordes ya están.)
 
 ## Cómo reproducirlo
 
@@ -126,7 +132,10 @@ export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 MKL_NUM
 python validation/nwa12_cut/run_pyocean.py --mode full --days 123 --dt 300 --threads 5 --restart-at 60.5
 ```
 
-Δt = 300 s es el estable medido (abajo); tarda ≈ 6.8 h. Para el chequeo del restart a la mitad:
+Δt = 300 s era el estable medido antes de `e1ffbbb` (abajo); tarda ≈ 6.8 h. **La paridad vigente** (biarmónica,
+`obc_tangential='mom6'`, Δt 600 s, 123 días en ≈ 3.6 h): `run_pyocean.py --mode full --days 123 --dt 600 --threads 5
+--tag bih123`; con salida horaria y 30 días, `--days 30 --tag bih30h` (la usa `compare.py` para medir el sesgo de las
+instantáneas). Para el chequeo del restart a la mitad:
 `--start-from …/runs/full_dt300/restart_day60.5.nc --tag from_restart` y luego `--compare` de los dos `final.nc`.
 El restart cae a las 12:00, entre dos registros diarios de GLORYS y GloFAS y entre dos horas de ERA5, y se escribe con
 `restart_day60.5_budget.npz`, los acumuladores del presupuesto, que `--start-from` recarga (si no existen, el
@@ -333,12 +342,15 @@ onda corta ni lluvia, aire a 10 °C, q = 0.98 q_sat, onda larga σT⁴); T se qu
   `parity_config()` usa hoy (g = 9.81 por defecto, 'vanished') la diferencia es 5.2e-7 m s⁻²: dos diferencias de
   paridad de la Tarea 9 (clase a de la configuración del caso, no del núcleo).
 - **Mareas solas (30 días, 600 s, sin rampa):** error vectorial de M2 en 11 mareógrafos (`tide_check.py`, días
-  1–30), **MOM6 0.218 m de media (mediana 0.193)**, pyOCEAN 0.229 m (0.200). MOM6 tiene mejor la fase en la bahía de
+  1–30), **MOM6 0.218 m de media (mediana 0.193)**, pyOCEAN 0.229 m (0.200). **Superado (Tarea 11):** la SSH horaria
+  de MOM6 es el promedio de los 6 valores de fin de paso de la hora de acople, no una instantánea (MOM6 0e9a561
+  `MOM.F90:1050-1100`); leída como tal, MOM6 llega 25 min tarde (12° en M2). `tide_check.py` deshace ese promedio
+  desde `af63946`: MOM6 0.244 m de media (0.240 mediana), pyOCEAN con la biarmónica 0.224 (0.193). MOM6 tiene mejor la fase en la bahía de
   Nueva York (Sandy Hook +1.8° contra −18.6°, Battery −8.6° contra −31.3°) y peor la amplitud en Long Island Sound
   (Bridgeport 0.57 contra 0.92 m, obs. 0.98). La clasificación (criterio 4) es de la Tarea 11.
 - **Corrida completa de MOM6 con Jerlov I (`mom6_full_jerlov`, control de paridad, R23) ✅ (criterio 7, primera parte):** 123 días desde el 2017-05-01, mismas entradas, DT 600
   / DT_THERM 1800 de NWA12 sin cambios: termina sin truncamientos (`ocean.stats`, CFL máx 0.28), salidas diarias 3-D y
-  η horaria. La mirada a SST contra OISST y a η en mareógrafos queda para la Tarea 11 (OISST no está bajado).
+  η horaria. La mirada a SST contra OISST y a η en mareógrafos está en la Tarea 11 (abajo).
 - **Corrida de referencia `mom6_full` (MANIZZA_05, R23, R25):** 123 días, DT 600 / DT_THERM 1800, 0 truncamientos, CFL máx 0.26, 26.0 s por día simulado en 5 rangos.
   SST media del dominio (tos diaria, ponderada por área): MANIZZA − Jerlov = **+0.30 °C el día 123** (24.03 contra
   23.73 °C); −0.10 °C el día 31, +0.06 el día 93, +0.05 de media en los 123 días. Es el sentido esperado: con
@@ -349,13 +361,117 @@ onda corta ni lluvia, aire a 10 °C, q = 0.98 q_sat, onda larga σT⁴); T se qu
   27.4 s/día; pyOCEAN, la misma corrida completa a Δt 300 s con 5 hilos, 208.5 s/día (7.9× MOM6; con Δt 600 sería
   ≈ 106 s/día, 4×).
 
-**Qué debe mejorar pyOCEAN (de esta tarea):** (1) `parity_config()` debe pasar `g=9.8` y `pgf_mass_weight='full'`
-para ser NWA12 (hoy 9.81 y 'vanished'; 5e-7 m s⁻² en el PGF inicial); (2) el costo por día (×8 contra MOM6 en los
-mismos núcleos): Δt 300 por la inestabilidad de θ_bc = ½ (factor 2) y la parte en serie del paso (1.6× de 1 a 5
-hilos); (3) la fase de M2 en la bahía de Nueva York (MOM6 la tiene bien con la misma batimetría y la misma marea de
-borde, así que no es sólo la resolución; a juzgar en la Tarea 11).
+**Qué debe mejorar pyOCEAN (de esta tarea):** (1) ~~`parity_config()` debe pasar `g=9.8` y
+`pgf_mass_weight='full'`~~ hecho (R21); (2) el costo por día (×8 contra MOM6 en los mismos núcleos): ~~Δt 300 por la
+inestabilidad de θ_bc = ½~~ (corregida, `e1ffbbb`: ×4 a Δt 600) y la parte en serie del paso (1.6× de 1 a 5 hilos);
+(3) la fase de M2 en la bahía de Nueva York: con la SSH de MOM6 bien leída, MOM6 también se adelanta (Battery −20.7°,
+Sandy Hook −10.4°); pyOCEAN 8–10° más (Tarea 11).
 
 Reproducir: `python validation/nwa12_cut/mom6_inputs.py` → `validation/nwa12_cut/build_mom6.sh` →
 `validation/nwa12_cut/run_mom6.sh pgf0|tides|full|full_jerlov` → `python validation/nwa12_cut/check_mom6.py --static --pgf
 --series --cost RUNS/runs/mom6_tides RUNS/runs/mom6_full RUNS/runs/mom6_full_jerlov` → `python validation/nwa12_cut/tide_check.py
 RUNS/runs/mom6_tides`.
+
+## Tarea 11: comparación con observaciones, cierre de la cadena (2026-11-03)
+
+Detalle y tablas completas en `RUNS/figs/obs_qc/README.md` (control de calidad), `RUNS/figs/obs_compare/README.md`
+(comparación, con OISST en su §5) y `RUNS/figs/gs_diag_*/README.md` (Corriente del Golfo). Aquí, lo que cierra la
+cadena.
+
+### Correcciones del núcleo que salieron de la cadena (pausa de la Tarea 11, 2026-11-02/03)
+
+La corrida de paridad de 123 días a Δt 300 no se podía puntuar: desde el día ~40 un modo cuasi-inercial llevaba la
+capa superior de la Corriente del Golfo a 5.5–7.2 m/s (`figs/gs_diag/README.md`). Orden aprobado por Esteban y
+resultado:
+
+1. **Flujo de PV / θ_bc = ½ (`e1ffbbb`, clase a).** El flujo de PV del momento vector-invariante usaba el transporte
+   del paso anterior; MOM6 sólo lo hace en su predictor (`MOM_dynamics_split_RK2.F90:566, 793, 1103`). Ahora usa uⁿ,
+   hⁿ. La caja inercial decae (−0.16 /d en vez de crecer), DOME a 1200 s queda estable en z\*, σ e híbrida, la onda
+   interna de Ilicak queda igual (0.736 / 0.579 / 0.261), y la paridad corre a Δt 600 (`docs/design/theta_bc_inertial/root_cause.md`).
+2. **Velocidad tangencial de MOM6 en los bordes abiertos (`b48d367`, paridad `2f80d5a`, R27):** fila propia en
+   `CLAUDE.md`.
+3. **Viscosidad horizontal en las caras abiertas (`ca36b59`, clase a).** Con `obc_tangential='none'` la cara abierta
+   era una pared en la tensión de Smagorinsky y en la laplaciana de A_h ((u₁ − 0)/Δx). Ahora entra su velocidad
+   normal, como MOM6 (`mask2dCu` = 1 en las caras OBC, `MOM_grid_initialize.F90:1270-1288`; sin rama OBC en la
+   tensión, `MOM_hor_visc.F90:708-715`). La paridad (`'mom6'`) queda bit a bit; DOME la siente (abajo).
+4. **Smagorinsky biarmónica de MOM6 (`a1a2c14`, paridad `1789e9f`).** El ancho del chorro en 72 °W pasa de 96 km
+   (laplaciana 0.15) a **72 km** (mediana de los días 60–123; MOM6 92, GLORYS 73), sin costo extra (0.99×), 0
+   truncamientos. La cota `BOUND_AH` × 6/11 **no** causa el tablero de ajedrez de ζ (`figs/gs_diag_bihbound`: nunca
+   actúa en la capa de superficie ni en la región de la métrica). Comparado media diaria con media diaria
+   (`figs/gs_diag_dailymean`, corrida horaria `full_dt600_bih30h`), el tablero es ζ/f **0.0286** contra 0.023 de MOM6
+   (1.24×, c, pequeño) y SST **0.089** contra 0.088 °C (igual): las instantáneas de las 00 UTC explicaban todo el
+   exceso de SST y ~55 % del de ζ.
+
+Corrida vigente `full_dt600_bih123` (1789e9f; Δt 600, 123 días, 5 hilos): 0 truncamientos, 0 eventos del limitador,
+max|u| 2.98 m/s, 105.2 s por día simulado; presupuestos relativos al contenido / al flujo bruto: volumen 1.5e-16 /
+6.8e-16, calor 1.2e-14 / 2.8e-14, sal 5.3e-14 / 2.4e-13 (`rel_terms` 1.0e-12 / 5.2e-13 / 7.8e-11, la sal por
+redondeo como en la Tarea 9).
+
+### Control de calidad de las observaciones (paso 0; `obs_qc.py`, `e96419e`; regla de Esteban R26)
+
+| registro | veredicto | razón |
+|---|---|---|
+| 13 mareógrafos CO-OPS (6 min y horario, verificados) | 10 **usables**, 3 **parciales** (Newport, Bridgeport, Montauk: bloques inferidos por CO-OPS y el hueco de 264 h de Montauk), 0 corruptos | sin escalones de datum ni fallas de reloj confirmados; los 23 candidatos a escalón desaparecen en la diferencia con los vecinos (señal oceánica); el registro de 2017 = sus constantes `harcon` a 0.2–2.2 cm en M2 |
+| TPXO10 en los mareógrafos | no representativo en Woods Hole, Nantucket, Montauk y The Battery (d) | se reportan aparte |
+| NDBC 44025 (WTMP, ATMP, PRES, WSPD) | **parcial** (86.6 % de WTMP) | huecos de 26 h (30 may) y 293 h (29 jul – 10 ago); 8 picos, 47 h pegadas; sin salinidad ni T subsuperficial en 2017 |
+| OISST v2.1 AVHRR (124 días, `compare.oisst_qc`) | **usable, parcial**: 18 de 713 píxeles de agua fuera | completo, versión final, sin hielo ni valores fuera de rango, `err` mediana 0.21 °C; 2 píxeles de Long Island Sound +3.4/+5.0 °C sobre GLORYS (anomalía > 5 °C 35–64 días) y 16 costeros sin referencia; +0.53 °C sobre la boya 44025 por representatividad (el sesgo crece hacia la costa en los cuatro píxeles del estencil, d) |
+
+### Resultados (pyOCEAN = paridad vigente; MOM6 = `mom6_full` MANIZZA_05 y el control `mom6_full_jerlov`)
+
+| comparación | pyOCEAN | MOM6 | MOM6 Jerlov | otra referencia |
+|---|---|---|---|---|
+| **mareas solas, M2 vectorial mediana / media [m], 11 mareógrafos** (criterio 4; `tides_dt600_bih`) | **0.193 / 0.225** | 0.241 / 0.245 | — | TPXO10 0.062 / 0.148 |
+| idem, 7 mareógrafos donde TPXO10 es representativo | 0.184 / 0.166 | 0.181 / 0.202 | — | TPXO10 0.045 / 0.041 |
+| η, 4 meses: submareal menos barómetro inverso, RMSE [m] / r (mediana de 11) | 0.047 / 0.85 | 0.052 / 0.76 | 0.049 / 0.76 | — |
+| SST contra OISST, plataforma interior Jun–Ago, sesgo / RMSE [°C] | +1.07 / 1.80 (≈ +0.85 sin el sesgo de muestreo) | +0.51 / 1.53 | +0.11 / 1.44 | GLORYS12 +0.10 / 1.07 |
+| SST contra OISST, agua profunda interior Jun–Ago | +2.46 / 3.37 | +2.07 / 3.01 | +2.31 / 3.19 | GLORYS12 +0.42 / 1.50 |
+| SST contra GLORYS12, plataforma interior Jun–Ago | +0.95 / 1.86 | +0.36 / 1.75 | −0.00 / 1.68 | — |
+| SST en 44025, medias diarias, sesgo / RMSE / r | +0.49 / 0.77 / 0.994 | +0.82 / 1.14 / 0.987 | +0.19 / 0.78 / 0.989 | GLORYS +0.65; OISST +0.53 / 0.74 / 0.994 |
+
+Comparación de la SSH de MOM6: su salida horaria es el promedio de la hora de acople (arriba, Tarea 10); `compare.py`
+y `tide_check.py` lo deshacen. Sesgo de muestreo de pyOCEAN: la corrida diaria guarda instantáneas de las 00 UTC
+contra las medias diarias de MOM6, GLORYS y OISST; medido contra OISST con la corrida horaria, +0.11 °C en la
+plataforma en mayo y ≈ +0.2 °C en verano (por la serie por paso en los 13 puntos), +0.02 °C en agua profunda.
+
+### Criterios del spec
+
+| criterio | estado | dónde |
+|---|---|---|
+| 1. malla = MOM6 compilado | ✅ 23 variables estáticas bit a bit | Tarea 10 |
+| 2. invariancia en mallas curvilíneas | ✅ ≤ 1e-10 en los 4 casos; Coriolis de flujo σ corregido (a) | Tarea 3, `docs/design/regional_refs/metric_audit.md` |
+| 3. GLORYS | ✅ lectura = archivo crudo, rotación exacta, contenido por columna, caras del borde | Tarea 7 |
+| 4. mareas solas | ✅ M2 0.193 m contra 0.241 de MOM6 (empate en los 7 mareógrafos buenos de TPXO10); los dos 3× TPXO10 | arriba |
+| 5. presión atmosférica | ✅ barómetro inverso estático a 3.4e-5 (σ) y 1.1e-5 (z\* esférica), volumen exacto, apagada = bit a bit | Tarea 6 |
+| 6. corrida completa de paridad | 🔶 sin truncamientos ni eventos del limitador, presupuestos a redondeo, restart y 1 = 5 hilos bit a bit (corrida de la Tarea 9 y pruebas del caso pequeño con la paridad vigente); **costo 105 s/día contra 26.0 de MOM6 (4.0×)** | arriba |
+| 7. MOM6 en el recorte | ✅ 123 días con las mismas entradas, PGF inicial a 1.2e-14, primera mirada a SST (GLORYS, OISST, 44025) y a η | Tarea 10, arriba |
+| 8. sin cambios en lo existente | ✅ con regeneraciones deliberadas: las correcciones (a) `e1ffbbb` (flujo de PV: 17 casos ALE vector-invariantes) y `ca36b59` (caras abiertas: 5 casos con fronteras abiertas y ah > 0) regeneraron a propósito los goldens que tocan; la de Coriolis σ (`5d8aab4`) dejó los goldens bit a bit, cada una con su máx. \|Δ\| en el commit | `CLAUDE.md` |
+
+### Clasificación de lo que queda
+
+- **Fase de M2 en la bahía de Nueva York y Long Island Sound** (los dos modelos 10–38° adelantados; pyOCEAN 8–10°
+  más que MOM6): batimetría de 1/12° de los estrechos y puertos y sin `CHANNEL_DRAG` (b/c). Fuera de costa pyOCEAN va
+  4–5° adelante de TPXO10 y MOM6 1–3° atrás [hipótesis: paso barotrópico implícito θ frente al split-explicit de
+  MOM6 con η filtrada; c hasta probar lo contrario].
+- **Calentamiento de la plataforma en verano** (≈ +0.75 °C sobre MOM6 Jerlov, con la misma onda corta, bulk y estado
+  inicial; confirmado contra OISST y GLORYS): (b) KPP frente a ePBL [hipótesis, por comprobar con la profundidad de la
+  capa de mezcla contra perfiles]; MANIZZA_05 vale ≈ 0.4 °C en MOM6 (b para pyOCEAN, que no la tiene).
+- **Agua profunda +2 °C en los tres modelos**: trayectoria de la Corriente del Golfo y anillos en una corrida libre
+  (c); la pared norte en 72 °W deriva al norte desde el día ~50 en pyOCEAN (38.9 °N, MOM6 37.8, GLORYS 37.4), sin
+  atribuir con una sola realización (b/c).
+- **η submareal**: sin presión atmosférica en la paridad (`MAX_P_SURF` = 0 en NWA12); con el barómetro inverso
+  quitado de la observación, los dos modelos tienen 11–25 % de varianza de más (b contra la verdad, c de la paridad).
+- **Costo 4× MOM6**: la parte en serie del paso (1.6× de 1 a 5 hilos) y un solo Δt (MOM6 separa `DT_THERM` 1800).
+
+### Qué debe mejorar pyOCEAN (cadena regional)
+
+1. Mezcla de la capa superficial en la plataforma: comparar KPP con ePBL y con perfiles observados (OOI Pioneer,
+   planeadores, eMOLT); ePBL y la doble difusión son la elección de NWA12 (b; proyecto 4).
+2. Onda corta de Manizza con clorofila (b): vale ≈ 0.4 °C de SST de plataforma en MOM6.
+3. Arrastre de canal / subgrid (`CHANNEL_DRAG`) y constituyentes de aguas someras (M4, MS4, M6) para Long Island Sound.
+4. Presión atmosférica encendida en el proyecto 4 (`atm_pressure=True` existe; la paridad la deja apagada).
+5. Costo: menos parte en serie por paso y un Δt de trazadores separado, para acercarse a los 26 s/día de MOM6.
+6. Salida de medias diarias de SST (y SSH horaria) para comparar media con media; hoy se corrige con la corrida horaria.
+7. La deriva de la Corriente del Golfo: estadística de varias realizaciones en el proyecto 4, no una sola trayectoria.
+
+Reproducir la comparación: `python validation/nwa12_cut/obs_qc.py` → `python validation/nwa12_cut/compare.py`
+(`--only tides eta sst buoy oisst`); salidas en `RUNS/figs/obs_qc/` y `RUNS/figs/obs_compare/`.

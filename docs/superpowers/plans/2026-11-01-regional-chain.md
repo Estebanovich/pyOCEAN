@@ -348,12 +348,12 @@ The case lives only in `validation/nwa12_cut/`, with one case definition that wr
   - **Criterion 4:** the median M2 vector error of pyOCEAN is not worse than MOM6's on the same cut, or the difference is classified.
   - **Full run, first look without scoring:**
     - η at the gauges against the verified hourly levels;
-    - SST against GLORYS and, if Esteban authorises the small extra download, NOAA OISST v2.1 (otherwise state it is pending);
+    - SST against GLORYS and, if Esteban authorises the small extra download, NOAA OISST v2.1 (otherwise state it is pending) — done 2026-11-03 (authorised; QC + comparison in `figs/obs_compare/README.md` §5);
     - T and S at 44025 against the buoy.
   - Ends with the "what pyOCEAN should improve" list. Missing NWA12 physics (ePBL, double diffusion, biharmonic Smagorinsky, tracer reservoir) is class (b)/(c), to be decided in project 4.
-- [ ] **Step 0: Observation QC first (Esteban, 2026-11-02).** Before any skill number, classify every observation record as usable or corrupted, with the reason. Gauges (CO-OPS 6-min and hourly, 13 stations): `diagnostics/sealevel_qc.py`, which checks spikes, stuck values, datum steps, clock offsets and twin sensors, plus checks against CO-OPS `harcon` and gaps (Montauk). NDBC 44025: range, spike and stuck checks, and gaps. Write the QC table (record, verdict, reason) in the README. Only usable records enter the metrics.
-- [ ] **Step 1: Failing test** for the harmonic helper on a synthetic M2 + K1 series: amplitude to 1e-6, phase to 1e-4°.
-- [ ] **Step 2:** Implement and run `compare.py`.
-- [ ] **Step 3:** Update the README with every criterion (✅/🔶, numbers and classification), then the `CLAUDE.md` row and the roadmap scorecard.
-- [ ] **Step 4:** Run the full suite and record the count.
-- [ ] **Step 5:** Commit.
+- [x] **Step 0: Observation QC first (Esteban, 2026-11-02).** Before any skill number, classify every observation record as usable or corrupted, with the reason. Gauges (CO-OPS 6-min and hourly, 13 stations): `diagnostics/sealevel_qc.py`, which checks spikes, stuck values, datum steps, clock offsets and twin sensors, plus checks against CO-OPS `harcon` and gaps (Montauk). NDBC 44025: range, spike and stuck checks, and gaps. Write the QC table (record, verdict, reason) in the README. Only usable records enter the metrics.
+- [x] **Step 1: Failing test** for the harmonic helper on a synthetic M2 + K1 series: amplitude to 1e-6, phase to 1e-4°.
+- [x] **Step 2:** Implement and run `compare.py`.
+- [x] **Step 3:** Update the README with every criterion (✅/🔶, numbers and classification), then the `CLAUDE.md` row and the roadmap scorecard.
+- [x] **Step 4:** Run the full suite and record the count.
+- [x] **Step 5:** Commit.
