@@ -480,3 +480,123 @@ def test_initial_pgf_matches_mom6():
     NWA12 PGF settings (G_EARTH 9.8, full mass weighting)."""
     r = cm.pgf_check(_PGF0)
     assert max(r["max_du"], r["max_dv"]) <= cm.TOL_PGF, r
+
+
+# ---------------------------------------------------------------------------------------------------- Task 11 compare
+def test_tidal_constants_recovers_m2_k1():
+    """Plan Task 11 step 1: the harmonic helper returns amplitude to 1e-6 m and Greenwich phase to 1e-4° on a
+    synthetic M2 + K1 series built with the OTPS basis of forcing.tides (nodal corrections at each time)."""
+    from diagnostics.tide_gauges import complex_from_amp_phase
+    from forcing.tides import predict
+    from validation.nwa12_cut import compare as cmp
+
+    t = T0 + np.arange(0, 30 * 24 * 6) * np.timedelta64(10, "m")
+    amp, pha = np.array([0.734, 0.112]), np.array([351.7, 187.25])
+    h = 0.4 + predict(t, complex_from_amp_phase(amp, pha), ["m2", "k1"])
+    r = cmp.tidal_constants(t, h, ["m2", "k1"])
+    np.testing.assert_allclose(r["amp"], amp, atol=1e-6)
+    dphi = (r["phase"] - pha + 180.0) % 360.0 - 180.0
+    assert np.abs(dphi).max() < 1e-4
+    assert abs(r["mean"] - 0.4) < 1e-6
+    # inferred constituent: P1 = ratio · K1, solved jointly
+    ratio = 0.33 * np.exp(-1j * np.deg2rad(4.0))
+    hc = complex_from_amp_phase(np.array([0.734, 0.112, 0.112 * 0.33]), np.array([351.7, 187.25, 191.25]))
+    h2 = predict(t, hc, ["m2", "k1", "p1"])
+    r2 = cmp.tidal_constants(t, h2, ["m2", "k1", "p1"], inference={"p1": ("k1", ratio)})
+    np.testing.assert_allclose(r2["amp"], np.abs(hc), atol=1e-6)
+
+
+def test_tidal_errors_vector_and_phase():
+    from validation.nwa12_cut import compare as cmp
+
+    obs = np.array([1.0 * np.exp(-1j * np.deg2rad(10.0))])
+    mod = np.array([0.9 * np.exp(-1j * np.deg2rad(20.0))])
+    e = cmp.tidal_errors(mod, obs)
+    assert abs(e["amp_ratio"][0] - 0.9) < 1e-12
+    assert abs(e["dphase"][0] - 10.0) < 1e-9                        # model lags the observation by 10°
+    assert abs(e["vector"][0] - abs(mod[0] - obs[0])) < 1e-15
+
+
+def test_accepted_mask_excludes_qc_intervals():
+    from validation.nwa12_cut import compare as cmp
+
+    t = np.datetime64("2017-05-01T00:00", "ns") + np.arange(48) * np.timedelta64(1, "h")
+    excl = {"gaps": [["2017-05-01T02:12", "2017-05-01T04:54"]], "inferred": [["2017-05-01T10:00", "2017-05-01T10:00"]],
+            "spikes": [["2017-05-01T20:06", "2017-05-01T20:06"]],
+            "step_candidates_rejected": [["2017-05-02T06:00", "2017-05-02T06:00"]]}     # not a fault: ignored
+    ok = cmp.accepted(t, excl)
+    bad = np.flatnonzero(~ok)
+    assert list(bad) == [3, 4, 10]          # 03:00 and 04:00 inside the gap, 10:00 inferred; 20:06 is off the hour
+
+
+def test_godin_filter_removes_tides_keeps_slow_signal():
+    from validation.nwa12_cut import compare as cmp
+
+    th = np.arange(24 * 40, dtype=float)
+    slow = 0.2 * np.sin(2 * np.pi * th / (24 * 10.0))
+    x = slow + 0.8 * np.cos(2 * np.pi * th / 12.4206) + 0.1 * np.cos(2 * np.pi * th / 23.9345)
+    y = cmp.godin(x)
+    ok = np.isfinite(y)
+    assert ok.sum() == x.size - 2 * 35                                 # 71-h support
+    def gain(period_h):                                                 # Godin's amplitude response
+        a = lambda n: np.sin(np.pi * n / period_h) / (n * np.sin(np.pi / period_h))
+        return a(24) ** 2 * a(25)
+    assert abs(gain(12.4206)) < 4e-3 and abs(gain(23.9345)) < 2e-3
+    assert np.abs(y[ok] - gain(240.0) * slow[ok]).max() < 0.8 * 4e-3 + 0.1 * 2e-3
+    x[100] = np.nan
+    y2 = cmp.godin(x)
+    assert np.isnan(y2[100 - 35:100 + 36]).all() and np.isfinite(y2[200])
+
+
+def test_daily_mean_and_skill():
+    from validation.nwa12_cut import compare as cmp
+
+    t = np.datetime64("2017-05-01T00:00", "ns") + np.arange(72) * np.timedelta64(1, "h")
+    x = np.repeat([1.0, 2.0, 3.0], 24)
+    x[30:50] = np.nan                                                   # day 2 keeps 4 of 24 h
+    d, m = cmp.daily_mean(t, x, min_count=12)
+    assert list(d.astype("datetime64[D]").astype(str)) == ["2017-05-01", "2017-05-02", "2017-05-03"]
+    assert m[0] == 1.0 and np.isnan(m[1]) and m[2] == 3.0
+    s = cmp.skill(np.array([1.0, 2.0, 3.0, np.nan]), np.array([1.5, 2.5, 3.5, 9.0]))
+    assert s["n"] == 3 and abs(s["bias"] - 0.5) < 1e-12 and abs(s["rmse"] - 0.5) < 1e-12
+    assert abs(s["crmse"]) < 1e-12 and abs(s["corr"] - 1.0) < 1e-12
+
+
+def test_inverse_barometer():
+    from validation.nwa12_cut import compare as cmp
+
+    p = np.array([101325.0, 101425.0, 101225.0])
+    eta = cmp.inverse_barometer(p, rho0=1025.0, g=9.81)
+    np.testing.assert_allclose(eta, -(p - p.mean()) / (1025.0 * 9.81))
+
+
+def test_undo_step_average_recovers_constants():
+    """MOM6's hourly SSH is the mean of the 6 step-end values of the coupling hour (MOM.F90:1056, 1100); undoing the
+    box average (phase shift ω·(n−1)Δ/2, gain sin(nωΔ/2)/(n sin(ωΔ/2))) recovers the instantaneous constants."""
+    from diagnostics.tide_gauges import complex_from_amp_phase
+    from forcing.tides import predict
+    from validation.nwa12_cut import compare as cmp
+
+    cons = ["m2", "s2", "n2", "k1", "o1"]
+    hc = complex_from_amp_phase(np.array([0.6, 0.12, 0.14, 0.09, 0.06]), np.array([10.0, 40.0, 350.0, 180.0, 200.0]))
+    t = T0 + np.arange(1, 29 * 24 + 1) * np.timedelta64(1, "h")
+    dt = np.timedelta64(600, "s")
+    y = np.mean([predict(t - k * dt, hc, cons) for k in range(6)], axis=0)
+    raw = cmp.tidal_constants(t, y, cons)["hc"]
+    assert np.abs(raw - hc).max() > 0.05                                      # 25-min lag: 12° in M2
+    fixed = cmp.undo_step_average(raw, cons, n=6, dt=600.0)
+    assert np.abs(fixed - hc).max() < 2e-4                                    # nodal u, f drift within the hour
+
+
+def test_box_mean_matches_step_average():
+    from validation.nwa12_cut import compare as cmp
+
+    t6 = T0 + np.arange(0, 48 * 10) * np.timedelta64(6, "m")
+    x = np.sin(2 * np.pi * ((t6 - T0) / np.timedelta64(1, "s")) / 44714.0)
+    t = T0 + np.arange(2, 46) * np.timedelta64(1, "h")
+    y = cmp.box_mean(t6, x, t, n=6, dt=600.0)
+    sec = (t - T0) / np.timedelta64(1, "s")
+    ref = np.mean([np.sin(2 * np.pi * (sec - k * 600.0) / 44714.0) for k in range(6)], axis=0)
+    assert np.abs(y - ref).max() < 2e-4                                       # linear interpolation of 6-min data
+    x[100] = np.nan
+    assert np.isnan(cmp.box_mean(t6, x, t, n=6, dt=600.0)).sum() >= 1

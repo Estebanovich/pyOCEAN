@@ -207,6 +207,15 @@ def ic_check(run: Path = RUNS / "mom6_pgf0", ic_path: Path = INPUTS / "ic_full.n
 def mom6_series(run: Path = RUNS / "mom6_tides", case: cs.Case = cs.CASE) -> Path:
     """series.npz (t [s from case.t0], names, eta (nt, n)) of MOM6's hourly SSH snapshots at the gauges' cells, the
     layout of run_pyocean.py's series that tide_check.py reads."""
+    sec, names, eta = mom6_eta(run, case)
+    p = Path(run) / "series.npz"
+    np.savez(p, t=sec, names=np.array(names), eta=eta)
+    return p
+
+
+def mom6_eta(run: Path, case: cs.Case = cs.CASE) -> tuple[np.ndarray, list[str], np.ndarray]:
+    """(t [s from case.t0], station names, η (nt, n) [m]) of MOM6's hourly SSH snapshots at the stations' cells
+    (``inputs/pyocean/stations.nc``, the cells of the pyOCEAN series)."""
     import xarray as xr
     with xr.open_dataset(case.inputs / "stations.nc") as ds:
         names = [str(x) for x in ds["station"].values]
@@ -219,9 +228,7 @@ def mom6_series(run: Path = RUNS / "mom6_tides", case: cs.Case = cs.CASE) -> Pat
     ts = np.array([np.datetime64(x.isoformat(), "ns") for x in t])
     sec = (ts - case.t0) / np.timedelta64(1, "s")
     eta = np.stack([ssh[:, jj[k], ii[k]] for k in keep], axis=1)
-    p = Path(run) / "series.npz"
-    np.savez(p, t=sec, names=np.array([names[k] for k in keep]), eta=eta)
-    return p
+    return sec, [names[k] for k in keep], eta
 
 
 # ------------------------------------------------------------------------------------------------ SST
