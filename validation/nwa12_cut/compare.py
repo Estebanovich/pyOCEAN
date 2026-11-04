@@ -212,22 +212,33 @@ def harcon_ratio(h: np.ndarray) -> dict[str, tuple[str, complex]]:
     return {c: (ref, complex(h[pos[c]] / h[pos[ref]])) for c, ref in INFER.items()}
 
 
+def step_average_of(run: Path) -> tuple[int, float]:
+    """(n_avg, Δt [s]) of a run's η samples: a MOM6 run (``*ocean_hourly*.nc``) writes the mean of the
+    n_avg = dt_cpld/DT step-end values of each coupling hour (MOM6 0e9a561 src/core/MOM.F90:1050-1100, ``ssh_rint``
+    / ``time_in_cycle``), a pyOCEAN run instantaneous values (n_avg = 1, Δt = the sample spacing of ``series.npz``)."""
+    import re
+
+    run = Path(run)
+    if any(run.glob("*ocean_hourly*.nc")):
+        cpl = float(re.search(r"dt_cpld\s*=\s*([0-9.]+)", (run / "input.nml").read_text()).group(1))
+        dt = float(re.search(r"^DT\s*=\s*([0-9.]+)", (run / "MOM_parameter_doc.short").read_text(), re.M).group(1))
+        return int(round(cpl / dt)), dt
+    return 1, float(np.median(np.diff(np.load(run / "series.npz")["t"])))
+
+
 def model_eta(run: Path) -> tuple[np.ndarray, list[str], np.ndarray, int, float]:
     """(hourly times, station names, η (nt, n), n_avg, Δt [s]) of a run: pyOCEAN ``series.npz`` (instantaneous
     step-end values, the on-the-hour ones kept; n_avg = 1) or MOM6 ``*ocean_hourly*.nc`` SSH at the same cells, which
-    is the mean of the n_avg = dt_cpld/DT step-end values of the coupling hour (``undo_step_average``)."""
+    is the mean of the n_avg = dt_cpld/DT step-end values of the coupling hour (``step_average_of``,
+    ``undo_step_average``)."""
     run = Path(run)
-    if any(run.glob("*ocean_hourly*.nc")):
-        import re
+    n_avg, dt = step_average_of(run)
+    if n_avg > 1:
         from validation.nwa12_cut.check_mom6 import mom6_eta
         sec, names, eta = mom6_eta(run)
-        cpl = float(re.search(r"dt_cpld\s*=\s*([0-9.]+)", (run / "input.nml").read_text()).group(1))
-        dt = float(re.search(r"^DT\s*=\s*([0-9.]+)", (run / "MOM_parameter_doc.short").read_text(), re.M).group(1))
-        n_avg = int(round(cpl / dt))
     else:
         s = np.load(run / "series.npz")
         sec, names, eta = s["t"], [str(x) for x in s["names"]], s["eta"]
-        n_avg, dt = 1, float(np.median(np.diff(s["t"])))
     on = np.isclose(sec % 3600.0, 0.0)
     t = T0 + (np.round(sec[on]) * 1e9).astype("timedelta64[ns]")
     return t, names, eta[on], n_avg, dt

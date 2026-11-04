@@ -205,8 +205,9 @@ def ic_check(run: Path = RUNS / "mom6_pgf0", ic_path: Path = INPUTS / "ic_full.n
 
 # ------------------------------------------------------------------------------------------------ criterion 4
 def mom6_series(run: Path = RUNS / "mom6_tides", case: cs.Case = cs.CASE) -> Path:
-    """series.npz (t [s from case.t0], names, eta (nt, n)) of MOM6's hourly SSH snapshots at the gauges' cells, the
-    layout of run_pyocean.py's series that tide_check.py reads."""
+    """series.npz (t [s from case.t0], names, eta (nt, n)) of MOM6's hourly SSH at the gauges' cells, the layout of
+    run_pyocean.py's series that tide_check.py reads.  The SSH is the coupling-hour mean of the step-end values, not a
+    snapshot (MOM.F90:1050-1100); tide_check and compare undo that average."""
     sec, names, eta = mom6_eta(run, case)
     p = Path(run) / "series.npz"
     np.savez(p, t=sec, names=np.array(names), eta=eta)
@@ -214,8 +215,9 @@ def mom6_series(run: Path = RUNS / "mom6_tides", case: cs.Case = cs.CASE) -> Pat
 
 
 def mom6_eta(run: Path, case: cs.Case = cs.CASE) -> tuple[np.ndarray, list[str], np.ndarray]:
-    """(t [s from case.t0], station names, η (nt, n) [m]) of MOM6's hourly SSH snapshots at the stations' cells
-    (``inputs/pyocean/stations.nc``, the cells of the pyOCEAN series)."""
+    """(t [s from case.t0], station names, η (nt, n) [m]) of MOM6's hourly SSH at the stations' cells
+    (``inputs/pyocean/stations.nc``, the cells of the pyOCEAN series).  Each value is the mean of the step-end η of
+    the coupling hour ending at the stamp (MOM6 0e9a561 MOM.F90:1050-1100), not a snapshot."""
     import xarray as xr
     with xr.open_dataset(case.inputs / "stations.nc") as ds:
         names = [str(x) for x in ds["station"].values]

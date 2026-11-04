@@ -699,3 +699,39 @@ def test_region_skill_area_weighted():
     assert abs(r["all", "all"]["bias"] - (2 * (2 / 6) + 2) / 3) < 1e-12
     assert r["top", "all"]["cells"] == 2 and r["top", "all"]["n_days"] == 3 and r["top", "all"]["source"] == "X"
     np.testing.assert_allclose(bias_t["top"][1], [0.5, 0.5, 2.0])
+
+
+def test_tide_check_undoes_mom6_step_average(tmp_path):
+    """tide_check reads a MOM6 run's hourly SSH as the coupling-hour mean of its 6 step-end values (MOM6 0e9a561
+    MOM.F90:1050-1100) and undoes it, as compare.model_eta does; a pyOCEAN run (no ocean_hourly file) is untouched."""
+    import json
+    from types import SimpleNamespace
+
+    from diagnostics.tide_gauges import complex_from_amp_phase
+    from forcing.tides import predict
+    from validation.nwa12_cut import compare as cmp
+    from validation.nwa12_cut import tide_check as tc
+
+    cons = ["m2", "s2", "n2", "k1", "o1", "q1"]
+    hc = complex_from_amp_phase(np.array([0.6, 0.12, 0.14, 0.09, 0.06, 0.01]),
+                                np.array([10.0, 40.0, 350.0, 180.0, 200.0, 190.0]))
+    sec = np.arange(1, 30 * 24 + 1) * 3600.0
+    t = T0 + (sec * 1e9).astype("timedelta64[ns]")
+    y = np.mean([predict(t - k * np.timedelta64(600, "s"), hc, cons) for k in range(6)], axis=0)
+    (tmp_path / "harcon_9999999.json").write_text(json.dumps({"HarmonicConstituents": [
+        {"name": "M2", "amplitude": 0.6, "phase_GMT": 10.0}]}))
+    case = SimpleNamespace(t0=T0, tides=tmp_path)
+    for kind in ("mom6", "pyocean"):
+        run = tmp_path / kind
+        run.mkdir()
+        np.savez(run / "series.npz", t=sec, names=np.array(["coops_9999999"]), eta=y[:, None])
+        if kind == "mom6":
+            (run / "20170501.ocean_hourly.nc").write_bytes(b"")
+            (run / "input.nml").write_text("&coupler_nml\n    dt_cpld = 3600\n/\n")
+            (run / "MOM_parameter_doc.short").write_text("DT = 600.0  ! [s]\n")
+        assert cmp.step_average_of(run) == ((6, 600.0) if kind == "mom6" else (1, 3600.0))
+        o, m = tc.gauge_m2(run, skip_days=1.0, case=case)["stations"]["9999999"]
+        if kind == "mom6":
+            assert abs(m - o) < 2e-4                                  # corrected: instantaneous M2 recovered
+        else:
+            assert abs(m - o) > 0.1                                   # a box-averaged series read as snapshots

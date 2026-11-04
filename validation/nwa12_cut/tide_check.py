@@ -10,6 +10,11 @@ observed constants are NOAA CO-OPS ``harcon_<id>.json`` (amplitude, Greenwich ph
 complex convention h = A e^{−iG} (``diagnostics.tide_gauges.complex_from_amp_phase``).  Prints amplitude, phase and
 the M2 vector error |h_mod − h_obs| per gauge and its mean and median.
 
+A MOM6 run (``check_mom6.mom6_series`` writes its ``series.npz``) holds hourly SSH that is the **mean of the 6
+step-end values of the coupling hour**, not a snapshot (MOM6 0e9a561 src/core/MOM.F90:1050-1100); its constants are
+corrected with ``compare.undo_step_average`` (phase ω(n−1)Δt/2 and gain), as in ``compare.py``.  Read as snapshots,
+MOM6's M2 lags by ≈ 12° and loses 1 % of its amplitude (the Task 10 numbers of the README were read that way).
+
 ``--boundary`` also prints the amplitude of the boundary tidal velocity (Σ_c |ū_c| of the 10 constituents and |ū_M2|)
 on the open faces for both ``BoundaryTides.velocity_depth`` choices ('model' = U/D_model, ruling R3; 'tpxo' =
 U/h_TPXO).
@@ -31,6 +36,7 @@ from diagnostics.sealevel_qc import harmonic_analysis  # noqa: E402
 from diagnostics.tide_gauges import complex_from_amp_phase  # noqa: E402
 from forcing.tides import OMEGA  # noqa: E402
 from validation.nwa12_cut import case as cs  # noqa: E402
+from validation.nwa12_cut.compare import step_average_of, undo_step_average  # noqa: E402
 
 CANDIDATES = ("m2", "s2", "n2", "k1", "o1", "q1", "k2", "p1")
 
@@ -50,12 +56,15 @@ def gauge_m2(run: Path, skip_days: float = 1.0, case: cs.Case = cs.CASE) -> dict
     keep = s["t"] >= skip_days * 86400.0
     t = case.t0 + (s["t"][keep] * 1e9).astype("timedelta64[ns]")
     cons = separable(float(s["t"][keep][-1] - s["t"][keep][0]))
+    n_avg, dt = step_average_of(run)
     out = {}
     for k, name in enumerate(map(str, s["names"])):
         if not name.startswith("coops_"):
             continue
         sid = name[6:]
         hc = harmonic_analysis(t, s["eta"][keep, k], cons)["hc"]
+        if n_avg > 1:                                                   # MOM6: coupling-hour mean, not a snapshot
+            hc = undo_step_average(hc, cons, n_avg, dt)
         hj = json.loads((Path(case.tides) / f"harcon_{sid}.json").read_text())["HarmonicConstituents"]
         m2 = [c for c in hj if c["name"] == "M2"][0]
         out[sid] = (complex_from_amp_phase(np.array(m2["amplitude"]), np.array(m2["phase_GMT"])), hc[0])
