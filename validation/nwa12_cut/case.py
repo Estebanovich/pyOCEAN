@@ -19,18 +19,21 @@ Parity with NWA12 (``parity_config``; values from ``docs/design/regional_refs/*.
 | PGF bottom mass weighting | ``MASS_WEIGHT_IN_PRESSURE_GRADIENT`` True (every face) | ``pgf_mass_weight='full'`` (R21; initial PGF = MOM6 to 1.2e-14, Task 10) | — |
 | EOS | ``WRIGHT_FULL`` θ, S_P, ρ₀ 1035, ``C_P`` 3992 | ``eos='wright_full'``, ``ts_kind='theta_sp'``, ρ₀ 1035, c_p 3992 | — |
 | surface | FMS coupler NCAR bulk (SIS2) | ``BulkFluxes('ncar')`` (= FMS ``surface_flux`` bit for bit), ERA5 + lsm | c (no SIS2, gusts) |
-| shortwave | ``VAR_PEN_SW`` with chlorophyll (COBALT), 3 bands | Jerlov I, Paulson & Simpson | c |
-| mixing | ePBL + Jackson + double diffusion, ``KD`` 1e-6, ``KV`` 0 | KPP (CVMix) + Jackson, κ_bg 1e-6 (parity value, R16; pyOCEAN default 0), ν_bg 0 | b (no ePBL, no double diffusion) |
+| shortwave | ``VAR_PEN_SW``, ``OPACITY_SCHEME`` MANIZZA_05 with chlorophyll from file, 3 bands (``mom6_full``; the run ``mom6_full_jerlov`` is the Jerlov control) | Jerlov I, Paulson & Simpson | c |
+| mixing | ePBL + Jackson + double diffusion, ``KD`` 1e-6, ``KV`` 0 (possibly a background viscosity ``KD``·``PRANDTL_BKGND`` = 1e-6, MOM_bkgnd_mixing.F90:430 [hipótesis, branch not checked with ePBL]) | KPP (CVMix) + Jackson, κ_bg 1e-6 (parity value, R16; pyOCEAN default 0), ν_bg 0 | b (no ePBL, no double diffusion) |
 | shear mixing | Jackson, ``PRANDTL_TURB`` 1.25 (ν = 1.25 κ, MOM_kappa_shear.F90:393, 773) | ``shear_prandtl=1.25`` | — |
-| Coriolis | ``BOUND_CORIOLIS`` False | Sadourny energy PV flux with BOUND_CORIOLIS always on (core/components/momentum.py:210, not a parameter) | c |
+| Coriolis | ``BOUND_CORIOLIS`` False, ``CORIOLIS_EN_DIS`` True (of two transports, the one that dissipates energy, MOM_CoriolisAdv.F90:439-449, 733-815) | Sadourny energy PV flux with BOUND_CORIOLIS always on (core/components/momentum.py:210, not a parameter), no ``CORIOLIS_EN_DIS`` | c |
+| mixed-layer restratification | ``MIXEDLAYER_RESTRAT`` True, Fox-Kemper et al. (2011), ``FOX_KEMPER_ML_RESTRAT_COEF`` 1.0, ``MLE_FRONT_LENGTH`` 1500 m, MLD from ePBL | none | b (found 2026-11-04, Gulf Stream drift research) |
+| time scheme | split RK2, ``BE`` 0.6; split-explicit barotropic (``BEBT`` 0.2, ``DTBT`` −0.9) | AB3; implicit free surface θ = 0.6, θ_bc = ½ | c |
 | drag | quadratic ``CDRAG`` 0.003, ``HBBL`` 10, ``DRAG_BG_VEL`` 0, ``CHANNEL_DRAG`` | quadratic cd 0.003, hbbl 10, U_bg 0 | b/c (no channel drag, R5) |
-| open edges | Flather + Orlanski + nudging 3 d / 360 d (by Orlanski phase speed), reservoir 9 km | 'radiating': Flather + Orlanski + nudging τ_in 3 d, τ_out 360 d (by flow direction, R7), no reservoir/sponge | c |
+| open edges | Flather + Orlanski + nudging 3 d / 360 d (by Orlanski phase speed, ``OBC_RAD_VEL_WT`` 0.3), reservoir 9 km in and out; runs with ``ENABLE_BUGS_BY_DEFAULT`` True (``OBC_PROJECTION_BUG``, ``EXTERIOR_OBC_BUG``, ``OBC_TRACER_DZ_BUG``) | 'radiating': Flather + Orlanski + nudging τ_in 3 d, τ_out 360 d, chosen by the sign of the Orlanski phase speed cx as CROCO (core/components/open_boundary.py:150; R7 said "by flow direction", corrected 2026-11-04), no reservoir/sponge | c |
 | tangential velocity at open edges | ``ORLANSKI_TAN``, ``NUDGED_TAN`` (radiated and nudged toward the exterior tangential velocity), ``OBC_COMPUTED_VORTICITY``/``STRAIN`` | default ``obc_tangential='none'``: not radiated or nudged, ζ = 0 and D_S = 0 at the open-edge corners (MOM6's ZERO configuration, not free slip; the open-face normal velocity enters the Smagorinsky tension in both modes since the fix of 2026-11-03); ``obc_tangential='mom6'`` ports the MOM6 treatment (``docs/design/regional_refs/mom6_obc_tangential.md``), exterior ``OBData.u_tangential`` from GLORYS at the edge corners | c ('none') / — ('mom6') |
 | boundary tide | TPXO, 10 constituents, η and TPXO's velocity added to the segment, nodal fixed at a date | ``BoundaryTides`` TPXO10, 10 constituents, ``velocity_depth='tpxo'``: u = U/h_TPXO, TPXO's own velocity (R19, revises R3 for the case; u = U/D_model gave up to 3.8 m/s on 5-m faces), OTPS nodal at each time, ramp 0 | c (nodal) |
 | body tide | ``TIDES``, scalar SAL 0.05, SAL in Flather | ``tidal_potential=True``, ``sal_beta`` 0.05, ``sal_flather`` | c (legacy SAL path, R4) |
 | atm. pressure | off (``MAX_P_SURF`` = 0) | ``atm_pressure=False`` | — |
 | rivers | GloFAS v3 (CEFI ``write_runoff_glofas.py``), ePBL ``DO_RIVERMIX`` | GloFAS v4 with the CEFI ldd rule (R11, R12), real freshwater at the top layer | c (version; no river mixing without ePBL, b) |
-| Δt | ``DT`` 600 s, ``DT_THERM`` 1800 s | one Δt: 300 s (full; 600 s grows the known θ_bc = ½ mode, R15), 600 s (tides) | c (the instability: a, own plan) |
+| Δt | ``DT`` 600 s, ``DT_THERM`` = ``DT_TRACER_ADVECT`` 1800 s | one Δt: 600 s for every phase (300 s until the θ_bc / PV-flux fix ``e1ffbbb``, 2026-11-02, R15) | c (no separate tracer Δt) |
+| tracer advection | ``PPM:H3`` every 1800 s | WENO5-Z + FCT in SSP-RK3 (three stages) every 600 s | c |
 
 Why ALE z* + vector-invariant momentum + a Smagorinsky stress-tensor operator (biharmonic as NWA12, or the Laplacian;
 not σ or the constant Laplacian): the σ flux-form momentum and the constant-A_h Laplacian have no curvilinear metric

@@ -263,6 +263,8 @@ Reorganiza las fases del `CLAUDE.md`. Cambiar el plan del `CLAUDE.md` requiere l
 
 Criterio de avance entre etapas: cada etapa cierra con sus filas del marcador en ✅ o con la diferencia explicada.
 
+**Eficiencia (anotado el 2026-11-04, decisión de Esteban):** el costo se atenderá en una etapa propia o dentro de una existente; dónde va está **por decidir**. Mientras tanto, cada medición o diferencia de costo frente a otro modelo se anota en la sección 10, sin cambiar el modelo por ello.
+
 ## 9. Arquitectura del núcleo y experiencia de usuario (2026-10-15)
 
 Origen: revisión del código y del manual el 2026-10-15, comparada con la organización de MITgcm, MOM6, ROMS/CROCO, HYCOM, Oceananigans y Veros y con las quejas de la sección 3b. Pendiente antes de fijar las interfaces: leer la composición en el código de MOM6 (`src/core/MOM.F90`, `step_MOM`) y de Oceananigans (`HydrostaticFreeSurfaceModel`), con referencias `file:line`.
@@ -353,3 +355,56 @@ Principios:
 6. Instalación con `pip`/conda-forge en una Mac, sin compilar.
 
 Orden de trabajo: Etapa N de la sección 8 (N1 → N6). N1–N3 cambian la calidad del modelo; N5 es lo que más atrae usuarios.
+
+## 10. Cuaderno de eficiencia (anotaciones; sin cambios al modelo todavía)
+
+Se llena conforme aparecen mediciones. Cada entrada: fecha, caso, número, comparación, fuente y si la causa está medida o es [hipótesis]. Las palancas no están decididas; cualquier cambio irá con su spec, bit a bit o con goldens regenerados a propósito, y sin ajustar a un caso.
+
+### 10a. Mediciones
+
+| Fecha | Caso | pyOCEAN | Referencia | Fuente |
+|---|---|---|---|---|
+| 2026-11-03 | Recorte NWA12 (87 × 89 × 75, z\*, paridad, Δt 600 s, 5 núcleos P) | 105 s/día (0.74 s/paso); 1.6× de 1 a 5 hilos | MOM6 + SIS2 26.0 s/día, 5 rangos MPI (`LAYOUT = 1, 5`) → **4.0×** | `validation/nwa12_cut/README.md` (criterio 6) |
+| 2026-11-04 | Uso de CPU, gemela NWA12 `full_dt600_pertT1e-3` en marcha (5 hilos) | 168–212 % de 500 % posibles (≈ 2 núcleos ocupados en promedio; `top`/`ps`); el ventilador casi no suena | MOM6 con 5 rangos MPI mantiene los 5 núcleos al 100 % (cómputo + espera activa de MPI) y el ventilador sube (observación de Esteban) | `ps -o %cpu`, `top -stats cpu` |
+| 2026-10-13 | BayIW cut 198 × 159 z\*, anidado | 9.1 s por hora simulada | MITgcm 4.4 (5 MPI) | `validation/bayiw_cut/README.md` |
+| 2026-10 | BayIW sección 2-D, igual Δt | z\* 9.1 vs 9.0 s/h; híbrida 5.0 vs 4.7 | MOM6 ±10 %; ALE de MOM6 18.6–22.8 % del paso frente a ~13.5 % del remapeo de pyOCEAN; advección de T 11 % (WENO5, 3 etapas) frente a 4.8 % | `validation/mom6_bayiw/README.md` |
+| 2026-10-15 | DOME 10 km / 5 km | 14 / 61–64 s/día | MITgcm 4.6 / 33.7; MOM6 12.0 / 92.8 (Δt 1200) | `validation/dome/README.md` |
+| 2026-10-14 | Ilicak 2-D (1 proceso, Δt máximo estable) | — | CROCO 1.7–3× más barato salvo el overflow | §7 |
+| 2026-10-30 | Columnas periódicas 5 × 5 | 38–79 ms/paso | MOM6 16; CROCO 10–25× más barato (halo) | `validation/turbulence_columns/` |
+| 2026-11-01 | EOS no lineal (BayIW cut) | `wright_full` 1.37×, `teos10` 1.87× la lineal | límite 2.5× | §7 |
+| 2026-10-30 | Jackson (BayIW cut z\*) | 1.275× por paso, kernel ≈ 82 % | — | `validation/dome/README.md` |
+| 2026-10-30 | Smoke `ilicak_overflow_zstar` con C = 0 | 1.08× | `main` | causa sin aislar |
+
+### 10b. Diferencias de diseño frente a MOM6 en NWA12 (2026-11-04; ninguna medida por fase todavía)
+
+1. **Δt de trazadores.** MOM6 usa `DT = 600` s y `DT_THERM = 1800` s (`runs/mom6_full/MOM_parameter_doc.all`): advección de trazadores, regrid/remapeo y diabático (KPP, Jackson, calor) cada 1800 s. pyOCEAN hace todo cada 600 s, y su advección WENO5 + FCT con SSP-RK3 son tres etapas por paso contra una de MOM6. Probablemente la diferencia mayor [hipótesis].
+2. **Paralelismo.** MOM6: 5 procesos MPI con memoria propia. pyOCEAN: 5 hilos de Numba en un proceso, 1.6× de 1 a 5 hilos; parte en serie (pegamento NumPy/Python entre núcleos) y núcleos limitados por memoria (≈ 3.5× con 5 hilos en BayIW). MPI opcional ya está en la Etapa C.
+3. **Acoplamiento atmosférico.** MOM6 `dt_cpld = 3600` s; pyOCEAN calcula el bulk cada paso (componente 8.5 ms/paso en BayIW, ≈ 1 % aquí).
+4. **Modo barotrópico.** MOM6 split-explicit; pyOCEAN superficie libre implícita (CG + LU). Peso sin medir; el split-explicit ya está en la Etapa C.
+
+### 10b2. Ideas de otros campos (investigación del 2026-11-04; reporte `reports/Proyectos indirectos útiles para pyOCEAN.md`, notas en `research_notes/`, sin commit)
+
+Sin medir; todo [hipótesis] hasta que corra su prueba.
+
+- **Superficie libre:** multigrid como precondicionador de CG (MGPCG, McAdams, Sifakis & Teran 2010, estándar en efectos visuales), PyAMG o el Cholesky de Apple Accelerate (envoltorios macldlt / emerge-aasds) contra la LU rezagada (SuperLU, 65 % del paso en PAC_MEX). El operador de Helmholtz está mejor condicionado que el Poisson de VFX. Patente de NVIDIA sobre un solver multigrid: implementar desde el artículo de 2010.
+- **Reproducibilidad:** suma EFP de MOM6 (Hallberg & Adcroft 2014, Parallel Computing 40:140–143) para sumas globales idénticas con 1/5 hilos, MPI o GPU; reglas de los juegos en lockstep (sin fast-math, sin contracción FMA, orden de reducción fijo, hash por tick = nuestros hashes por fase).
+- **Parte en serie:** auditar la fusión de Numba (`NUMBA_PARALLEL_DIAGNOSTICS`), memoria de trabajo preasignada, pegamento NumPy a kernels; fases independientes en paralelo solo con la capa `omp` o `tbb` (`workqueue` no admite llamadas concurrentes); RK3 por bloques con halo (idea de Halide). Python 3.14t sin GIL: Numba solo en release candidate y choca con numpy 1.26.4.
+- **GPU de la Mac:** ninguna pila Python tiene float64 en Metal; única puerta: kernels propios de MLX (`mx.fast.metal_kernel`) en fp32 con acumulación float64, como modo aparte con sus propios goldens, solo si el ancho de banda GPU/CPU medido da > 1.5×.
+- **Visualización en vivo:** fastplotlib/pygfx en Jupyter (Metal), PyVista + trame en 3-D; filtros diarios y de marea dentro de la corrida (evita el sesgo de las instantáneas de 00 UTC).
+- **Caché de Numba:** `cache=True` guarda globales del momento de compilar y depende del modelo de CPU; riesgo para los goldens; prueba de CI que limpie la caché.
+- **Descartado:** float64 emulado en Metal, jax-metal/Warp/MPS para el núcleo, punto fijo de juegos, Jacobi fijo y proyección neuronal (Tompson 2017), advección semi-Lagrangiana de Stam/BFECC, Lattice Boltzmann con mojado-secado, agua de motores de juego como física, GT4Py/Devito como dependencia.
+
+### 10b3. Pruebas pendientes (ninguna mientras una corrida larga use la máquina)
+
+| # | Prueba | Decide | Estado |
+|---|---|---|---|
+| 1 | Perfil por fase del driver con 1 y 5 hilos (NWA12 paridad) + STREAM triad Numba float64/float32 frente a un kernel Metal de MLX | fracción serial frente a ancho de banda por fase; si GPU/CPU < 1.5× se archiva la GPU | ⬜ |
+| 2 | Fracción del paso NWA12 en advección de trazadores, remapeo y cierre | techo de ganancia de un Δt de trazadores separado (DT_THERM 1800 s de MOM6) | ⬜ |
+| 3 | Suma EFP en Numba (N = 6, M = 46): 10⁷ valores con 1 y 5 hilos y en orden permutado | bits idénticos y = `math.fsum` | ⬜ |
+| 4 | Matriz SPD + RHS de PAC_MEX fuera de línea: LU rezagada vs PyAMG vs V-ciclo geométrico (MGPCG) vs Cholesky de Accelerate | iteraciones y tiempo a igual tolerancia | ⬜ |
+| 5 | `inspect_asm` (grep `fmadd`/`fmla`) en EOS Roquet, PGF FV, Thomas, WENO5 + diagnóstico de fusión de los cinco kernels más caros | si LLVM contrae FMA sin pedirlo; qué no se fusiona | ⬜ |
+
+### 10c. Primer paso cuando se abra el tema
+
+Perfil por fase del driver en unos cientos de pasos de la corrida de paridad NWA12 (≈ 15 min, máquina libre), para repartir los 0.74 s/paso entre las cuatro diferencias de 10b antes de elegir palanca.
+

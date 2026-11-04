@@ -76,12 +76,15 @@ R11 y R12 del registro.
 | peso de masa en el PGF | `MASS_WEIGHT_IN_PRESSURE_GRADIENT` True | `pgf_mass_weight='full'` (R21; PGF inicial = MOM6 a 1.2e-14, Tarea 10) | — |
 | EOS | `WRIGHT_FULL` (θ, S_P), ρ₀ 1035, `C_P` 3992 | `eos='wright_full'`, `ts_kind='theta_sp'`, ρ₀ 1035, c_p 3992 | — |
 | superficie | bulk NCAR del acoplador FMS, con SIS2 | `BulkFluxes('ncar')` (= `surface_flux` de FMS bit a bit), ERA5 con `lsm` | (c) sin SIS2, sin ráfagas |
-| onda corta | `VAR_PEN_SW` con clorofila (COBALT), 3 bandas | Jerlov I, Paulson & Simpson | (c) |
+| onda corta | `VAR_PEN_SW`, `OPACITY_SCHEME` MANIZZA_05 con clorofila de archivo, 3 bandas (`mom6_full`; `mom6_full_jerlov` es el control con Jerlov) | Jerlov I, Paulson & Simpson | (c) |
 | mezcla vertical | ePBL + Jackson + doble difusión, `KD` 1e-6, `KV` 0 | KPP (CVMix) + Jackson, κ_bg 1e-6 (el `KD` de NWA12, pasado como parámetro; el valor por defecto de pyOCEAN sigue en 0), ν_bg 0 | (b) sin ePBL ni doble difusión |
 | mezcla por cizalla | Jackson, `PRANDTL_TURB` 1.25 (ν = 1.25 κ; `MOM_kappa_shear.F90:393, 773`) | `shear_mixing='jackson'`, `shear_prandtl=1.25` | — |
-| Coriolis | `BOUND_CORIOLIS = False` | flujo de PV de Sadourny con el acotado de BOUND_CORIOLIS siempre activo (`core/components/momentum.py:210`, no es parámetro) | (c) |
+| Coriolis | `BOUND_CORIOLIS = False`, `CORIOLIS_EN_DIS = True` (de dos transportes elige el que disipa energía; `MOM_CoriolisAdv.F90:439-449, 733-815`) | flujo de PV de Sadourny con el acotado de BOUND_CORIOLIS siempre activo (`core/components/momentum.py:210`, no es parámetro), sin `CORIOLIS_EN_DIS` | (c) |
+| reestratificación de la capa de mezcla | `MIXEDLAYER_RESTRAT = True` (Fox-Kemper et al. 2011), coeficiente 1.0, `MLE_FRONT_LENGTH` 1500 m, MLD de ePBL | no existe | (b), encontrada el 2026-11-04 |
+| esquema temporal | RK2 dividido, `BE` 0.6; barotrópico split-explicit (`BEBT` 0.2, `DTBT` −0.9) | AB3; superficie libre implícita θ = 0.6, θ_bc = ½ | (c) |
+| trazadores | `PPM:H3` con `DT_THERM` = `DT_TRACER_ADVECT` = 1800 s | WENO5-Z + FCT en SSP-RK3 (tres etapas) cada 600 s, un solo Δt | (c) |
 | fricción de fondo | cuadrática `CDRAG` 0.003, `HBBL` 10 m, `DRAG_BG_VEL` 0, `CHANNEL_DRAG` | cuadrática cd 0.003, hbbl 10, U_bg 0 | (b/c) sin `CHANNEL_DRAG` (R5) |
-| bordes abiertos | Flather + Orlanski + nudging 3 d / 360 d (según la velocidad de fase de Orlanski), reservorio de trazadores de 9 km | `'radiating'`: Flather + Orlanski + nudging τ_in 3 d / τ_out 360 d (según el sentido del flujo, R7), sin reservorio ni esponja | (c) |
+| bordes abiertos | Flather + Orlanski + nudging 3 d / 360 d (según la velocidad de fase de Orlanski), reservorio de trazadores de 9 km | `'radiating'`: Flather + Orlanski + nudging τ_in 3 d / τ_out 360 d (según el signo de la velocidad de fase de Orlanski, como CROCO, `core/components/open_boundary.py:150`; R7 decía «según el sentido del flujo», corregido el 2026-11-04), sin reservorio ni esponja | (c) |
 | velocidad tangencial en los bordes abiertos | `ORLANSKI_TAN`, `NUDGED_TAN`: radiada y relajada hacia la velocidad tangencial exterior | `obc_tangential='mom6'` (R27, desde `2f80d5a`): la misma radiación y relajación, ζ y D_S calculadas en las esquinas del borde (antes ζ = D_S = 0, el ZERO de MOM6) | — |
 | exterior | GLORYS diario en sus niveles (`z_to_dz` de CEFI), remapeado con PPM_H4 | GLORYS diario en sus niveles (`source_level_grid`, interfaces a medio camino), remapeado a las capas, lineal en el tiempo; ū = media de la columna de la celda de borde | — |
 | marea de borde | TPXO, 10 constituyentes, η y la velocidad de TPXO sumadas al segmento, nodal fijo en una fecha | `BoundaryTides` con TPXO10 (10 constituyentes), `velocity_depth='tpxo'`: u = U/h_TPXO, la velocidad propia de TPXO (R19, revisa R3 para el caso; u = U/D del modelo daba hasta 3.8 m/s en caras de 5 m), nodal OTPS en cada instante, sin rampa | (c) nodal |
@@ -104,9 +107,13 @@ paridad con NWA12; el punto (2) de "qué debe mejorar" de N2b prefiere decidir l
 44025, así que se revisa en el proyecto 4. Sin banda de esponja (NWA12 no tiene) y velocidades iniciales
 interpoladas en la vertical (MOM6 las remapea): aceptadas, clase c.
 
-**Física de NWA12 que pyOCEAN no tiene (clase b o c, para el proyecto 4):** ePBL, doble difusión, la onda corta de
-Manizza con clorofila, `CHANNEL_DRAG`, el reservorio de trazadores de los segmentos (9 km), la mezcla de ríos de ePBL
-y SIS2. (La Smagorinsky biarmónica y la velocidad tangencial de MOM6 en los bordes ya están.)
+**Física de NWA12 que pyOCEAN no tiene (clase b o c, para el proyecto 4):** ePBL, doble difusión, la reestratificación
+de la capa de mezcla de Fox-Kemper (`MIXEDLAYER_RESTRAT`), la onda corta de Manizza con clorofila, `CHANNEL_DRAG`, el
+reservorio de trazadores de los segmentos (9 km), la mezcla de ríos de ePBL y SIS2; además, elecciones numéricas (c):
+`CORIOLIS_EN_DIS`, RK2 con `BE` 0.6 + barotrópico split-explicit, trazadores `PPM:H3` con `DT_THERM` 1800 s. MOM6 corre
+con `ENABLE_BUGS_BY_DEFAULT = True` (banderas de bugs de OBC activas). El artículo de Ross et al. (2023) da Smagorinsky
+0.015 y SAL 0.01; el `MOM_input` de CEFI y de `mom6_full` tienen 0.03 y 0.05: la paridad sigue a `MOM_input`.
+Detalle: `reports/Deriva norte de la Corriente del Golfo.md` (sin commit) y `figs/gs_drift/`. (La Smagorinsky biarmónica y la velocidad tangencial de MOM6 en los bordes ya están.)
 
 ## Cómo reproducirlo
 
