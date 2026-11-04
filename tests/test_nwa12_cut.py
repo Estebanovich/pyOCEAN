@@ -600,3 +600,102 @@ def test_box_mean_matches_step_average():
     assert np.abs(y - ref).max() < 2e-4                                       # linear interpolation of 6-min data
     x[100] = np.nan
     assert np.isnan(cmp.box_mean(t6, x, t, n=6, dt=600.0)).sum() >= 1
+
+
+# ---------------------------------------------------------------------------------------------------- Task 11 OISST
+def test_daily_mean_of_fields():
+    """``daily_mean`` also averages (nt, ny, nx) fields day by day, with the count rule per cell."""
+    from validation.nwa12_cut import compare as cmp
+
+    t = T0 + np.arange(48) * np.timedelta64(1, "h")
+    f = np.zeros((48, 2, 3))
+    f[:24] = 1.0
+    f[24:] = np.arange(24)[:, None, None] * np.ones((1, 2, 3))
+    f[24:40, 1, 2] = np.nan                                            # 8 of 24 h left in one cell of day 2
+    d, m = cmp.daily_mean(t, f, min_count=12)
+    assert m.shape == (2, 2, 3)
+    assert np.all(m[0] == 1.0)
+    assert abs(m[1, 0, 0] - 11.5) < 1e-12 and np.isnan(m[1, 1, 2])
+
+
+def test_oisst_files_skip_appledouble(tmp_path):
+    from validation.nwa12_cut import compare as cmp
+
+    for n in ("oisst-avhrr-v02r01.20170502.nc", "oisst-avhrr-v02r01.20170501.nc",
+              "._oisst-avhrr-v02r01.20170501.nc", "notes.txt"):
+        (tmp_path / n).write_bytes(b"")
+    assert [p.name for p in cmp.oisst_files(tmp_path)] == ["oisst-avhrr-v02r01.20170501.nc",
+                                                           "oisst-avhrr-v02r01.20170502.nc"]
+
+
+def test_coastal_pixels_eight_neighbours():
+    from validation.nwa12_cut import compare as cmp
+
+    land = np.zeros((5, 5), bool)
+    land[0, 0] = True
+    c = cmp.coastal_pixels(land)
+    assert c[1, 1] and c[0, 1] and c[1, 0]                             # diagonal neighbour counts
+    assert not c[0, 0]                                                  # land itself is not a coastal water pixel
+    assert c.sum() == 3
+
+
+def test_oisst_qc_flags():
+    """Day coverage, time stamps, land-mask stability, range, ice, err statistics and the coastal-representativeness
+    flag: a coastal pixel more than ``dep_max`` from the reference on average is flagged, an open-ocean pixel with the
+    same departure is not (mesoscale position is not an analysis fault), a coastal pixel without reference is
+    'unverified'."""
+    from validation.nwa12_cut import compare as cmp
+
+    days = np.datetime64("2017-05-01T12:00", "ns") + np.array([0, 1, 3, 4]) * np.timedelta64(1, "D")   # 05-03 missing
+    ny, nx = 4, 5
+    sst = np.full((4, ny, nx), 15.0)
+    sst[:, 0, 0] = np.nan                                               # land
+    sst[:, 3, 4] = np.nan                                               # land
+    err = np.full_like(sst, 0.2)
+    err[:, 1, 1] = 0.5
+    ice = np.full_like(sst, np.nan)
+    anom = np.zeros_like(sst)
+    ref = np.full_like(sst, 15.0)
+    ref[:, 0, 0] = np.nan
+    ref[:, 3, 4] = np.nan
+    ref[:, 0, 1] = 11.0                                                 # coastal, OISST 4 °C warmer
+    ref[:, 2, 2] = 11.0                                                 # open ocean, same departure
+    ref[:, 2, 3] = np.nan                                               # coastal (next to (3, 4)), no reference
+    q = cmp.oisst_qc(days, sst, err, ice, anom, ref=ref, t_start=np.datetime64("2017-05-01"),
+                     t_end=np.datetime64("2017-05-05"), dep_max=3.0)
+    assert q["days_missing"] == ["2017-05-03"]
+    assert q["n_days"] == 4 and q["n_off_noon"] == 0 and q["land_constant"]
+    assert q["n_out_of_range"] == 0 and q["n_ice"] == 0
+    assert abs(q["err_max"] - 0.5) < 1e-6
+    assert q["pixel"][0, 1] == "flagged" and q["pixel"][2, 2] == "ok" and q["pixel"][2, 3] == "unverified"
+    assert q["pixel"][0, 0] == "land"
+    assert q["n_flagged"] == 1 and q["n_unverified"] == 1
+    # range and ice faults are counted
+    sst[2, 1, 2] = 40.0
+    ice[1, 1, 3] = 10.0
+    q = cmp.oisst_qc(days, sst, err, ice, anom, ref=ref, t_start=np.datetime64("2017-05-01"),
+                     t_end=np.datetime64("2017-05-05"))
+    assert q["n_out_of_range"] == 1 and q["n_ice"] == 1
+
+
+def test_region_skill_area_weighted():
+    """Area-weighted daily bias and RMSE of f − ref over region masks, per period (RMSE of a period = root of the
+    mean of the daily mean squares)."""
+    from validation.nwa12_cut import compare as cmp
+
+    t = T0 + np.arange(3) * np.timedelta64(1, "D")
+    ref = np.zeros((3, 2, 2))
+    f = np.zeros((3, 2, 2))
+    f[:, 0, 0] = 1.0
+    f[:, 0, 1] = -1.0
+    f[2] = 2.0
+    area = np.array([[3.0, 1.0], [1.0, 1.0]])
+    reg = {"top": np.array([[True, True], [False, False]]), "all": np.ones((2, 2), bool)}
+    per = {"first2": np.array([True, True, False]), "all": np.ones(3, bool)}
+    rows, bias_t = cmp.region_skill(t, f, ref, reg, area, per, source="X")
+    r = {(x["region"], x["period"]): x for x in rows}
+    assert abs(r["top", "first2"]["bias"] - 0.5) < 1e-12               # (3·1 − 1·1)/4
+    assert abs(r["top", "first2"]["rmse"] - 1.0) < 1e-12
+    assert abs(r["all", "all"]["bias"] - (2 * (2 / 6) + 2) / 3) < 1e-12
+    assert r["top", "all"]["cells"] == 2 and r["top", "all"]["n_days"] == 3 and r["top", "all"]["source"] == "X"
+    np.testing.assert_allclose(bias_t["top"][1], [0.5, 0.5, 2.0])

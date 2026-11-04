@@ -23,22 +23,29 @@ F/R/L-flagged samples are kept, as the QC decided).  Sections:
 3. **SST against GLORYS12** (daily mean of the top level, 0.49 m, bilinear to the T points): pyOCEAN has daily
    00 UTC *snapshots* of the full field (``out/``), MOM6 daily *means* (``tos``).  GLORYS is linearly interpolated to
    00 UTC for the snapshots; the snapshot-minus-daily-mean bias of pyOCEAN is measured at the 13 series points from
-   the per-step series and reported next to it.  OISST v2.1 is not downloaded (pending Esteban's authorisation).
+   the per-step series and reported next to it.
 4. **NDBC 44025 SST** (``WTMP``, hourly, the QC's accepted hours): pyOCEAN per-step top-layer T at the buoy's cell
-   (hourly and daily means), MOM6 daily-mean ``tos`` at the same cell, GLORYS at the buoy.  The buoy has no
+   (hourly and daily means), MOM6 daily-mean ``tos`` at the same cell, GLORYS and OISST at the buoy.  The buoy has no
    salinity and no subsurface temperature (``44025o2017`` does not exist), so S and T(z) at 44025 are not compared.
+5. **SST against OISST v2.1** (NOAA 1/4° daily AVHRR-only analysis, Reynolds et al. 2007, doi:10.1175/2007JCLI1824.1;
+   ``data/oisst/``, read with xarray).  QC first (``oisst_qc``: day coverage, 12 UTC stamps, land mask, range, ice,
+   analysis error, coastal representativeness against GLORYS12; bias against the QC'd 44025 daily means), then the
+   §3 comparison with OISST as reference (bilinear from the accepted pixels; GLORYS12 as a fourth source) and the
+   snapshot-vs-daily-mean effect measured on the hourly run ``full_dt600_bih30h`` (``oisst_snapshot_effect``).
 
 Outputs (never in the repo): ``figs/obs_compare/`` — ``tides.csv``, ``eta_full.csv``, ``sst_glorys.csv``,
-``sst_44025.csv``, ``summary.json`` and figures.
+``sst_44025.csv``, ``sst_oisst.csv``, ``oisst_qc.json``, ``summary.json`` and figures.
 
 Usage:
     python validation/nwa12_cut/compare.py [--tides-py RUN …] [--full-py RUN] [--mom6-tides RUN] [--mom6-full RUN …]
+        [--hourly-py RUN] [--oisst DIR] [--only tides eta sst buoy oisst]
 """
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -136,17 +143,19 @@ def godin(x: np.ndarray) -> np.ndarray:
 
 
 def daily_mean(t: np.ndarray, x: np.ndarray, min_count: int = 20) -> tuple[np.ndarray, np.ndarray]:
-    """UTC daily means of a series: (day starts datetime64[D], mean), NaN where fewer than ``min_count`` finite
-    samples fall in the day."""
+    """UTC daily means of a series or of a (nt, ...) field: (day starts datetime64[D], mean (ndays, ...)), NaN where
+    fewer than ``min_count`` finite samples fall in the day (counted per element of a field)."""
     d = np.asarray(t, "datetime64[ns]").astype("datetime64[D]")
     x = np.asarray(x, float)
     days = np.unique(d)
-    out = np.full(days.size, np.nan)
+    out = np.full((days.size,) + x.shape[1:], np.nan)
     for k, day in enumerate(days):
         v = x[d == day]
-        v = v[np.isfinite(v)]
-        if v.size >= min_count:
-            out[k] = v.mean()
+        ok = np.isfinite(v)
+        n = ok.sum(axis=0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            m = np.where(ok, v, 0.0).sum(axis=0) / n
+        out[k] = np.where(n >= min_count, m, np.nan)
     return days, out
 
 
@@ -421,42 +430,75 @@ def _interp_time(tg: np.ndarray, g: np.ndarray, t: np.ndarray) -> np.ndarray:
     return out
 
 
-def sst_compare(py_run: Path, mom6_runs: dict[str, Path]) -> tuple[list[dict], dict]:
-    """Daily domain SST metrics against GLORYS12 on the common wet cells where GLORYS is defined every day, for the
-    whole cut and its interior (≥ 10 cells from the open edges) split into shelf (H < 200 m) and deep water."""
+def region_skill(t: np.ndarray, f: np.ndarray, ref: np.ndarray, regions: dict[str, np.ndarray], area: np.ndarray,
+                 periods: dict[str, np.ndarray], source: str = "") -> tuple[list[dict], dict]:
+    """Area-weighted SST skill of a model field against a reference on the same grid and times.
+
+    For each region mask R and day n: bias_n = Σ_R A (f − r) / Σ_R A and ms_n = Σ_R A (f − r)² / Σ_R A [°C, °C²]
+    (A = cell area [m²]; NaN cells count as zero difference, so the masks must hold only cells where both are
+    defined).  A period's bias is the mean of bias_n and its RMSE √(mean ms_n).
+
+    Returns (rows: dicts source/region/period/n_days/bias/rmse/cells, bias_t: {region: (t, bias_n)})."""
+    d = np.asarray(f, float) - np.asarray(ref, float)
+    rows, bias_t = [], {}
+    for reg, m in regions.items():
+        w = np.where(m, area, 0.0)
+        dz = np.where(m, np.nan_to_num(d), 0.0)
+        b_n = (dz * w).sum(axis=(1, 2)) / w.sum()
+        ms_n = (dz ** 2 * w).sum(axis=(1, 2)) / w.sum()
+        bias_t[reg] = (t, b_n)
+        for per, sel in periods.items():
+            rows.append(dict(source=source, region=reg, period=per, n_days=int(sel.sum()),
+                             bias=float(b_n[sel].mean()), rmse=float(np.sqrt(ms_n[sel].mean())), cells=int(m.sum())))
+    return rows, bias_t
+
+
+def sst_regions(H: np.ndarray, ref_ok: np.ndarray, edge: int = 10, h_shelf: float = 200.0) -> dict[str, np.ndarray]:
+    """Comparison regions on the model grid: all wet cells where the reference is defined every day, and the interior
+    (≥ ``edge`` cells from the open edges) split into shelf (H < ``h_shelf`` m) and deep water."""
+    wet = np.isfinite(H) & ref_ok
+    ny, nx = H.shape
+    jj, ii = np.mgrid[0:ny, 0:nx]
+    interior = (jj >= edge) & (jj < ny - edge) & (ii >= edge) & (ii < nx - edge)
+    return {"all": wet, "interior_shelf": wet & interior & (H < h_shelf),
+            "interior_deep": wet & interior & (H >= h_shelf)}
+
+
+def _periods(t: np.ndarray) -> dict[str, np.ndarray]:
+    jun = np.datetime64("2017-06-01", "ns")
+    return {"May": t < jun, "Jun-Aug": t >= jun, "all": np.ones(t.size, bool)}
+
+
+def sst_compare(py_run: Path, mom6_runs: dict[str, Path], ref: tuple[np.ndarray, np.ndarray] | None = None,
+                extra: dict[str, tuple[np.ndarray, np.ndarray]] | None = None) -> tuple[list[dict], dict]:
+    """Daily domain SST metrics against a reference (default GLORYS12; OISST with ``ref=oisst_on_model(...)``) on
+    the common wet cells where the reference is defined every day, for the whole cut and its interior split into shelf
+    and deep water (``sst_regions``).  Each source is compared at its own times (pyOCEAN 00 UTC snapshots, MOM6 and
+    GLORYS daily means centred at 12 UTC) with the reference interpolated linearly in time.  ``extra`` adds sources
+    given as (times, (nt, ny, nx) field), e.g. GLORYS against OISST."""
     from validation.nwa12_cut import case as cs
 
     hg, H = cs.grid(cs.CASE)
     lat2, lon2 = hg["lat_t"].values, hg["lon_t"].values
     area = hg["area_t"].values
-    tg, gl = _glorys_sst(lat2, lon2)
+    tg, gl = ref if ref is not None else _glorys_sst(lat2, lon2)
     src = {"pyOCEAN": _pyocean_sst(py_run)}
     src.update({lab: _mom6_sst(r) for lab, r in mom6_runs.items()})
-    wet = np.isfinite(H) & np.all(np.isfinite(gl), axis=0)
-    ny, nx = H.shape
-    jj, ii = np.mgrid[0:ny, 0:nx]
-    interior = (jj >= 10) & (jj < ny - 10) & (ii >= 10) & (ii < nx - 10)
-    regions = {"all": wet, "interior_shelf": wet & interior & (H < 200), "interior_deep": wet & interior & (H >= 200)}
+    src.update(extra or {})
+    regions = sst_regions(H, np.all(np.isfinite(gl), axis=0))
+    wet = regions["all"]
     rows, maps = [], {}
     t_lo = T0 + np.timedelta64(1, "D")
     for lab, (t, f) in src.items():
         keep = (t >= t_lo) & (t <= np.datetime64("2017-09-01T00:00", "ns"))
         t, f = t[keep], f[keep]
         g = _interp_time(tg, gl, t)
-        d = f - g
-        for reg, m in regions.items():
-            w = np.where(m, area, 0.0)
-            bias_t = np.nansum(np.where(m, d, 0.0) * w, axis=(1, 2)) / w.sum()
-            rmse_t = np.sqrt(np.nansum(np.where(m, d, 0.0) ** 2 * w, axis=(1, 2)) / w.sum())
-            for per, sel in (("May", t < np.datetime64("2017-06-01", "ns")),
-                             ("Jun-Aug", t >= np.datetime64("2017-06-01", "ns")), ("all", np.ones(t.size, bool))):
-                rows.append(dict(source=lab, region=reg, period=per, n_days=int(sel.sum()),
-                                 bias=float(bias_t[sel].mean()), rmse=float(np.sqrt((rmse_t[sel] ** 2).mean())),
-                                 cells=int(m.sum())))
-            maps.setdefault(lab, {})["bias_t"] = maps.get(lab, {}).get("bias_t", {})
-            maps[lab]["bias_t"][reg] = (t, bias_t)
+        ok = np.isfinite(g[:, wet]).all(axis=1)                    # reference covers the day
+        t, f, g = t[ok], f[ok], g[ok]
+        r_, bias_t = region_skill(t, f, g, regions, area, _periods(t), source=lab)
+        rows += r_
         jja = t >= np.datetime64("2017-06-01", "ns")
-        maps[lab]["mean_bias_jja"] = np.where(wet, np.nanmean(d[jja], axis=0), np.nan)
+        maps[lab] = dict(bias_t=bias_t, mean_bias_jja=np.where(wet, np.nanmean(f[jja] - g[jja], axis=0), np.nan))
     maps["_grid"] = dict(lat=lat2, lon=lon2, H=H)
     return rows, maps
 
@@ -474,6 +516,205 @@ def snapshot_bias(py_run: Path) -> dict:
         d = [snap[i] - dm[np.searchsorted(days, tsnap[i])] for i in range(1, tsnap.size - 1)
              if np.searchsorted(days, tsnap[i]) < days.size and np.isfinite(dm[np.searchsorted(days, tsnap[i])])]
         out[n] = dict(mean=float(np.mean(d)), rms=float(np.sqrt(np.mean(np.square(d)))))
+    return out
+
+
+# ------------------------------------------------------------------------------------------------ 5. OISST v2.1
+OISST = RUNS / "data" / "oisst"
+OISST_BOX = (35.5, 42.5, -76.5, -68.0)            # lat_lo, lat_hi, lon_lo, lon_hi: the cut plus one 1/4° margin
+OISST_RANGE = (-1.8, 35.0)                         # physical SST range [°C] (freezing point of sea water, warm limit)
+ANOM_PERSIST = 5.0                                 # |anomaly| [°C] counted per pixel for the QC report
+
+
+def oisst_files(directory: Path = OISST) -> list[Path]:
+    """The daily OISST v2.1 AVHRR files of a directory, sorted by date; macOS AppleDouble companions (``._*``) and
+    other files are skipped."""
+    return sorted(p for p in Path(directory).glob("oisst-avhrr-v02r01.*.nc") if not p.name.startswith("._"))
+
+
+def coastal_pixels(land: np.ndarray) -> np.ndarray:
+    """Water pixels with at least one land pixel among their 8 neighbours (outside the array counts as water)."""
+    land = np.asarray(land, bool)
+    p = np.pad(land, 1, constant_values=False)
+    ny, nx = land.shape
+    nb = np.zeros_like(land)
+    for dj in (-1, 0, 1):
+        for di in (-1, 0, 1):
+            if dj or di:
+                nb |= p[1 + dj:1 + dj + ny, 1 + di:1 + di + nx]
+    return nb & ~land
+
+
+def oisst_qc(t: np.ndarray, sst: np.ndarray, err: np.ndarray, ice: np.ndarray, anom: np.ndarray,
+             ref: np.ndarray | None = None, t_start: np.datetime64 = np.datetime64("2017-05-01"),
+             t_end: np.datetime64 = np.datetime64("2017-09-01"), sst_range: tuple[float, float] = OISST_RANGE,
+             dep_max: float = 3.0) -> dict:
+    """QC of a daily OISST v2.1 record over a box (arrays (nt, ny, nx) on the 1/4° grid).
+
+    Checks (Reynolds et al. 2007; Huang et al. 2021, OISST v2.1): one file per day from ``t_start`` to ``t_end``
+    (missing days, duplicates), stamps at 12 UTC (the daily-mean convention), a constant land mask, SST inside
+    ``sst_range``, no sea ice (``ice`` > 0), and the analysis error ``err`` (the OI error standard deviation [°C]).
+    Representativeness: a coastal 1/4° pixel mixes land and enclosed water (AVHRR land contamination, sparse in situ
+    data), so a coastal pixel whose period-mean departure from an independent reference ``ref`` (GLORYS12 on the
+    same grid) exceeds ``dep_max`` [°C] is **flagged** and one without reference is **unverified**; open-ocean
+    pixels are never flagged by the departure (the Gulf Stream path differs between analyses: mesoscale position,
+    not an analysis fault).  Neither enters the comparison.
+
+    Returns a dict of counts and statistics, ``pixel`` (ny, nx) in {land, ok, flagged, unverified}, ``dep`` (period-
+    mean OISST − ref [°C]) and ``anom_days`` (days with |anomaly| > ``ANOM_PERSIST``)."""
+    t = np.asarray(t, "datetime64[ns]")
+    days = t.astype("datetime64[D]")
+    want = np.arange(np.datetime64(t_start, "D"), np.datetime64(t_end, "D") + 1)
+    missing = [str(d) for d in want if d not in set(days)]
+    off_noon = int(np.sum((t - days.astype("datetime64[ns]")) != np.timedelta64(12, "h")))
+    sst = np.asarray(sst, float)
+    land_t = ~np.isfinite(sst)
+    land = land_t[0]
+    fin = np.isfinite(sst)
+    lo, hi = sst_range
+    e = np.asarray(err, float)[fin]
+    ice = np.asarray(ice, float)
+    with np.errstate(invalid="ignore"):
+        n_ice = int(np.sum(np.isfinite(ice) & (ice > 0)))
+        n_out = int(np.sum(fin & ((sst < lo) | (sst > hi))))
+        anom_days = np.sum(np.abs(np.asarray(anom, float)) > ANOM_PERSIST, axis=0)
+    coast = coastal_pixels(land)
+    if ref is not None:
+        with np.errstate(invalid="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            dep = np.nanmean(sst - np.asarray(ref, float), axis=0)
+    else:
+        dep = np.full(land.shape, np.nan)
+    pixel = np.full(land.shape, "ok", dtype="<U10")
+    pixel[land] = "land"
+    pixel[coast & np.isfinite(dep) & (np.abs(dep) > dep_max)] = "flagged"
+    pixel[coast & ~np.isfinite(dep)] = "unverified"
+    return dict(n_days=int(t.size), days_missing=missing, n_duplicates=int(t.size - np.unique(days).size),
+                n_off_noon=off_noon, land_constant=bool((land_t == land).all()),
+                n_land_changes=int((land_t != land).sum()), n_out_of_range=n_out, n_ice=n_ice,
+                n_err_missing=int(np.sum(~np.isfinite(np.asarray(err, float)) & fin)),
+                err_median=float(np.median(e)), err_p95=float(np.percentile(e, 95)), err_max=float(e.max()),
+                n_water=int((~land).sum()), n_coastal=int(coast.sum()), n_flagged=int((pixel == "flagged").sum()),
+                n_unverified=int((pixel == "unverified").sum()), pixel=pixel, dep=dep, anom_days=anom_days)
+
+
+def load_oisst(directory: Path = OISST, box: tuple[float, float, float, float] = OISST_BOX) -> dict:
+    """Read the daily OISST files over ``box`` with xarray: dict(t (12 UTC stamps), lat, lon (°E, −180…180), sst,
+    err, ice, anom (nt, ny, nx) [°C, °C, %, °C], titles (set of global ``title`` attributes), files)."""
+    import xarray as xr
+
+    fs = oisst_files(directory)
+    lat_lo, lat_hi, lon_lo, lon_hi = box
+    parts, titles = [], set()
+    for f in fs:
+        with xr.open_dataset(f) as ds:
+            titles.add(str(ds.attrs.get("title", "")))
+            box_ = dict(lat=slice(lat_lo, lat_hi), lon=slice(lon_lo % 360.0, lon_hi % 360.0))
+            parts.append(ds.isel(zlev=0).sel(**box_).load())
+    ds = xr.concat(parts, "time")
+    return dict(t=ds["time"].values.astype("datetime64[ns]"), lat=ds["lat"].values.astype(float),
+                lon=((ds["lon"].values.astype(float) + 180.0) % 360.0) - 180.0,
+                **{v: ds[v].values.astype(float) for v in ("sst", "err", "ice", "anom")}, titles=titles,
+                files=[f.name for f in fs])
+
+
+def _bilinear(lat: np.ndarray, lon: np.ndarray, f: np.ndarray, lat_q: np.ndarray, lon_q: np.ndarray) -> np.ndarray:
+    """Bilinear interpolation of (nt, ny, nx) fields on a regular (lat, lon) grid to query points (any shape); NaN
+    wherever one of the four corners is NaN or the point is outside the grid."""
+    import xarray as xr
+
+    da = xr.DataArray(f, dims=("time", "lat", "lon"), coords=dict(lat=lat, lon=lon))
+    lat_q, lon_q = np.asarray(lat_q, float), np.asarray(lon_q, float)
+    dims = tuple(f"q{k}" for k in range(lat_q.ndim))
+    q = dict(lat=xr.DataArray(lat_q, dims=dims), lon=xr.DataArray(lon_q, dims=dims))
+    return da.interp(**q).values
+
+
+def glorys_on_oisst(o: dict) -> np.ndarray:
+    """GLORYS12 top-level θ (daily means) bilinear on the OISST grid, matched by date (nt, ny, nx) [°C]."""
+    import xarray as xr
+
+    from validation.nwa12_cut.obs_qc import GLORYS
+
+    with xr.open_dataset(GLORYS) as g:
+        s = g["thetao"].isel(depth=0)
+        s = s.sel(time=o["t"].astype("datetime64[D]").astype("datetime64[ns]"))
+        return s.interp(latitude=xr.DataArray(o["lat"], dims="lat"),
+                        longitude=xr.DataArray(o["lon"], dims="lon")).values.astype(float)
+
+
+def oisst_on_model(o: dict, usable: np.ndarray, lat2: np.ndarray, lon2: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(times, OISST SST bilinear at the model T points (nt, ny, nx)) with the QC-rejected pixels (``usable`` False)
+    removed first, so a model cell next to a flagged or unverified pixel has no reference."""
+    sst = np.where(usable[None], o["sst"], np.nan)
+    return o["t"], _bilinear(o["lat"], o["lon"], sst, lat2, lon2)
+
+
+def oisst_qc_report(o: dict, dep_max: float = 3.0) -> tuple[dict, dict]:
+    """QC of the OISST record (``oisst_qc`` against GLORYS12 on the 1/4° grid) and its bias against the QC'd NDBC
+    44025 daily-mean SST at the buoy (OISST bilinear; GLORYS12 at the same point for context).  Returns (summary for
+    the JSON, fields for the figure)."""
+    from validation.nwa12_cut.obs_qc import NDBC_POS
+
+    ref = glorys_on_oisst(o)
+    q = oisst_qc(o["t"], o["sst"], o["err"], o["ice"], o["anom"], ref=ref, dep_max=dep_max)
+    tb, xb = buoy_wtmp()
+    db, mb = daily_mean(tb, xb, min_count=20)
+    keep = db >= np.datetime64("2017-05-02")
+    po = _bilinear(o["lat"], o["lon"], o["sst"], np.array([NDBC_POS[0]]), np.array([NDBC_POS[1]]))[:, 0]
+    pe = _bilinear(o["lat"], o["lon"], o["err"], np.array([NDBC_POS[0]]), np.array([NDBC_POS[1]]))[:, 0]
+    pg = _bilinear(o["lat"], o["lon"], ref, np.array([NDBC_POS[0]]), np.array([NDBC_POS[1]]))[:, 0]
+    od = dict(zip(o["t"].astype("datetime64[D]"), po))
+    gd = dict(zip(o["t"].astype("datetime64[D]"), pg))
+    sk_o = skill(mb[keep], np.array([od.get(d, np.nan) for d in db[keep]]))
+    sk_g = skill(mb[keep], np.array([gd.get(d, np.nan) for d in db[keep]]))
+    flagged = [dict(lat=float(o["lat"][j]), lon=float(o["lon"][i]), status=str(q["pixel"][j, i]),
+                    dep=None if not np.isfinite(q["dep"][j, i]) else float(q["dep"][j, i]),
+                    anom_days=int(q["anom_days"][j, i]),
+                    err_mean=float(np.nanmean(o["err"][:, j, i])))
+               for j, i in np.argwhere(np.isin(q["pixel"], ("flagged", "unverified")))]
+    summ = {k: v for k, v in q.items() if k not in ("pixel", "dep", "anom_days")}
+    summ.update(titles=sorted(o["titles"]), first=str(o["t"][0]), last=str(o["t"][-1]), rejected_pixels=flagged,
+                dep_max=dep_max, err_at_44025_mean=float(np.nanmean(pe)), buoy_daily_vs_oisst=sk_o,
+                buoy_daily_vs_glorys=sk_g,
+                open_ocean_dep_pct=[float(x) for x in np.nanpercentile(
+                    q["dep"][(q["pixel"] == "ok") & ~coastal_pixels(q["pixel"] == "land")], [5, 50, 95])])
+    fig = dict(q=q, o=o, db=db[keep], mb=mb[keep], po=po, pg=pg)
+    return summ, fig
+
+
+def oisst_snapshot_effect(run_hourly: Path, run_daily: Path, oisst_model: tuple[np.ndarray, np.ndarray]) -> dict:
+    """Bias of comparing pyOCEAN's 00 UTC snapshots with OISST daily means, measured on an hourly-output run
+    (``full_dt600_bih30h``, 30 days): the same days scored twice against OISST, once with the 00 UTC snapshots
+    (reference interpolated to 00 UTC, as for ``full_dt600_bih123``) and once with UTC daily means of the 24 hourly
+    fields (stamped 12 UTC).  Also checks that the hourly run's 00 UTC snapshots equal the daily run's."""
+    from validation.nwa12_cut import case as cs
+
+    hg, H = cs.grid(cs.CASE)
+    area = hg["area_t"].values
+    tg, go = oisst_model
+    regions = sst_regions(H, np.all(np.isfinite(go), axis=0))
+    th, fh = _pyocean_sst(run_hourly)
+    days, dm = daily_mean(th, fh, min_count=24)
+    full = np.isfinite(dm).any(axis=(1, 2))
+    sel_d = full & (days >= np.datetime64("2017-05-02"))
+    td = days[sel_d].astype("datetime64[ns]") + 12 * HOUR
+    snap = np.isin(th, days[sel_d].astype("datetime64[ns]"))
+    ts = th[snap]
+    out = {}
+    for lab, (t, f) in (("snapshot", (ts, fh[snap])), ("daily_mean", (td, dm[sel_d]))):
+        g = _interp_time(tg, go, t)
+        rows, _ = region_skill(t, f, g, regions, area, {"all": np.ones(t.size, bool)}, source=lab)
+        out[lab] = {r["region"]: dict(bias=r["bias"], rmse=r["rmse"], n_days=r["n_days"], cells=r["cells"])
+                    for r in rows}
+    out["snapshot_minus_daily_mean"] = {reg: dict(bias=out["snapshot"][reg]["bias"] - out["daily_mean"][reg]["bias"],
+                                                  rmse=out["snapshot"][reg]["rmse"] - out["daily_mean"][reg]["rmse"])
+                                        for reg in regions}
+    t1, f1 = _pyocean_sst(run_daily)
+    common = np.intersect1d(t1, ts)
+    out["identity_check_max_abs"] = float(np.nanmax(np.abs(f1[np.isin(t1, common)] - fh[np.isin(th, common)])))
+    out["identity_check_days"] = int(common.size)
+    out["days"] = [str(days[sel_d][0]), str(days[sel_d][-1])]
     return out
 
 
@@ -498,9 +739,10 @@ def buoy_wtmp() -> tuple[np.ndarray, np.ndarray]:
     return q["t"], np.where(ok, q["x"], np.nan)
 
 
-def buoy_compare(py_run: Path, mom6_runs: dict[str, Path], station: str = "ndbc_44025") -> tuple[list[dict], dict]:
+def buoy_compare(py_run: Path, mom6_runs: dict[str, Path], station: str = "ndbc_44025",
+                 oisst: dict | None = None) -> tuple[list[dict], dict]:
     """44025 SST: daily means (buoy days with ≥ 20 accepted hours) of the buoy, pyOCEAN (all steps of the day), MOM6
-    (daily tos at the same cell) and GLORYS (bilinear at the buoy); pyOCEAN hourly against the buoy hourly; mean
+    (daily tos at the same cell), GLORYS and OISST (bilinear at the buoy); pyOCEAN hourly against the buoy hourly; mean
     diurnal range (daily max − min) of the buoy and pyOCEAN."""
     import xarray as xr
 
@@ -527,6 +769,9 @@ def buoy_compare(py_run: Path, mom6_runs: dict[str, Path], station: str = "ndbc_
     with xr.open_dataset(GLORYS) as g:
         gs = g["thetao"].isel(depth=0).interp(latitude=NDBC_POS[0], longitude=NDBC_POS[1])
         est["GLORYS12"] = dict(zip(gs["time"].values.astype("datetime64[D]"), gs.values.astype(float)))
+    if oisst is not None:                                             # OISST v2.1 bilinear at the buoy
+        po = _bilinear(oisst["lat"], oisst["lon"], oisst["sst"], np.array([NDBC_POS[0]]), np.array([NDBC_POS[1]]))
+        est["OISST"] = dict(zip(oisst["t"].astype("datetime64[D]"), po[:, 0]))
     keep = db >= np.datetime64("2017-05-02")
     rows = []
     for lab, dd in est.items():
@@ -604,7 +849,7 @@ def plot_eta(figs: dict, rows_qc: dict, path: Path) -> None:
     plt.close(fig)
 
 
-def plot_sst(maps: dict, path: Path) -> None:
+def plot_sst(maps: dict, path: Path, ref: str = "GLORYS12") -> None:
     plt = _plt()
     labs = [k for k in maps if not k.startswith("_")]
     g = maps["_grid"]
@@ -613,7 +858,7 @@ def plot_sst(maps: dict, path: Path) -> None:
         a_ = fig.add_subplot(2, len(labs), n + 1)
         pc = a_.pcolormesh(g["lon"], g["lat"], maps[lab]["mean_bias_jja"], cmap="RdBu_r", vmin=-2, vmax=2,
                            shading="auto")
-        a_.set_title(f"{lab} − GLORYS12, SST Jun–Aug [°C]", fontsize=8)
+        a_.set_title(f"{lab} − {ref}, SST Jun–Aug [°C]", fontsize=8)
         fig.colorbar(pc, ax=a_, shrink=0.8)
     a_ = fig.add_subplot(2, 1, 2)
     for lab in labs:
@@ -621,7 +866,7 @@ def plot_sst(maps: dict, path: Path) -> None:
             t, b = maps[lab]["bias_t"][reg]
             a_.plot(t, b, ls, lw=1, label=f"{lab} {reg}")
     a_.axhline(0, color="k", lw=0.5)
-    a_.set_ylabel("area-mean SST bias vs GLORYS12 [°C]")
+    a_.set_ylabel(f"area-mean SST bias vs {ref} [°C]")
     a_.legend(fontsize=7, ncol=2)
     fig.tight_layout()
     fig.savefig(path, dpi=100)
@@ -646,6 +891,32 @@ def plot_buoy(f: dict, path: Path) -> None:
     plt.close(fig)
 
 
+def plot_oisst_qc(f: dict, path: Path) -> None:
+    """OISST QC figure: pixel status, mean analysis error, mean OISST − GLORYS12 and the 44025 daily series."""
+    plt = _plt()
+    q, o = f["q"], f["o"]
+    fig = plt.figure(figsize=(14, 8))
+    code = np.select([q["pixel"] == "land", q["pixel"] == "ok", q["pixel"] == "flagged"], [np.nan, 0.0, 2.0], 1.0)
+    for n, (fld, ttl, kw) in enumerate((
+            (code, "pixel: 0 ok, 1 unverified, 2 flagged", dict(cmap="viridis", vmin=0, vmax=2)),
+            (np.nanmean(o["err"], axis=0), "mean analysis error err [°C]", dict(cmap="magma_r", vmin=0, vmax=0.6)),
+            (q["dep"], "mean OISST − GLORYS12 [°C]", dict(cmap="RdBu_r", vmin=-3, vmax=3)))):
+        a_ = fig.add_subplot(2, 3, n + 1)
+        pc = a_.pcolormesh(o["lon"], o["lat"], np.where(q["pixel"] == "land", np.nan, fld), shading="auto", **kw)
+        a_.set_title(ttl, fontsize=8)
+        fig.colorbar(pc, ax=a_, shrink=0.8)
+    a_ = fig.add_subplot(2, 1, 2)
+    td = f["db"].astype("datetime64[ns]") + 12 * HOUR
+    a_.plot(td, f["mb"], "k.-", lw=0.8, label="44025 daily mean (QC)")
+    a_.plot(o["t"], f["po"], lw=0.9, label="OISST v2.1")
+    a_.plot(o["t"], f["pg"], lw=0.9, label="GLORYS12")
+    a_.set_ylabel("SST at 44025 [°C]")
+    a_.legend(fontsize=7)
+    fig.tight_layout()
+    fig.savefig(path, dpi=100)
+    plt.close(fig)
+
+
 def _csv(rows: list[dict], path: Path) -> None:
     import pandas as pd
     pd.DataFrame(rows).to_csv(path, index=False, float_format="%.5g")
@@ -659,11 +930,16 @@ def main() -> None:
     ap.add_argument("--mom6-tides", type=Path, default=R / "mom6_tides")
     ap.add_argument("--full-py", type=Path, default=R / "full_dt600_bih123")
     ap.add_argument("--mom6-full", type=Path, nargs="+", default=[R / "mom6_full", R / "mom6_full_jerlov"])
+    ap.add_argument("--hourly-py", type=Path, default=R / "full_dt600_bih30h",
+                    help="hourly-output run for the snapshot-vs-daily-mean effect (OISST section)")
+    ap.add_argument("--oisst", type=Path, default=OISST)
     ap.add_argument("--out", type=Path, default=OUT)
-    ap.add_argument("--only", choices=("tides", "eta", "sst", "buoy"), nargs="*", default=None)
+    ap.add_argument("--only", choices=("tides", "eta", "sst", "buoy", "oisst"), nargs="*", default=None)
     a = ap.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
-    do = set(a.only or ("tides", "eta", "sst", "buoy"))
+    do = set(a.only or ("tides", "eta", "sst", "buoy", "oisst"))
+    have_oisst = bool(oisst_files(a.oisst))
+    o = load_oisst(a.oisst) if have_oisst and ({"oisst", "buoy"} & do) else None
     summ_path = a.out / "summary.json"
     summary = json.loads(summ_path.read_text()) if summ_path.exists() else {}
     mom6_full = {("MOM6" if r.name == "mom6_full" else f"MOM6_{r.name[10:] or r.name}"): r for r in a.mom6_full}
@@ -693,10 +969,25 @@ def main() -> None:
         summary["sst_snapshot_minus_dailymean"] = sb
         summary["sst_glorys"] = rows
     if "buoy" in do:
-        rows, f = buoy_compare(a.full_py, mom6_full)
+        rows, f = buoy_compare(a.full_py, mom6_full, oisst=o)
         _csv(rows, a.out / "sst_44025.csv")
         plot_buoy(f, a.out / "sst_44025.png")
         summary["sst_44025"] = rows
+    if "oisst" in do and o is not None:
+        from validation.nwa12_cut import case as cs
+
+        qsum, qfig = oisst_qc_report(o)
+        (a.out / "oisst_qc.json").write_text(json.dumps(qsum, indent=1, default=float))
+        plot_oisst_qc(qfig, a.out / "oisst_qc.png")
+        hg, _ = cs.grid(cs.CASE)
+        om = oisst_on_model(o, qfig["q"]["pixel"] == "ok", hg["lat_t"].values, hg["lon_t"].values)
+        gl = _glorys_sst(hg["lat_t"].values, hg["lon_t"].values)
+        rows, maps = sst_compare(a.full_py, mom6_full, ref=om, extra={"GLORYS12": gl})
+        _csv(rows, a.out / "sst_oisst.csv")
+        plot_sst(maps, a.out / "sst_oisst.png", ref="OISST v2.1")
+        summary["sst_oisst"] = rows
+        summary["oisst_snapshot_effect"] = oisst_snapshot_effect(a.hourly_py, a.full_py, om)
+        summary["oisst_qc"] = {k: v for k, v in qsum.items() if k != "rejected_pixels"}
     summ_path.write_text(json.dumps(summary, indent=1, default=float))
     print(json.dumps({k: v for k, v in summary.items() if k in ("tides", "eta_full")}, indent=1, default=float))
 
