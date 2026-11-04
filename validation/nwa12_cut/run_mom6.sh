@@ -5,6 +5,12 @@
 #   validation/nwa12_cut/run_mom6.sh tides    # tides only, 30 days (criterion 4)
 #   validation/nwa12_cut/run_mom6.sh full     # MOM6 reference, NWA12's MANIZZA_05 shortwave, 123 days (R23)
 #   validation/nwa12_cut/run_mom6.sh full_jerlov   # parity control: the same with pyOCEAN's Jerlov-I shortwave
+#   validation/nwa12_cut/run_mom6.sh full_pert     # twin of full from θ + 1e-3 °C noise (figs/gs_drift d11)
+#   validation/nwa12_cut/run_mom6.sh full_aspy     # full with the d11 candidates set as in pyOCEAN (MLE off, Coriolis
+#                                                  # without EN_DIS and with the bound, DT_THERM 600, no OBC tracer
+#                                                  # reservoir, no double diffusion); full_aspy_mle-coriolis … switches
+#                                                  # only the named ones, _pert appended starts from the twin state
+#                                                  # (mom6_inputs.ASPY_SWITCHES)
 #
 # The run directory /Volumes/ESTEBAN_MIT/pyOCEAN_runs/nwa12_cut/runs/mom6_<mode>/ is written by
 # mom6_inputs.py --run-dir (INPUT/ links to inputs/mom6/, templates of this directory filled for the mode).
@@ -14,7 +20,7 @@
 # Writes timing.json (wall seconds, simulated days, ranks) next to the outputs.
 set -euo pipefail
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 MKL_NUM_THREADS=1
-[[ $# -eq 1 ]] || { echo "usage: $0 {pgf0|tides|full|full_jerlov}" >&2; exit 2; }
+[[ $# -eq 1 ]] || { echo "usage: $0 {pgf0|tides|full|full_jerlov|full_pert|full_aspy[_<sw>-<sw>…][_pert]}" >&2; exit 2; }
 MODE=$1
 NP=${NP:-5}
 (( NP <= 5 )) || { echo "NP ≤ 5 (P-cores only)" >&2; exit 2; }

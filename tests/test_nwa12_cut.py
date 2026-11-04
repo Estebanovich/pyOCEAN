@@ -994,3 +994,37 @@ def test_mom6_full_pert_mode():
     txt = mi.mode_override("full_pert", ("south",))
     assert 'THICKNESS_FILE = "ic_full_pert.nc"' in txt and '#override TS_FILE = "ic_full_pert.nc"' in txt
     assert mi.DIAG_EXTRA["full_pert"] == mi.DIAG_EXTRA["full"]
+
+
+def test_mom6_full_aspy_mode():
+    # "MOM6 as pyOCEAN" (Gulf Stream drift d11): every candidate switched off by #override lines, subsets for the
+    # bisection, a twin variant from ic_full_pert.nc; otherwise the 'full' reference with its diagnostics.
+    allsw = ("mle", "coriolis", "dt_therm", "reservoir", "ddiff")
+    assert tuple(mi.ASPY_SWITCHES) == allsw
+    assert mi.mode_config("full_aspy") == dict(mi.MODES["full"], aspy=allsw)
+    txt = mi.mode_override("full_aspy", ("south",))
+    for line in ("#override MIXEDLAYER_RESTRAT = False", "#override CORIOLIS_EN_DIS = False",
+                 "#override BOUND_CORIOLIS = True", "#override DT_THERM = 600.0", "#override DT_TRACER_ADVECT = 600.0",
+                 "#override OBC_TRACER_RESERVOIR_LENGTH_SCALE_OUT = 0.0",
+                 "#override OBC_TRACER_RESERVOIR_LENGTH_SCALE_IN = 0.0", "#override DOUBLE_DIFFUSION = False",
+                 'THICKNESS_FILE = "ic_full.nc"', "CHL_FROM_FILE = True"):
+        assert txt.count(line) == 1, line
+    # every overridden parameter is set in NWA12's MOM_input (an #override needs a prior definition)
+    base = (mi.HERE / "MOM_input").read_text().splitlines()
+    for lines in mi.ASPY_SWITCHES.values():
+        for ln in lines:
+            key = ln.split()[1]
+            assert any(b.split("=")[0].strip() == key for b in base), key
+    # timing constraints of MOM.F90:2641-2668 with DT 600 and dt_cpld 3600
+    dt_therm = float(mi.ASPY_SWITCHES["dt_therm"][0].split("=")[1])
+    assert dt_therm % 600.0 == 0 and 3600 % dt_therm == 0
+    sub = mi.mode_override("full_aspy_mle-coriolis", ("south",))
+    assert "MIXEDLAYER_RESTRAT = False" in sub and "BOUND_CORIOLIS = True" in sub
+    assert "DT_THERM" not in sub and "DOUBLE_DIFFUSION" not in sub and "RESERVOIR" not in sub
+    assert mi.mode_config("full_aspy_ddiff-reservoir")["aspy"] == ("reservoir", "ddiff")
+    tw = mi.mode_config("full_aspy_pert")
+    assert tw["ic"] == "full_pert" and tw["aspy"] == allsw
+    assert 'THICKNESS_FILE = "ic_full_pert.nc"' in mi.mode_override("full_aspy_pert", ("south",))
+    for bad in ("full_aspy_foo", "full_aspy_mle-mle", "full_aspyx", "full_aspy_", "nonsense"):
+        with pytest.raises(ValueError):
+            mi.mode_config(bad)

@@ -67,7 +67,8 @@ into volume with RHO_0 = 1035, pyOCEAN adds the volume Q: MOM6's river volume is
 
 Usage: python validation/nwa12_cut/mom6_inputs.py [--only grid,ic,obc,tides,era5,runoff,chl]
        python validation/nwa12_cut/mom6_inputs.py --only ic_pert      (ic_full_pert.nc of the diagnostic twin)
-       python validation/nwa12_cut/mom6_inputs.py --run-dir {pgf0,tides,full,full_jerlov,full_pert}   (run_mom6.sh calls it)
+       python validation/nwa12_cut/mom6_inputs.py --run-dir {pgf0,tides,full,full_jerlov,full_pert,full_aspy[_<sw>-<sw>…][_pert]}
+       (run_mom6.sh calls it; full_aspy switches off the MOM6 candidates of the Gulf Stream drift, ASPY_SWITCHES)
 Index order: pyOCEAN (k, j, i) with k = 0 at the bed; MOM6 files are surface first, (z, y, x).
 """
 from __future__ import annotations
@@ -661,6 +662,57 @@ MODES = {
     "full_pert": dict(days=123, seconds=0, dt_cpld=3600, ic="full_pert", data="full", sw="manizza"),
 }
 PERTURB_AMP, PERTURB_SEED = 1.0e-3, 1             # [°C], seed of ic_full_pert.nc
+# "MOM6 as pyOCEAN" (Gulf Stream north-wall drift, figs/gs_drift d11, approved 2026-11-04): NWA12 options that
+# pyOCEAN's parity configuration does not have, each switched to what pyOCEAN does.  Sources: line numbers of the
+# NWA12 run's MOM_parameter_doc.all (runs/mom6_full, MOM6 0e9a561), of this directory's MOM_input and the get_param
+# call.  Mode "full_aspy" switches off all of them; "full_aspy_<a>-<b>" only those named (bisection), with "_pert"
+# appended it starts from ic_full_pert.nc (twin).  Diagnostic configuration study, not a parity item.
+ASPY_SWITCHES = {
+    # Fox-Kemper et al. (2008, 2011) mixed-layer eddy restratification: pyOCEAN has none (class b)
+    # doc.all:1830 MIXEDLAYER_RESTRAT = True (FOX_KEMPER_ML_RESTRAT_COEF 1.0 :1841, MLE_FRONT_LENGTH 1500 :1851);
+    # MOM_input:413; MOM_mixed_layer_restrat.F90:1691
+    "mle": ["#override MIXEDLAYER_RESTRAT = False"],
+    # Coriolis: NWA12 picks the dissipating one of two thickness-flux estimates and has BOUND_CORIOLIS off (it is
+    # forced off with EN_DIS + SADOURNY75_ENERGY anyway, MOM_CoriolisAdv.F90:2165-2166); pyOCEAN is plain Sadourny
+    # energy with the bound always on (core/dynamics/vector_invariant.py, :1008-1023, 1260-1275)
+    # doc.all:1325 CORIOLIS_EN_DIS = True, :1341 BOUND_CORIOLIS = False; MOM_input:297, 299;
+    # MOM_CoriolisAdv.F90:2074, 2163
+    "coriolis": ["#override CORIOLIS_EN_DIS = False", "#override BOUND_CORIOLIS = True"],
+    # tracer / thermodynamic step: pyOCEAN advances tracers and diabatic terms every Δt = 600 s.  600 is a multiple
+    # of DT = 600 (doc.all:71) and divides dt_cpld = 3600 (input.nml), DT_TRACER_ADVECT ≤ DT_THERM, DIABATIC_FIRST
+    # False (doc.all:18; MOM.F90:2666-2668 needs equal steps only with it), THERMO/TRADV_SPANS_COUPLING False
+    # doc.all:75 DT_THERM = 1800, :85 DT_TRACER_ADVECT = 1800; MOM_input:21, 23; MOM.F90:2641, 2654
+    "dt_therm": ["#override DT_THERM = 600.0", "#override DT_TRACER_ADVECT = 600.0"],
+    # OBC tracer reservoir: 0 = the reservoir takes the exterior value on inflow, the interior on outflow at once,
+    # pyOCEAN's upwind open-boundary tracer (no reservoir)
+    # doc.all:374 OBC_TRACER_RESERVOIR_LENGTH_SCALE_OUT = 9000, :381 _IN = 9000; MOM_input:100, 101;
+    # MOM_open_boundary.F90:866, 874
+    "reservoir": ["#override OBC_TRACER_RESERVOIR_LENGTH_SCALE_OUT = 0.0",
+                  "#override OBC_TRACER_RESERVOIR_LENGTH_SCALE_IN = 0.0"],
+    # double diffusion, Large et al. (1994) in MOM_set_diffusivity (USE_KPP False, USE_CVMIX_DDIFF False doc.all:2173,
+    # so this is the only double-diffusive path): pyOCEAN has none (class b)
+    # doc.all:2066 DOUBLE_DIFFUSION = True; MOM_input:476; MOM_set_diffusivity.F90:2624
+    "ddiff": ["#override DOUBLE_DIFFUSION = False"],
+}
+
+
+def mode_config(mode: str) -> dict:
+    """Configuration of ``mode``: an entry of MODES, or a "MOM6 as pyOCEAN" mode ``full_aspy`` (all of
+    ASPY_SWITCHES), ``full_aspy_<a>-<b>…`` (those switches only) with an optional ``_pert`` suffix (twin start)."""
+    if mode in MODES:
+        return MODES[mode]
+    if mode == "full_aspy" or mode.startswith("full_aspy_"):
+        rest, pert = mode[len("full_aspy"):], mode.endswith("_pert")
+        if pert:
+            rest = rest[:-len("_pert")]
+        names = tuple(ASPY_SWITCHES) if rest == "" else tuple(rest.lstrip("_").split("-"))
+        bad = [n for n in names if n not in ASPY_SWITCHES]
+        if bad or not names or len(set(names)) != len(names) or (rest and not rest.startswith("_")):
+            raise ValueError(f"mode {mode!r}: switches must be distinct names of {tuple(ASPY_SWITCHES)}")
+        return dict(MODES["full_pert" if pert else "full"], aspy=tuple(n for n in ASPY_SWITCHES if n in names))
+    raise ValueError(f"unknown mode {mode!r}; use {', '.join(MODES)} or full_aspy[_<sw>-<sw>…][_pert]")
+
+
 SHORTWAVE = {
     # NWA12 minus COBALT: MANIZZA_05 (in MOM_input) with the chlorophyll from file (MOM_diabatic_driver / opacity)
     "manizza": ["#override CHL_FROM_FILE = True", f'CHL_FILE = "{CHL_FILE}"', 'CHL_VARNAME = "chlor_a"'],
@@ -685,7 +737,7 @@ def _segment_data(num: int, data: str) -> str:
 
 def mode_override(mode: str, edges: tuple[str, ...]) -> str:
     """The block of ``mode`` appended to the cut's MOM_override."""
-    c = MODES[mode]
+    c = mode_config(mode)
     ic = f"ic_{c['ic']}.nc"
     L = [f"\n! --- run mode '{mode}' (mom6_inputs.mode_override)",
          f'THICKNESS_FILE = "{ic}"', f'#override TS_FILE = "{ic}"', f'#override SALT_FILE = "{ic}"',
@@ -701,6 +753,8 @@ def mode_override(mode: str, edges: tuple[str, ...]) -> str:
     if mode == "tides":
         L += ["! no wind stress: a homogeneous ocean forced by the tide only (pyOCEAN 'tides' mode)",
               "#override WIND_STRESS_MULTIPLIER = 0.0"]
+    for n in c.get("aspy", ()):
+        L += [f"! as pyOCEAN: {n} (mom6_inputs.ASPY_SWITCHES)"] + ASPY_SWITCHES[n]
     return "\n".join(L) + "\n"
 
 
@@ -721,9 +775,7 @@ DIAG_EXTRA = {
 def run_dir(mode: str, root: Path | None = None, inputs: Path = OUT, case: cs.Case = cs.CASE) -> Path:
     """A ready-to-run MOM6+SIS2 directory ``RUNS/runs/mom6_<mode>/`` (INPUT/ links to the inputs, templates of
     this directory filled for the mode)."""
-    if mode not in MODES:
-        raise ValueError(f"unknown mode {mode!r}; use {', '.join(MODES)}")
-    c = MODES[mode]
+    c = mode_config(mode)
     if c["sw"] == "manizza" and not (Path(inputs) / CHL_FILE).exists():
         raise FileNotFoundError(f"{Path(inputs) / CHL_FILE} missing: run mom6_inputs.py --only chl (source "
                                 f"{CHL_SOURCE}, rulings R23, R25)")
@@ -744,7 +796,7 @@ def run_dir(mode: str, root: Path | None = None, inputs: Path = OUT, case: cs.Ca
     (d / "INPUT" / "SIS_override").write_text((HERE / "SIS_override").read_text())
     (d / "input.nml").write_text((HERE / "input.nml").read_text().format(days=c["days"], seconds=c["seconds"],
                                                                          dt_cpld=c["dt_cpld"]))
-    files, fields = DIAG_EXTRA[mode]
+    files, fields = DIAG_EXTRA["full" if "aspy" in c else mode]
     (d / "diag_table").write_text((HERE / "diag_table").read_text().format(mode=mode, extra_files=files,
                                                                            extra_fields=fields))
     shutil.copyfile(HERE / ("data_table_tides" if c["data"] == "tides" else "data_table"), d / "data_table")
@@ -783,7 +835,8 @@ def write(case: cs.Case = cs.CASE, only: tuple[str, ...] = ("grid", "ic", "obc",
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--only", default="grid,ic,obc,tides,era5,runoff,chl")
-    ap.add_argument("--run-dir", choices=tuple(MODES), help="write the run directory of a mode instead")
+    ap.add_argument("--run-dir", help=f"write the run directory of a mode instead ({', '.join(MODES)}, "
+                                      "full_aspy[_<sw>-<sw>…][_pert])")
     a = ap.parse_args()
     if a.run_dir:
         print(run_dir(a.run_dir))
