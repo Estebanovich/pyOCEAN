@@ -537,6 +537,63 @@ def rivers(case: Case, hg: xr.Dataset, H: np.ndarray):
         ds.close()
 
 
+def deep_sponge(case: Case, hg: xr.Dataset, H: np.ndarray, tau_days: float = 5.0, h_min: float = 500.0,
+                taper_cells: int = 3, period: tuple[str, str] = ("2017-05-01", "2017-06-30"),
+                t_ref_depth: float | None = 200.0, t_ref_max: float = 15.0) -> tuple[dict, dict]:
+    """
+    Diagnostic interior T/S sponge over deep water (intrusion diagnosis, ``figs/intrusion_diag/README.md``; not a
+    parity item).  Returns (``SigmaBaroclinic`` keyword arguments, summary for ``meta.json``).
+
+    The interior sponge relaxes T, S implicitly toward one static profile in z (``core.components.sponge``,
+    T ← (T + Δt r T*)/(1 + Δt r), MOM6 MOM_sponge.F90 implicit form); a spatially varying 3-D target is not
+    supported.  The profile is the area-weighted horizontal mean of the GLORYS12 time mean over ``period`` (θ [°C],
+    S_P), sampled at the nearest GLORYS point of each model T cell, over the wet cells with H > ``h_min`` and, when
+    ``t_ref_depth`` is given, GLORYS θ(``t_ref_depth``) < ``t_ref_max`` (slope water north of the Gulf Stream north
+    wall, the 15 °C at 200 m criterion), on the GLORYS levels with any value (interfaces ``source_level_grid``).
+
+    Rate r = w / (τ · 86400 s) [s⁻¹] on the wet cells with H > ``h_min``, 0 elsewhere; w = min(1, d / taper_cells)
+    with d the Euclidean distance in cells to the nearest wet cell with H ≤ ``h_min`` (w = 1 for taper_cells = 0).
+    """
+    from scipy.ndimage import distance_transform_edt
+
+    from forcing.ocean_init import source_level_grid
+    lat, lon, area = hg["lat_t"].values, hg["lon_t"].values, hg["area_t"].values
+    wet = np.isfinite(H)
+    deep = wet & (np.nan_to_num(H) > h_min)
+    with xr.open_dataset(case.glorys[0]) as ds:
+        ds = ds.sel(time=slice(period[0], period[1]))
+        if ds.sizes["time"] == 0:
+            raise ValueError(f"no GLORYS records in {period}")
+        T = ds["thetao"].mean("time").values.astype(float)
+        S = ds["so"].mean("time").values.astype(float)
+        d = ds["depth"].values.astype(float)
+        jj = np.abs(ds["latitude"].values[:, None, None] - lat[None]).argmin(0)
+        ii = np.abs(ds["longitude"].values[:, None, None] - lon[None]).argmin(0)
+        n_rec = int(ds.sizes["time"])
+    Tm, Sm = T[:, jj, ii], S[:, jj, ii]
+    sel = deep.copy()
+    if t_ref_depth is not None:
+        k = int(np.argmin(np.abs(d - t_ref_depth)))
+        sel &= np.nan_to_num(Tm[k], nan=np.inf) < t_ref_max
+    w = np.where(sel[None] & np.isfinite(Tm) & np.isfinite(Sm), area[None], 0.0)
+    wk = w.sum(axis=(1, 2))
+    ok = wk > 0
+    if not ok.any():
+        raise ValueError("no deep cells selected for the sponge profile")
+    T_prof = (np.nan_to_num(Tm) * w).sum(axis=(1, 2))[ok] / wk[ok]
+    S_prof = (np.nan_to_num(Sm) * w).sum(axis=(1, 2))[ok] / wk[ok]
+    zw = source_level_grid(d[ok])["z_f"].values
+    dist = distance_transform_edt(~(wet & ~deep))
+    wt = np.ones(H.shape) if taper_cells <= 0 else np.minimum(1.0, dist / float(taper_cells))
+    rate = np.where(deep, wt / (tau_days * 86400.0), 0.0)
+    kw = dict(sponge_rate=rate, sponge_T=T_prof, sponge_zw=zw, sponge_S=S_prof)
+    summary = dict(tau_days=tau_days, h_min=h_min, taper_cells=taper_cells, period=list(period), records=n_rec,
+                   t_ref_depth=t_ref_depth, t_ref_max=t_ref_max, profile_cells=int(sel.sum()),
+                   sponge_cells=int(deep.sum()), levels=int(ok.sum()),
+                   T_surface=float(T_prof[0]), S_surface=float(S_prof[0]))
+    return kw, summary
+
+
 def with_paths(case: Case, **kw) -> Case:
     """A copy of ``case`` with some fields replaced (tests)."""
     return replace(case, **kw)

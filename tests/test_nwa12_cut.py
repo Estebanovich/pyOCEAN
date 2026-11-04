@@ -395,6 +395,41 @@ def test_restart_with_allowed_theta_bc_change(syn, tmp_path):
     assert meta["n_steps"] == 6 and meta["n_trunc"] == 0 and meta["budget_scope"].startswith("from t0")
 
 
+def test_deep_sponge(syn, monkeypatch, tmp_path):
+    # Diagnostic interior sponge (intrusion diagnosis): rate 1/τ over H > h_min with a taper in cells from the
+    # shallow side, 0 elsewhere; one profile = area-weighted mean of the GLORYS time mean over the selected cells;
+    # the runner's --deep-sponge path builds it, relaxes T, S and skips the domain budget.
+    hg, H = cs.grid(syn)
+    kw, meta = cs.deep_sponge(syn, hg, H, tau_days=5.0, h_min=120.0, taper_cells=2,
+                              period=("2017-04-30", "2017-05-03"), t_ref_depth=None)
+    r, deep = kw["sponge_rate"], np.isfinite(H) & (np.nan_to_num(H) > 120.0)
+    assert (r[~deep] == 0).all() and (r[deep] > 0).all() and r.max() == pytest.approx(1 / (5 * 86400.0))
+    assert np.isclose(r[deep], 0.5 / (5 * 86400.0)).any()               # first deep cell next to the shelf: w = ½
+    zw = kw["sponge_zw"]
+    assert zw[0] == 0 and (np.diff(zw) < 0).all() and kw["sponge_T"].shape == kw["sponge_S"].shape == (zw.size - 1,)
+    # synthetic S = 35 − 0.002 z + 0.1 (x − LON0): the profile decreases with depth by 0.002 per metre
+    with xr.open_dataset(syn.glorys[0]) as ds:
+        dep = ds["depth"].values.astype(float)
+    assert np.allclose(np.diff(kw["sponge_S"]), -0.002 * np.diff(dep), atol=1e-4)
+    assert meta["sponge_cells"] == deep.sum() and meta["profile_cells"] == deep.sum()
+    b = _build(syn, days=0.25, dt=1800.0, **kw)
+    assert b.model.sponge_rate is not None
+    st = _run(b, b.state, 0, 2)
+    assert np.isfinite(st.T).all() and np.isfinite(st.S).all()
+    from validation.nwa12_cut import run_pyocean as rp
+    orig = cs.deep_sponge
+    monkeypatch.setattr(cs, "deep_sponge", lambda case, hg, H, tau_days: orig(
+        case, hg, H, tau_days=tau_days, h_min=120.0, taper_cells=2, period=("2017-04-30", "2017-05-03"),
+        t_ref_depth=None))
+    import dataclasses
+    case = dataclasses.replace(syn, runs=tmp_path / "runs")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        meta = rp.run(case, "full", 0.125, 1800.0, threads=2, tag="sp", out_hours=3.0, log=lambda m: None,
+                      deep_sponge=5.0)
+    assert meta["deep_sponge"]["tau_days"] == 5.0 and "budget" not in meta and meta["n_trunc"] == 0
+
+
 def test_output_writes_layer_thickness(syn, tmp_path):
     # The new output field h_layer (ALE layer thickness; 'h' is the static bathymetry) round-trips through
     # OutputWriter with its CF standard name.

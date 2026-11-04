@@ -170,28 +170,35 @@ def meta_of(b: cs.Built, st, mode: str, dt: float, n_steps: int, wall: float, ti
 
 def run(case: cs.Case, mode: str, days: float, dt: float, threads: int = 5, restart_at: float | None = None,
         tag: str = "", out_hours: float = 24.0, write: bool = True, start_from: Path | None = None,
-        log=print, overrides: dict | None = None, allow_restart_change: tuple[str, ...] = ()) -> dict:
+        log=print, overrides: dict | None = None, allow_restart_change: tuple[str, ...] = (),
+        deep_sponge: float | None = None) -> dict:
     """
     One run (module docstring); returns the metadata (and writes them).  ``overrides``: ``SigmaBaroclinic``
     arguments replacing the parity values (``--override KEY=VALUE``; diagnostics only, recorded in ``meta.json``);
     ``allow_restart_change``: restart configuration entries allowed to differ on ``start_from``
-    (``core.restart.read_restart(allow_changed=...)``).
+    (``core.restart.read_restart(allow_changed=...)``); ``deep_sponge``: τ [days] of the diagnostic interior T/S
+    sponge over H > 500 m (``case.deep_sponge``, ``--deep-sponge``; the domain budget is then not computed, the
+    sponge is not a boundary flux).
     """
     overrides = dict(overrides or {})
+    sponge_kw, sponge_meta = {}, None
+    if deep_sponge is not None:
+        hg, H = cs.grid(case)
+        sponge_kw, sponge_meta = cs.deep_sponge(case, hg, H, tau_days=deep_sponge)
     set_threads(threads)
     out = run_dir(case, mode, dt, tag) if write else None
     if out is not None:
         out.mkdir(parents=True, exist_ok=True)
     n_steps = int(round(days * 86400.0 / dt))
     check_coverage(case, mode, days)
-    b = cs.build(case, mode, dt, days, **overrides)
+    b = cs.build(case, mode, dt, days, **overrides, **sponge_kw)
     st, n0 = b.state, 0
     if start_from is not None:
         st = read_restart(start_from, b.model, allow_changed=tuple(allow_restart_change))
         n0 = int(round(st.time / dt))
         log(f"started from {start_from} at step {n0}")
     budget, budget_scope = None, None
-    if mode == "full":
+    if mode == "full" and sponge_meta is None:
         budget = DomainBudget(b.model)
         bp = None if start_from is None else budget_path(start_from)
         if bp is not None and bp.exists():                           # continue the accumulation of the first leg
@@ -215,6 +222,8 @@ def run(case: cs.Case, mode: str, days: float, dt: float, threads: int = 5, rest
         meta["overrides"] = {k: repr(v) for k, v in overrides.items()}
     if allow_restart_change:
         meta["allow_restart_change"] = list(allow_restart_change)
+    if sponge_meta is not None:
+        meta["deep_sponge"] = sponge_meta
     if budget is not None:
         meta["budget"] = budget.residuals()
         meta["budget_scope"] = budget_scope
@@ -334,6 +343,9 @@ def parser() -> argparse.ArgumentParser:
                          "diagnostics only, e.g. --override theta_bc=1.0")
     ap.add_argument("--allow-restart-change", action="append", default=[], metavar="NAME",
                     help="restart configuration entry allowed to differ on --start-from (e.g. theta_bc), repeatable")
+    ap.add_argument("--deep-sponge", type=float, default=None, metavar="TAU_DAYS",
+                    help="diagnostic interior T/S sponge over H > 500 m toward one GLORYS May–June slope-water "
+                         "profile at rate 1/TAU (case.deep_sponge; no domain budget)")
     ap.add_argument("--compare", nargs=2, type=Path, default=None, metavar=("A", "B"),
                     help="compare two restart files bit for bit and exit")
     return ap
@@ -356,7 +368,8 @@ def main() -> None:
         res = restart_check(case, a.mode, days, a.dt, a.threads, log=log)
     else:
         res = run(case, a.mode, days, a.dt, a.threads, a.restart_at, a.tag, a.out_hours, start_from=a.start_from,
-                  log=log, overrides=parse_overrides(a.override), allow_restart_change=tuple(a.allow_restart_change))
+                  log=log, overrides=parse_overrides(a.override), allow_restart_change=tuple(a.allow_restart_change),
+                  deep_sponge=a.deep_sponge)
     print(json.dumps(res, indent=1, default=float))
 
 
