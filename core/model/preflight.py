@@ -190,6 +190,8 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
         err("tracer_advection", f"n_tracers={ntr!r}: passive tracers need vertical_coordinate='ale' and n ≥ 0")
     if a["sponge_rate"] is not None and not ale:
         err("interior_sponge", "sponge_rate (interior sponge) needs vertical_coordinate='ale'")
+    elif a["sponge_rate"] is not None:
+        _sponge_issues(a, err)
     bd = a["bottom_drag"]
     if bd not in (None, "quadratic"):
         err("bottom_drag", f"unknown bottom_drag {bd!r}; use None or 'quadratic'")
@@ -366,6 +368,57 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
     if a["sponge_rate"] is None and ({"sponge_T", "sponge_zw", "sponge_tr", "sponge_S"} & given):
         warn("interior_sponge", "sponge_T / sponge_zw / sponge_tr / sponge_S are ignored without sponge_rate")
     return out
+
+
+def _sponge_issues(a: dict, err) -> None:
+    """
+    Shapes of the interior-sponge arguments, all reported together (ruling 2026-11-04: per-column targets).
+    sponge_rate (ny, nx) as bathy; sponge_T (nz_s,) or (nz_s, ny, nx); sponge_zw (nz_s + 1,) or (nz_s + 1, ny, nx),
+    strictly decreasing from the surface in every column; sponge_S the shape of sponge_T; sponge_tr
+    (n_tracers, nz_s) or (n_tracers, nz_s, ny, nx).  A per-column target must be finite in the sponge columns
+    (r > 0); MOM6 fills the data below the bed with the value above (MOM_ALE_sponge.F90:1006-1014), here the caller
+    does (sponge_zw is clipped at each bed, so values below it never enter).
+    """
+    hw = np.shape(a["bathy"])
+    r = np.asarray(a["sponge_rate"], float)
+    if r.shape != hw:
+        err("interior_sponge", f"sponge_rate shape {r.shape}, expected {hw}")
+    cols = (np.nan_to_num(r) > 0) if r.shape == hw else np.zeros(hw, bool)
+    T, zw = a.get("sponge_T"), a.get("sponge_zw")
+    if T is None or zw is None:
+        err("interior_sponge", "sponge_rate needs sponge_T and sponge_zw")
+        return
+    T, zw = np.asarray(T, float), np.asarray(zw, float)
+    nzs = T.shape[0] if T.ndim else 0
+    if T.ndim not in (1, 3) or (T.ndim == 3 and T.shape[1:] != hw):
+        err("interior_sponge", f"sponge_T shape {T.shape}: expected (nz_s,) or (nz_s, {hw[0]}, {hw[1]})")
+    if zw.ndim not in (1, 3) or zw.shape[0] != nzs + 1 or (zw.ndim == 3 and zw.shape[1:] != hw):
+        err("interior_sponge", f"sponge_T (nz_s,) needs sponge_zw (nz_s + 1,) decreasing from the surface: sponge_zw "
+                               f"shape {zw.shape}, expected ({nzs + 1},) or ({nzs + 1}, {hw[0]}, {hw[1]})")
+    else:
+        dec = np.diff(zw, axis=0) < 0
+        if not (dec.all() if zw.ndim == 1 else dec[:, cols].all()):
+            err("interior_sponge", "sponge_zw must be strictly decreasing from the surface (in every sponge column)")
+    S = a.get("sponge_S")
+    if S is not None and np.shape(S) != T.shape:
+        err("interior_sponge", f"sponge_S shape {np.shape(S)}, expected that of sponge_T {T.shape}")
+    tr, ntr = a.get("sponge_tr"), int(a.get("n_tracers") or 0)
+    if tr is not None:
+        trs = np.shape(tr)
+        ok = trs in ((ntr, nzs), (ntr, nzs) + tuple(hw)) or (np.size(tr) == ntr * nzs and len(trs) <= 2)
+        if not ok:
+            err("interior_sponge", f"sponge_tr shape {trs}: expected ({ntr}, {nzs}) or ({ntr}, {nzs}, {hw[0]}, {hw[1]})")
+    for name, v in (("sponge_T", T), ("sponge_S", S), ("sponge_zw", zw)):
+        if v is None:
+            continue
+        v = np.asarray(v, float)
+        if v.ndim == 3 and v.shape[1:] == hw and not np.isfinite(v[:, cols]).all():
+            err("interior_sponge", f"{name} must be finite in every sponge column (r > 0); fill the levels below the "
+                                   "bed with the value above (as MOM6)")
+        elif v.ndim == 1 and not np.isfinite(v).all():
+            err("interior_sponge", f"{name} must be finite")
+    if tr is not None and np.ndim(tr) == 4 and np.shape(tr)[2:] == hw and not np.isfinite(np.asarray(tr)[..., cols]).all():
+        err("interior_sponge", "sponge_tr must be finite in every sponge column (r > 0)")
 
 
 def _biharmonic_issues(a: dict, smag: float, err) -> float:

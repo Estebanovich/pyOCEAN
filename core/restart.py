@@ -42,6 +42,7 @@ into a different configuration raises instead of silently diverging.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -77,6 +78,15 @@ def _text(v) -> str:
     if a.dtype.kind in "fiub":
         return " ".join(f"{x:.17g}" for x in np.atleast_1d(a).astype(float).ravel())
     return str(v)
+
+
+def _target_text(v) -> str:
+    """An interior-sponge target as exact text: a profile element by element (``_text``, as before); a per-column
+    target (ruling 2026-11-04) by its shape and the SHA-256 of its float64 bytes, so a restart attribute stays small."""
+    a = np.asarray(v, float)
+    if a.ndim <= 1:
+        return _text(a)
+    return f"shape {'x'.join(map(str, a.shape))} sha256 {hashlib.sha256(np.ascontiguousarray(a).tobytes()).hexdigest()}"
 
 
 def _config(model: SigmaBaroclinic) -> dict:
@@ -159,10 +169,10 @@ def _config(model: SigmaBaroclinic) -> dict:
                    n_tracers=int(getattr(model, "n_tracers", 0)))
         sp = getattr(model, "sponge_rate", None)
         cfg.update(sponge_rate="none" if sp is None else _text(sp),
-                   sponge_T="none" if sp is None else _text(model._interior_sponge_c.T),
-                   sponge_zw="none" if sp is None else _text(model._interior_sponge_c.zw),
+                   sponge_T="none" if sp is None else _target_text(model._interior_sponge_c.T),
+                   sponge_zw="none" if sp is None else _target_text(model._interior_sponge_c.zw),
                    sponge_S="none" if sp is None or model._interior_sponge_c.S is None
-                   else _text(model._interior_sponge_c.S))
+                   else _target_text(model._interior_sponge_c.S))
         cfg.update(bottom_drag=str(getattr(model, "bottom_drag", None)), cd=model.cd, drag_bg_vel=model.drag_bg_vel,
                    hbbl=model.hbbl)
         cfg.update({f"regrid_{k}": _text(v) for k, v in sorted(model.regrid_params.items())})

@@ -1177,6 +1177,9 @@ class SigmaBaroclinic:
         stretched to the column and remapped onto the current layers; passive tracers toward sponge_tr (default 0);
         salinity toward sponge_S (nz_s,) [g kg⁻¹] (``salinity=True``; None: S is not relaxed);
         r = sponge_rate (ny, nx) [s⁻¹], ignored on land; momentum is not damped (as MOM6 DOME_initialize_sponges).
+        Per-column targets (ruling 2026-11-04): sponge_T, sponge_S (nz_s, ny, nx), sponge_tr (n_tracers, nz_s, ny, nx)
+        and/or sponge_zw (nz_s + 1, ny, nx), each column remapped as the profile is (MOM6 MOM_ALE_sponge.F90
+        apply_ALE_sponge:1035-1066); finite in every column with r > 0 (pre-flight).
         It acts after the remap, so the mixing diagnostic counts advection and remap only
     ts_kind : convention of the T and S data given to the **constructor** — the exterior of ``open_boundary_state``
         (``OBData.T``, ``OBData.S``) and the sponge profiles ``sponge_T``, ``sponge_S``: ``"theta_sp"`` (default; θ [°C],
@@ -1509,12 +1512,18 @@ class SigmaBaroclinic:
                     raise ValueError(f"sponge_T in ts_kind={ts_kind!r} needs sponge_S to convert to "
                                      f"{_eos.ts_kind!r}")
                 Ts, sponge_S = to_model_ts(Ts, np.asarray(sponge_S, float), _eos.ts_kind, ts_kind)
-            if zw.ndim != 1 or Ts.shape != (zw.size - 1,) or not (np.diff(zw) < 0).all():
-                raise ValueError("sponge_T (nz_s,) needs sponge_zw (nz_s + 1,) decreasing from the surface")
+            nzs = Ts.shape[0] if Ts.ndim else 0                        # (nz_s,) or per column (nz_s, ny, nx)
+            if (Ts.ndim not in (1, 3) or zw.ndim not in (1, 3) or zw.shape[0] != nzs + 1
+                    or (Ts.ndim == 3 and Ts.shape[1:] != self.H.shape)
+                    or (zw.ndim == 3 and zw.shape[1:] != self.H.shape)):
+                raise ValueError("sponge_T (nz_s,) or (nz_s, ny, nx) needs sponge_zw (nz_s + 1,) or "
+                                 "(nz_s + 1, ny, nx) decreasing from the surface")
             self.sponge_rate = np.where(self.fs.active, np.nan_to_num(r), 0.0)
             self._sp_zw, self._sp_T = zw, Ts
-            self._sp_tr = (np.zeros((self.n_tracers, Ts.size)) if sponge_tr is None
-                           else np.asarray(sponge_tr, float).reshape(self.n_tracers, Ts.size))
+            self._sp_tr = (np.zeros((self.n_tracers, nzs)) if sponge_tr is None
+                           else np.asarray(sponge_tr, float))
+            if self._sp_tr.ndim != 4:                                   # profiles: (n_tracers, nz_s) as before
+                self._sp_tr = self._sp_tr.reshape(self.n_tracers, nzs)
             self._sp_cols = self.sponge_rate > 0
             self._sp_S = None
             if sponge_S is not None:
