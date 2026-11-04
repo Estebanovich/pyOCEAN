@@ -735,3 +735,150 @@ def test_tide_check_undoes_mom6_step_average(tmp_path):
             assert abs(m - o) < 2e-4                                  # corrected: instantaneous M2 recovered
         else:
             assert abs(m - o) > 0.1                                   # a box-averaged series read as snapshots
+
+
+# ---------------------------------------------------------------------------------------------------- Task 11 in situ
+def test_column_to_bins_layers_and_bed():
+    """Layer values (surface first) on depth bins: linear between centres, top value above the first centre, the
+    bottom value down to the bed, NaN below it; vanished bed layers are skipped."""
+    from validation.nwa12_cut import compare as cmp
+
+    h = np.array([2.0, 2.0, 4.0, 1e-3, 1e-3])                 # centres 1, 3, 6; bed at 8 m; two vanished layers
+    x = np.array([10.0, 8.0, 2.0, 99.0, 99.0])
+    np.testing.assert_allclose(cmp.column_centres(h[:3]), [1.0, 3.0, 6.0])
+    zb = np.array([0.5, 2.0, 4.5, 7.5, 8.5])
+    np.testing.assert_allclose(cmp.column_to_bins(h, x, zb), [10.0, 9.0, 5.0, 2.0, np.nan])
+
+
+def test_bracket_linear_time_weights():
+    from validation.nwa12_cut import compare as cmp
+
+    times = T0 + np.array([0, 24, 48]) * np.timedelta64(1, "h")
+    t = T0 + np.array([6, 24, 47, 60, -1]) * np.timedelta64(1, "h")
+    k0, k1, w = cmp.bracket(times, t)
+    np.testing.assert_array_equal(k0, [0, 0, 1, -1, -1])
+    np.testing.assert_array_equal(k1, [1, 1, 2, -1, -1])
+    np.testing.assert_allclose(w[:3], [0.25, 1.0, 23 / 24])
+
+
+class _FakeReader:
+    """Two daily levels on a 2 × 3 grid with 3 layers; T = 10 + day + layer, u, v uniform per level."""
+
+    def __init__(self):
+        self.times = T0 + np.array([0, 24]) * np.timedelta64(1, "h")
+
+    def _f(self, k, uv=False):
+        h = np.ones((3, 2, 3))
+        T = 10.0 + k + np.arange(3)[:, None, None] * np.ones((3, 2, 3))
+        f = dict(h=h, T=T, S=35.0 + 0 * T)
+        if uv:
+            f["u"] = np.full((3, 2, 4), 1.0 + k)
+            f["v"] = np.full((3, 3, 3), 0.0)
+        return f
+
+    def get(self, k):
+        return self._f(k)
+
+    def load(self, k, uv=False):
+        return self._f(k, uv)
+
+
+def test_sample_columns_time_interpolation_and_rotation():
+    from validation.nwa12_cut import compare as cmp
+
+    rd = _FakeReader()
+    t = T0 + np.array([12, 24]) * np.timedelta64(1, "h")
+    zb = np.array([0.5, 1.5, 2.5])
+    th, S = cmp.sample_columns(rd, t, np.array([0, 1]), np.array([2, 0]), zb)
+    np.testing.assert_allclose(th, [[10.5, 11.5, 12.5], [11.0, 12.0, 13.0]])
+    np.testing.assert_allclose(S, 35.0)
+    # grid x rotated 90° counter-clockwise from east: u_x = 1 is a northward current
+    rot = (np.zeros((2, 3)), np.ones((2, 3)))
+    ue, vn = cmp.sample_columns(rd, t[:1], np.array([0]), np.array([1]), zb, kind="uv", rot=rot)
+    np.testing.assert_allclose(ue, 0.0, atol=1e-12)
+    np.testing.assert_allclose(vn, 1.5)
+
+
+def test_at_depth_clamps_to_model_bottom():
+    from validation.nwa12_cut import compare as cmp
+
+    zb = np.array([0.5, 1.5, 2.5, 3.5])
+    x = np.array([[1.0, 2.0, 3.0, np.nan], [1.0, 2.0, 3.0, 4.0]])
+    np.testing.assert_allclose(cmp.at_depth(x, zb, np.array([10.0, 2.0])), [3.0, 2.5])
+    assert np.isnan(cmp.at_depth(x, zb, np.array([10.0, 10.0]), clamp_bottom=False)).all()
+
+
+def test_band_stats_common_samples():
+    """Every source is scored on the same samples: a bin missing in one source is dropped for all."""
+    from validation.nwa12_cut import compare as cmp
+
+    zb = np.array([5.0, 15.0, 45.0])
+    obs = np.array([[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]])
+    a = obs + 1.0
+    b = obs - 0.5
+    b[1, 1] = np.nan
+    rows = cmp.band_stats(obs, {"a": a, "b": b}, zb, {"g": np.array([True, True])}, "theta",
+                          bands=((0.0, 10.0), (10.0, 30.0)))
+    r = {(x["band"], x["source"]): x for x in rows}
+    assert r[("0-10", "a")]["n"] == 2 and r[("0-10", "a")]["bias"] == pytest.approx(1.0)
+    assert r[("10-30", "b")]["n"] == 1 and r[("10-30", "a")]["n"] == 1
+    assert r[("10-30", "b")]["rmse"] == pytest.approx(0.5)
+
+
+def test_layer_mean_and_obs_at():
+    from validation.nwa12_cut import compare as cmp
+
+    zb = np.arange(0.5, 10.0, 1.0)
+    x = np.tile(np.arange(10.0), (2, 1))
+    x[1, :4] = np.nan                                   # 1 of 5 bins in 0–5 m: < half filled
+    m = cmp.layer_mean(x, zb, 0.0, 5.0)
+    assert m[0] == pytest.approx(2.0) and np.isnan(m[1])
+    t = T0 + np.arange(0, 48 * 4) * np.timedelta64(15, "m")
+    y = np.arange(t.size, dtype=float)
+    y[:48] = np.nan                                     # half of day 1 missing
+    q = T0 + np.array([12, 36]) * np.timedelta64(1, "h")
+    d = cmp._obs_at(t, y, q, daily=True, min_frac=0.8)
+    assert np.isnan(d[0]) and d[1] == pytest.approx(np.mean(y[96:192]))
+    s = cmp._obs_at(t, y, q, daily=False, min_frac=0.0)
+    assert s[1] == pytest.approx(np.mean(y[142:147]))   # ±30 min around 36 h: samples 142…146
+
+
+def test_nearest_wet_skips_land():
+    from validation.nwa12_cut import compare as cmp
+
+    lat2, lon2 = np.meshgrid(np.array([40.0, 40.1]), np.array([-70.0, -69.9, -69.8]), indexing="ij")
+    wet = np.ones((2, 3), bool)
+    wet[0, 0] = False
+    j, i, d = cmp.nearest_wet(lat2, lon2, wet, np.array([40.0]), np.array([-70.0]))
+    assert (j[0], i[0]) in ((1, 0), (0, 1))
+    assert d[0] == pytest.approx(8.5, abs=3.0)
+
+
+def test_mld_test_summary():
+    from validation.nwa12_cut import compare as cmp
+
+    n = 20
+    g = np.ones(n, bool)
+    met = {"obs": {k: np.full(n, 10.0) for k in ("mld", "tcl", "t05", "t030", "t3060", "s030")}}
+    met["A"] = {k: v.copy() for k, v in met["obs"].items()}
+    met["B"] = {k: v.copy() for k, v in met["obs"].items()}
+    met["A"]["mld"] = np.linspace(4, 8, n)              # shallower and warmer where shallower
+    met["A"]["t05"] = 10.0 + (8 - met["A"]["mld"])
+    met["A"]["t030"] = 10.0 + np.linspace(0, 2, n)      # column heat excess carried by salt: advection
+    met["A"]["s030"] = 10.0 + np.linspace(0, 1, n)
+    r = cmp.mld_test(dict(met=met, groups={"g": g}), a="A", b="B", group="g")
+    assert r["corr_dT030_dS030"] == pytest.approx(1.0)
+    assert r["n"] == n and r["frac_a_shallower"] == 1.0
+    assert r["corr_dT05_dMLD"] == pytest.approx(-1.0)
+    assert r["A_mld_median"] == pytest.approx(6.0)
+
+
+def test_bottom_values_skip_vanished_layers():
+    from validation.nwa12_cut import compare as cmp
+
+    h = np.zeros((4, 1, 3))
+    h[:, 0, 0] = [2.0, 2.0, 1e-3, 1e-3]             # z* column with two vanished bed layers
+    h[:, 0, 1] = [2.0, 2.0, 2.0, 2.0]
+    x = np.arange(12.0).reshape(4, 1, 3)
+    b = cmp.bottom_values(h, x)
+    assert b[0, 0] == x[1, 0, 0] and b[0, 1] == x[3, 0, 1] and np.isnan(b[0, 2])

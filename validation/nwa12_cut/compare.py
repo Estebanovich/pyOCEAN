@@ -33,12 +33,19 @@ F/R/L-flagged samples are kept, as the QC decided).  Sections:
    §3 comparison with OISST as reference (bilinear from the accepted pixels; GLORYS12 as a fourth source) and the
    snapshot-vs-daily-mean effect measured on the hourly run ``full_dt600_bih30h`` (``oisst_snapshot_effect``).
 
+6. **In situ** (``obs_qc_insitu.py`` accepted samples, ``figs/obs_qc/insitu_accepted.npz``): glider and OOI profiler
+   profiles (θ, S bias/RMSE per depth band on common samples; MLD = σ₀ + 0.03 from 5 m, thermocline, layer means,
+   the KPP-vs-ePBL test ``mld_test``), moored CTDs at their depth, eMOLT bottom T, ADCP depth-mean currents, and the
+   slope / Gulf Stream water on the southern MAB inner shelf (``shelf_intrusion``).  pyOCEAN snapshots are matched
+   to observations within ±30 min (±20 min for ADCP ensembles), MOM6 and GLORYS daily means to daily means.
+
 Outputs (never in the repo): ``figs/obs_compare/`` — ``tides.csv``, ``eta_full.csv``, ``sst_glorys.csv``,
 ``sst_44025.csv``, ``sst_oisst.csv``, ``oisst_qc.json``, ``summary.json`` and figures.
 
 Usage:
     python validation/nwa12_cut/compare.py [--tides-py RUN …] [--full-py RUN] [--mom6-tides RUN] [--mom6-full RUN …]
-        [--hourly-py RUN] [--oisst DIR] [--only tides eta sst buoy oisst]
+        [--hourly-py RUN] [--oisst DIR] [--insitu NPZ]
+        [--only tides eta sst buoy oisst profiles moorings emolt adcp intrusion]
 """
 from __future__ import annotations
 
@@ -65,6 +72,7 @@ INFER = {"k2": "s2", "p1": "k1"}
 TPXO_POOR = {"8447930": "Woods Hole", "8449130": "Nantucket", "8510560": "Montauk", "8518750": "The Battery"}
 #: QC categories that remove a sample (obs_qc README: rejected step candidates and F/R/L flags are kept)
 EXCLUDE = ("gaps", "inferred", "spikes", "stuck", "gross", "steps")
+SECTIONS = ("tides", "eta", "sst", "buoy", "oisst", "profiles", "moorings", "emolt", "adcp", "intrusion")
 RHO0, G = 1035.0, 9.8                                          # parity ρ₀ and g (R21)
 GODIN_HALF = 35                                                # 24-24-25 h running means: support ±35 h
 
@@ -805,6 +813,626 @@ def buoy_compare(py_run: Path, mom6_runs: dict[str, Path], station: str = "ndbc_
     return rows, fig
 
 
+# ------------------------------------------------------------------------------------------------ 6. in-situ (R26 QC)
+INSITU = QC / "insitu_accepted.npz"
+DEPTH_BANDS = ((0.0, 10.0), (10.0, 30.0), (30.0, 60.0), (60.0, 100.0), (100.0, 200.0), (200.0, 500.0),
+               (500.0, 1000.0))
+H_SHELF = 200.0
+MLD_REF, MLD_DSIG, MLD_TOP = 5.0, 0.03, 7.0           # de Boyer Montégut et al. (2004) σ₀ threshold, 5 m reference
+H_MIN = 1e-2                                          # m: thinner (vanished) model layers are skipped
+
+
+def column_centres(h_top_first: np.ndarray) -> np.ndarray:
+    """Depth below the free surface [m] of the layer centres of a column given its thicknesses, surface first."""
+    h = np.asarray(h_top_first, float)
+    return np.cumsum(h) - 0.5 * h
+
+
+def column_to_bins(h_top_first: np.ndarray, x: np.ndarray, zb: np.ndarray) -> np.ndarray:
+    """A model column (layer values ``x`` with thicknesses ``h``, surface first) on depth-bin centres ``zb``: linear
+    between layer centres, the top value above the first centre, the bottom value between the last centre and the
+    bed, NaN below the bed.  Layers thinner than ``H_MIN`` (vanished z* layers at the bed) are skipped."""
+    h = np.asarray(h_top_first, float)
+    x = np.asarray(x, float)
+    ok = np.isfinite(h) & (h > H_MIN) & np.isfinite(x)
+    if ok.sum() == 0:
+        return np.full(zb.size, np.nan)
+    zc = column_centres(np.where(ok, h, 0.0))[ok]
+    out = np.interp(zb, zc, x[ok])
+    out[zb > np.nansum(np.where(ok, h, 0.0))] = np.nan
+    return out
+
+
+def bracket(times: np.ndarray, t: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(k0, k1, w) such that t ≈ (1 − w) times[k0] + w times[k1] (linear interpolation in time); k0 = −1 outside."""
+    x = (np.asarray(times, "datetime64[ns]") - times[0]) / HOUR
+    y = (np.asarray(t, "datetime64[ns]") - times[0]) / HOUR
+    k1 = np.searchsorted(x, y)
+    k1c = np.clip(k1, 1, x.size - 1)
+    k0 = k1c - 1
+    w = (y - x[k0]) / (x[k1c] - x[k0])
+    bad = (y < x[0]) | (y > x[-1])
+    return np.where(bad, -1, k0), np.where(bad, -1, k1c), np.where(bad, np.nan, w)
+
+
+class _Reader:
+    """Daily model/reanalysis fields read one time level at a time (cache of two levels)."""
+
+    times: np.ndarray
+
+    def __init__(self) -> None:
+        self._cache: dict[int, dict] = {}
+
+    def get(self, k: int) -> dict:
+        if k not in self._cache:
+            if len(self._cache) > 2:
+                self._cache.pop(min(self._cache))
+            self._cache[k] = self.load(k)
+        return self._cache[k]
+
+    def load(self, k: int) -> dict:          # pragma: no cover - abstract
+        raise NotImplementedError
+
+
+class PyoceanReader(_Reader):
+    """pyOCEAN ``out/out_*.nc`` snapshots: T, S, h_layer (bed first in the file; returned surface first), u, v."""
+
+    def __init__(self, run: Path) -> None:
+        super().__init__()
+        self.files = sorted(p for p in (Path(run) / "out").glob("out_*.nc") if not p.name.startswith("._"))
+        st = [p.stem[4:] for p in self.files]
+        self.times = np.array([np.datetime64(f"{s[:10]}T{s[11:13]}:{s[13:15]}", "ns") for s in st])
+
+    def load(self, k: int, uv: bool = False) -> dict:
+        import netCDF4
+        out = {}
+        with netCDF4.Dataset(self.files[k]) as ds:
+            for v, name in (("T", "T"), ("S", "S"), ("h", "h_layer")) + ((("u", "u"), ("v", "v")) if uv else ()):
+                x = ds[name]
+                x.set_auto_mask(False)
+                out[v] = np.asarray(x[0], float)[::-1]
+        return out
+
+
+class Mom6Reader(_Reader):
+    """MOM6 ``ocean_daily`` means (time = centre of the day): temp, salt, h (surface first), u, v."""
+
+    def __init__(self, run: Path) -> None:
+        import netCDF4
+
+        from validation.nwa12_cut.check_mom6 import _find
+        super().__init__()
+        self.path = _find(run, "ocean_daily")
+        with netCDF4.Dataset(self.path) as ds:
+            tv = ds["time"]
+            self.times = np.array([np.datetime64(x.isoformat(), "ns") for x in
+                                   netCDF4.num2date(tv[:], tv.units, getattr(tv, "calendar", "gregorian"))])
+
+    def load(self, k: int, uv: bool = False) -> dict:
+        import netCDF4
+
+        names = (("T", "temp"), ("S", "salt"), ("h", "h")) + ((("u", "u"), ("v", "v")) if uv else ())
+        with netCDF4.Dataset(self.path) as ds:
+            sl = dict(names)
+            out = {}
+            for v, n in sl.items():
+                x = ds[n]
+                x.set_auto_mask(False)
+                a = np.asarray(x[k], float)
+                for m in [x.getncattr(a_) for a_ in ("missing_value", "_FillValue") if a_ in x.ncattrs()]:
+                    a = np.where(a == m, np.nan, a)
+                out[v] = a
+        return out
+
+
+class GlorysReader(_Reader):
+    """GLORYS12 daily means (time = label + 12 h) on its z levels; ``h`` are the level-cell thicknesses."""
+
+    def __init__(self) -> None:
+        import xarray as xr
+
+        from validation.nwa12_cut.obs_qc import GLORYS
+        super().__init__()
+        self.ds = xr.open_dataset(GLORYS)
+        self.times = self.ds["time"].values.astype("datetime64[ns]") + 12 * HOUR
+        z = self.ds["depth"].values.astype(float)
+        edges = np.r_[0.0, 0.5 * (z[1:] + z[:-1]), z[-1] + 0.5 * (z[-1] - z[-2])]
+        self.h = np.diff(edges)
+        self.lat = self.ds["latitude"].values.astype(float)
+        self.lon = self.ds["longitude"].values.astype(float)
+
+    def load(self, k: int, uv: bool = False) -> dict:
+        d = self.ds.isel(time=k)
+        out = dict(T=d["thetao"].values.astype(float), S=d["so"].values.astype(float))
+        if uv:
+            out["u"], out["v"] = d["uo"].values.astype(float), d["vo"].values.astype(float)
+        out["h"] = np.where(np.isfinite(out["T"]), self.h[:, None, None], 0.0)
+        return out
+
+
+def nearest_wet(lat2: np.ndarray, lon2: np.ndarray, wet: np.ndarray, lat: np.ndarray,
+                lon: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(j, i, distance [km]) of the nearest wet cell of a (curvilinear) grid to each point (KD-tree on the unit
+    sphere)."""
+    from scipy.spatial import cKDTree
+
+    def xyz(la, lo):
+        la, lo = np.radians(la), np.radians(lo)
+        return np.stack([np.cos(la) * np.cos(lo), np.cos(la) * np.sin(lo), np.sin(la)], axis=-1)
+
+    jw, iw = np.nonzero(wet)
+    tree = cKDTree(xyz(lat2[jw, iw], lon2[jw, iw]))
+    d, n = tree.query(xyz(np.asarray(lat, float), np.asarray(lon, float)))
+    return jw[n], iw[n], 2 * 6371.0 * np.arcsin(np.clip(d / 2, 0, 1))
+
+
+def sample_columns(reader: _Reader, t: np.ndarray, j: np.ndarray, i: np.ndarray, zb: np.ndarray, kind: str = "ts",
+                   rot: tuple[np.ndarray, np.ndarray] | None = None,
+                   max_gap: np.timedelta64 = np.timedelta64(36, "h")) -> tuple[np.ndarray, np.ndarray]:
+    """Two fields (n, n_bins) of a reader's columns (j, i) at the times t on the depth bins zb, linear in time
+    between its two bracketing levels (snapshots or daily means; NaN if they are more than ``max_gap`` apart or t
+    is outside).  ``kind`` 'ts' gives (θ, S); 'uv' gives (east, north) velocity: C-grid faces averaged to the T cell
+    and rotated with ``rot`` = (cos α, sin α) (``forcing.rotation.to_earth``), or taken as they are (A-grid,
+    already east/north) when ``rot`` is None.  Each time level is read once."""
+    from forcing.rotation import to_earth
+
+    k0, k1, w = bracket(reader.times, t)
+    n = t.size
+    out = np.zeros((2, n, zb.size))
+    ok = k0 >= 0
+    ok[ok] = (reader.times[k1[ok]] - reader.times[k0[ok]]) <= max_gap
+    out[:, ~ok] = np.nan
+    uv = kind == "uv"
+    for kk in np.unique(np.r_[k0[ok], k1[ok]]):
+        f = reader.load(int(kk), uv=uv) if uv else reader.get(int(kk))
+        for which, wt in ((k0, 1.0 - w), (k1, w)):
+            for n_ in np.flatnonzero(ok & (which == kk)):
+                if wt[n_] == 0.0:
+                    continue
+                jj, ii = j[n_], i[n_]
+                h = f["h"][:, jj, ii]
+                if uv and rot is not None:
+                    a_ = 0.5 * (f["u"][:, jj, ii] + f["u"][:, jj, ii + 1])
+                    b_ = 0.5 * (f["v"][:, jj, ii] + f["v"][:, jj + 1, ii])
+                    a_, b_ = to_earth(a_, b_, rot[0][jj, ii], rot[1][jj, ii])
+                elif uv:
+                    a_, b_ = f["u"][:, jj, ii], f["v"][:, jj, ii]
+                else:
+                    a_, b_ = f["T"][:, jj, ii], f["S"][:, jj, ii]
+                out[0, n_] += wt[n_] * column_to_bins(h, a_, zb)
+                out[1, n_] += wt[n_] * column_to_bins(h, b_, zb)
+    return out[0], out[1]
+
+
+def at_depth(x: np.ndarray, zb: np.ndarray, z: np.ndarray, clamp_bottom: bool = True) -> np.ndarray:
+    """Values of binned profiles (n, n_bins) at one depth per row (linear in the bins; with ``clamp_bottom`` the
+    deepest finite bin where z lies below the column, e.g. a seafloor sensor deeper than the model bed)."""
+    out = np.full(x.shape[0], np.nan)
+    for k in range(x.shape[0]):
+        ok = np.isfinite(x[k])
+        if ok.sum() < 2:
+            continue
+        zz = z[k] if not clamp_bottom else min(z[k], zb[ok][-1])
+        out[k] = np.interp(zz, zb[ok], x[k, ok], left=np.nan, right=np.nan)
+    return out
+
+
+def sigma0(th: np.ndarray, S: np.ndarray, zb: np.ndarray, lat: np.ndarray, lon: np.ndarray) -> np.ndarray:
+    """σ₀ [kg m⁻³] of binned θ, S_P (TEOS-10 via gsw, S_A from S_P at the bin pressure)."""
+    import gsw
+    p = gsw.p_from_z(-zb[None, :], np.asarray(lat, float)[:, None])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        SA = gsw.SA_from_SP(S, p, np.asarray(lon, float)[:, None], np.asarray(lat, float)[:, None])
+        return gsw.sigma0(SA, gsw.CT_from_pt(SA, th))
+
+
+def band_stats(obs: np.ndarray, mods: dict[str, np.ndarray], zb: np.ndarray, groups: dict[str, np.ndarray],
+               var: str, bands=DEPTH_BANDS) -> list[dict]:
+    """Bias and RMSE of each source against the observations per depth band and profile group, on the bins where
+    the observation and *every* source are defined (the same samples for all)."""
+    common = np.isfinite(obs)
+    for m in mods.values():
+        common &= np.isfinite(m)
+    rows = []
+    for g, gm in groups.items():
+        for z0, z1 in bands:
+            sel = common & gm[:, None] & ((zb >= z0) & (zb < z1))[None, :]
+            n = int(sel.sum())
+            for lab, m in mods.items():
+                d = (m - obs)[sel]
+                rows.append(dict(var=var, group=g, band=f"{z0:.0f}-{z1:.0f}", source=lab, n=n,
+                                 n_prof=int(sel.any(axis=1).sum()),
+                                 bias=float(d.mean()) if n else np.nan,
+                                 rmse=float(np.sqrt(np.mean(d ** 2))) if n else np.nan))
+    return rows
+
+
+def layer_mean(x: np.ndarray, zb: np.ndarray, z0: float, z1: float, mask: np.ndarray | None = None) -> np.ndarray:
+    """Mean of binned values between z0 and z1 [m] per profile (only bins where ``mask``), NaN if < half filled."""
+    sel = (zb >= z0) & (zb < z1)
+    xx = np.where(mask, x, np.nan) if mask is not None else x
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        m = np.nanmean(xx[:, sel], axis=1)
+    m[np.isfinite(xx[:, sel]).sum(axis=1) < 0.5 * sel.sum()] = np.nan
+    return m
+
+
+def load_insitu(path: Path = INSITU) -> dict:
+    """The accepted samples written by ``obs_qc_insitu.py``."""
+    a = np.load(path)
+    return {k: a[k] for k in a.files}
+
+
+def profiles_compare(py_run: Path, mom6_runs: dict[str, Path], hourly: Path | None = None, insitu: Path = INSITU,
+                     t_lo: np.datetime64 = T0 + np.timedelta64(1, "D")) -> tuple[list[dict], dict]:
+    """Accepted glider and profiler-mooring profiles against pyOCEAN, MOM6 (each run) and GLORYS12.
+
+    Each profile is sampled at the nearest wet model cell (inside the cut, ≤ 1.5 cells away), linear in time between
+    the bracketing pyOCEAN 00 UTC snapshots / MOM6 and GLORYS daily means, and put on the observation's 1-m bins.
+    Returns (rows: θ and S bias/RMSE per depth band, region and period; MLD/thermocline/upper-layer rows), and a
+    dict with the sampled arrays for figures and the MLD test."""
+    from diagnostics import profile_qc as pq
+    from validation.nwa12_cut import case as cs
+
+    a = load_insitu(insitu)
+    zb = a["zb"]
+    hg, H = cs.grid(cs.CASE)
+    lat2, lon2 = hg["lat_t"].values, hg["lon_t"].values
+    b = cs.CASE.box
+    t, la, lo = a["prof_t"], a["prof_lat"], a["prof_lon"]
+    inbox = (lo >= b[0]) & (lo <= b[1]) & (la >= b[2]) & (la <= b[3]) & (t >= t_lo)
+    wet = np.isfinite(H) & (H > 0)
+    j, i, dist = nearest_wet(lat2, lon2, wet, la, lo)
+    dx = np.sqrt(hg["area_t"].values[j, i]) / 1e3
+    use = inbox & (dist <= 1.5 * dx)
+    idx = np.flatnonzero(use)
+    t, la, lo, j, i = t[idx], la[idx], lo[idx], j[idx], i[idx]
+    th_o, S_o, sig_o = a["prof_th"][idx].astype(float), a["prof_S"][idx].astype(float), a["prof_sig"][idx].astype(float)
+    rec = a["prof_records"][a["prof_rec"][idx]]
+    gl = GlorysReader()
+    gj, gi, _ = nearest_wet(*np.meshgrid(gl.lat, gl.lon, indexing="ij"),
+                            np.isfinite(gl.get(0)["T"][0]), la, lo)
+    readers = {"pyOCEAN": (PyoceanReader(py_run), j, i)}
+    readers.update({lab: (Mom6Reader(r), j, i) for lab, r in mom6_runs.items()})
+    readers["GLORYS12"] = (gl, gj, gi)
+    mod = {}
+    for lab, (rd, jj, ii) in readers.items():
+        mod[lab] = sample_columns(rd, t, jj, ii, zb)
+        print(f"  sampled {lab}: {np.isfinite(mod[lab][0]).any(axis=1).sum()} of {t.size} profiles", flush=True)
+    if hourly is not None:                    # snapshot sampling error: the hourly run at the profile time vs its
+        hr = PyoceanReader(hourly)            # own 00 UTC snapshots interpolated (May only)
+        day0 = PyoceanReader(hourly)
+        sel0 = np.isclose(((day0.times - day0.times[0]) / HOUR) % 24, 0.0)
+        day0.files = [f for f, s in zip(day0.files, sel0) if s]
+        day0.times = day0.times[sel0]
+        mod["pyOCEAN_hourly"] = sample_columns(hr, t, j, i, zb)
+        mod["pyOCEAN_hourly_00UTC"] = sample_columns(day0, t, j, i, zb)
+    Hm = H[j, i]
+    jun = np.datetime64("2017-06-01", "ns")
+    region = {"shelf": Hm < H_SHELF, "deep": Hm >= H_SHELF, "inner": Hm < 60.0,
+              "mid": (Hm >= 60.0) & (Hm < 100.0), "outer": (Hm >= 100.0) & (Hm < H_SHELF)}
+    period = {"May": t < jun, "Jun-Aug": t >= jun}
+    groups = {f"{r}/{p}": rm & pm for r, rm in region.items() for p, pm in period.items()}
+    groups["all"] = np.ones(t.size, bool)
+    main = [k for k in mod if not k.startswith("pyOCEAN_hourly")]
+    rows = band_stats(th_o, {k: mod[k][0] for k in main}, zb, groups, "theta")
+    rows += band_stats(S_o, {k: mod[k][1] for k in main}, zb, groups, "S")
+    # profile metrics on the same bins (model masked to where the observation has σ₀)
+    m_sig = np.isfinite(sig_o)
+    out = dict(t=t, lat=la, lon=lo, H=Hm, rec=rec, zb=zb, obs=(th_o, S_o, sig_o), mod=mod, groups=groups)
+    met = {"obs": dict(mld=pq.mixed_layer_depth(zb, sig_o, MLD_REF, MLD_DSIG, MLD_TOP),
+                       tcl=pq.thermocline_depth(zb, np.where(np.isfinite(th_o), th_o, np.nan)),
+                       t05=layer_mean(th_o, zb, 0, 5), t030=layer_mean(th_o, zb, 0, 30),
+                       t3060=layer_mean(th_o, zb, 30, 60), s030=layer_mean(S_o, zb, 0, 30))}
+    for lab, (th_m, S_m) in mod.items():
+        sg = np.where(m_sig, sigma0(th_m, S_m, zb, la, lo), np.nan)
+        thm = np.where(np.isfinite(th_o), th_m, np.nan)
+        met[lab] = dict(mld=pq.mixed_layer_depth(zb, sg, MLD_REF, MLD_DSIG, MLD_TOP), tcl=pq.thermocline_depth(zb, thm),
+                        t05=layer_mean(thm, zb, 0, 5), t030=layer_mean(thm, zb, 0, 30),
+                        t3060=layer_mean(thm, zb, 30, 60),
+                        s030=layer_mean(np.where(np.isfinite(S_o), S_m, np.nan), zb, 0, 30))
+    out["met"] = met
+    for g, gm in groups.items():
+        for key in ("mld", "tcl", "t05", "t030", "t3060", "s030"):
+            ok = gm & np.isfinite(met["obs"][key])
+            for lab in main:
+                ok &= np.isfinite(met[lab][key])
+            for lab in ["obs"] + main:
+                x = met[lab][key][ok]
+                d = x - met["obs"][key][ok]
+                rows.append(dict(var=key, group=g, band="profile", source=lab, n=int(ok.sum()), n_prof=int(ok.sum()),
+                                 median=float(np.median(x)) if x.size else np.nan,
+                                 bias=float(d.mean()) if x.size else np.nan,
+                                 rmse=float(np.sqrt(np.mean(d ** 2))) if x.size else np.nan))
+    out["rows_meta"] = dict(n_accepted=int(a["prof_t"].size), n_used=int(t.size),
+                            n_outside=int((~inbox).sum()), n_dry=int((inbox & (dist > 1.5 * dx)).sum()))
+    return rows, out
+
+
+def mld_test(f: dict, a: str = "pyOCEAN", b: str = "MOM6_jerlov", group: str = "shelf/Jun-Aug") -> dict:
+    """The hypothesis 'pyOCEAN's warmer shelf surface comes from a shallower mixed layer than MOM6 (KPP vs ePBL)'
+    on the observed profiles of a group: medians of MLD and of the 0–5, 0–30 and 30–60 m mean θ for the
+    observations and both models, the across-profile correlation of Δθ₀₋₅ with ΔMLD (a − b), and of the 0–30 m mean
+    Δθ with the 0–30 m mean ΔS (a − b): a column heat excess carried by salt cannot come from vertical mixing or the
+    surface heat flux, it is lateral advection."""
+    met, gm = f["met"], f["groups"][group]
+    keys = ("mld", "tcl", "t05", "t030", "t3060", "s030")
+    ok = gm.copy()                                 # profiles where MLD and 0–5 m θ exist in all three
+    for s in ("obs", a, b):
+        for k in ("mld", "t05"):
+            ok &= np.isfinite(met[s][k])
+    res = dict(group=group, n=int(ok.sum()))
+    for k in keys:                                 # each metric on the subset where it exists in all three
+        okk = ok.copy()
+        for s in ("obs", a, b):
+            okk &= np.isfinite(met[s][k])
+        res[f"n_{k}"] = int(okk.sum())
+        for s in ("obs", a, b):
+            res[f"{s}_{k}_median"] = float(np.median(met[s][k][okk])) if okk.any() else np.nan
+            res[f"{s}_{k}_mean"] = float(np.mean(met[s][k][okk])) if okk.any() else np.nan
+    if ok.sum() > 5:
+        dm = met[a]["mld"][ok] - met[b]["mld"][ok]
+        dt = met[a]["t05"][ok] - met[b]["t05"][ok]
+        res["corr_dT05_dMLD"] = float(np.corrcoef(dt, dm)[0, 1])
+        res["frac_a_shallower"] = float(np.mean(dm < 0))
+        dmo = met[a]["mld"][ok] - met["obs"]["mld"][ok]
+        res["frac_a_shallower_than_obs"] = float(np.mean(dmo < 0))
+        res["frac_b_shallower_than_obs"] = float(np.mean(met[b]["mld"][ok] - met["obs"]["mld"][ok] < 0))
+        o2 = ok & np.isfinite(met[a]["t030"]) & np.isfinite(met[b]["t030"]) & np.isfinite(met[a]["s030"]) \
+            & np.isfinite(met[b]["s030"])
+        if o2.sum() > 5:
+            res["corr_dT030_dS030"] = float(np.corrcoef(met[a]["t030"][o2] - met[b]["t030"][o2],
+                                                        met[a]["s030"][o2] - met[b]["s030"][o2])[0, 1])
+    return res
+
+
+def _readers(py_run: Path, mom6_runs: dict[str, Path]) -> dict[str, _Reader]:
+    return {"pyOCEAN": PyoceanReader(py_run), **{lab: Mom6Reader(r) for lab, r in mom6_runs.items()},
+            "GLORYS12": GlorysReader()}
+
+
+def _site_cells(lat: np.ndarray, lon: np.ndarray, readers: dict) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Nearest wet cell of each point on the model grid (pyOCEAN = MOM6 grid) and on GLORYS12's."""
+    from validation.nwa12_cut import case as cs
+
+    hg, H = cs.grid(cs.CASE)
+    j, i, _ = nearest_wet(hg["lat_t"].values, hg["lon_t"].values, np.isfinite(H) & (H > 0), lat, lon)
+    gl = readers["GLORYS12"]
+    gj, gi, _ = nearest_wet(*np.meshgrid(gl.lat, gl.lon, indexing="ij"), np.isfinite(gl.get(0)["T"][0]), lat, lon)
+    return {lab: ((gj, gi) if lab == "GLORYS12" else (j, i)) for lab in readers}
+
+
+def _requests(sites: list[dict], readers: dict) -> dict[str, dict]:
+    """Per source, the times at which each site is compared: pyOCEAN at its 00 UTC snapshots, the others at the
+    centres of their daily means, within each site's record (from day 2).  Returns {source: dict(t, site)}."""
+    out = {}
+    for lab, rd in readers.items():
+        ts, ss = [], []
+        for n, s in enumerate(sites):
+            tt = rd.times[(rd.times >= T0 + np.timedelta64(1, "D")) & (rd.times >= s["t"].min())
+                          & (rd.times <= s["t"].max()) & (rd.times <= np.datetime64("2017-09-01T00:00", "ns"))]
+            ts.append(tt)
+            ss.append(np.full(tt.size, n))
+        out[lab] = dict(t=np.concatenate(ts), site=np.concatenate(ss))
+    return out
+
+
+def _obs_at(t: np.ndarray, x: np.ndarray, tq: np.ndarray, daily: bool, min_frac: float) -> np.ndarray:
+    """Observation matched to a model time: the mean over ±30 min (snapshot) or the UTC daily mean of the day of
+    ``tq`` with at least ``min_frac`` of the day's nominal samples (daily mean)."""
+    out = np.full(tq.size, np.nan)
+    step = np.median(np.diff(t)) if t.size > 1 else np.timedelta64(1, "h")
+    win = np.timedelta64(30, "m") if not daily else np.timedelta64(12, "h")
+    nominal = 2 * win / step
+    for k, q in enumerate(tq):
+        lo, hi = np.searchsorted(t, q - win), np.searchsorted(t, q + win, side="left" if daily else "right")
+        x_ = x[lo:hi]
+        if daily and np.isfinite(x_).sum() < min_frac * nominal:
+            continue
+        if np.isfinite(x_).any():
+            out[k] = np.nanmean(x_)
+    return out
+
+
+def moorings_compare(py_run: Path, mom6_runs: dict[str, Path], insitu: Path = INSITU) -> tuple[list[dict], dict]:
+    """Moored CTDs (NSIF ~7 m and seafloor) against the models at the instrument depth (the model's deepest value
+    where the model bed is shallower): pyOCEAN 00 UTC snapshots against the observation averaged over ±30 min,
+    MOM6 and GLORYS daily means against the observed UTC daily mean (≥ 80 % of the 15-min samples).  The sensors'
+    in-situ T is converted to θ (gsw)."""
+    import gsw
+
+    a = load_insitu(insitu)
+    readers = _readers(py_run, mom6_runs)
+    sites = []
+    for n, rec in enumerate(map(str, a["moored_records"])):
+        t, T, S, p = (a[f"moored{n}_{v}"] for v in ("t", "T", "S", "p"))
+        lat, lon = a[f"moored{n}_pos"]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            SA = gsw.SA_from_SP(np.where(np.isfinite(S), S, 35.0), p, lon, lat)
+            th = gsw.pt0_from_t(SA, T, p)
+            z = -gsw.z_from_p(p, lat)
+        sites.append(dict(rec=rec, t=t, th=th, S=S, z=float(np.nanmedian(z[np.isfinite(T)])), lat=lat, lon=lon))
+    cells = _site_cells(np.array([s["lat"] for s in sites]), np.array([s["lon"] for s in sites]), readers)
+    req = _requests(sites, readers)
+    zb = 0.5 * (np.arange(0.0, 501.0)[1:] + np.arange(0.0, 501.0)[:-1])
+    rows, figs = [], {s["rec"]: dict(t=s["t"], th=s["th"], S=s["S"], z=s["z"], mod={}) for s in sites}
+    for lab, rd in readers.items():
+        r = req[lab]
+        j, i = (c[r["site"]] for c in cells[lab])
+        th_m, S_m = sample_columns(rd, r["t"], j, i, zb)
+        zq = np.array([sites[k]["z"] for k in r["site"]])
+        mt, ms = at_depth(th_m, zb, zq), at_depth(S_m, zb, zq)
+        for n, s in enumerate(sites):
+            m = r["site"] == n
+            daily = lab != "pyOCEAN"
+            figs[s["rec"]]["mod"][lab] = (r["t"][m], mt[m], ms[m])
+            for v, mx in (("theta", mt[m]), ("S", ms[m])):
+                ob = _obs_at(s["t"], s["th"] if v == "theta" else s["S"], r["t"][m], daily, 0.8)
+                rows.append(dict(record=s["rec"], depth=s["z"], var=v, source=lab,
+                                 sampling="daily mean" if daily else "00UTC snapshot", **skill(ob, mx)))
+    return rows, figs
+
+
+def emolt_compare(py_run: Path, mom6_runs: dict[str, Path], insitu: Path = INSITU) -> tuple[list[dict], dict]:
+    """eMOLT bottom temperature at the sites the QC accepted as representable, against the models at the sensor
+    depth (the deepest model value where the model is shallower): pyOCEAN 00 UTC snapshots against the hourly
+    sample nearest 00 UTC (±30 min), MOM6/GLORYS daily means against UTC daily means (≥ 80 % of the hours).  eMOLT
+    T is in-situ; at ≤ 100 m θ − T < 0.015 °C."""
+    a = load_insitu(insitu)
+    from validation.nwa12_cut import case as cs
+    _, H = cs.grid(cs.CASE)
+    readers = _readers(py_run, mom6_runs)
+    sites = []
+    for n, site in enumerate(map(str, a["emolt_sites"])):
+        lat, lon, dep, enters, j, i = a[f"emolt{n}_meta"]
+        if enters:
+            sites.append(dict(rec=site, t=a[f"emolt{n}_t"], T=a[f"emolt{n}_T"], z=dep, lat=lat, lon=lon,
+                              H=float(H[int(j), int(i)])))
+    if not sites:
+        return [], {}
+    cells = _site_cells(np.array([s["lat"] for s in sites]), np.array([s["lon"] for s in sites]), readers)
+    req = _requests(sites, readers)
+    zb = 0.5 * (np.arange(0.0, 501.0)[1:] + np.arange(0.0, 501.0)[:-1])
+    rows, figs = [], {s["rec"]: dict(t=s["t"], T=s["T"], depth=s["z"], model_H=s["H"], mod={}) for s in sites}
+    for lab, rd in readers.items():
+        r = req[lab]
+        j, i = (c[r["site"]] for c in cells[lab])
+        th_m, _ = sample_columns(rd, r["t"], j, i, zb)
+        mt = at_depth(th_m, zb, np.array([sites[k]["z"] for k in r["site"]]))
+        for n, s in enumerate(sites):
+            m = r["site"] == n
+            daily = lab != "pyOCEAN"
+            figs[s["rec"]]["mod"][lab] = (r["t"][m], mt[m])
+            ob = _obs_at(s["t"], s["T"], r["t"][m], daily, 0.8)
+            rows.append(dict(site=s["rec"], depth=s["z"], model_H=s["H"], source=lab,
+                             sampling="daily mean" if daily else "00UTC snapshot", **skill(ob, mt[m])))
+    return rows, figs
+
+
+ADCP_BIN = 5.0                                         # m: depth bins of the ADCP comparison
+
+
+def adcp_compare(py_run: Path, mom6_runs: dict[str, Path], insitu: Path = INSITU) -> tuple[list[dict], dict]:
+    """QC'd ADCP currents (east, north) against the models on 5-m depth bins: daily means (bins with ≥ 50 % of the
+    day's ensembles) against MOM6/GLORYS daily means, the ensembles within ±20 min of 00 UTC against pyOCEAN
+    snapshots.  Metrics on the depth mean over the bins that observation and model share on ≥ 50 % of the days:
+    mean current, RMSE of the vector, complex (vector) correlation magnitude and veering (Kundu 1976)."""
+    from validation.nwa12_cut import case as cs
+
+    a = load_insitu(insitu)
+    hg, _ = cs.grid(cs.CASE)
+    rot = (hg["cos_t"].values, hg["sin_t"].values)
+    readers = _readers(py_run, mom6_runs)
+    sites = []
+    for n, rec in enumerate(map(str, a["adcp_records"])):
+        t, z, u, v = (a[f"adcp{n}_{x}"] for x in ("t", "z", "u", "v"))
+        lat, lon = a[f"adcp{n}_pos"]
+        sites.append(dict(rec=rec, t=t, z=z, u=u, v=v, lat=lat, lon=lon))
+    cells = _site_cells(np.array([s["lat"] for s in sites]), np.array([s["lon"] for s in sites]), readers)
+    req = _requests(sites, readers)
+    edges = np.arange(0.0, 501.0, ADCP_BIN)
+    zb = 0.5 * (edges[1:] + edges[:-1])
+    rows, figs = [], {s["rec"]: dict(zb=zb, mod={}) for s in sites}
+    for lab, rd in readers.items():
+        r = req[lab]
+        j, i = (c[r["site"]] for c in cells[lab])
+        ue, vn = sample_columns(rd, r["t"], j, i, zb, kind="uv", rot=None if lab == "GLORYS12" else rot)
+        daily = lab != "pyOCEAN"
+        for n, s in enumerate(sites):
+            m = np.flatnonzero(r["site"] == n)
+            b = np.searchsorted(edges, s["z"], side="right") - 1
+            ob = np.full((m.size, zb.size, 2), np.nan)
+            ens_t = np.unique(s["t"])
+            for k, q in enumerate(r["t"][m]):
+                win = np.timedelta64(12, "h") if daily else np.timedelta64(20, "m")
+                lo, hi = np.searchsorted(s["t"], q - win), np.searchsorted(s["t"], q + win, side="left")
+                if hi <= lo:
+                    continue
+                n_ens = np.unique(s["t"][lo:hi]).size
+                full = (2 * win) / np.median(np.diff(ens_t))
+                if daily and n_ens < 0.5 * full:
+                    continue
+                for c, x in enumerate((s["u"], s["v"])):
+                    s_ = np.bincount(b[lo:hi], weights=x[lo:hi], minlength=zb.size)[:zb.size]
+                    c_ = np.bincount(b[lo:hi], minlength=zb.size)[:zb.size]
+                    ob[k, :, c] = np.where(c_ >= (0.5 * n_ens if daily else 1), s_ / np.maximum(c_, 1), np.nan)
+            md = np.stack([ue[m], vn[m]], axis=-1)
+            common = np.isfinite(ob).all(axis=-1) & np.isfinite(md).all(axis=-1)
+            keep = common.mean(axis=0) >= 0.5
+            sel = common & keep[None, :]
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                om = np.nanmean(np.where(sel[..., None], ob, np.nan), axis=1)
+                mm = np.nanmean(np.where(sel[..., None], md, np.nan), axis=1)
+            ok = np.isfinite(om).all(axis=1) & np.isfinite(mm).all(axis=1) & (sel.sum(axis=1) == keep.sum())
+            figs[s["rec"]]["mod"][lab] = (r["t"][m], om, mm, ok, keep)
+            if ok.sum() < 5:
+                continue
+            wo, wm = om[ok, 0] + 1j * om[ok, 1], mm[ok, 0] + 1j * mm[ok, 1]
+            ao, am = wo - wo.mean(), wm - wm.mean()
+            vc = np.vdot(ao, am) / np.sqrt(np.vdot(ao, ao).real * np.vdot(am, am).real)
+            zk = zb[keep]
+            rows.append(dict(record=s["rec"], source=lab, sampling="daily mean" if daily else "00UTC snapshot",
+                             n=int(ok.sum()), z_range=f"{zk.min() - ADCP_BIN / 2:.0f}-{zk.max() + ADCP_BIN / 2:.0f}",
+                             obs_mean_u=float(wo.mean().real), obs_mean_v=float(wo.mean().imag),
+                             mod_mean_u=float(wm.mean().real), mod_mean_v=float(wm.mean().imag),
+                             rmse=float(np.sqrt(np.mean(np.abs(wm - wo) ** 2))), vec_corr=float(np.abs(vc)),
+                             veering_deg=float(np.degrees(np.angle(vc))),
+                             obs_std=float(np.sqrt(np.mean(np.abs(ao) ** 2))),
+                             mod_std=float(np.sqrt(np.mean(np.abs(am) ** 2)))))
+    return rows, figs
+
+
+def bottom_values(h: np.ndarray, x: np.ndarray, min_h: float = H_MIN) -> np.ndarray:
+    """Value of the deepest non-vanished layer (h > ``min_h``) of every column of a (nz, ny, nx) field whose layers
+    are surface first; NaN in columns without such a layer."""
+    ok = np.isfinite(h) & (h > min_h) & np.isfinite(x)
+    nz = ok.shape[0]
+    kb = nz - 1 - np.argmax(ok[::-1], axis=0)
+    out = np.take_along_axis(x, kb[None], axis=0)[0]
+    return np.where(ok.any(axis=0), out, np.nan)
+
+
+INTRUSION_BOX = dict(h_max=60.0, lat_max=40.5, lon_max=-72.0)   # southern MAB inner shelf (NJ–Delmarva)
+INTRUSION_S = 35.0                                              # bottom S above this: slope / Gulf Stream water
+
+
+def shelf_intrusion(py_run: Path, mom6_runs: dict[str, Path], every: int = 5) -> list[dict]:
+    """Slope / Gulf Stream water on the southern MAB inner shelf: per day (every ``every`` days) the fraction of the
+    cells with H < 60 m south of 40.5 °N and west of 72 °W whose bottom salinity exceeds 35, and the median bottom θ
+    and S, for pyOCEAN, each MOM6 run and GLORYS12 (bilinear to the T points).  The observed shelf bottom water is
+    the cold pool (θ 7–12 °C, S 32.5–33.4 in the ud_134 and eMOLT records)."""
+    from validation.nwa12_cut import case as cs
+
+    hg, H = cs.grid(cs.CASE)
+    lat, lon = hg["lat_t"].values, hg["lon_t"].values
+    b = INTRUSION_BOX
+    m = np.isfinite(H) & (H < b["h_max"]) & (lat < b["lat_max"]) & (lon < b["lon_max"])
+    rows = []
+    readers = {"pyOCEAN": PyoceanReader(py_run), **{lab: Mom6Reader(r) for lab, r in mom6_runs.items()}}
+    for lab, rd in readers.items():
+        for k in range(0, rd.times.size, every):
+            f = rd.load(k)
+            sb, tb = bottom_values(f["h"], f["S"])[m], bottom_values(f["h"], f["T"])[m]
+            rows.append(dict(source=lab, t=str(rd.times[k])[:13], cells=int(m.sum()),
+                             frac_S35=float(np.mean(sb > INTRUSION_S)), bottom_theta=float(np.nanmedian(tb)),
+                             bottom_S=float(np.nanmedian(sb))))
+    gl = GlorysReader()
+    for k in range(2, gl.times.size - 2, every):
+        f = gl.load(k)
+        bt, bs = bottom_values(f["h"], f["T"]), bottom_values(f["h"], f["S"])
+        jj = np.clip(np.searchsorted(gl.lat, lat[m]), 0, gl.lat.size - 1)
+        ii = np.clip(np.searchsorted(gl.lon, lon[m]), 0, gl.lon.size - 1)
+        sb, tb = bs[jj, ii], bt[jj, ii]
+        rows.append(dict(source="GLORYS12", t=str(gl.times[k])[:13], cells=int(np.isfinite(sb).sum()),
+                         frac_S35=float(np.nanmean(sb > INTRUSION_S)), bottom_theta=float(np.nanmedian(tb)),
+                         bottom_S=float(np.nanmedian(sb))))
+    return rows
+
+
 # ------------------------------------------------------------------------------------------------ figures
 def _plt():
     import matplotlib
@@ -928,6 +1556,128 @@ def plot_oisst_qc(f: dict, path: Path) -> None:
     plt.close(fig)
 
 
+def plot_profiles(rows: list[dict], path: Path, group_list=("inner/Jun-Aug", "outer/Jun-Aug", "deep/Jun-Aug")) -> None:
+    """θ and S bias and RMSE against the accepted profiles per depth band (common samples)."""
+    import pandas as pd
+    plt = _plt()
+    df = pd.DataFrame([r for r in rows if r["band"] != "profile"])
+    fig, ax = plt.subplots(2, 2 * len(group_list), figsize=(4.2 * len(group_list) * 2 / 2, 8), sharey=True)
+    bands = [f"{a:.0f}-{b:.0f}" for a, b in DEPTH_BANDS]
+    ymid = np.array([0.5 * (a + b) for a, b in DEPTH_BANDS])
+    for c, g in enumerate(group_list):
+        for r_, var in enumerate(("theta", "S")):
+            for k, key in enumerate(("bias", "rmse")):
+                a_ = ax[r_, 2 * c + k]
+                for src in df.source.unique():
+                    d = df[(df["var"] == var) & (df.group == g) & (df.source == src)].set_index("band")
+                    y = np.array([d[key].get(b, np.nan) for b in bands])
+                    a_.plot(y, ymid, "o-", ms=3, lw=1, label=src)
+                a_.axvline(0, color="k", lw=0.5)
+                a_.set_title(f"{g} {var} {key}", fontsize=8)
+                a_.set_yscale("symlog", linthresh=30)
+    ax[0, 0].invert_yaxis()
+    ax[0, 0].set_ylabel("depth [m]")
+    ax[0, 0].legend(fontsize=6)
+    fig.tight_layout()
+    fig.savefig(path, dpi=100)
+    plt.close(fig)
+
+
+def plot_mld(f: dict, path: Path, group: str = "shelf/Jun-Aug") -> None:
+    """Observed vs model MLD and 0–5 m θ on the profiles of a group, and the daily medians in time."""
+    plt = _plt()
+    met, gm = f["met"], f["groups"][group]
+    srcs = [k for k in met if k != "obs" and not k.startswith("pyOCEAN_hourly")]
+    fig, ax = plt.subplots(2, 2, figsize=(12, 9))
+    ok_all = gm & np.isfinite(met["obs"]["mld"])
+    for s in srcs:
+        ok = ok_all & np.isfinite(met[s]["mld"])
+        ax[0, 0].plot(met["obs"]["mld"][ok], met[s]["mld"][ok], ".", ms=2, alpha=0.4, label=s)
+        ok2 = gm & np.isfinite(met["obs"]["t05"]) & np.isfinite(met[s]["t05"])
+        ax[0, 1].plot(met["obs"]["t05"][ok2], met[s]["t05"][ok2], ".", ms=2, alpha=0.4, label=s)
+    for a_, lim in ((ax[0, 0], (0, 40)), (ax[0, 1], (8, 27))):
+        a_.plot(lim, lim, "k", lw=0.6)
+        a_.set_xlim(lim)
+        a_.set_ylim(lim)
+        a_.legend(fontsize=7, markerscale=4)
+    ax[0, 0].set_xlabel("observed MLD [m] (σ₀ + 0.03 from 5 m)")
+    ax[0, 0].set_ylabel("model MLD [m]")
+    ax[0, 1].set_xlabel("observed θ 0–5 m [°C]")
+    ax[0, 1].set_ylabel("model θ 0–5 m [°C]")
+    day = f["t"].astype("datetime64[D]")
+    for s in ["obs"] + srcs:
+        for a_, key in ((ax[1, 0], "mld"), (ax[1, 1], "t05")):
+            ok = gm & np.isfinite(met[s][key]) & np.isfinite(met["obs"][key])
+            ud = np.unique(day[ok])
+            med = [np.median(met[s][key][ok & (day == d)]) for d in ud]
+            a_.plot(ud, med, "k.-" if s == "obs" else ".-", lw=0.8, ms=3, label=s)
+    ax[1, 0].set_ylabel("daily median MLD [m]")
+    ax[1, 1].set_ylabel("daily median θ 0–5 m [°C]")
+    ax[1, 0].legend(fontsize=7)
+    fig.suptitle(f"{group}: profiles with an observed MLD", fontsize=9)
+    fig.tight_layout()
+    fig.savefig(path, dpi=100)
+    plt.close(fig)
+
+
+def plot_moorings(figs: dict, path: Path) -> None:
+    plt = _plt()
+    ks = list(figs)
+    fig, ax = plt.subplots(len(ks), 2, figsize=(14, 1.8 * len(ks) + 1), sharex=True)
+    for n, k in enumerate(ks):
+        f = figs[k]
+        for c, (v, key) in enumerate((("th", 1), ("S", 2))):
+            a_ = ax[n, c]
+            a_.plot(f["t"], f[v], color="k", lw=0.4, label="obs (QC accepted)")
+            for lab, m in f["mod"].items():
+                a_.plot(m[0], m[key], lw=0.8, label=lab)
+            a_.set_ylabel(f"{k[:8]} {f['z']:.0f} m", fontsize=7)
+    ax[0, 0].legend(fontsize=6, ncol=3)
+    ax[0, 0].set_title("θ [°C]", fontsize=8)
+    ax[0, 1].set_title("S_P", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(path, dpi=100)
+    plt.close(fig)
+
+
+def plot_emolt(figs: dict, path: Path) -> None:
+    plt = _plt()
+    ks = list(figs)
+    fig, ax = plt.subplots(len(ks), 1, figsize=(12, 1.8 * len(ks) + 1), sharex=True, squeeze=False)
+    for a_, k in zip(ax[:, 0], ks):
+        f = figs[k]
+        a_.plot(f["t"], f["T"], color="k", lw=0.4, label="eMOLT (QC accepted)")
+        for lab, m in f["mod"].items():
+            a_.plot(m[0], m[1], lw=0.8, label=lab)
+        a_.set_ylabel(f"{k}\n{f['depth']:.0f} m (model {f['model_H']:.0f})", fontsize=6)
+    ax[0, 0].legend(fontsize=6, ncol=3)
+    ax[0, 0].set_title("bottom T [°C]", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(path, dpi=100)
+    plt.close(fig)
+
+
+def plot_adcp(figs: dict, path: Path) -> None:
+    plt = _plt()
+    ks = list(figs)
+    fig, ax = plt.subplots(len(ks), 2, figsize=(14, 1.8 * len(ks) + 1), sharex=True)
+    for n, k in enumerate(ks):
+        for lab, (t, om, mm, ok, keep) in figs[k]["mod"].items():
+            if lab in ("MOM6", "pyOCEAN") or n == 0:
+                pass
+            for c in range(2):
+                if lab == "MOM6_jerlov":
+                    ax[n, c].plot(t[ok], om[ok, c], "k", lw=0.6, label="ADCP daily")
+                ax[n, c].plot(t[ok], mm[ok, c], lw=0.7, label=lab)
+        ax[n, 0].set_ylabel(k[:8] + " " + k[9:14], fontsize=6)
+    ax[0, 0].legend(fontsize=6, ncol=3)
+    ax[0, 0].set_title("depth-mean east velocity [m/s] (common bins)", fontsize=8)
+    ax[0, 1].set_title("depth-mean north velocity [m/s]", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(path, dpi=100)
+    plt.close(fig)
+
+
 def _csv(rows: list[dict], path: Path) -> None:
     import pandas as pd
     pd.DataFrame(rows).to_csv(path, index=False, float_format="%.5g")
@@ -945,10 +1695,11 @@ def main() -> None:
                     help="hourly-output run for the snapshot-vs-daily-mean effect (OISST section)")
     ap.add_argument("--oisst", type=Path, default=OISST)
     ap.add_argument("--out", type=Path, default=OUT)
-    ap.add_argument("--only", choices=("tides", "eta", "sst", "buoy", "oisst"), nargs="*", default=None)
+    ap.add_argument("--insitu", type=Path, default=INSITU, help="accepted samples of obs_qc_insitu.py")
+    ap.add_argument("--only", choices=SECTIONS, nargs="*", default=None)
     a = ap.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
-    do = set(a.only or ("tides", "eta", "sst", "buoy", "oisst"))
+    do = set(a.only or SECTIONS)
     have_oisst = bool(oisst_files(a.oisst))
     o = load_oisst(a.oisst) if have_oisst and ({"oisst", "buoy"} & do) else None
     summ_path = a.out / "summary.json"
@@ -999,6 +1750,53 @@ def main() -> None:
         summary["sst_oisst"] = rows
         summary["oisst_snapshot_effect"] = oisst_snapshot_effect(a.hourly_py, a.full_py, om)
         summary["oisst_qc"] = {k: v for k, v in qsum.items() if k != "rejected_pixels"}
+    if "profiles" in do:
+        rows, f = profiles_compare(a.full_py, mom6_full, hourly=a.hourly_py, insitu=a.insitu)
+        _csv(rows, a.out / "insitu_profiles.csv")
+        plot_profiles(rows, a.out / "insitu_profiles.png")
+        summary["insitu_profiles_meta"] = f["rows_meta"]
+        groups = ("shelf/Jun-Aug", "shelf/May", "deep/Jun-Aug", "inner/Jun-Aug", "mid/Jun-Aug", "outer/Jun-Aug")
+        summary["mld_test"] = {g: mld_test(f, group=g) for g in groups}
+        summary["mld_test_mom6_manizza"] = mld_test(f, b="MOM6")
+        plot_mld(f, a.out / "insitu_mld.png")
+        np.savez_compressed(a.out / "insitu_profiles_sampled.npz", t=f["t"], lat=f["lat"], lon=f["lon"], H=f["H"],
+                            rec=f["rec"].astype(str), zb=f["zb"], obs_th=f["obs"][0], obs_S=f["obs"][1],
+                            **{f"{k}_th": v[0].astype(np.float32) for k, v in f["mod"].items()},
+                            **{f"{k}_S": v[1].astype(np.float32) for k, v in f["mod"].items()},
+                            **{f"met_{s_}_{k}": v for s_, m_ in f["met"].items() for k, v in m_.items()})
+        hr = [k for k in f["mod"] if k.startswith("pyOCEAN_hourly")]
+        if len(hr) == 2:                                   # snapshot sampling error on the profiles (May)
+            m = f["groups"]["shelf/May"]
+            sb = band_stats(f["mod"]["pyOCEAN_hourly_00UTC"][0], {"hourly": f["mod"]["pyOCEAN_hourly"][0]},
+                            f["zb"], {"shelf/May": m, "all/May": f["t"] < np.datetime64("2017-06-01", "ns")}, "theta")
+            summary["insitu_snapshot_effect"] = sb
+        summary["insitu_profiles"] = [r for r in rows if r["group"].endswith("Jun-Aug") or r["group"] == "shelf/May"]
+        recs = {}                                          # profiles used per record and region (for the README)
+        for r_, h_, t_ in zip(f["rec"], f["H"], f["t"]):
+            k = (str(r_), "shelf" if h_ < H_SHELF else "deep", "May" if t_ < np.datetime64("2017-06-01") else "Jun-Aug")
+            recs[k] = recs.get(k, 0) + 1
+        summary["insitu_profiles_per_record"] = [dict(record=a_, region=b_, period=c_, n=n_)
+                                                 for (a_, b_, c_), n_ in sorted(recs.items())]
+    if "moorings" in do:
+        rows, figs = moorings_compare(a.full_py, mom6_full, insitu=a.insitu)
+        _csv(rows, a.out / "insitu_moorings.csv")
+        plot_moorings(figs, a.out / "insitu_moorings.png")
+        summary["insitu_moorings"] = rows
+    if "emolt" in do:
+        rows, figs = emolt_compare(a.full_py, mom6_full, insitu=a.insitu)
+        _csv(rows, a.out / "insitu_emolt.csv")
+        if figs:
+            plot_emolt(figs, a.out / "insitu_emolt.png")
+        summary["insitu_emolt"] = rows
+    if "adcp" in do:
+        rows, figs = adcp_compare(a.full_py, mom6_full, insitu=a.insitu)
+        _csv(rows, a.out / "insitu_adcp.csv")
+        plot_adcp(figs, a.out / "insitu_adcp.png")
+        summary["insitu_adcp"] = rows
+    if "intrusion" in do:
+        rows = shelf_intrusion(a.full_py, mom6_full)
+        _csv(rows, a.out / "insitu_intrusion.csv")
+        summary["shelf_intrusion"] = rows
     summ_path.write_text(json.dumps(summary, indent=1, default=float))
     print(json.dumps({k: v for k, v in summary.items() if k in ("tides", "eta_full")}, indent=1, default=float))
 

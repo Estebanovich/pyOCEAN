@@ -433,6 +433,30 @@ y `tide_check.py` lo deshacen. Sesgo de muestreo de pyOCEAN: la corrida diaria g
 contra las medias diarias de MOM6, GLORYS y OISST; medido contra OISST con la corrida horaria, +0.11 °C en la
 plataforma en mayo y ≈ +0.2 °C en verano (por la serie por paso en los 13 puntos), +0.02 °C en agua profunda.
 
+### Observaciones in situ: QC y comparación (OOI Pioneer, planeadores, eMOLT; `obs_qc_insitu.py`, `compare.py --only profiles moorings emolt adcp intrusion`)
+
+QC primero (R26; `diagnostics/profile_qc.py`, `RUNS/figs/obs_qc/README.md` §3): **0 registros corruptos**. 19
+despliegues de planeador: 16 usables, 3 Spray parciales (posiciones marcadas por el proveedor); 14 de los 19 no traen
+banderas útiles (los 9 OOI diferidos no tienen variables de QC y las de los tiempo real están en NaN), así que
+deciden nuestras pruebas: la sal profunda S(θ = 6 °C) de 10 despliegues es 35.046–35.064 con deriva ≤ 0.014, y los
+pares entre plataformas (5 km, 2 h) no muestran sesgos > 0.2 °C / 0.05. 5 perfiladores y 7 ADCP usables, 6 CTD
+fondeados (4 usables, 2 parciales por huecos; dos redespliegues a otra profundidad), velpt y presf parciales y no
+usados (la presión de velpt está en kPa rotulada dbar). eMOLT: 12 sitios usables, 6 representables en el recorte (5
+al norte de 42 °N, 2 en bahías donde el modelo tiene 5–6 m). Comparación con 29 350 perfiles (junio–agosto):
+**la hipótesis de la capa de mezcla (KPP frente a ePBL) queda refutada**: en la plataforma la mediana de la MLD es 7.6 m
+en pyOCEAN, 7.6 en las observaciones y 6.2 en MOM6 Jerlov (pyOCEAN más somera sólo en 26 % de los perfiles); el
+exceso de calor llena los 30 m superiores (θ medio 0–30 m 21.8 contra 17.0 °C observado y 18.8 de MOM6 Jerlov) y
+viene con sal (S 34.9 contra 32.4; correlación Δθ–ΔS frente a MOM6 Jerlov r = 0.88): es advección lateral. pyOCEAN
+inunda desde el día ~45 el 69 % del fondo de la plataforma interior del sur del MAB (H < 60 m) con agua de ≈ 21 °C y
+S > 35 (MOM6 28–43 %, 11–16 °C; GLORYS ≤ 6 %; observado: piscina fría de 7–11 °C), al mismo tiempo que la deriva al
+norte de la pared de la Corriente del Golfo: en la plataforma interior de Delaware el sesgo es +7.7 °C / +3.5 a
+10–30 m (MOM6 −1.2 / +1.6). En el resto los dos modelos se parecen: termoclina de la plataforma externa y del mar de
+talud +4…+6 °C a 30–60 m en los tres (GLORYS +1.8), NSIF de 7 m +1.5…+2.3 °C, fondo de eMOLT +1.8 / +1.5 / +0.7 °C
+(mediana pyOCEAN / MOM6 / MOM6 Jerlov), y los dos invierten la corriente media sobre la plataforma en OOI (ADCP
+−0.07 m/s hacia el este, modelos +0.02…+0.05, GLORYS −0.04). Clases: intrusión (b/c, trayectoria libre de la
+Corriente del Golfo, magnitud propia de pyOCEAN), corriente invertida (c de la configuración del recorte,
+[hipótesis: entrada a lo largo de la plataforma por el borde noreste]). Detalle en `RUNS/figs/obs_compare/README.md` §6.
+
 ### Criterios del spec
 
 | criterio | estado | dónde |
@@ -453,8 +477,9 @@ plataforma en mayo y ≈ +0.2 °C en verano (por la serie por paso en los 13 pun
   4–5° adelante de TPXO10 y MOM6 1–3° atrás [hipótesis: paso barotrópico implícito θ frente al split-explicit de
   MOM6 con η filtrada; c hasta probar lo contrario].
 - **Calentamiento de la plataforma en verano** (≈ +0.75 °C sobre MOM6 Jerlov, con la misma onda corta, bulk y estado
-  inicial; confirmado contra OISST y GLORYS): (b) KPP frente a ePBL [hipótesis, por comprobar con la profundidad de la
-  capa de mezcla contra perfiles]; MANIZZA_05 vale ≈ 0.4 °C en MOM6 (b para pyOCEAN, que no la tiene).
+  inicial; confirmado contra OISST y GLORYS): **no** es KPP frente a ePBL (refutado con los perfiles, arriba); es agua
+  de talud / de la Corriente del Golfo sobre la plataforma desde el día ~45 (b/c); MANIZZA_05 vale ≈ 0.4 °C en MOM6
+  (b para pyOCEAN, que no la tiene).
 - **Agua profunda +2 °C en los tres modelos**: trayectoria de la Corriente del Golfo y anillos en una corrida libre
   (c); la pared norte en 72 °W deriva al norte desde el día ~50 en pyOCEAN (38.9 °N, MOM6 37.8, GLORYS 37.4), sin
   atribuir con una sola realización (b/c).
@@ -464,8 +489,10 @@ plataforma en mayo y ≈ +0.2 °C en verano (por la serie por paso en los 13 pun
 
 ### Qué debe mejorar pyOCEAN (cadena regional)
 
-1. Mezcla de la capa superficial en la plataforma: comparar KPP con ePBL y con perfiles observados (OOI Pioneer,
-   planeadores, eMOLT); ePBL y la doble difusión son la elección de NWA12 (b; proyecto 4).
+1. La intrusión de agua de la Corriente del Golfo en la plataforma interior (69 % del fondo al sur de 40.5 °N con
+   S > 35 contra 28–43 % en MOM6): presupuesto del flujo de calor y sal a través de la isóbata de 60 m frente a
+   MOM6, y la entrada a lo largo de la plataforma por el borde noreste (los dos modelos invierten la corriente en
+   OOI). La capa de mezcla de KPP no es la causa (MLD = observada); ePBL queda como opción del proyecto 4.
 2. Onda corta de Manizza con clorofila (b): vale ≈ 0.4 °C de SST de plataforma en MOM6.
 3. Arrastre de canal / subgrid (`CHANNEL_DRAG`) y constituyentes de aguas someras (M4, MS4, M6) para Long Island Sound.
 4. Presión atmosférica encendida en el proyecto 4 (`atm_pressure=True` existe; la paridad la deja apagada).
