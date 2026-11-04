@@ -114,6 +114,12 @@ reservorio de trazadores de los segmentos (9 km), la mezcla de ríos de ePBL y S
 con `ENABLE_BUGS_BY_DEFAULT = True` (banderas de bugs de OBC activas). El artículo de Ross et al. (2023) da Smagorinsky
 0.015 y SAL 0.01; el `MOM_input` de CEFI y de `mom6_full` tienen 0.03 y 0.05: la paridad sigue a `MOM_input`.
 Detalle: `reports/Deriva norte de la Corriente del Golfo.md` (sin commit) y `figs/gs_drift/`. (La Smagorinsky biarmónica y la velocidad tangencial de MOM6 en los bordes ya están.)
+**MOM6 "como pyOCEAN" (d11 fase 3, 2026-11-04; `run_mom6.sh full_aspy`, `mom6_inputs.ASPY_SWITCHES`):** apagar a la
+vez MLE, `CORIOLIS_EN_DIS` (con `BOUND_CORIOLIS`), `DT_THERM` 1800 → 600, el reservorio de trazadores y la doble
+difusión no acerca la trayectoria de MOM6 a la de pyOCEAN: mediana de la pared norte a 72 °W (días 60–123) 38.17 y
+37.60 °N en dos miembros (MOM6 37.83 / 37.75, pyOCEAN 38.93 / 38.90); lectura pre-registrada AMBIGUA → SIN EFECTO en la
+confirmación, sin bisección. La causa queda en lo estructural (ePBL vs KPP, RK2/BE vs AB3, barotrópico) [hipótesis].
+La dispersión intrínseca de MOM6 es ≥ 0.57° (no 0.08°): toda comparación de trayectoria necesita ≥ 2–3 miembros.
 
 ## Cómo reproducirlo
 
