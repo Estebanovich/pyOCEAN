@@ -66,7 +66,8 @@ nearest coast cell) with runoff = Q ρ_fw / A_t, ρ_fw = 1000 kg m⁻³ (CEFI's 
 into volume with RHO_0 = 1035, pyOCEAN adds the volume Q: MOM6's river volume is 1000/1035 of pyOCEAN's (class c).
 
 Usage: python validation/nwa12_cut/mom6_inputs.py [--only grid,ic,obc,tides,era5,runoff,chl]
-       python validation/nwa12_cut/mom6_inputs.py --run-dir {pgf0,tides,full,full_jerlov}   (run_mom6.sh calls it)
+       python validation/nwa12_cut/mom6_inputs.py --only ic_pert      (ic_full_pert.nc of the diagnostic twin)
+       python validation/nwa12_cut/mom6_inputs.py --run-dir {pgf0,tides,full,full_jerlov,full_pert}   (run_mom6.sh calls it)
 Index order: pyOCEAN (k, j, i) with k = 0 at the bed; MOM6 files are surface first, (z, y, x).
 """
 from __future__ import annotations
@@ -309,10 +310,15 @@ def write_ics(case: cs.Case, out: Path, modes: tuple[str, ...] = ("full", "tides
     info = {}
     hg, H = cs.grid(case)
     for mode in modes:
-        b = cs.build(case, mode, dt=600.0, days=1.0, hg=hg, H=H)
+        b = cs.build(case, "full" if mode == "full_pert" else mode, dt=600.0, days=1.0, hg=hg, H=H)
         st = b.state
-        p = write_ic(mode, st.h, st.T, st.S, st.u, st.v, out,
-                     f"pyOCEAN case.build(CASE, '{mode}') initial state (validation/nwa12_cut/case.py), surface first")
+        T, note = st.T, ""
+        if mode == "full_pert":
+            T = cs.perturb_temperature(st.T, H, PERTURB_AMP, PERTURB_SEED)
+            note = f" + case.perturb_temperature(amp {PERTURB_AMP} °C, seed {PERTURB_SEED}) on θ"
+        p = write_ic(mode, st.h, T, st.S, st.u, st.v, out,
+                     f"pyOCEAN case.build(CASE, '{mode}') initial state (validation/nwa12_cut/case.py){note}, "
+                     "surface first")
         eta_h = np.where(np.isfinite(H), st.h.sum(0) - np.nan_to_num(H), 0.0)
         info[mode] = dict(file=p.name, max_abs_eta_minus_sum_h=float(np.abs(np.where(np.isfinite(H), st.eta, 0.0)
                                                                               - eta_h).max()))
@@ -650,7 +656,11 @@ MODES = {
     "full": dict(days=123, seconds=0, dt_cpld=3600, ic="full", data="full", sw="manizza"),
     # parity control (ruling R23): the same run with pyOCEAN's Jerlov-I shortwave
     "full_jerlov": dict(days=123, seconds=0, dt_cpld=3600, ic="full", data="full", sw="jerlov"),
+    # diagnostic twin of "full" (Gulf Stream drift, figs/gs_drift d11): the same run from ic_full_pert.nc, the
+    # shared initial θ plus case.perturb_temperature(amp 1e-3 °C, seed 1), the field of run_pyocean --perturb-T
+    "full_pert": dict(days=123, seconds=0, dt_cpld=3600, ic="full_pert", data="full", sw="manizza"),
 }
+PERTURB_AMP, PERTURB_SEED = 1.0e-3, 1             # [°C], seed of ic_full_pert.nc
 SHORTWAVE = {
     # NWA12 minus COBALT: MANIZZA_05 (in MOM_input) with the chlorophyll from file (MOM_diabatic_driver / opacity)
     "manizza": ["#override CHL_FROM_FILE = True", f'CHL_FILE = "{CHL_FILE}"', 'CHL_VARNAME = "chlor_a"'],
@@ -703,6 +713,8 @@ DIAG_EXTRA = {
                                   for v in ("temp", "salt", "u", "v", "h"))),
     "full": ("", "\n".join(f'"ocean_model", "{v}", "{v}", "ocean_daily", "all", .true., "none", 2'
                            for v in ("temp", "salt", "u", "v", "h"))),
+    "full_pert": ("", "\n".join(f'"ocean_model", "{v}", "{v}", "ocean_daily", "all", .true., "none", 2'
+                                for v in ("temp", "salt", "u", "v", "h"))),
 }
 
 
@@ -751,6 +763,8 @@ def write(case: cs.Case = cs.CASE, only: tuple[str, ...] = ("grid", "ic", "obc",
         man["grid"] = write_grid(case, out)
     if "ic" in only:
         man["ic"] = write_ics(case, out)
+    if "ic_pert" in only:                                  # diagnostic twin's initial file only (d11)
+        man.setdefault("ic", {}).update(write_ics(case, out, modes=("full_pert",)))
     if "obc" in only:
         man["obc"] = write_glorys_segments(case, out)
     if "tides" in only:

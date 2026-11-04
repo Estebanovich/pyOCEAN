@@ -652,6 +652,20 @@ def _deep_sponge_columns(Tm: np.ndarray, Sm: np.ndarray, d: np.ndarray, H: np.nd
     return kw, summary
 
 
+def perturb_temperature(T: np.ndarray, H: np.ndarray, amp: float, seed: int = 1) -> np.ndarray:
+    """
+    Diagnostic only (Gulf Stream drift, figs/gs_drift d11): a copy of the potential temperature T (k, j, i) [°C]
+    plus seeded white noise, uniform in [−amp, amp] [°C], in every layer of every wet column (H finite); land
+    untouched.  Used to start a twin of a run (``--perturb-T``) and the matching MOM6 initial file (``full_pert``)
+    with the same field, to measure intrinsic (chaotic) variability of the free-running path.  Not a parity item.
+    """
+    if amp < 0:
+        raise ValueError(f"amp must be ≥ 0, got {amp}")
+    rng = np.random.default_rng(seed)
+    noise = rng.uniform(-amp, amp, size=T.shape)
+    return np.where(np.isfinite(H)[None], T + noise, T)
+
+
 def with_paths(case: Case, **kw) -> Case:
     """A copy of ``case`` with some fields replaced (tests)."""
     return replace(case, **kw)

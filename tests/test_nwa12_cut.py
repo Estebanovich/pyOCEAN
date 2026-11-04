@@ -467,6 +467,30 @@ def test_deep_sponge_per_column(syn, monkeypatch, tmp_path):
     assert meta["deep_sponge"]["per_column"] and "budget" not in meta and meta["n_trunc"] == 0
 
 
+def test_perturb_temperature(syn, monkeypatch, tmp_path):
+    # Diagnostic twin (Gulf Stream drift d11): seeded uniform noise in [-amp, amp] on every wet cell and layer, land
+    # untouched, reproducible by seed; amp 0 is the identity; the runner's --perturb-T path records it in meta.
+    hg, H = cs.grid(syn)
+    T = np.full((3,) + H.shape, 10.0)
+    a = cs.perturb_temperature(T, H, 1e-3, seed=1)
+    wet = np.isfinite(H)
+    assert np.array_equal(a, cs.perturb_temperature(T, H, 1e-3, seed=1))
+    assert not np.array_equal(a, cs.perturb_temperature(T, H, 1e-3, seed=2))
+    assert (np.abs(a - T)[:, wet] <= 1e-3).all() and (np.abs(a - T)[:, wet] > 0).all()
+    assert np.array_equal(a[:, ~wet], T[:, ~wet]) and np.array_equal(cs.perturb_temperature(T, H, 0.0), T)
+    with pytest.raises(ValueError):
+        cs.perturb_temperature(T, H, -1.0)
+    from validation.nwa12_cut import run_pyocean as rp
+    assert rp.parser().parse_args(["--mode", "full", "--perturb-T", "1e-3"]).perturb_T == 1e-3
+    import dataclasses
+    case = dataclasses.replace(syn, runs=tmp_path / "runs")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        meta = rp.run(case, "full", 0.125, 1800.0, threads=2, tag="pert", out_hours=3.0, log=lambda m: None,
+                      perturb_T=1e-3, perturb_seed=3)
+    assert meta["perturb_T"]["amp"] == 1e-3 and meta["perturb_T"]["seed"] == 3 and meta["n_trunc"] == 0
+
+
 def test_fill_down_and_nearest_columns():
     a = np.array([[1.0, np.nan, 5.0], [2.0, np.nan, np.nan], [np.nan, np.nan, np.nan]])[:, None, :]  # (k, 1, 3)
     out = cs._fill_target(a)
@@ -962,3 +986,11 @@ def test_bottom_values_skip_vanished_layers():
     x = np.arange(12.0).reshape(4, 1, 3)
     b = cmp.bottom_values(h, x)
     assert b[0, 0] == x[1, 0, 0] and b[0, 1] == x[3, 0, 1] and np.isnan(b[0, 2])
+
+
+def test_mom6_full_pert_mode():
+    # The MOM6 twin of the perturbation test reads its own initial file and is otherwise the 'full' reference.
+    assert mi.MODES["full_pert"] == dict(mi.MODES["full"], ic="full_pert")
+    txt = mi.mode_override("full_pert", ("south",))
+    assert 'THICKNESS_FILE = "ic_full_pert.nc"' in txt and '#override TS_FILE = "ic_full_pert.nc"' in txt
+    assert mi.DIAG_EXTRA["full_pert"] == mi.DIAG_EXTRA["full"]

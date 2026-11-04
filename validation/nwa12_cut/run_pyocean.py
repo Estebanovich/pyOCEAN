@@ -171,7 +171,8 @@ def meta_of(b: cs.Built, st, mode: str, dt: float, n_steps: int, wall: float, ti
 def run(case: cs.Case, mode: str, days: float, dt: float, threads: int = 5, restart_at: float | None = None,
         tag: str = "", out_hours: float = 24.0, write: bool = True, start_from: Path | None = None,
         log=print, overrides: dict | None = None, allow_restart_change: tuple[str, ...] = (),
-        deep_sponge: float | None = None, deep_sponge_3d: bool = False) -> dict:
+        deep_sponge: float | None = None, deep_sponge_3d: bool = False, perturb_T: float | None = None,
+        perturb_seed: int = 1) -> dict:
     """
     One run (module docstring); returns the metadata (and writes them).  ``overrides``: ``SigmaBaroclinic``
     arguments replacing the parity values (``--override KEY=VALUE``; diagnostics only, recorded in ``meta.json``);
@@ -179,7 +180,9 @@ def run(case: cs.Case, mode: str, days: float, dt: float, threads: int = 5, rest
     (``core.restart.read_restart(allow_changed=...)``); ``deep_sponge``: τ [days] of the diagnostic interior T/S
     sponge over H > 500 m (``case.deep_sponge``, ``--deep-sponge``; the domain budget is then not computed, the
     sponge is not a boundary flux); ``deep_sponge_3d``: its target per column (GLORYS May–June mean at each column,
-    ``case.deep_sponge(per_column=True)``) instead of one profile.
+    ``case.deep_sponge(per_column=True)``) instead of one profile; ``perturb_T``: amplitude [°C] of seeded uniform
+    noise added to the initial θ of every wet cell (``case.perturb_temperature``, ``--perturb-T``; diagnostic twin
+    run for intrinsic variability, not with ``start_from``).
     """
     overrides = dict(overrides or {})
     sponge_kw, sponge_meta = {}, None
@@ -195,6 +198,10 @@ def run(case: cs.Case, mode: str, days: float, dt: float, threads: int = 5, rest
     check_coverage(case, mode, days)
     b = cs.build(case, mode, dt, days, **overrides, **sponge_kw)
     st, n0 = b.state, 0
+    if perturb_T is not None:
+        if start_from is not None:
+            raise SystemExit("--perturb-T perturbs the initial state: not with --start-from")
+        st.T = cs.perturb_temperature(st.T, b.H, perturb_T, perturb_seed)
     if start_from is not None:
         st = read_restart(start_from, b.model, allow_changed=tuple(allow_restart_change))
         n0 = int(round(st.time / dt))
@@ -226,6 +233,8 @@ def run(case: cs.Case, mode: str, days: float, dt: float, threads: int = 5, rest
         meta["allow_restart_change"] = list(allow_restart_change)
     if sponge_meta is not None:
         meta["deep_sponge"] = sponge_meta
+    if perturb_T is not None:
+        meta["perturb_T"] = dict(amp=perturb_T, seed=perturb_seed, kind="uniform, every wet cell and layer")
     if budget is not None:
         meta["budget"] = budget.residuals()
         meta["budget_scope"] = budget_scope
@@ -351,6 +360,10 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--deep-sponge-3d", action="store_true",
                     help="with --deep-sponge: per-column target (GLORYS May–June mean at each column) instead of "
                          "one profile (case.deep_sponge(per_column=True))")
+    ap.add_argument("--perturb-T", type=float, default=None, metavar="AMP",
+                    help="diagnostic twin: add seeded uniform noise in [-AMP, AMP] °C to the initial θ of every wet "
+                         "cell (case.perturb_temperature; intrinsic-variability test)")
+    ap.add_argument("--perturb-seed", type=int, default=1)
     ap.add_argument("--compare", nargs=2, type=Path, default=None, metavar=("A", "B"),
                     help="compare two restart files bit for bit and exit")
     return ap
@@ -374,7 +387,8 @@ def main() -> None:
     else:
         res = run(case, a.mode, days, a.dt, a.threads, a.restart_at, a.tag, a.out_hours, start_from=a.start_from,
                   log=log, overrides=parse_overrides(a.override), allow_restart_change=tuple(a.allow_restart_change),
-                  deep_sponge=a.deep_sponge, deep_sponge_3d=a.deep_sponge_3d)
+                  deep_sponge=a.deep_sponge, deep_sponge_3d=a.deep_sponge_3d,
+                  perturb_T=a.perturb_T, perturb_seed=a.perturb_seed)
     print(json.dumps(res, indent=1, default=float))
 
 
