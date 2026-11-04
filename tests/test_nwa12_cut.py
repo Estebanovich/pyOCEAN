@@ -430,6 +430,51 @@ def test_deep_sponge(syn, monkeypatch, tmp_path):
     assert meta["deep_sponge"]["tau_days"] == 5.0 and "budget" not in meta and meta["n_trunc"] == 0
 
 
+def test_deep_sponge_per_column(syn, monkeypatch, tmp_path):
+    # Per-column variant (ruling 2026-11-04): each sponge column relaxes toward the GLORYS time mean at its own
+    # nearest GLORYS point (NaN below the GLORYS bed filled with the value above, as MOM6 MOM_ALE_sponge.F90:1006-1014),
+    # on the GLORYS levels; same rate as the profile variant.
+    hg, H = cs.grid(syn)
+    args = dict(tau_days=5.0, h_min=120.0, taper_cells=2, period=("2017-04-30", "2017-05-03"), t_ref_depth=None)
+    k1, _ = cs.deep_sponge(syn, hg, H, **args)
+    kw, meta = cs.deep_sponge(syn, hg, H, per_column=True, **args)
+    assert np.array_equal(kw["sponge_rate"], k1["sponge_rate"]) and meta["per_column"]
+    zw, T, S = kw["sponge_zw"], kw["sponge_T"], kw["sponge_S"]
+    assert zw.ndim == 1 and T.shape == S.shape == (zw.size - 1,) + H.shape
+    sp = kw["sponge_rate"] > 0
+    assert np.isfinite(T[:, sp]).all() and np.isfinite(S[:, sp]).all()
+    # synthetic S = 35 − 0.002 z + 0.1 (x − LON0): varies across columns, so the per-column S at the surface differs
+    assert np.ptp(S[0, sp]) > 0.01
+    with xr.open_dataset(syn.glorys[0]) as ds:
+        dep = ds["depth"].values.astype(float)
+    assert np.allclose(np.diff(S[:, sp], axis=0), (-0.002 * np.diff(dep))[:, None], atol=1e-4)
+    f = meta["shelfbreak_S35_fraction"]                                  # NaN: no 500–1000 m columns here
+    assert np.isnan(f) or 0.0 <= f <= 1.0
+    b = _build(syn, days=0.25, dt=1800.0, **kw)
+    st = _run(b, b.state, 0, 2)
+    assert np.isfinite(st.T).all() and np.isfinite(st.S).all()
+    from validation.nwa12_cut import run_pyocean as rp
+    orig = cs.deep_sponge
+    monkeypatch.setattr(cs, "deep_sponge", lambda case, hg, H, tau_days, per_column=False: orig(
+        case, hg, H, tau_days=tau_days, h_min=120.0, taper_cells=2, period=("2017-04-30", "2017-05-03"),
+        t_ref_depth=None, per_column=per_column))
+    import dataclasses
+    case = dataclasses.replace(syn, runs=tmp_path / "runs")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        meta = rp.run(case, "full", 0.125, 1800.0, threads=2, tag="sp3", out_hours=3.0, log=lambda m: None,
+                      deep_sponge=5.0, deep_sponge_3d=True)
+    assert meta["deep_sponge"]["per_column"] and "budget" not in meta and meta["n_trunc"] == 0
+
+
+def test_fill_down_and_nearest_columns():
+    a = np.array([[1.0, np.nan, 5.0], [2.0, np.nan, np.nan], [np.nan, np.nan, np.nan]])[:, None, :]  # (k, 1, 3)
+    out = cs._fill_target(a)
+    np.testing.assert_array_equal(out[:, 0, 0], [1.0, 2.0, 2.0])
+    np.testing.assert_array_equal(out[:, 0, 2], [5.0, 5.0, 5.0])
+    assert np.isfinite(out).all()                                      # the empty column takes a neighbour's
+
+
 def test_output_writes_layer_thickness(syn, tmp_path):
     # The new output field h_layer (ALE layer thickness; 'h' is the static bathymetry) round-trips through
     # OutputWriter with its CF standard name.

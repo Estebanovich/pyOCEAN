@@ -171,20 +171,22 @@ def meta_of(b: cs.Built, st, mode: str, dt: float, n_steps: int, wall: float, ti
 def run(case: cs.Case, mode: str, days: float, dt: float, threads: int = 5, restart_at: float | None = None,
         tag: str = "", out_hours: float = 24.0, write: bool = True, start_from: Path | None = None,
         log=print, overrides: dict | None = None, allow_restart_change: tuple[str, ...] = (),
-        deep_sponge: float | None = None) -> dict:
+        deep_sponge: float | None = None, deep_sponge_3d: bool = False) -> dict:
     """
     One run (module docstring); returns the metadata (and writes them).  ``overrides``: ``SigmaBaroclinic``
     arguments replacing the parity values (``--override KEY=VALUE``; diagnostics only, recorded in ``meta.json``);
     ``allow_restart_change``: restart configuration entries allowed to differ on ``start_from``
     (``core.restart.read_restart(allow_changed=...)``); ``deep_sponge``: τ [days] of the diagnostic interior T/S
     sponge over H > 500 m (``case.deep_sponge``, ``--deep-sponge``; the domain budget is then not computed, the
-    sponge is not a boundary flux).
+    sponge is not a boundary flux); ``deep_sponge_3d``: its target per column (GLORYS May–June mean at each column,
+    ``case.deep_sponge(per_column=True)``) instead of one profile.
     """
     overrides = dict(overrides or {})
     sponge_kw, sponge_meta = {}, None
     if deep_sponge is not None:
         hg, H = cs.grid(case)
-        sponge_kw, sponge_meta = cs.deep_sponge(case, hg, H, tau_days=deep_sponge)
+        sponge_kw, sponge_meta = (cs.deep_sponge(case, hg, H, tau_days=deep_sponge, per_column=True)
+                                  if deep_sponge_3d else cs.deep_sponge(case, hg, H, tau_days=deep_sponge))
     set_threads(threads)
     out = run_dir(case, mode, dt, tag) if write else None
     if out is not None:
@@ -346,6 +348,9 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--deep-sponge", type=float, default=None, metavar="TAU_DAYS",
                     help="diagnostic interior T/S sponge over H > 500 m toward one GLORYS May–June slope-water "
                          "profile at rate 1/TAU (case.deep_sponge; no domain budget)")
+    ap.add_argument("--deep-sponge-3d", action="store_true",
+                    help="with --deep-sponge: per-column target (GLORYS May–June mean at each column) instead of "
+                         "one profile (case.deep_sponge(per_column=True))")
     ap.add_argument("--compare", nargs=2, type=Path, default=None, metavar=("A", "B"),
                     help="compare two restart files bit for bit and exit")
     return ap
@@ -369,7 +374,7 @@ def main() -> None:
     else:
         res = run(case, a.mode, days, a.dt, a.threads, a.restart_at, a.tag, a.out_hours, start_from=a.start_from,
                   log=log, overrides=parse_overrides(a.override), allow_restart_change=tuple(a.allow_restart_change),
-                  deep_sponge=a.deep_sponge)
+                  deep_sponge=a.deep_sponge, deep_sponge_3d=a.deep_sponge_3d)
     print(json.dumps(res, indent=1, default=float))
 
 

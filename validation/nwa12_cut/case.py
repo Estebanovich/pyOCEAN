@@ -539,14 +539,20 @@ def rivers(case: Case, hg: xr.Dataset, H: np.ndarray):
 
 def deep_sponge(case: Case, hg: xr.Dataset, H: np.ndarray, tau_days: float = 5.0, h_min: float = 500.0,
                 taper_cells: int = 3, period: tuple[str, str] = ("2017-05-01", "2017-06-30"),
-                t_ref_depth: float | None = 200.0, t_ref_max: float = 15.0) -> tuple[dict, dict]:
+                t_ref_depth: float | None = 200.0, t_ref_max: float = 15.0,
+                per_column: bool = False) -> tuple[dict, dict]:
     """
     Diagnostic interior T/S sponge over deep water (intrusion diagnosis, ``figs/intrusion_diag/README.md``; not a
     parity item).  Returns (``SigmaBaroclinic`` keyword arguments, summary for ``meta.json``).
 
-    The interior sponge relaxes T, S implicitly toward one static profile in z (``core.components.sponge``,
-    T ← (T + Δt r T*)/(1 + Δt r), MOM6 MOM_sponge.F90 implicit form); a spatially varying 3-D target is not
-    supported.  The profile is the area-weighted horizontal mean of the GLORYS12 time mean over ``period`` (θ [°C],
+    The interior sponge relaxes T, S implicitly (``core.components.sponge``, T ← (T + Δt r T*)/(1 + Δt r), MOM6
+    MOM_sponge.F90 implicit form).
+
+    ``per_column=True`` (``--deep-sponge-3d``, ruling 2026-11-04): the target of each model column is the GLORYS
+    time mean over ``period`` at its nearest GLORYS point, on the GLORYS levels (interfaces ``source_level_grid``)
+    down to the deepest level any sponge column needs; values below the GLORYS bed take the value above (MOM6
+    MOM_ALE_sponge.F90:1006-1014), and a column with no GLORYS value takes that of the nearest column with one
+    (``_fill_target``).  ``t_ref_depth`` is not used.  Otherwise one profile: the profile is the area-weighted horizontal mean of the GLORYS12 time mean over ``period`` (θ [°C],
     S_P), sampled at the nearest GLORYS point of each model T cell, over the wet cells with H > ``h_min`` and, when
     ``t_ref_depth`` is given, GLORYS θ(``t_ref_depth``) < ``t_ref_max`` (slope water north of the Gulf Stream north
     wall, the 15 °C at 200 m criterion), on the GLORYS levels with any value (interfaces ``source_level_grid``).
@@ -554,8 +560,6 @@ def deep_sponge(case: Case, hg: xr.Dataset, H: np.ndarray, tau_days: float = 5.0
     Rate r = w / (τ · 86400 s) [s⁻¹] on the wet cells with H > ``h_min``, 0 elsewhere; w = min(1, d / taper_cells)
     with d the Euclidean distance in cells to the nearest wet cell with H ≤ ``h_min`` (w = 1 for taper_cells = 0).
     """
-    from scipy.ndimage import distance_transform_edt
-
     from forcing.ocean_init import source_level_grid
     lat, lon, area = hg["lat_t"].values, hg["lon_t"].values, hg["area_t"].values
     wet = np.isfinite(H)
@@ -571,6 +575,8 @@ def deep_sponge(case: Case, hg: xr.Dataset, H: np.ndarray, tau_days: float = 5.0
         ii = np.abs(ds["longitude"].values[:, None, None] - lon[None]).argmin(0)
         n_rec = int(ds.sizes["time"])
     Tm, Sm = T[:, jj, ii], S[:, jj, ii]
+    if per_column:
+        return _deep_sponge_columns(Tm, Sm, d, H, wet, deep, tau_days, h_min, taper_cells, period, n_rec)
     sel = deep.copy()
     if t_ref_depth is not None:
         k = int(np.argmin(np.abs(d - t_ref_depth)))
@@ -583,14 +589,66 @@ def deep_sponge(case: Case, hg: xr.Dataset, H: np.ndarray, tau_days: float = 5.0
     T_prof = (np.nan_to_num(Tm) * w).sum(axis=(1, 2))[ok] / wk[ok]
     S_prof = (np.nan_to_num(Sm) * w).sum(axis=(1, 2))[ok] / wk[ok]
     zw = source_level_grid(d[ok])["z_f"].values
-    dist = distance_transform_edt(~(wet & ~deep))
-    wt = np.ones(H.shape) if taper_cells <= 0 else np.minimum(1.0, dist / float(taper_cells))
-    rate = np.where(deep, wt / (tau_days * 86400.0), 0.0)
+    rate = _deep_sponge_rate(wet, deep, tau_days, taper_cells)
     kw = dict(sponge_rate=rate, sponge_T=T_prof, sponge_zw=zw, sponge_S=S_prof)
     summary = dict(tau_days=tau_days, h_min=h_min, taper_cells=taper_cells, period=list(period), records=n_rec,
                    t_ref_depth=t_ref_depth, t_ref_max=t_ref_max, profile_cells=int(sel.sum()),
                    sponge_cells=int(deep.sum()), levels=int(ok.sum()),
                    T_surface=float(T_prof[0]), S_surface=float(S_prof[0]))
+    return kw, summary
+
+
+def _deep_sponge_rate(wet: np.ndarray, deep: np.ndarray, tau_days: float, taper_cells: int) -> np.ndarray:
+    """r = w / (τ · 86400 s) [s⁻¹] on ``deep``, w = min(1, d / taper_cells), d the distance in cells to the nearest
+    wet shallow cell (``deep_sponge``)."""
+    from scipy.ndimage import distance_transform_edt
+    dist = distance_transform_edt(~(wet & ~deep))
+    wt = np.ones(deep.shape) if taper_cells <= 0 else np.minimum(1.0, dist / float(taper_cells))
+    return np.where(deep, wt / (tau_days * 86400.0), 0.0)
+
+
+def _fill_target(a: np.ndarray) -> np.ndarray:
+    """
+    A GLORYS field (nz, ny, nx) sampled on the model cells, made finite: NaN below the GLORYS bed takes the value
+    of the level above (MOM6 MOM_ALE_sponge.F90:1006-1014, ``tmpT1d(k) = tmpT1d(k-1)``); a column with no value at
+    all takes the column of the nearest cell (Euclidean, in cells) that has one.
+    """
+    from scipy.ndimage import distance_transform_edt
+    out = np.array(a, float)
+    for k in range(1, out.shape[0]):
+        bad = ~np.isfinite(out[k])
+        out[k, bad] = out[k - 1, bad]
+    empty = ~np.isfinite(out[0])
+    if empty.any() and not empty.all():
+        _, (jj, ii) = distance_transform_edt(empty, return_indices=True)
+        out = out[:, jj, ii]
+    return out
+
+
+def _deep_sponge_columns(Tm: np.ndarray, Sm: np.ndarray, d: np.ndarray, H: np.ndarray, wet: np.ndarray,
+                         deep: np.ndarray, tau_days: float, h_min: float, taper_cells: int,
+                         period: tuple[str, str], n_rec: int) -> tuple[dict, dict]:
+    """Per-column targets of ``deep_sponge(per_column=True)``: (sponge kwargs, summary)."""
+    from forcing.ocean_init import source_level_grid
+    rate = _deep_sponge_rate(wet, deep, tau_days, taper_cells)
+    sp = rate > 0
+    zf = source_level_grid(d)["z_f"].values                       # interfaces of all GLORYS levels, surface first
+    hmax = float(np.nanmax(np.where(sp, H, np.nan)))
+    nk = int(min(d.size, np.searchsorted(-zf[1:], hmax) + 1))    # levels down to the deepest sponge bed
+    T3, S3 = _fill_target(Tm[:nk]), _fill_target(Sm[:nk])
+    zw = zf[:nk + 1]
+    # target water at 40–60 m on the shelf-break columns (500 < H ≤ 1000 m): fraction with S > 35
+    zc = 0.5 * (zw[1:] + zw[:-1])
+    lev = (zc <= -40.0) & (zc >= -60.0)
+    brk = sp & (np.nan_to_num(H) > 500.0) & (np.nan_to_num(H) <= 1000.0)
+    sb = S3[lev][:, brk]
+    frac = float((sb > 35.0).mean()) if sb.size else float("nan")
+    kw = dict(sponge_rate=rate, sponge_T=T3, sponge_zw=zw, sponge_S=S3)
+    summary = dict(tau_days=tau_days, h_min=h_min, taper_cells=taper_cells, period=list(period), records=n_rec,
+                   per_column=True, sponge_cells=int(deep.sum()), levels=nk,
+                   shelfbreak_S35_fraction=frac, shelfbreak_cells=int(brk.sum()),
+                   S_surface_range=[float(S3[0, sp].min()), float(S3[0, sp].max())],
+                   T_surface_range=[float(T3[0, sp].min()), float(T3[0, sp].max())])
     return kw, summary
 
 
