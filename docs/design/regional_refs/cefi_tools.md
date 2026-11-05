@@ -70,7 +70,7 @@ nx_start 1600, nx_end -1`: a TPXO subset around NWA, `:126-138`), `segments`, `t
 **Input:** **TPXO9 v1** (`h_tpxo9.v1.nc`, `u_tpxo9.v1.nc`; `:17-47`), not TPXO10. Elevation
 `ha`, `hp` (m, degrees); velocities `ua`, `up`, `va`, `vp` with amplitude multiplied by 0.01
 ("convert to m/s", `:32, 43`), i.e. TPXO's **velocity** fields in cm/s, not the transports `Ua`,
-`Va` [verificar the TPXO9 v1 variable units against the file header]. Land mask = amplitude ≤ 0 of
+`Va` (open, 2026-11-05: no TPXO9 v1 file on this Mac, so the units are taken from CEFI's own comment "convert to m/s", not from the file header; pyOCEAN reads TPXO10, whose header gives transports in cm²/s, so this does not affect pyOCEAN — check the header if TPXO9 is ever used). Land mask = amplitude ≤ 0 of
 the first constituent (`:23, 34, 45`).
 
 **Processing:** complex `h = ha·exp(−i hp)`, `u = ua·exp(−i up)` (`:22, 33, 44`); flood over land with
@@ -207,8 +207,8 @@ make_quick_mosaic --input_mosaic ocean_mosaic.nc --mosaic_name grid_spec --ocean
   `land_mosaic_tile1Xocean_mosaic_tile1.nc` (exactly the files present in
   `exps/NWA12.COBALT/INPUT/`). Because the atmosphere grid equals the ocean grid, the exchange grid
   is one cell per ocean cell (`xgrid_nml interp_method = 'second_order'` still applies,
-  `input.nml_24hr`). [verificar: FRE-NCtools source is not in `~/pyOCEAN_refs`; the list of outputs is
-  from the NWA12 `INPUT/` directory and the tool's documented behaviour, not from its code.]
+  `input.nml_24hr`). (Open, 2026-11-05: FRE-NCtools source is not in `~/pyOCEAN_refs`; the list of outputs is
+  from the NWA12 `INPUT/` directory and the tool's documented behaviour, not from its code.)
 - `make_mask.sh` runs `check_mask --grid_file ocean_mosaic.nc --ocean_topog ocean_topog.nc --layout
   N,N` for 40×40, 50×50, 60×60 (`:1-3`) to write `mask_table.*` (processor land-masking); not needed
   for a serial or small cut.

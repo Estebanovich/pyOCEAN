@@ -265,6 +265,13 @@ Criterio de avance entre etapas: cada etapa cierra con sus filas del marcador en
 
 **Eficiencia (anotado el 2026-11-04, decisión de Esteban):** el costo se atenderá en una etapa propia o dentro de una existente; dónde va está **por decidir**. Mientras tanto, cada medición o diferencia de costo frente a otro modelo se anota en la sección 10, sin cambiar el modelo por ello.
 
+**Pendientes al cerrar la rama `regional-chain` (2026-11-05, para una rama de seguimiento; ninguno toca el camino por defecto):**
+- Re-correr DOME (Smagorinsky, Jackson y los controles de BBL, z\*, σ) después de `e1ffbbb` y `ca36b59`; las filas de CLAUDE.md marcan esos números como anteriores.
+- M8 de la revisión final: el runoff de un río en una celda seca de W/D no entra en el balance de dominio (error de balance; el corte NWA12 no lo usa).
+- M4: `_momentum_terms`/`_tendencies` (privadas) no pasan la velocidad tangencial de la frontera abierta.
+- Estacionados, clase c: M3 (velocidad de marea rotada con el ángulo de la celda T en vez del de la cara) y el tablero de ajedrez de ζ (1.24× MOM6 en medias diarias).
+- Las 5 pruebas de eficiencia de §10b3, cuando se abra el tema de costo.
+
 ## 9. Arquitectura del núcleo y experiencia de usuario (2026-10-15)
 
 Origen: revisión del código y del manual el 2026-10-15, comparada con la organización de MITgcm, MOM6, ROMS/CROCO, HYCOM, Oceananigans y Veros y con las quejas de la sección 3b. Pendiente antes de fijar las interfaces: leer la composición en el código de MOM6 (`src/core/MOM.F90`, `step_MOM`) y de Oceananigans (`HydrostaticFreeSurfaceModel`), con referencias `file:line`.
