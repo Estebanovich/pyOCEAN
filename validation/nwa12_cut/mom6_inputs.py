@@ -67,7 +67,7 @@ into volume with RHO_0 = 1035, pyOCEAN adds the volume Q: MOM6's river volume is
 
 Usage: python validation/nwa12_cut/mom6_inputs.py [--only grid,ic,obc,tides,era5,runoff,chl]
        python validation/nwa12_cut/mom6_inputs.py --only ic_pert      (ic_full_pert.nc of the diagnostic twin)
-       python validation/nwa12_cut/mom6_inputs.py --run-dir {pgf0,tides,full,full_jerlov,full_pert,full_aspy[_<sw>-<sw>…][_pert]}
+       python validation/nwa12_cut/mom6_inputs.py --run-dir {pgf0,tides,full,full_jerlov,full_pert,full_budget,full_d55,full_swap55,full_self55,full_d30,full_swap30,full_aspy[_<sw>-<sw>…][_pert]}
        (run_mom6.sh calls it; full_aspy switches off the MOM6 candidates of the Gulf Stream drift, ASPY_SWITCHES)
 Index order: pyOCEAN (k, j, i) with k = 0 at the bed; MOM6 files are surface first, (z, y, x).
 """
@@ -304,6 +304,36 @@ def write_ic(name: str, h: np.ndarray, T: np.ndarray, S: np.ndarray, u: np.ndarr
             x[:] = np.asarray(val, float)[::-1]
         ds.comment = comment
     return p
+
+
+def read_state(src: str, case: cs.Case = cs.CASE) -> dict:
+    """A model state (pyOCEAN order: k = 0 at the bed) for the state swap of d11 Phase 4: ``src`` is
+    "pyocean:<run>/out/out_<time>.nc" (a parity snapshot: eta, u, v, T, S, h_layer) or "mom6:<run>/RESTART/MOM.res.nc"
+    (MOM6 restart: h, Temp, Salt, u, v, surface first), relative to RUNS/runs.  Returns h, T, S, u, v [m, °C θ,
+    PSU, m s⁻¹] and η = Σ h − H on wet columns [m] (the z* relation of both models; land 0, layers 0 there)."""
+    kind, rel = src.split(":", 1)
+    path = Path(case.runs) / "runs" / rel
+    _, H = cs.grid(case)
+    wet = np.isfinite(H)
+    with netCDF4.Dataset(path) as ds:
+        if kind == "pyocean":
+            g = {k: np.asarray(ds[v][0], float) for k, v in (("h", "h_layer"), ("T", "T"), ("S", "S"), ("u", "u"),
+                                                             ("v", "v"))}
+        elif kind == "mom6":
+            g = {k: np.asarray(ds[v][0], float)[::-1] for k, v in (("h", "h"), ("T", "Temp"), ("S", "Salt"),
+                                                                   ("u", "u"), ("v", "v"))}
+        else:
+            raise ValueError(f"state source {src!r}: use pyocean:… or mom6:…")
+    g = {k: np.nan_to_num(np.ma.filled(v, np.nan) if np.ma.isMaskedArray(v) else v) for k, v in g.items()}
+    g["eta"] = np.where(wet, g["h"].sum(0) - np.nan_to_num(H), 0.0)
+    return g
+
+
+def write_swap_ic(name: str, src: str, out: Path, case: cs.Case = cs.CASE) -> Path:
+    """MOM6 IC file ic_<name>.nc in ``out`` from the state ``src`` (``read_state``), d11 Phase 4 state swap."""
+    g = read_state(src, case)
+    return write_ic(name, g["h"], g["T"], g["S"], g["u"], g["v"], out,
+                    f"state swap (figs/gs_drift d11 Phase 4) from {src}, surface first")
 
 
 def write_ics(case: cs.Case, out: Path, modes: tuple[str, ...] = ("full", "tides")) -> dict:
@@ -660,7 +690,23 @@ MODES = {
     # diagnostic twin of "full" (Gulf Stream drift, figs/gs_drift d11): the same run from ic_full_pert.nc, the
     # shared initial θ plus case.perturb_temperature(amp 1e-3 °C, seed 1), the field of run_pyocean --perturb-T
     "full_pert": dict(days=123, seconds=0, dt_cpld=3600, ic="full_pert", data="full", sw="manizza"),
+    # "full" with the daily-mean momentum and KE budget terms of the crest-box diagnosis (figs/gs_drift d11 Phase 4);
+    # diagnostics only, the run must equal "full" bit for bit (BUDGET_DIAGS)
+    "full_budget": dict(days=123, seconds=0, dt_cpld=3600, ic="full", data="full", sw="manizza"),
+    # state swap (d11 Phase 4, tool 2): "full" to day 55 for its restart (RESTART/MOM.res.nc = the MOM6 state at
+    # 2017-06-25 00 UTC), and 40-day runs started on 2017-06-25 from a file state (no restart): the pyOCEAN parity
+    # snapshot of that time (swap) and, as the cold-start control, MOM6's own day-55 restart (self)
+    "full_d55": dict(days=55, seconds=0, dt_cpld=3600, ic="full", data="full", sw="manizza"),
+    "full_swap55": dict(days=40, seconds=0, dt_cpld=3600, ic="swap55", data="full", sw="manizza",
+                        date="2017,6,25,0,0,0", ic_src="pyocean:full_dt600_bih123/out/out_2017-06-25T000000.nc"),
+    "full_self55": dict(days=40, seconds=0, dt_cpld=3600, ic="self55", data="full", sw="manizza",
+                        date="2017,6,25,0,0,0", ic_src="mom6:mom6_full_d55/RESTART/MOM.res.nc"),
+    # second swap at day 30 (2017-05-31 00 UTC), to day 95 (tool 2b)
+    "full_d30": dict(days=30, seconds=0, dt_cpld=3600, ic="full", data="full", sw="manizza"),
+    "full_swap30": dict(days=65, seconds=0, dt_cpld=3600, ic="swap30", data="full", sw="manizza",
+                        date="2017,5,31,0,0,0", ic_src="pyocean:full_dt600_bih123/out/out_2017-05-31T000000.nc"),
 }
+START_DATE = "2017,5,1,0,0,0"                       # coupler current_date of every mode without its own "date"
 PERTURB_AMP, PERTURB_SEED = 1.0e-3, 1             # [°C], seed of ic_full_pert.nc
 # "MOM6 as pyOCEAN" (Gulf Stream north-wall drift, figs/gs_drift d11, approved 2026-11-04): NWA12 options that
 # pyOCEAN's parity configuration does not have, each switched to what pyOCEAN does.  Sources: line numbers of the
@@ -770,6 +816,22 @@ DIAG_EXTRA = {
     "full_pert": ("", "\n".join(f'"ocean_model", "{v}", "{v}", "ocean_daily", "all", .true., "none", 2'
                                 for v in ("temp", "salt", "u", "v", "h"))),
 }
+# Momentum-budget terms of MOM6 0e9a561 (figs/gs_drift d11 Phase 4), daily means, 3-D float32 on the model layers:
+# accelerations [m s-2] (corrector stage of MOM_dynamics_split_RK2.F90:963-975 and vertvisc; dudt is the change of u
+# over each sync interval, MOM_diagnostics.F90:1559-1588, so it includes the ALE remap of u), the same multiplied by
+# the barotropic face thickness diag_hu (h_*, [m2 s-2]; MOM_barotropic.F90:2236-2244) and the KE terms at h points
+# [m3 s-3] (MOM_diagnostics.F90 calculate_energy_diagnostics)
+BUDGET_DIAGS = (
+    "CAu", "CAv", "PFu", "PFv", "diffu", "diffv", "u_BT_accel", "v_BT_accel", "du_dt_visc", "dv_dt_visc",
+    "dudt", "dvdt", "gKEu", "gKEv", "rvxv", "rvxu",
+    "h_CAu", "h_CAv", "h_PFu", "h_PFv", "h_diffu", "h_diffv", "h_u_BT_accel", "h_v_BT_accel",
+    "h_du_dt_visc", "h_dv_dt_visc", "h_du_dt", "h_dv_dt", "h_gKEu", "h_gKEv", "h_rvxv", "h_rvxu",
+    "KE", "dKE_dt", "PE_to_KE", "KE_BT", "KE_Coradv", "KE_adv", "KE_visc", "KE_stress", "KE_horvisc",
+)
+DIAG_EXTRA["full_budget"] = (
+    '"ocean_budget", 1, "days", 1, "days", "time"',
+    DIAG_EXTRA["full"][1] + "\n" + "\n".join(f'"ocean_model", "{v}", "{v}", "ocean_budget", "all", .true., "none", 2'
+                                             for v in BUDGET_DIAGS))
 
 
 def run_dir(mode: str, root: Path | None = None, inputs: Path = OUT, case: cs.Case = cs.CASE) -> Path:
@@ -795,8 +857,12 @@ def run_dir(mode: str, root: Path | None = None, inputs: Path = OUT, case: cs.Ca
     (d / "INPUT" / "SIS_input").write_text((HERE / "SIS_input").read_text())
     (d / "INPUT" / "SIS_override").write_text((HERE / "SIS_override").read_text())
     (d / "input.nml").write_text((HERE / "input.nml").read_text().format(days=c["days"], seconds=c["seconds"],
-                                                                         dt_cpld=c["dt_cpld"]))
-    files, fields = DIAG_EXTRA["full" if "aspy" in c else mode]
+                                                                         dt_cpld=c["dt_cpld"],
+                                                                         date=c.get("date", START_DATE)))
+    if "ic_src" in c:                                  # state swap: the IC file goes into this run's INPUT/ only
+        (d / "INPUT" / f"ic_{c['ic']}.nc").unlink(missing_ok=True)
+        write_swap_ic(c["ic"], c["ic_src"], d / "INPUT", case)
+    files, fields = DIAG_EXTRA["full" if ("aspy" in c or mode not in DIAG_EXTRA) else mode]
     (d / "diag_table").write_text((HERE / "diag_table").read_text().format(mode=mode, extra_files=files,
                                                                            extra_fields=fields))
     shutil.copyfile(HERE / ("data_table_tides" if c["data"] == "tides" else "data_table"), d / "data_table")

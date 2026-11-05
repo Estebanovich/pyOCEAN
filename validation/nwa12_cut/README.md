@@ -120,6 +120,20 @@ difusión no acerca la trayectoria de MOM6 a la de pyOCEAN: mediana de la pared 
 37.60 °N en dos miembros (MOM6 37.83 / 37.75, pyOCEAN 38.93 / 38.90); lectura pre-registrada AMBIGUA → SIN EFECTO en la
 confirmación, sin bisección. La causa queda en lo estructural (ePBL vs KPP, RK2/BE vs AB3, barotrópico) [hipótesis].
 La dispersión intrínseca de MOM6 es ≥ 0.57° (no 0.08°): toda comparación de trayectoria necesita ≥ 2–3 miembros.
+**Balance de la cresta e intercambio de estados (d11 fase 4, 2026-11-04; `diagnostics/momentum_budget.py`,
+`run_pyocean.py --momentum-budget`/`--start-state`, `mom6_inputs.py` modos `full_budget`, `full_swap55`, `full_self55`):**
+balance término a término de la circulación de la caja de la cresta (38.1–39.1 °N, 72.6–71.4 °W) en los dos modelos
+(cierre: pyOCEAN 1e-15 por cara y paso; remap/residuo 7 % pyOCEAN, 5.6 % MOM6). Con el mismo estado (días 0–14) todos
+los términos coinciden (correlación 0.87–0.98, pendientes 0.93–1.20). La diferencia de circulación la carga el flujo de
+PV (advección de vorticidad relativa por los meandros); viscosidad horizontal, vertical y arrastre de fondo son un orden
+menores, con tasas dentro de 1.5× de MOM6, y se oponen a la diferencia. Lectura pre-registrada R3 (dinámica); R1, R2 y
+R4 (bug) rechazadas. Intercambio en el día 55 (pared norte, días 60–95): pyOCEAN desde el estado de MOM6 38.48 °N,
+colapso día 85; MOM6 desde el de pyOCEAN 39.13 °N, sin colapso; controles (cada uno desde su propio estado) a ≤ 0.04°
+de sus corridas. Lectura: **lo decide el estado del día 55, no el código**. La parte sistemática nace en los días
+~15–55 en el crecimiento de la mesoescala desde el mismo estado inicial (c, o b) [hipótesis: RK2 vs AB3, barotrópico
+split-explicit vs implícito, numérica de trazadores/espesores, KPP vs ePBL]. Sin error clase (a): **la deriva queda
+abierta (b/c)** y pasa al proyecto 4 como estadística de varias realizaciones. El intercambio en el día 30 se canceló
+por decisión de Esteban (sin resultado). Detalle: `figs/gs_drift/README.md` (fase 4).
 
 ## Cómo reproducirlo
 

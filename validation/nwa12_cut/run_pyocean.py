@@ -114,6 +114,28 @@ class Recorder:
                  eta=np.array(self.eta), sst=np.array(self.sst), sss=np.array(self.sss), umax=np.array(self.umax))
 
 
+def swap_state(b: cs.Built, src: str, day: float, case: cs.Case = cs.CASE):
+    """
+    The state-swap start of d11 Phase 4 (tool 2): ``b.state`` (the t0 state of ``case.build``) with η, h, θ, S_P,
+    u, v replaced by the state ``src`` (``mom6_inputs.read_state``: a pyOCEAN snapshot or a MOM6 restart) on the wet
+    columns and on the faces between two wet columns (or an open edge face of a wet column), time = ``day`` days.
+    Everything else is a cold start: empty AB3 history (AB1, AB2 at start-up), the closure state and the Orlanski
+    corner ratios of t0.  Diagnostic only (the MOM6 runs of the swap start the same way, from a file state).
+    """
+    import dataclasses
+    from validation.nwa12_cut.mom6_inputs import read_state
+    g = read_state(src, case)
+    st = b.state
+    wet = np.isfinite(b.H)
+    wpad = np.pad(wet, 1, mode="edge")
+    fu = wpad[1:-1, :-1] & wpad[1:-1, 1:]                             # (ny, nx+1): both sides wet (edges: the cell)
+    fv = wpad[:-1, 1:-1] & wpad[1:, 1:-1]                             # (ny+1, nx)
+    return dataclasses.replace(
+        st, eta=np.where(wet, g["eta"], st.eta), h=np.where(wet[None], g["h"], st.h),
+        T=np.where(wet[None], g["T"], st.T), S=np.where(wet[None], g["S"], st.S),
+        u=np.where(fu[None], g["u"], st.u), v=np.where(fv[None], g["v"], st.v), time=float(day) * 86400.0, g_hist=[])
+
+
 def budget_path(restart_path: Path) -> Path:
     """Domain-budget accumulators saved next to a restart file (``<stem>_budget.npz``)."""
     return Path(restart_path).with_name(Path(restart_path).stem + "_budget.npz")
@@ -172,7 +194,8 @@ def run(case: cs.Case, mode: str, days: float, dt: float, threads: int = 5, rest
         tag: str = "", out_hours: float = 24.0, write: bool = True, start_from: Path | None = None,
         log=print, overrides: dict | None = None, allow_restart_change: tuple[str, ...] = (),
         deep_sponge: float | None = None, deep_sponge_3d: bool = False, perturb_T: float | None = None,
-        perturb_seed: int = 1) -> dict:
+        perturb_seed: int = 1, momentum_budget: tuple[int, int, int, int] | None = None,
+        mb_zpart: float = 1000.0, start_state: str | None = None, start_day: float | None = None) -> dict:
     """
     One run (module docstring); returns the metadata (and writes them).  ``overrides``: ``SigmaBaroclinic``
     arguments replacing the parity values (``--override KEY=VALUE``; diagnostics only, recorded in ``meta.json``);
@@ -182,7 +205,10 @@ def run(case: cs.Case, mode: str, days: float, dt: float, threads: int = 5, rest
     sponge is not a boundary flux); ``deep_sponge_3d``: its target per column (GLORYS May–June mean at each column,
     ``case.deep_sponge(per_column=True)``) instead of one profile; ``perturb_T``: amplitude [°C] of seeded uniform
     noise added to the initial θ of every wet cell (``case.perturb_temperature``, ``--perturb-T``; diagnostic twin
-    run for intrinsic variability, not with ``start_from``).
+    run for intrinsic variability, not with ``start_from``); ``momentum_budget``: (j0, j1, i0, i1) window of the
+    read-only daily momentum budget (``diagnostics.momentum_budget``, ``--momentum-budget``; records in
+    ``<run>/mbudget/``, partial integrals over 0–``mb_zpart`` m; no change of the run, gs_drift d11 Phase 4);
+    ``start_state``/``start_day``: state-swap start (``swap_state``, ``--start-state``; d11 Phase 4 tool 2).
     """
     overrides = dict(overrides or {})
     sponge_kw, sponge_meta = {}, None
@@ -206,6 +232,12 @@ def run(case: cs.Case, mode: str, days: float, dt: float, threads: int = 5, rest
         st = read_restart(start_from, b.model, allow_changed=tuple(allow_restart_change))
         n0 = int(round(st.time / dt))
         log(f"started from {start_from} at step {n0}")
+    if start_state is not None:
+        if start_from is not None or perturb_T is not None or start_day is None:
+            raise SystemExit("--start-state needs --start-day and excludes --start-from and --perturb-T")
+        st = swap_state(b, start_state, start_day, case)
+        n0 = int(round(st.time / dt))
+        log(f"state swap: started from {start_state} at day {start_day:g} (step {n0})")
     budget, budget_scope = None, None
     if mode == "full" and sponge_meta is None:
         budget = DomainBudget(b.model)
@@ -217,9 +249,15 @@ def run(case: cs.Case, mode: str, days: float, dt: float, threads: int = 5, rest
         else:
             budget.start(st)
             budget_scope = "from t0" if start_from is None else "from the restart only (no saved accumulators)"
+    mb = None
+    if momentum_budget is not None:
+        from diagnostics.momentum_budget import MomentumBudget
+        mb = MomentumBudget(b.model, window=tuple(momentum_budget), z_part=mb_zpart,
+                            steps_per_record=max(1, int(round(86400.0 / dt))),
+                            out=None if out is None else out / "mbudget")
     rec = Recorder(b, out, max(1, int(round(out_hours * 3600.0 / dt))), str(case.t0)) if write else None
-    if rec is not None and n0 == 0:
-        rec(0, st)
+    if rec is not None and (n0 == 0 or start_state is not None):
+        rec(n0, st)
     ra = None if restart_at is None else int(round(restart_at * 86400.0 / dt))
     rpath = None if out is None or ra is None else out / f"restart_day{restart_at:g}.nc"
     st, wall, timed = integrate(b, st, n0, n_steps, budget=budget, rec=rec, guard=_guard(b, out), restart_at=ra,
@@ -233,6 +271,11 @@ def run(case: cs.Case, mode: str, days: float, dt: float, threads: int = 5, rest
         meta["allow_restart_change"] = list(allow_restart_change)
     if sponge_meta is not None:
         meta["deep_sponge"] = sponge_meta
+    if start_state is not None:
+        meta["start_state"] = dict(src=start_state, day=start_day, kind="cold start: AB1, t0 closure state")
+    if mb is not None:
+        meta["momentum_budget"] = dict(window=list(momentum_budget), z_part=mb_zpart, records=mb.n_rec,
+                                       max_closure_residual=mb.max_resid)
     if perturb_T is not None:
         meta["perturb_T"] = dict(amp=perturb_T, seed=perturb_seed, kind="uniform, every wet cell and layer")
     if budget is not None:
@@ -364,6 +407,14 @@ def parser() -> argparse.ArgumentParser:
                     help="diagnostic twin: add seeded uniform noise in [-AMP, AMP] °C to the initial θ of every wet "
                          "cell (case.perturb_temperature; intrinsic-variability test)")
     ap.add_argument("--perturb-seed", type=int, default=1)
+    ap.add_argument("--momentum-budget", type=int, nargs=4, default=None, metavar=("J0", "J1", "I0", "I1"),
+                    help="read-only daily momentum budget with a 3-D window over T cells J0..J1, I0..I1 "
+                         "(diagnostics.momentum_budget; records in <run>/mbudget/)")
+    ap.add_argument("--mb-zpart", type=float, default=1000.0, help="depth [m] of the partial budget integrals")
+    ap.add_argument("--start-state", default=None, metavar="SRC",
+                    help="state swap: start from pyocean:<run>/out/out_<time>.nc or mom6:<run>/RESTART/MOM.res.nc "
+                         "(relative to RUNS/runs; mom6_inputs.read_state) at --start-day, cold AB3/closure start")
+    ap.add_argument("--start-day", type=float, default=None)
     ap.add_argument("--compare", nargs=2, type=Path, default=None, metavar=("A", "B"),
                     help="compare two restart files bit for bit and exit")
     return ap
@@ -388,7 +439,8 @@ def main() -> None:
         res = run(case, a.mode, days, a.dt, a.threads, a.restart_at, a.tag, a.out_hours, start_from=a.start_from,
                   log=log, overrides=parse_overrides(a.override), allow_restart_change=tuple(a.allow_restart_change),
                   deep_sponge=a.deep_sponge, deep_sponge_3d=a.deep_sponge_3d,
-                  perturb_T=a.perturb_T, perturb_seed=a.perturb_seed)
+                  perturb_T=a.perturb_T, perturb_seed=a.perturb_seed, momentum_budget=a.momentum_budget,
+                  mb_zpart=a.mb_zpart, start_state=a.start_state, start_day=a.start_day)
     print(json.dumps(res, indent=1, default=float))
 
 

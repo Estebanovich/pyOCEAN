@@ -47,7 +47,9 @@ into salinity bins; with ``tef_region`` the step's budget, freshwater volume, op
 integrated in ``TEFRegion`` after the step (Lorenz et al. 2021, eq. 32).
 
 ``debug=True`` hashes the arrays alive at the end of every phase (``phase_hashes``), to find the first phase that
-departs from a reference run; ``keep_terms=True`` keeps the named explicit momentum terms (``last_terms``).
+departs from a reference run; ``keep_terms=True`` keeps the named explicit momentum terms (``last_terms``);
+``phase_hook`` (default None) is called as hook(name, ctx) after each phase, for read-only diagnostics
+(``diagnostics.momentum_budget``).
 """
 from __future__ import annotations
 
@@ -160,6 +162,9 @@ class Driver:
                                                    f"dt_tracer={self.dt_tracer}, dt_therm={self.dt_therm} must be equal")])
         self.last_terms: dict | None = None
         self.last_bflux: dict | None = None
+        # diagnostic hook (gs_drift d11 Phase 4, ``diagnostics.momentum_budget``): called as hook(name, ctx) after
+        # every phase; it must only read.  None (the default) runs no new line in the step
+        self.phase_hook = None
         # domain content budget (regional chain Task 9, ``diagnostics.domain_budget``): with ``record_content`` the
         # freshwater substep keeps the T content its volume change carries, Σ (V_fw − V_adv) T [°C m³]
         self.record_content = False
@@ -210,6 +215,8 @@ class Driver:
         ale = self.m.ale
         for name in PHASES:
             getattr(self, ("_ale_" if ale else "_sigma_") + name)(ctx)
+            if self.phase_hook is not None:
+                self.phase_hook(name, ctx)
             if self.debug:
                 hashes[name] = _hash_arrays(ctx.vals)
         if self.debug:

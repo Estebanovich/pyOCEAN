@@ -996,6 +996,78 @@ def test_mom6_full_pert_mode():
     assert mi.DIAG_EXTRA["full_pert"] == mi.DIAG_EXTRA["full"]
 
 
+def test_mom6_full_budget_mode():
+    # Crest budget (d11 Phase 4): the 'full' reference plus a daily ocean_budget file of MOM6 momentum/KE terms.
+    assert mi.MODES["full_budget"] == mi.MODES["full"]
+    assert mi.mode_override("full_budget", ("south",)).replace("full_budget", "full") == \
+        mi.mode_override("full", ("south",))
+    files, fields = mi.DIAG_EXTRA["full_budget"]
+    assert files.startswith('"ocean_budget", 1, "days"') and fields.startswith(mi.DIAG_EXTRA["full"][1])
+    for v in ("CAu", "PFu", "diffu", "u_BT_accel", "du_dt_visc", "dudt", "h_du_dt", "rvxv", "gKEu", "PE_to_KE"):
+        assert f'"ocean_model", "{v}", "{v}", "ocean_budget"' in fields
+
+
+def test_runner_momentum_budget(syn, tmp_path):
+    # --momentum-budget writes one record per simulated day and the closure residual into meta.json.
+    from validation.nwa12_cut import run_pyocean as rp
+    a = rp.parser().parse_args(["--mode", "full", "--momentum-budget", "1", "4", "2", "6", "--mb-zpart", "50"])
+    assert a.momentum_budget == [1, 4, 2, 6] and a.mb_zpart == 50.0
+    import dataclasses
+    case = dataclasses.replace(syn, runs=tmp_path / "runs")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        meta = rp.run(case, "full", 1.0, 3600.0, threads=2, tag="mb", out_hours=24.0, log=lambda m: None,
+                      momentum_budget=(1, 4, 2, 6), mb_zpart=50.0)
+    mb = meta["momentum_budget"]
+    assert mb["records"] == 1 and mb["max_closure_residual"] < 1e-10
+    recs = sorted((rp.run_dir(case, "full", 3600.0, "mb") / "mbudget").glob("mb_*.npz"))
+    assert len(recs) == 1 and int(np.load(recs[0])["n_steps"]) == 24
+
+
+def test_state_swap_from_snapshot_and_mom6_restart(syn, tmp_path):
+    # d11 Phase 4 tool 2: a run started from another model's state at day D (cold AB3 start) takes that state on the
+    # wet cells and the faces between wet cells, keeps land as built, and runs; a MOM6 restart (surface first) gives
+    # the same state as the pyOCEAN snapshot it was written from; the MOM6 swap modes start on 2017-06-25.
+    import dataclasses
+    import netCDF4
+    from validation.nwa12_cut import run_pyocean as rp
+    case = dataclasses.replace(syn, runs=tmp_path)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        rp.run(case, "full", 0.25, 1800.0, threads=2, tag="src", out_hours=6.0, log=lambda m: None)
+    snap = "pyocean:full_dt1800_src/out/out_2017-05-01T060000.nc"
+    g = mi.read_state(snap, case)
+    with netCDF4.Dataset(tmp_path / "runs/full_dt1800_src/out/out_2017-05-01T060000.nc") as ds:   # as MOM.res.nc
+        flds = {k: np.ma.filled(ds[v][0], np.nan) for k, v in (("h", "h_layer"), ("Temp", "T"), ("Salt", "S"),
+                                                                ("u", "u"), ("v", "v"))}
+    with netCDF4.Dataset(tmp_path / "runs/MOM.res.nc", "w") as ds:
+        for d_, n_ in (("Time", 1), ("Layer", NZ), ("lath", NY), ("lonh", NX), ("latq", NY + 1), ("lonq", NX + 1)):
+            ds.createDimension(d_, n_)
+        for k, dims in (("h", ("lath", "lonh")), ("Temp", ("lath", "lonh")), ("Salt", ("lath", "lonh")),
+                        ("u", ("lath", "lonq")), ("v", ("latq", "lonh"))):
+            ds.createVariable(k, "f8", ("Time", "Layer") + dims)[:] = np.nan_to_num(flds[k])[None, ::-1]
+    gm = mi.read_state("mom6:MOM.res.nc", case)
+    for k in ("h", "T", "S", "u", "v", "eta"):
+        np.testing.assert_array_equal(gm[k], g[k])
+    b = _build(syn, days=0.5, dt=1800.0)
+    st = rp.swap_state(b, snap, 0.25, case)
+    wet = np.isfinite(b.H)
+    assert st.time == 0.25 * 86400.0 and st.g_hist == []
+    np.testing.assert_array_equal(st.T[:, wet], g["T"][:, wet])
+    np.testing.assert_array_equal(st.T[:, ~wet], b.state.T[:, ~wet])
+    np.testing.assert_allclose(st.h.sum(0)[wet], (np.nan_to_num(b.H) + st.eta)[wet], rtol=1e-12)
+    st = _run(b, st, 12, 14)
+    assert np.isfinite(st.T).all() and st.n_trunc == 0
+    with pytest.raises(SystemExit):
+        rp.run(case, "full", 0.5, 1800.0, threads=2, write=False, log=lambda m: None, start_state=snap)
+    for mode in ("full_swap55", "full_self55"):
+        c = mi.mode_config(mode)
+        assert c["date"] == "2017,6,25,0,0,0" and c["days"] == 40 and f'"ic_{c["ic"]}.nc"' in mi.mode_override(
+            mode, ("south",))
+    assert mi.MODES["full_d55"]["days"] == 55 and "date" not in mi.MODES["full_d55"]
+    assert "{date}" in (Path(mi.__file__).parent / "input.nml").read_text()
+
+
 def test_mom6_full_aspy_mode():
     # "MOM6 as pyOCEAN" (Gulf Stream drift d11): every candidate switched off by #override lines, subsets for the
     # bisection, a twin variant from ic_full_pert.nc; otherwise the 'full' reference with its diagnostics.

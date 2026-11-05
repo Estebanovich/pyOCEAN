@@ -21,7 +21,7 @@
  &coupler_nml
         months = 0
         days   = {days}
-        current_date = 2017,5,1,0,0,0
+        current_date = {date}
         hours = 0
         minutes = 0
         seconds = {seconds}
