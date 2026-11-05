@@ -18,6 +18,12 @@ SCHISM #140).  For ``SigmaBaroclinic`` that is:
   BBL mixing (``bbl_mixing``) has no state of its own, but its scheme and parameters are checked; the bulk
   surface fluxes (``surface_fluxes``, N2b) have none either (the atmosphere is a pure function of time): their
   scheme, averaging depths, wind choice, radiation constants, heights and the atmosphere's time origin are checked;
+  the tides of the open boundary and the tidal potential (regional chain Task 5) have no state either: their
+  constituents, reference and nodal dates, ramp and edges, and the scalar SAL ``sal_beta``/``sal_flather``, are
+  checked (the harmonic constants themselves are not); the atmospheric pressure (``atm_pressure``, Task 6) has
+  no state either: the flag, the reference ``atm_pressure_ref`` and the edges of its inverse barometer are checked;
+  river runoff (``runoff``, Task 8) has none either: the river set (count and a hash of the cells) and the time
+  origin are checked;
 * the lagged-LU CG preconditioner of the free surface (the matrix it factorised and the refactor
   flag): CG stops at an iterate that depends on it;
 * ALE (``vertical_coordinate='ale'``, Plan D): the layer thicknesses h, the exterior profile kept in z
@@ -36,6 +42,7 @@ into a different configuration raises instead of silently diverging.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -60,6 +67,8 @@ _OPTIONAL = {
     "mix_num": (("layer", "y", "x"), "degC2 m3 s-1", "online numerical mixing (Burchard & Rennau 2008)"),
     "h": (("layer", "y", "x"), "m", "layer thickness (ALE), bed first"),
     "S": (("layer", "y", "x"), "1e-3", "salinity"),
+    "obc_rtan": (("layer", "yv", "xu"), "1", "Orlanski ratio at the open-edge corners of the last step "
+                                           "(obc_tangential='mom6')"),
 }
 
 
@@ -69,6 +78,15 @@ def _text(v) -> str:
     if a.dtype.kind in "fiub":
         return " ".join(f"{x:.17g}" for x in np.atleast_1d(a).astype(float).ravel())
     return str(v)
+
+
+def _target_text(v) -> str:
+    """An interior-sponge target as exact text: a profile element by element (``_text``, as before); a per-column
+    target (ruling 2026-11-04) by its shape and the SHA-256 of its float64 bytes, so a restart attribute stays small."""
+    a = np.asarray(v, float)
+    if a.ndim <= 1:
+        return _text(a)
+    return f"shape {'x'.join(map(str, a.shape))} sha256 {hashlib.sha256(np.ascontiguousarray(a).tobytes()).hexdigest()}"
 
 
 def _config(model: SigmaBaroclinic) -> dict:
@@ -91,7 +109,10 @@ def _config(model: SigmaBaroclinic) -> dict:
                 ny=int(model.H.shape[0]), nx=int(model.H.shape[1]),
                 periodic=",".join(model.periodic.axes) or "none",              # N3 task 3: periodic axes
                 eos=eos, cp=model.cp, p_ref=getattr(model, "p_ref", 2e7),       # TEOS-10 in 3-D, Task 4
-                pgf_mass_weight=getattr(model, "pgf_mass_weight", "vanished"))
+                pgf_mass_weight=getattr(model, "pgf_mass_weight", "vanished"),
+                obc_tangential=str(getattr(model, "obc_tangential", "none")),
+                smagorinsky_bi=getattr(model, "smagorinsky_bi", 0.0), ah_vel_scale=getattr(model, "ah_vel_scale", 0.0),
+                ah_bi=getattr(model, "ah_bi", 0.0))
     if eos != "linear":
         cfg.update(rho_pgf_ref=model.rho_pgf_ref)
     if core.closure == "gls":                                   # N2a task 8c: stratified or homogeneous k-ε
@@ -120,6 +141,21 @@ def _config(model: SigmaBaroclinic) -> dict:
                    else _text(sf.h_uv_sfc), bulk_relative_wind=int(sf.relative_wind), bulk_albedo=sf.albedo,
                    bulk_emissivity=sf.emissivity, bulk_z_u=sf.z_u, bulk_z_t=sf.z_t, bulk_z_q=sf.z_q,
                    bulk_origin="none" if org is None else str(np.datetime64(org, "ns")))
+    # tides (regional chain Task 5): no state (pure functions of t), so only the configuration is checked
+    bt = getattr(model, "_boundary_tides", None)
+    cfg.update(boundary_tides="none" if bt is None else "on", sal_beta=float(getattr(model, "sal_beta", 0.0)),
+               sal_flather=int(getattr(model, "sal_flather", False)))
+    if bt is not None:
+        cfg.update({f"tides_{k}": v for k, v in bt.config().items()})
+        cfg.update(tides_edges=",".join(bt.edges))
+    ap = getattr(model, "_atm_pressure", None)                # atmospheric pressure (Task 6): no state, the config
+    cfg.update(ap.config() if ap is not None else dict(atm_pressure="none"))
+    ro = getattr(model, "_runoff", None)                      # river runoff (Task 8): no state, the river set
+    cfg.update(ro.config() if ro is not None else dict(runoff="none"))
+    tp = getattr(model, "_tidal_potential", None)
+    cfg.update(tidal_potential="none" if tp is None else "on")
+    if tp is not None:
+        cfg.update({f"tidal_potential_{k}": v for k, v in tp.config().items()})
     if getattr(model, "ale", False):                           # ALE (Plan D): the rule and every scheme choice
         cfg.update(vertical_coordinate="ale", regrid=model.regrid_rule, remap=int(model.remap_code),
                    thickness_flux=model.thickness_flux, momentum=model.momentum, ke_scheme=model.ke_scheme,
@@ -133,10 +169,10 @@ def _config(model: SigmaBaroclinic) -> dict:
                    n_tracers=int(getattr(model, "n_tracers", 0)))
         sp = getattr(model, "sponge_rate", None)
         cfg.update(sponge_rate="none" if sp is None else _text(sp),
-                   sponge_T="none" if sp is None else _text(model._interior_sponge_c.T),
-                   sponge_zw="none" if sp is None else _text(model._interior_sponge_c.zw),
+                   sponge_T="none" if sp is None else _target_text(model._interior_sponge_c.T),
+                   sponge_zw="none" if sp is None else _target_text(model._interior_sponge_c.zw),
                    sponge_S="none" if sp is None or model._interior_sponge_c.S is None
-                   else _text(model._interior_sponge_c.S))
+                   else _target_text(model._interior_sponge_c.S))
         cfg.update(bottom_drag=str(getattr(model, "bottom_drag", None)), cd=model.cd, drag_bg_vel=model.drag_bg_vel,
                    hbbl=model.hbbl)
         cfg.update({f"regrid_{k}": _text(v) for k, v in sorted(model.regrid_params.items())})
@@ -152,7 +188,13 @@ _CONFIG_DEFAULTS = {"salinity": 0, "s_coef": 0.0, "s_ref": 35.0, "sponge_S": "no
                     "shear_mixing": "none",                                                 # no shear mixing
                     "bbl_mixing": "none",                                                   # no BBL mixing
                     "surface_fluxes": "none",                                               # no bulk fluxes
-                    "eos": "linear", "p_ref": 2e7, "pgf_mass_weight": "vanished"}           # before TEOS-10 in 3-D
+                    "eos": "linear", "p_ref": 2e7, "pgf_mass_weight": "vanished",           # before TEOS-10 in 3-D
+                    "boundary_tides": "none", "sal_beta": 0.0, "sal_flather": 0,            # before tides in 3-D
+                    "tidal_potential": "none",
+                    "atm_pressure": "none",                                                 # before p_a forcing
+                    "runoff": "none",                                                       # before river runoff
+                    "obc_tangential": "none",                                               # before MOM6 tangential OBC
+                    "smagorinsky_bi": 0.0, "ah_vel_scale": 0.0, "ah_bi": 0.0}                # before biharmonic
 
 # configuration entries not checked when a file lacks them: files written before TEOS-10 in 3-D did not store c_p,
 # which could be any value the run passed
@@ -271,11 +313,24 @@ def _n_visc_limited(ds: xr.Dataset, model: SigmaBaroclinic) -> int | None:
     n = ds.attrs.get("n_visc_limited")
     if n is not None:
         return int(n)
-    return 0 if getattr(model, "smagorinsky", 0.0) > 0 else None
+    mo = getattr(model, "_momentum", None)
+    on = mo.visc_counted if mo is not None else getattr(model, "smagorinsky", 0.0) > 0
+    return 0 if on else None
 
 
-def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
-    """Read a restart into a ``SigmaState`` and restore the hidden state of ``model``."""
+def read_restart(path: str | Path, model: SigmaBaroclinic, allow_changed: tuple[str, ...] = ()) -> SigmaState:
+    """
+    Read a restart into a ``SigmaState`` and restore the hidden state of ``model``.
+
+    ``allow_changed``: names of configuration entries (``_config`` keys, e.g. ``("theta_bc",)``) that may differ
+    between the restart and the model — a deliberate change at the restart, for diagnostics (regional chain Task 9,
+    θ_bc test of the NWA12 cut).  The model's value is used and a ``UserWarning`` names each change.  Default empty:
+    every entry must match (strict, as before).  Unknown names raise ValueError.
+    """
+    allow_changed = tuple(allow_changed)
+    unknown = [k for k in allow_changed if k not in _config(model)]
+    if unknown:
+        raise ValueError(f"allow_changed {unknown}: not restart configuration entries (have {sorted(_config(model))})")
     with xr.open_dataset(path, engine="netcdf4") as ds:
         ds = ds.load()
     if ds.attrs.get("model") != type(model).__name__:
@@ -301,6 +356,11 @@ def read_restart(path: str | Path, model: SigmaBaroclinic) -> SigmaState:
         else:
             same = stored is not None and np.isclose(float(stored), float(v), rtol=0, atol=0)
         if not same:
+            if k in allow_changed:
+                import warnings
+                warnings.warn(f"read_restart: {k} changed at the restart ({stored!r} → {v!r}), allowed by allow_changed",
+                              UserWarning, stacklevel=2)
+                continue
             bad.append(f"{k}: restart {stored!r} vs model {v!r}")
     if bad:
         raise ValueError("restart incompatible with the model configuration — " + "; ".join(bad))

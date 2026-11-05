@@ -3,9 +3,14 @@ Fixed-order driver of the 3-D core (N1, spec docs/superpowers/specs/2026-10-28-n
 
 One time step is ten named phases, the same order in σ and ALE (phases 8–9 do nothing in σ):
 
- 1 prepare                    exterior state at tⁿ⁺¹ (open boundaries); ALE: face geometry of hⁿ
+ 1 prepare                    exterior state at tⁿ⁺¹ (open boundaries); ALE: face geometry of hⁿ; boundary
+                              tide of the Flather exterior at tⁿ⁺¹ too (``boundary_tides``, regional chain Task 5);
+                              atmospheric pressure p_a at tⁿ + Δt/2 and its inverse barometer at the 'radiating'
+                              edges (``atm_pressure``, Task 6)
  2 explicit_momentum          named explicit terms (PGF, Coriolis or vector-invariant, advection, viscosity, …)
- 3 time_combine               AB3 (AB1, AB2 at start-up); τ/ρ₀, not extrapolated
+ 3 time_combine               AB3 (AB1, AB2 at start-up); τ/ρ₀, not extrapolated; body tide g∇η_body at
+                              tⁿ + Δt/2, not extrapolated either (``tidal_potential``); −∇p_a/ρ₀ likewise
+                              (``atm_pressure``)
  4 implicit_and_free_surface  closure ν, implicit vertical viscosity + bed drag + wind, free surface, Flather,
                               closure update (core.components.closure)
  5 boundary_velocity          sponge on u′, Orlanski; ALE: thin bed layers, optional blending
@@ -42,7 +47,9 @@ into salinity bins; with ``tef_region`` the step's budget, freshwater volume, op
 integrated in ``TEFRegion`` after the step (Lorenz et al. 2021, eq. 32).
 
 ``debug=True`` hashes the arrays alive at the end of every phase (``phase_hashes``), to find the first phase that
-departs from a reference run; ``keep_terms=True`` keeps the named explicit momentum terms (``last_terms``).
+departs from a reference run; ``keep_terms=True`` keeps the named explicit momentum terms (``last_terms``);
+``phase_hook`` (default None) is called as hook(name, ctx) after each phase, for read-only diagnostics
+(``diagnostics.momentum_budget``).
 """
 from __future__ import annotations
 
@@ -155,8 +162,17 @@ class Driver:
                                                    f"dt_tracer={self.dt_tracer}, dt_therm={self.dt_therm} must be equal")])
         self.last_terms: dict | None = None
         self.last_bflux: dict | None = None
+        # diagnostic hook (gs_drift d11 Phase 4, ``diagnostics.momentum_budget``): called as hook(name, ctx) after
+        # every phase; it must only read.  None (the default) runs no new line in the step
+        self.phase_hook = None
+        # domain content budget (regional chain Task 9, ``diagnostics.domain_budget``): with ``record_content`` the
+        # freshwater substep keeps the T content its volume change carries, Σ (V_fw − V_adv) T [°C m³]
+        self.record_content = False
+        self.last_fw_T = 0.0
         if getattr(model, "_surface_fluxes", None) is not None:      # bulk fluxes (N2b task 4): see _step_bulk
             self.step = self._step_bulk
+        elif getattr(model, "_runoff", None) is not None:            # river runoff alone (regional chain Task 8)
+            self.step = self._step_runoff
 
     # ------------------------------------------------------------------ driver
     def _step_bulk(self, st, tau_x=None, tau_y=None, fw=None, heat=None):
@@ -168,7 +184,24 @@ class Driver:
         """
         m = self.m
         tau_x, tau_y, fw, heat = m._surface_fluxes.forcing(st, st.time + m.dt / 2)
+        if getattr(m, "_runoff", None) is not None:                  # river runoff with the bulk P − E (Task 8)
+            fw = self._add_runoff(st, fw)
         return Driver.step(self, st, tau_x, tau_y, fw, heat)
+
+    def _step_runoff(self, st, tau_x=None, tau_y=None, fw=None, heat=None):
+        """
+        ``step`` with river runoff and no bulk fluxes (regional chain Task 8, ``core.components.runoff``): Q/A_t at
+        tⁿ + Δt/2 is added to the prescribed ``fw`` (or is the whole fw).  Bound in place of ``step`` at
+        construction, so the default path runs no new line.
+        """
+        return Driver.step(self, st, tau_x, tau_y, self._add_runoff(st, fw), heat)
+
+    def _add_runoff(self, st, fw):
+        """fw + Q/A_t of the river cells at tⁿ + Δt/2; the runoff field is kept as ``m.runoff`` (diagnostic)."""
+        m = self.m
+        out = m._runoff.add(fw, st.time + m.dt / 2)
+        m.runoff = m._runoff.last
+        return out
 
     def step(self, st, tau_x=None, tau_y=None, fw=None, heat=None):
         """
@@ -176,10 +209,14 @@ class Driver:
         ``heat`` the dict {"Q_ns", "Q_sw" (optional)} [W m⁻², into the ocean] of the surface heat flux (N3 task 2).
         """
         ctx = StepContext(st, tau_x, tau_y, fw, heat)
+        if self.record_content:
+            self.last_fw_T = 0.0
         hashes: dict[str, str] = {}
         ale = self.m.ale
         for name in PHASES:
             getattr(self, ("_ale_" if ale else "_sigma_") + name)(ctx)
+            if self.phase_hook is not None:
+                self.phase_hook(name, ctx)
             if self.debug:
                 hashes[name] = _hash_arrays(ctx.vals)
         if self.debug:
@@ -241,12 +278,15 @@ class Driver:
 
     # ------------------------------------------------------------------ phases shared by σ and ALE
     def _explicit_momentum(self, ctx: StepContext) -> None:
-        terms, wet_u, wet_v = self.m._momentum_terms(ctx.st)
+        m, st = self.m, ctx.st
+        obc_tan = (m._ob.tangential_velocity(st.u, st.v, st.obc_rtan, ctx.ext)        # MOM6 ORLANSKI_TAN +
+                   if m._ob.tangential else None)                                    # NUDGED_TAN corners
+        terms, wet_u, wet_v = self.m._momentum_terms(ctx.st, obc_tan)
         if self.keep_terms:
             self.last_terms = {name: (tu, tv) for name, tu, tv, _ in terms}
         gu, gv = sum_terms(terms, wet_u, wet_v)
         ctx.set(gu=gu, gv=gv)
-        if self.m._momentum.smagorinsky > 0:          # points where the AB3 bound reduced the Smagorinsky ν
+        if self.m._momentum.visc_counted:             # points where the AB3 bound reduced the Smagorinsky ν (A_h)
             ctx.set(n_visc_limited=self.m._momentum.last_n_limited)
 
     def _n_below_freezing(self, eta: np.ndarray, T: np.ndarray, S: np.ndarray | None, h: np.ndarray) -> int:
@@ -280,7 +320,45 @@ class Driver:
         gu_ab, gv_ab, hist = m._time_stepper.combine(ctx.st.g_hist, ctx.gu, ctx.gv)
         tu = None if ctx.tau_x is None else np.asarray(ctx.tau_x, float) / m.rho0
         tv = None if ctx.tau_y is None else np.asarray(ctx.tau_y, float) / m.rho0
+        if "patm_force" in ctx.vals:
+            # atmospheric pressure −∇p_a/ρ₀ (regional chain Task 6): at tⁿ + Δt/2 on every layer, outside the AB3
+            # history (as τ), so it enters the depth mean and the free-surface solve where g∇η enters
+            fx, fy = ctx.patm_force
+            gu_ab, gv_ab = gu_ab + fx[None], gv_ab + fy[None]
+        if getattr(m, "_tidal_potential", None) is not None:
+            # body tide g∇η_body (regional chain Task 5): at tⁿ + Δt/2 on every layer, outside the AB3 history (as τ)
+            fx, fy = m._tidal_potential.force(ctx.st.time + 0.5 * m.dt)
+            gu_ab, gv_ab = gu_ab + fx[None], gv_ab + fy[None]
         ctx.set(gu_ab=gu_ab, gv_ab=gv_ab, hist=hist, tu=tu, tv=tv)
+
+    def _atm_pressure(self, ctx: StepContext) -> None:
+        """
+        Atmospheric pressure of the step (regional chain Task 6, ``core.components.atm_pressure``): p_a = the
+        ``msl`` of the bulk component's atmosphere at tⁿ + Δt/2, p̄_a over the wet cells of the state n, the face
+        force −∇p_a/ρ₀ for phase 3 and η_IB of the 'radiating' edges for the Flather exterior of phase 4; the
+        field is kept as ``m.p_atm`` (registry diagnostic).  Nothing without ``atm_pressure``.
+        """
+        m = self.m
+        ap = getattr(m, "_atm_pressure", None)
+        if ap is None:
+            return
+        p_a = np.asarray(m._surface_fluxes.last_msl, float)
+        pbar = ap.mean(p_a, ap.wet(ctx.st.eta))
+        m.p_atm = p_a
+        ctx.set(patm_force=ap.force(p_a, pbar))
+        ib = ap.flather_eta(ap.eta_ib(p_a, pbar)) if m._ob.open else None
+        if ib is not None:
+            ctx.set(ib=ib)
+
+    def _boundary_tide(self, ctx: StepContext) -> None:
+        """
+        Tide of the Flather exterior at tⁿ⁺¹, the time level of the exterior provider (regional chain Task 5,
+        ``BoundaryTides``; MOM6 update_OBC_data(..., Time_local) with Time_local = tⁿ⁺¹,
+        MOM_dynamics_split_RK2.F90:315, 553); nothing without.
+        """
+        m = self.m
+        if getattr(m, "_boundary_tides", None) is not None:
+            ctx.set(tide=m._boundary_tides.flather_arrays(ctx.st.time + m.dt))
 
     _sigma_explicit_momentum = _ale_explicit_momentum = _explicit_momentum
     _sigma_time_combine = _ale_time_combine = _time_combine
@@ -294,6 +372,9 @@ class Driver:
         freshwater, (N, ny, nx), for the variance budget of task 6) in ``ctx.vals``.
         """
         m = self.m
+        if self.record_content:                     # T is unchanged by the substep: its content follows the volume
+            d = np.nan_to_num(V_fw - V_adv)
+            self.last_fw_T = float(np.sum(np.where(d != 0.0, d * C[0], 0.0)))
         _, n_lim, var_surf = apply_freshwater(C, lay, V_adv, V_fw, m.dt * np.nan_to_num(m.area) * ctx.fluxes.fw,
                                               dt=m.dt)
         ctx.set(n_limited_fw=n_lim, var_surf=var_surf)
@@ -499,6 +580,8 @@ class Driver:
             if m.salinity:
                 ctx.set(S_in=m._ob.exterior_S(D0[None] * ds, ext))
         ctx.set(ext=ext)
+        self._boundary_tide(ctx)
+        self._atm_pressure(ctx)
 
     def _sigma_implicit_and_free_surface(self, ctx: StepContext) -> None:
         m, st = self.m, ctx.st
@@ -511,7 +594,7 @@ class Driver:
         nu = cl.viscosity(st)                                          # ν of the current closure state (CROCO order)
         nu_u, nu_v = (None, None) if nu is None else nu
         eta_new, u_new, v_new, fluxes = m._free_surface.step(st.eta, st.u, st.v, ctx.gu_ab, ctx.gv_ab, ctx.tu, ctx.tv,
-                                                             m._ob.flather_args(ctx.ext), fw=ctx.fw, nu_u=nu_u,
+                                                             m._ob.flather_args(ctx.ext, ctx.vals.get("tide"), ctx.vals.get("ib")), fw=ctx.fw, nu_u=nu_u,
                                                              nu_v=nu_v)
         # bed u*² of the closure (N3 task 4): one source, the first-layer log law at the new velocities
         ustar2_bot = m.core.bed_ustar2(eta_new, u_new, v_new)
@@ -626,6 +709,8 @@ class Driver:
         wu, wv = face_fractions(hu), face_fractions(hv)
         ext = m._ob.evaluate(st.time + m.dt, hu, hv, wu, wv)
         ctx.set(qe=qe, qw=qw, qn=qn, qs=qs, hu=hu, hv=hv, wu=wu, wv=wv, ext=ext)
+        self._boundary_tide(ctx)
+        self._atm_pressure(ctx)
 
     def _ale_implicit_and_free_surface(self, ctx: StepContext) -> None:
         m, st = self.m, ctx.st
@@ -659,7 +744,7 @@ class Driver:
         nu = cl.viscosity(st)                                          # None for the constant closures of ALE
         nu_u, nu_v = (None, None) if nu is None else nu
         eta_new, u_new, v_new, fluxes = m._free_surface.step(st.eta, st.u, st.v, ctx.gu_ab, ctx.gv_ab, ctx.tu, ctx.tv,
-                                                             m._ob.flather_args(ctx.ext), fw=ctx.fw, wu=ctx.wu,
+                                                             m._ob.flather_args(ctx.ext, ctx.vals.get("tide"), ctx.vals.get("ib")), fw=ctx.fw, wu=ctx.wu,
                                                              wv=ctx.wv, nu_u=nu_u, nu_v=nu_v, **visc)
         ustar2_bot = self._ale_bed_ustar2(ctx, u_new, v_new, visc)
         ctx.set(eta_new=eta_new, u_new=u_new, v_new=v_new, fluxes=fluxes, ustar2_bot=ustar2_bot)
@@ -775,7 +860,9 @@ class Driver:
         m, st = self.m, ctx.st
         wu, wv, hu, hv = ctx.wu, ctx.wv, ctx.hu, ctx.hv
         u_new, v_new = ctx.u_new, ctx.v_new
-        m._ob.relax_velocity(st.u, st.v, u_new, v_new, ctx.ext, ctx.fluxes, wu, wv)   # sponge on u′, Orlanski
+        rtan = m._ob.relax_velocity(st.u, st.v, u_new, v_new, ctx.ext, ctx.fluxes, wu, wv)  # sponge on u′, Orlanski
+        if rtan is not None:
+            ctx.set(obc_rtan=rtan)                                    # corner Orlanski ratio for the next step
         u_new = zero_thin_bed_velocity(u_new, hu, wu, m.h_thin_bed)
         v_new = zero_thin_bed_velocity(v_new, hv, wv, m.h_thin_bed)
         if m.thin_layer_cutoff > 0.0:                                   # HYCOM blending of thin layers (spec §3, 1B)
@@ -928,4 +1015,5 @@ class Driver:
                                    n_limited=st.n_limited + lf.n_limited + ctx.vals.get("n_limited_fw", 0),
                                    n_visc_limited=self._n_visc_limited(ctx),
                                    tr=ctx.tr_new, closure=ctx.vals.get("closure"),
-                                   S=ctx.S_new, budget=self._budget_terms(ctx)))
+                                   S=ctx.S_new, budget=self._budget_terms(ctx),
+                                   obc_rtan=ctx.vals.get("obc_rtan")))

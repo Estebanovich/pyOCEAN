@@ -15,8 +15,18 @@ from core.vertical import remap as rm
 
 
 class InteriorSponge:
-    """r (ny, nx) [s⁻¹]; T* (nz_s,) on interfaces zw (nz_s+1,) [m] decreasing from the surface; tr* (ntr, nz_s);
-    S* (nz_s,) [g kg⁻¹] or None (no salinity)."""
+    """
+    r (ny, nx) [s⁻¹]; T* (nz_s,) or per column (nz_s, ny, nx) on interfaces zw (nz_s+1,) or (nz_s+1, ny, nx) [m],
+    surface first and decreasing; tr* (ntr, nz_s) or (ntr, nz_s, ny, nx); S* shaped as T* [g kg⁻¹] or None.
+
+    Per-column targets (ruling 2026-11-04) follow MOM6's ALE sponge: each column keeps its own target on its own
+    z grid and is remapped onto the model layers every call (MOM6 0e9a561 MOM_ALE_sponge.F90:
+    set_up_ALE_sponge_field_fixed 699-755 stores p(nz_data, col) per column; apply_ALE_sponge 1035-1066 calls
+    remapping_core_h with the column's source thicknesses and applies the backward-Euler
+    (c + Δt r c*)/(1 + Δt r)).  Unlike MOM6 the source column is stretched to the model column total H + η
+    (as the 1-D path and core.vertical.ale.exterior_on_layers) instead of extending its last cell to the bed
+    (MOM_ALE_sponge.F90:1021); a profile (nz_s,) is the per-column target broadcast, bit for bit.
+    """
     name = "interior_sponge"
     role = Role.INTERIOR_SPONGE
     reads = ("T", "S", "tr", "h", "eta")
@@ -54,10 +64,13 @@ class InteriorSponge:
         return self._relaxer(eta, h)(S, self.S)
 
     def _relaxer(self, eta: np.ndarray, h: np.ndarray):
-        """relax(c, profile): c relaxed toward ``profile`` (nz_s,) remapped onto the layers h (see ``apply``)."""
+        """relax(c, profile): c relaxed toward ``profile`` (nz_s,) or (nz_s, ny, nx) remapped onto the layers h
+        (see ``apply``).  Columns outside the sponge (r = 0, land, dry) are not remapped (``ok``), so NaN there is
+        harmless."""
         H = np.nan_to_num(np.asarray(self.H, float))
         ok = self.cols & (H + eta > 0) & (h.sum(axis=0) > 0)
-        z = np.maximum(self.zw[:, None, None], -H[None])               # surface first, clipped to each bed
+        zw = self.zw if self.zw.ndim == 3 else self.zw[:, None, None]  # per column or one profile
+        z = np.maximum(zw, -H[None])                                    # surface first, clipped to each bed
         z[-1] = -H
         hs = (z[:-1] - z[1:])[::-1]                                         # bed first
         tot_s, tot = hs.sum(axis=0), h.sum(axis=0)
@@ -67,7 +80,7 @@ class InteriorSponge:
         numba.set_num_threads(threads._THREADS[0])
 
         def relax(c, prof):
-            tgt = rm.remap_columns(hs, np.ascontiguousarray(prof[::-1, None, None] * np.ones((1,) + H.shape)),
-                                   np.ascontiguousarray(h), self.remap_code, ok)
+            src = prof[::-1] if prof.ndim == 3 else prof[::-1, None, None] * np.ones((1,) + H.shape)
+            tgt = rm.remap_columns(hs, np.ascontiguousarray(src), np.ascontiguousarray(h), self.remap_code, ok)
             return np.where(ok[None], (c + r * tgt) / (1.0 + r), c)
         return relax

@@ -96,6 +96,15 @@ class WetDryFreeSurface:
         'jacobi' is the diagonal.  On the 96 273-cell northern Gulf of
         California nest: 1–3 iterations and 7–19 ms per solve vs 97–117
         iterations and ~50 ms with Jacobi (factorisation 0.19 s).
+    sal_beta : float
+        Scalar self-attraction and loading β ∈ [0, 1) (regional chain Task 5): the surface pressure gradient is
+        g(1 − β)∇η on the **total** η, in the explicit and implicit parts and in the matrix, as
+        ``ImplicitFreeSurface(sal_beta=…)`` and MOM6 SAL_SCALAR_VALUE (NWA12 0.05; MOM_self_attr_load.F90:96-99,
+        312-324, dgeo_de = 1 − β in MOM_barotropic.F90:1179-1186).  0 (default): g, bit for bit.
+    sal_flather : bool
+        Also use g(1 − β) in the Flather wave speed c = √(g(1 − β) D) (MOM6 TIDAL_SAL_FLATHER,
+        MOM_barotropic.F90:1216, 4434-4446; MOM6 default False, NWA12 True).  Default False: √(g D), as
+        ``ImplicitFreeSurface``.  No effect with β = 0.
     periodic : core.model.periodic.Periodic, tuple of 'x'/'y', optional
         Periodic axes (N3 task 3).  With 'x' the u-faces 0 and nx are the same face, between cell nx−1 and
         cell 0: H_f = min(H_{nx−1}, H_0), the upwind η, the gradient (η_0 − η_{nx−1})/δ_f and one matrix
@@ -107,7 +116,8 @@ class WetDryFreeSurface:
                  g: float = G, d_min: float = 0.05, flather_u: np.ndarray | None = None,
                  flather_v: np.ndarray | None = None, solver: str = "direct", cg_rtol: float = 1e-10,
                  precond: str = "lu", refactor_iterations: int = 5, clamped_u: np.ndarray | None = None,
-                 clamped_v: np.ndarray | None = None, periodic=None) -> None:
+                 clamped_v: np.ndarray | None = None, periodic=None, sal_beta: float = 0.0,
+                 sal_flather: bool = False) -> None:
         from core.model.periodic import Periodic
         self.per = periodic if isinstance(periodic, Periodic) else Periodic(periodic or ())
         if not 0.5 <= theta <= 1.0:
@@ -127,6 +137,13 @@ class WetDryFreeSurface:
         self.lu_factorizations = 0
         self.cg_iterations = 0
         self.dt, self.theta, self.g, self.d_min = float(dt), float(theta), float(g), float(d_min)
+        if not 0.0 <= sal_beta < 1.0:
+            raise ValueError(f"sal_beta must be in [0, 1), got {sal_beta}")
+        self.sal_beta, self.sal_flather = float(sal_beta), bool(sal_flather)
+        # gravity of the surface pressure gradient g(1 − β) (scalar SAL) and of the Flather wave speed;
+        # both are g itself when β = 0, so the arithmetic is unchanged (bit for bit)
+        self.g_pgf = self.g if self.sal_beta == 0.0 else self.g * (1.0 - self.sal_beta)
+        self.g_flather = self.g_pgf if self.sal_flather else self.g
         H = np.asarray(bathy, float)
         self.H = H
         self.active = np.isfinite(H)
@@ -282,7 +299,7 @@ class WetDryFreeSurface:
         Q_in = A (η^{n+1} − η^n)/Δt + (θ-weighted outflow through the interior faces) + (Flather outflow) − A fw.
         Stored as the θ-weighted open flux (model sign) with the cell's depth at n, and as the face velocity.
         """
-        th, dt, g = self.theta, self.dt, self.g
+        th, dt, g = self.theta, self.dt, self.g_pgf
         gx1, gy1 = self._gradient(eta_new)
         ui = np.where(wu, us - g * th * dt * gx1, 0.0)
         vi = np.where(wv, vs - g * th * dt * gy1, 0.0)
@@ -332,7 +349,8 @@ class WetDryFreeSurface:
             source.  fw_eff is kept as ``last_fw`` (None without fw).  fw None adds no operation (bit for bit).
         Returns η^{n+1}, u^{n+1}, v^{n+1} (u = 0 on dry faces).
         """
-        th, dt, g = self.theta, self.dt, self.g
+        th, dt, g = self.theta, self.dt, self.g_pgf          # g(1 − β) with scalar SAL (= g when β = 0)
+        g_fl = self.g_flather                                # Flather wave speed (sal_flather)
         Du, wu = self._face_depth(eta, u_n, 1)
         Dv, wv = self._face_depth(eta, v_n, 0)
         gx, gy = self._gradient(eta)
@@ -367,7 +385,7 @@ class WetDryFreeSurface:
                 open_ = D > self.d_min
                 qp = None if flather_q is None else np.asarray(flather_q[0] if fl["axis"] == "u" else flather_q[1])[fl["face"]]
                 fixed = np.zeros(e_ext.shape, bool) if qp is None else np.isfinite(qp)
-                c = np.where(open_ & ~fixed, fl["length"] * np.sqrt(g * D), 0.0)
+                c = np.where(open_ & ~fixed, fl["length"] * np.sqrt(g_fl * D), 0.0)
                 out_q = fl["length"] * D * fl["sign"] * ub                                       # outward
                 if qp is not None:
                     out_q = np.where(fixed, fl["sign"] * np.nan_to_num(qp), out_q)

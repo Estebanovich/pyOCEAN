@@ -46,6 +46,7 @@ FIELDS = {
     "S": ("t3", "1e-3", "sea_water_salinity", "salinity"),
     "ubar": ("u2", "m s-1", "barotropic_sea_water_x_velocity", "depth-mean velocity at u-faces"),
     "vbar": ("v2", "m s-1", "barotropic_sea_water_y_velocity", "depth-mean velocity at v-faces"),
+    "h_layer": ("t3", "m", "cell_thickness", "ALE layer thickness (k = 0 at the bed)"),
     "mix_num": ("t3", "degC2 m3 s-1", None, "online numerical mixing (Burchard & Rennau 2008)"),
 }
 # diagnostics added next to T and S of a ``teos10`` model (θ and S_P, the convention of data and users)

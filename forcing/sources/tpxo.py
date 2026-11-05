@@ -90,6 +90,37 @@ def _subset(lon: np.ndarray, lat: np.ndarray, lon_range, lat_range) -> tuple[np.
     return ii, jj
 
 
+def tpxo_atlas_files(directory: str | Path, constituents: list[str] | tuple[str, ...],
+                     transports: bool = True) -> tuple[list[Path], list[Path] | None, Path | None, list[str]]:
+    """
+    Files of a TPXO atlas directory for the requested constituents, those present only.
+
+    Looks for ``h_<c>_*.nc`` (and ``u_<c>_*.nc`` with ``transports``) and the grid file ``grid_*.nc``.  A
+    constituent without its files is skipped with a ``UserWarning`` — e.g. the long-period ``mm`` and ``mf``
+    (NWA12 forces them, docs/design/regional_refs/mom6_obc_tides.md §1) exist in TPXO10-atlas-v2 but not in
+    every atlas.  Pass the result to ``read_tpxo(h_files, u_files, grid_file, ...)``.
+
+    Returns
+    -------
+    (h_files, u_files or None, grid_file or None, names) with names the constituents found, in request order.
+    """
+    import warnings
+
+    d = Path(directory)
+    h_files, u_files, names = [], [], []
+    for c in constituents:
+        h = sorted(d.glob(f"h_{c.lower()}_*.nc"))
+        u = sorted(d.glob(f"u_{c.lower()}_*.nc")) if transports else [None]
+        if not h or not u:
+            warnings.warn(f"TPXO atlas {d} has no files for constituent {c!r}: skipped", UserWarning, stacklevel=2)
+            continue
+        h_files.append(h[0])
+        u_files.append(u[0])
+        names.append(c.lower())
+    grids = sorted(d.glob("grid_*.nc"))
+    return h_files, (u_files if transports else None), (grids[0] if grids else None), names
+
+
 def read_tpxo(
     h_files: list[str | Path],
     u_files: list[str | Path] | None,
@@ -116,7 +147,8 @@ def read_tpxo(
     xr.Dataset
         ``h`` (constituent, lat, lon) complex [m], NaN on land; with ``u_files`` also
         ``U`` (constituent, lat, lon_u) and ``V`` (constituent, lat_v, lon)
-        complex transports [m² s⁻¹].  Longitudes in −180–180 °E.
+        complex transports [m² s⁻¹], and, when the grid file holds them, the atlas depths ``hu`` (lat, lon_u) and
+        ``hv`` (lat_v, lon) [m] (land NaN; ``BoundaryTides(velocity_depth='tpxo')``).  Longitudes in −180–180 °E.
     """
     grid = xr.open_dataset(grid_file) if grid_file is not None else None
     try:
@@ -152,6 +184,14 @@ def read_tpxo(
                     V_list.append(np.where(V == 0, np.nan + 0j, V))
                     lon_u = lu.values.astype(float)[ii]
                     lat_v = lvat.values.astype(float)[jj]
+        depths = {}
+        if u_files is not None and grid is not None and all(
+                n in {v.lower() for v in grid.variables} for n in ("hu", "hv")):
+            # the atlas's own depths at the U and V nodes [m] (land 0 → NaN), for velocity = transport / depth
+            for name in ("hu", "hv"):
+                var = _var(grid, name)
+                d = _read_region(var, var.dims[0], var.dims[1], ii, jj)
+                depths[name] = np.where(d > 0, d, np.nan)
     finally:
         if grid is not None:
             grid.close()
@@ -166,5 +206,10 @@ def read_tpxo(
                                 coords={"lon_u": to180(lon_u)}, attrs={"units": "m2 s-1"})
         out["V"] = xr.DataArray(np.stack(V_list), dims=("constituent", "lat_v", "lon"),
                                 coords={"lat_v": lat_v}, attrs={"units": "m2 s-1"})
+        if depths:
+            out["hu"] = xr.DataArray(depths["hu"], dims=("lat", "lon_u"), attrs={"units": "m",
+                                     "long_name": "TPXO bathymetry at U nodes"})
+            out["hv"] = xr.DataArray(depths["hv"], dims=("lat_v", "lon"), attrs={"units": "m",
+                                     "long_name": "TPXO bathymetry at V nodes"})
     out.attrs["source_files"] = ", ".join(Path(p).name for p in h_files)
     return out

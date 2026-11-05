@@ -134,6 +134,8 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
     if not (np.isfinite(smag) and smag >= 0.0):
         err("momentum", f"smagorinsky={smag!r}: the Smagorinsky coefficient must be a finite number ≥ 0 "
                         "(0 = off; OM4 uses 0.15)")
+    bih = _biharmonic_issues(a, smag, err)
+    _curvilinear_issues(a, ale, smag or bih, warn)
     # ---- open boundaries
     open_ = tuple(a["open_boundaries"])
     bad = set(open_) - set(EDGES)
@@ -152,6 +154,8 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
             modes[e] = mode
     if a["open_boundary_state"] is None and "clamped" in modes.values():
         err("open_boundary", "a 'clamped' open_boundary_mode needs open_boundary_state (the exterior to impose)")
+    _tide_issues(a, given, modes, err, warn)
+    _tangential_issues(a, ale, smag or bih, modes, err, warn)
     # ---- periodic axes (N3 task 3): an axis is periodic or has open/closed edges, not both
     per = a.get("periodic", ()) or ()
     per = (per,) if isinstance(per, str) else tuple(per)
@@ -186,6 +190,8 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
         err("tracer_advection", f"n_tracers={ntr!r}: passive tracers need vertical_coordinate='ale' and n ≥ 0")
     if a["sponge_rate"] is not None and not ale:
         err("interior_sponge", "sponge_rate (interior sponge) needs vertical_coordinate='ale'")
+    elif a["sponge_rate"] is not None:
+        _sponge_issues(a, err)
     bd = a["bottom_drag"]
     if bd not in (None, "quadratic"):
         err("bottom_drag", f"unknown bottom_drag {bd!r}; use None or 'quadratic'")
@@ -351,9 +357,217 @@ def preflight(a: dict, given: frozenset[str]) -> list[Issue]:
         from core.components.surface_fluxes import bulk_errors
         for msg in bulk_errors(sf, sal):
             err("surface_fluxes", msg)
+    _atm_pressure_issues(a, given, sf, err, warn)
+    ro = a.get("runoff")                                       # river runoff (regional chain Task 8)
+    if ro is not None:
+        from core.components.runoff import runoff_errors
+        for msg in runoff_errors(ro, a.get("bathy")):
+            err("runoff", msg)
+        if not sal:
+            err("salinity", "runoff needs salinity=True (river water enters with S = 0, the real freshwater path)")
     if a["sponge_rate"] is None and ({"sponge_T", "sponge_zw", "sponge_tr", "sponge_S"} & given):
         warn("interior_sponge", "sponge_T / sponge_zw / sponge_tr / sponge_S are ignored without sponge_rate")
     return out
+
+
+def _sponge_issues(a: dict, err) -> None:
+    """
+    Shapes of the interior-sponge arguments, all reported together (ruling 2026-11-04: per-column targets).
+    sponge_rate (ny, nx) as bathy; sponge_T (nz_s,) or (nz_s, ny, nx); sponge_zw (nz_s + 1,) or (nz_s + 1, ny, nx),
+    strictly decreasing from the surface in every column; sponge_S the shape of sponge_T; sponge_tr
+    (n_tracers, nz_s) or (n_tracers, nz_s, ny, nx).  A per-column target must be finite in the sponge columns
+    (r > 0); MOM6 fills the data below the bed with the value above (MOM_ALE_sponge.F90:1006-1014), here the caller
+    does (sponge_zw is clipped at each bed, so values below it never enter).
+    """
+    hw = np.shape(a["bathy"])
+    r = np.asarray(a["sponge_rate"], float)
+    if r.shape != hw:
+        err("interior_sponge", f"sponge_rate shape {r.shape}, expected {hw}")
+    cols = (np.nan_to_num(r) > 0) if r.shape == hw else np.zeros(hw, bool)
+    T, zw = a.get("sponge_T"), a.get("sponge_zw")
+    if T is None or zw is None:
+        err("interior_sponge", "sponge_rate needs sponge_T and sponge_zw")
+        return
+    T, zw = np.asarray(T, float), np.asarray(zw, float)
+    nzs = T.shape[0] if T.ndim else 0
+    if T.ndim not in (1, 3) or (T.ndim == 3 and T.shape[1:] != hw):
+        err("interior_sponge", f"sponge_T shape {T.shape}: expected (nz_s,) or (nz_s, {hw[0]}, {hw[1]})")
+    if zw.ndim not in (1, 3) or zw.shape[0] != nzs + 1 or (zw.ndim == 3 and zw.shape[1:] != hw):
+        err("interior_sponge", f"sponge_T (nz_s,) needs sponge_zw (nz_s + 1,) decreasing from the surface: sponge_zw "
+                               f"shape {zw.shape}, expected ({nzs + 1},) or ({nzs + 1}, {hw[0]}, {hw[1]})")
+    else:
+        dec = np.diff(zw, axis=0) < 0
+        if not (dec.all() if zw.ndim == 1 else dec[:, cols].all()):
+            err("interior_sponge", "sponge_zw must be strictly decreasing from the surface (in every sponge column)")
+    S = a.get("sponge_S")
+    if S is not None and np.shape(S) != T.shape:
+        err("interior_sponge", f"sponge_S shape {np.shape(S)}, expected that of sponge_T {T.shape}")
+    tr, ntr = a.get("sponge_tr"), int(a.get("n_tracers") or 0)
+    if tr is not None:
+        trs = np.shape(tr)
+        ok = trs in ((ntr, nzs), (ntr, nzs) + tuple(hw)) or (np.size(tr) == ntr * nzs and len(trs) <= 2)
+        if not ok:
+            err("interior_sponge", f"sponge_tr shape {trs}: expected ({ntr}, {nzs}) or ({ntr}, {nzs}, {hw[0]}, {hw[1]})")
+    for name, v in (("sponge_T", T), ("sponge_S", S), ("sponge_zw", zw)):
+        if v is None:
+            continue
+        v = np.asarray(v, float)
+        if v.ndim == 3 and v.shape[1:] == hw and not np.isfinite(v[:, cols]).all():
+            err("interior_sponge", f"{name} must be finite in every sponge column (r > 0); fill the levels below the "
+                                   "bed with the value above (as MOM6)")
+        elif v.ndim == 1 and not np.isfinite(v).all():
+            err("interior_sponge", f"{name} must be finite")
+    if tr is not None and np.ndim(tr) == 4 and np.shape(tr)[2:] == hw and not np.isfinite(np.asarray(tr)[..., cols]).all():
+        err("interior_sponge", "sponge_tr must be finite in every sponge column (r > 0)")
+
+
+def _biharmonic_issues(a: dict, smag: float, err) -> float:
+    """
+    Biharmonic Smagorinsky viscosity (regional chain, Gulf Stream fix step 4; ``core.dynamics.hor_visc.biharmonic``):
+    ``smagorinsky_bi`` [-], ``ah_vel_scale`` [m s⁻¹] and ``ah_bi`` [m⁴ s⁻¹] are finite numbers ≥ 0; with any of them
+    > 0 the Laplacian must be off (``smagorinsky`` = ``ah`` = 0): MOM6's joint Laplacian + biharmonic stability
+    bound (``visc_bound_rem``, MOM_hor_visc.F90:1121-1133, 1248-1252) is not ported.  Returns the largest of the
+    three (0 = off).
+    """
+    vals = {k: a.get(k, 0.0) for k in ("smagorinsky_bi", "ah_vel_scale", "ah_bi")}
+    bad = False
+    for k, x in vals.items():
+        if not (isinstance(x, (int, float, np.floating, np.integer)) and np.isfinite(x) and x >= 0.0):
+            err("momentum", f"{k}={x!r}: must be a finite number ≥ 0 (0 = off; NWA12: smagorinsky_bi 0.03, "
+                            "ah_vel_scale 0.01 m/s, ah_bi 0)")
+            bad = True
+    if bad:
+        return 0.0
+    on = max(vals.values())
+    if on > 0 and (smag > 0 or a.get("ah", 0.0) > 0):
+        err("momentum", "the biharmonic viscosity (smagorinsky_bi/ah_vel_scale/ah_bi > 0) cannot run together with "
+                        f"the Laplacian one (smagorinsky={smag!r}, ah={a.get('ah', 0.0)!r}): MOM6's joint stability "
+                        "bound is not ported; set smagorinsky = ah = 0")
+    return float(on)
+
+
+def _curvilinear_issues(a: dict, ale: bool, smag: float, warn) -> None:
+    """
+    Operators without curvilinear metric terms (regional chain Task 3, ``docs/design/regional_refs/metric_audit.md``
+    §2.3, class b): on a grid built from a MOM6 supergrid (``grid_type == 'mom6_supergrid'``) the σ flux-form and
+    advective momentum and the constant-A_h Laplacian (``smagorinsky`` = 0 with ``ah`` > 0) treat the grid components
+    of the velocity as Cartesian ones and miss the curvature terms.  The invariant forms are metric-correct: use
+    ``vertical_coordinate='ale'`` with the vector-invariant momentum (the default there) and ``smagorinsky`` > 0 (the
+    stress-tensor operator, ``ah`` its floor) — the NWA12 cut configuration.  Warnings only: a run is consistent to
+    the size of the missing terms.
+    """
+    hg = a.get("h_grid")
+    attrs = getattr(hg, "attrs", None) or {}
+    if attrs.get("grid_type") != "mom6_supergrid":
+        return
+    momentum = a["momentum"] or ("vector_invariant" if ale else "flux")
+    if momentum == "flux":
+        warn("momentum", "curvilinear (supergrid) grid with the flux-form momentum: it has no curvilinear metric "
+                         "terms (metric_audit.md §2.3, class b); use vertical_coordinate='ale' with the "
+                         "vector-invariant momentum")
+    if smag == 0.0 and a.get("ah", 0.0) > 0.0:
+        warn("momentum", "curvilinear (supergrid) grid with the constant-A_h Laplacian (smagorinsky = 0, ah > 0): it "
+                         "is not the stress-tensor divergence and misses the metric terms (metric_audit.md §2.3, class "
+                         "b); use smagorinsky > 0 (ah becomes its floor)")
+
+
+def _tangential_issues(a: dict, ale: bool, smag: float, modes: dict[str, str], err, warn) -> None:
+    """
+    MOM6 tangential open-boundary velocity (``obc_tangential='mom6'``: ORLANSKI_TAN + NUDGED_TAN and the
+    "computed" vorticity/strain at the open-edge corners, docs/design/regional_refs/mom6_obc_tangential.md): the
+    corner vorticity is that of the vector-invariant momentum, so ALE with ``momentum='vector_invariant'``; not with
+    periodic axes (the corner arrays are not padded); it acts on the 'radiating' edges only; the corner strain needs
+    the Smagorinsky stress-tensor operator (``smagorinsky`` > 0).
+    """
+    ot = a.get("obc_tangential", "none")
+    if ot not in ("none", "mom6"):
+        err("open_boundary", f"unknown obc_tangential {ot!r}; use 'none' or 'mom6'")
+        return
+    if ot == "none":
+        return
+    momentum = a["momentum"] or ("vector_invariant" if ale else "flux")
+    if not ale or momentum != "vector_invariant":
+        err("open_boundary", "obc_tangential='mom6' needs vertical_coordinate='ale' with momentum='vector_invariant' "
+                             "(the corner vorticity enters the PV flux of the vector-invariant form)")
+    per = a.get("periodic", ()) or ()
+    if per:
+        err("open_boundary", f"obc_tangential='mom6' is not available with periodic axes {per!r}")
+    if "radiating" not in modes.values():
+        warn("open_boundary", "obc_tangential='mom6' acts on the 'radiating' edges only and there is none: it does "
+                              "nothing")
+    if smag == 0.0:
+        warn("open_boundary", "obc_tangential='mom6' without smagorinsky > 0 or the biharmonic viscosity: the corner "
+                              "vorticity is computed, but the constant Laplacian has no corner shear strain")
+
+
+def _atm_pressure_issues(a: dict, given: frozenset[str], sf, err, warn) -> None:
+    """
+    Atmospheric pressure (regional chain Task 6, ``core.components.atm_pressure``): ``atm_pressure`` is a bool and
+    needs ``surface_fluxes`` (p_a is the ``msl`` of the bulk component's atmosphere); ``atm_pressure_ref`` is None
+    or a finite pressure in Pa (a value in hPa is caught), and is ignored without ``atm_pressure``.
+    """
+    ap = a.get("atm_pressure", False)
+    if not isinstance(ap, (bool, np.bool_)):
+        err("atm_pressure", f"atm_pressure must be True or False, got {ap!r}")
+    elif ap and sf is None:
+        err("atm_pressure", "atm_pressure=True needs surface_fluxes: the sea-level pressure p_a is the 'msl' of the "
+                            "bulk fluxes' atmosphere (BulkFluxes(atmosphere, ...)) at tⁿ + Δt/2")
+    ref = a.get("atm_pressure_ref")
+    if ref is not None:
+        try:
+            ok = bool(np.isfinite(ref) and 5e4 <= float(ref) <= 1.2e5)
+        except (TypeError, ValueError):
+            ok = False
+        if not ok:
+            err("atm_pressure", f"atm_pressure_ref={ref!r}: the reference sea-level pressure p̄_a must be a number in "
+                                "Pa between 5e4 and 1.2e5 (e.g. 1e5, as SIS2), or None for the domain mean")
+        if not ap:
+            warn("atm_pressure", "atm_pressure_ref is ignored without atm_pressure=True")
+
+
+def _tide_issues(a: dict, given: frozenset[str], modes: dict[str, str], err, warn) -> None:
+    """
+    Tides at the open boundary, body tide and scalar SAL (regional chain Task 5,
+    ``core.components.boundary_tides``): ``boundary_tides`` needs a 'radiating' edge (the tide is added to the
+    Flather exterior of those edges only), valid constituents/dates/ramp; ``tidal_potential=True`` takes its
+    constituents from ``boundary_tides``; ``sal_beta`` ∈ [0, 1).
+    """
+    from core.components.boundary_tides import BoundaryTides, TidalPotential
+    bt = a.get("boundary_tides")
+    if bt is not None:
+        if not isinstance(bt, BoundaryTides):
+            err("open_boundary", f"boundary_tides must be a core.components.boundary_tides.BoundaryTides, got "
+                                 f"{type(bt).__name__}")
+        else:
+            for msg in bt.issues():
+                err("open_boundary", msg)
+        if "radiating" not in modes.values():
+            err("open_boundary", "boundary_tides needs at least one 'radiating' open edge: the tide is added to the "
+                                 "Flather exterior (η, ū) of the 'radiating' edges "
+                                 f"(open edges and modes: {modes or 'none'})")
+    tp = a.get("tidal_potential", False)
+    if tp is True:
+        if bt is None:
+            err("tidal_potential", "tidal_potential=True takes its constituents and dates from boundary_tides; "
+                                   "without boundary_tides pass a TidalPotential(constituents, ref_date, ...)")
+        elif isinstance(bt, BoundaryTides):
+            for msg in TidalPotential.from_boundary_tides(bt).issues():
+                err("tidal_potential", msg)
+    elif isinstance(tp, TidalPotential):
+        for msg in tp.issues():
+            err("tidal_potential", msg)
+    elif tp is not False and tp is not None:
+        err("tidal_potential", f"tidal_potential must be False, True or a TidalPotential, got {type(tp).__name__}")
+    beta = a.get("sal_beta", 0.0)
+    try:
+        ok = bool(np.isfinite(beta) and 0.0 <= beta < 1.0)
+    except TypeError:
+        ok = False
+    if not ok:
+        err("free_surface", f"sal_beta={beta!r}: the scalar self-attraction and loading factor must be in [0, 1) "
+                            "(MOM6 SAL_SCALAR_VALUE; NWA12 0.05)")
+    elif beta == 0.0 and "sal_flather" in given and a.get("sal_flather"):
+        warn("free_surface", "sal_flather=True is ignored with sal_beta=0 (the Flather speed is √(g D) either way)")
 
 
 def _eos_issues(a: dict, given: frozenset[str], eos, nonlinear: bool, sal: bool, ale: bool, err, warn) -> None:

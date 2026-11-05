@@ -105,7 +105,11 @@ from core.components.geometry import LayerGeometry
 from core.components.pgf import PressureGradient
 from core.components.momentum import Momentum, sum_terms
 from core.components.open_boundary import CONFIG as _OB_CONFIG, OpenBoundary, convert_exterior
+from core.dynamics.open_boundary import tangential_corners as obc_tangential_corners
 from core.components.bottom_drag import LogLawBedDrag, QuadraticBedDrag
+from core.components.boundary_tides import BoundaryTides, TidalPotential, bind_copy
+from core.components.atm_pressure import AtmosphericPressure
+from core.components.runoff import Runoff
 from core.components.closure import BBLAddedClosure, ShearAddedClosure, find_closure, make_closure
 from physics.mixing.kpp_cvmix import KPPParams
 from physics.mixing.kappa_shear import JacksonParams
@@ -122,6 +126,9 @@ from core.model.preflight import preflight
 from core.model.periodic import Periodic, periodic_grid
 from core.components.time_stepper import AB3, AB3Momentum, _ab3_kernel, ab3_combine  # noqa: F401  (re-exported)
 from core.model.threads import _THREADS, set_threads  # noqa: F401  (one shared list; re-exported)
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from forcing.sources.glofas import RiverInput
 
 G = 9.81
 REMAP_SCHEMES = {"pcm": rm.PCM, "plm": rm.PLM, "ppm_h4": rm.PPM_H4}
@@ -150,6 +157,8 @@ class SigmaState:
     budget: dict | None = None                               # variance budget of the last step (N2a, variance_budget)
     n_visc_limited: int | None = None                        # active h/q points whose Smagorinsky ν the stability
                                                              # bound reduced, summed over steps; None while off
+    obc_rtan: np.ndarray | None = None                       # Orlanski ratio at the open-edge corners of the last
+                                                             # step (N, ny+1, nx+1), obc_tangential='mom6' (ALE)
 
 
 def _up3_faces(c: np.ndarray, flux: np.ndarray, ok: np.ndarray, axis: int, order: int = 3) -> np.ndarray:
@@ -1025,6 +1034,15 @@ class SigmaBaroclinic:
           land and dry faces, no tendency on open-boundary faces.  Points where the bound reduced ν are counted in
           ``SigmaState.n_visc_limited``; ``self._momentum.last_nu_t`` holds the last step's ν at h points.
           Assignable after construction, as ``ah``
+    smagorinsky_bi, ah_vel_scale, ah_bi : biharmonic Smagorinsky viscosity (regional chain, Gulf Stream fix step 4;
+          MOM6 BIHARMONIC with SMAG_BI_CONST [-], AH_VEL_SCALE [m s⁻¹] and AH [m⁴ s⁻¹]; NWA12 0.03, 0.01, 0).  All 0
+          (default): off, bit for bit as before.  Any > 0: the "hviscosity" term becomes −∇·(A_h h ∇(∇²u))/h in
+          MOM6's stress-tensor form with A_h = max(ah_bi, ah_vel_scale Δ³, smagorinsky_bi Δ⁴ |S|), bounded for AB3
+          (MOM6 BOUND_AH × 6/11), Del2 = 0 on open faces (OBC_ZERO_BIHARMONIC), free slip at land
+          (``core.dynamics.hor_visc.biharmonic``, docs/design/regional_refs/mom6_biharmonic.md).  Not together with
+          the Laplacian (``smagorinsky`` = ``ah`` = 0; pre-flight).  Limited points counted in
+          ``SigmaState.n_visc_limited``; ``self._momentum.last_ah_t`` holds A_h at h points.  Assignable after
+          construction
     kv : vertical tracer diffusivity [m² s⁻¹] (implicit; 0 = none).  With closure='gls' and ``gls_stratified``
           it is not a constant but the floor (background) of the GLS diffusivity, κ_t = max(c_μ′ k²/ε, kv), and
           kv = 0 (default) keeps CROCO's floor nuws = 1e-6 (gls_mixing.F:152, 872-880; CROCO does not read Akt_bak
@@ -1118,6 +1136,14 @@ class SigmaBaroclinic:
           conserved exactly — core.dynamics.wetting_drying.WetDryFreeSurface ``clamped_u``; u′, tracers and the
           sponge as 'radiating')}
     obc_tau_in, obc_tau_out : nudging time scales [s] of 'radiating' (CROCO typical 1 and 10 days)
+    obc_tangential : 'none' (default, the open-edge corners as before: ζ = 0 and D_S = 0, MOM6's ZERO
+        configuration) or 'mom6': MOM6 ORLANSKI_TAN + NUDGED_TAN on the 'radiating' edges — the tangential velocity
+        at the corners of the edge line is radiated from the interior with the corner mean of the normal Orlanski
+        ratio of the last step (``SigmaState.obc_rtan``) and nudged once per step toward ``OBData.u_tangential``
+        (γ = Δt/(τ + Δt), τ = ``obc_tau_in`` when the ratio is 0, else ``obc_tau_out``), and the vorticity and
+        shear strain there are "computed" from it (OBC_COMPUTED_VORTICITY/STRAIN; MOM_open_boundary.F90:3026-3062,
+        MOM_CoriolisAdv.F90:470-524, MOM_hor_visc.F90:795-836; docs/design/regional_refs/mom6_obc_tangential.md).
+        ALE with the vector-invariant momentum, no periodic axes.
     theta_bc : time weight of the baroclinic part u′ of the layer transport (None = ½ in every coordinate:
         time-centred, as the AB3 momentum tendency is centred at n + ½); the depth mean keeps the free-surface
         ``theta`` so the layer fluxes add up to the free-surface flux.  Before 2026-10-13 u′ took ``theta`` too,
@@ -1151,6 +1177,9 @@ class SigmaBaroclinic:
         stretched to the column and remapped onto the current layers; passive tracers toward sponge_tr (default 0);
         salinity toward sponge_S (nz_s,) [g kg⁻¹] (``salinity=True``; None: S is not relaxed);
         r = sponge_rate (ny, nx) [s⁻¹], ignored on land; momentum is not damped (as MOM6 DOME_initialize_sponges).
+        Per-column targets (ruling 2026-11-04): sponge_T, sponge_S (nz_s, ny, nx), sponge_tr (n_tracers, nz_s, ny, nx)
+        and/or sponge_zw (nz_s + 1, ny, nx), each column remapped as the profile is (MOM6 MOM_ALE_sponge.F90
+        apply_ALE_sponge:1035-1066); finite in every column with r > 0 (pre-flight).
         It acts after the remap, so the mixing diagnostic counts advection and remap only
     ts_kind : convention of the T and S data given to the **constructor** — the exterior of ``open_boundary_state``
         (``OBData.T``, ``OBData.S``) and the sponge profiles ``sponge_T``, ``sponge_S``: ``"theta_sp"`` (default; θ [°C],
@@ -1177,6 +1206,31 @@ class SigmaBaroclinic:
         wrapped halos and are cropped (as MOM6/MITgcm halo exchanges, ``core.model.periodic``); NumPy pair
         operators compute the wrap face natively.  Pre-flight refuses an open boundary on a periodic axis.  Used by
         the doubly periodic single-column cases (CROCO 5×5, MOM6 2×2) and for channels
+    boundary_tides : ``core.components.boundary_tides.BoundaryTides`` (regional chain Task 5): TPXO barotropic tide
+        added to the Flather exterior of every ``'radiating'`` edge, η_ext + η_tide and ū_ext + ū_tide with
+        ū_tide = U_TPXO / D_model (rotated to grid axes on curvilinear grids), at tⁿ⁺¹ (as the provider and MOM6);
+        u′ untouched.  Needs at
+        least one 'radiating' edge (pre-flight).  None (default): bit for bit
+    tidal_potential : False (default), True (the equilibrium tide of the ``boundary_tides`` constituents and dates)
+        or a ``TidalPotential``: g∇η_body added to the momentum tendency of every layer after the AB3 combination,
+        at tⁿ + Δt/2 (needs ``lon_t``, ``lat_t`` in the grid)
+    sal_beta : scalar self-attraction and loading β ∈ [0, 1): surface pressure gradient g(1 − β)∇η on the total η
+        (MOM6 SAL_SCALAR_VALUE, NWA12 0.05; ``core.dynamics.wetting_drying.WetDryFreeSurface``); 0: bit for bit
+    sal_flather : also use g(1 − β) in the Flather wave speed (MOM6 TIDAL_SAL_FLATHER: default False, NWA12 True)
+    atm_pressure : atmospheric pressure forcing (regional chain Task 6, ``core.components.atm_pressure``): the
+        ``msl`` of the ``surface_fluxes`` atmosphere at tⁿ + Δt/2 adds −∇p_a/ρ₀ to every layer after the AB3
+        combination (depth-uniform, so it enters the free-surface solve with g∇η, as MOM6's p_surf), and the inverse
+        barometer η_IB = −(p_a − p̄_a)/(ρ₀ g) is added to the Flather exterior η of the 'radiating' edges.  Not in
+        the EOS pressure (MOM6).  Needs ``surface_fluxes``.  False (default): bit for bit
+    atm_pressure_ref : p̄_a [Pa] of the inverse barometer; None (default): the area mean over the wet cells at
+        each step (a uniform p_a then does nothing); a number (e.g. 1e5 as SIS2) lets a uniform p_a change move
+        the domain's mean level through the open edges
+    runoff : river runoff (regional chain Task 8, ``core.components.runoff``), a
+        ``forcing.sources.glofas.RiverInput`` (e.g. from ``glofas_mouths``): Q/A_t of each river cell at tⁿ + Δt/2
+        (linear between daily records) is added to the real freshwater flux fw of the step (N2a path: a volume
+        source, the water entering the top layer with S = 0 and the layer's T, as MOM6 lrunoff in NWA12), together
+        with the bulk P − E or a prescribed ``step(fw=...)``.  Needs ``salinity=True``.  Model time t is the date
+        ``runoff.origin + t``.  None (default): bit for bit
     """
 
     def __init__(self, h_grid: xr.Dataset, bathy: np.ndarray, dt: float, n_layers: int = 10,
@@ -1206,7 +1260,12 @@ class SigmaBaroclinic:
                  shear_prandtl: float = 1.0, jackson_params: JacksonParams | None = None,
                  bbl_mixing: str | None = None, bbl_params: BBLParams | None = None,
                  surface_fluxes: BulkFluxes | None = None, eos: str = "linear", rho_pgf_ref: float | None = None,
-                 pgf_mass_weight: str = "vanished", p_ref: float = 2e7, ts_kind: str = "theta_sp") -> None:
+                 pgf_mass_weight: str = "vanished", p_ref: float = 2e7, ts_kind: str = "theta_sp",
+                 boundary_tides: BoundaryTides | None = None, tidal_potential: bool | TidalPotential = False,
+                 sal_beta: float = 0.0, sal_flather: bool = False, atm_pressure: bool = False,
+                 atm_pressure_ref: float | None = None, runoff: RiverInput | None = None,
+                 obc_tangential: str = "none", smagorinsky_bi: float = 0.0, ah_vel_scale: float = 0.0,
+                 ah_bi: float = 0.0) -> None:
         _args = {k: v for k, v in locals().items() if k != "self"}
         raise_issues(preflight(_args, _given(_args)))                  # N1 pre-flight: every error at once
         # equation of state (TEOS-10 in 3-D, Task 4): ρ₀ of the EOS before anything that uses it is built
@@ -1285,6 +1344,12 @@ class SigmaBaroclinic:
             fl_v[0, :] = act[0, :]
         if "north" in self.open:
             fl_v[-1, :] = act[-1, :]
+        # MOM6 ORLANSKI_TAN + NUDGED_TAN with the "computed" corner vorticity/strain on the 'radiating' edges
+        # (docs/design/regional_refs/mom6_obc_tangential.md); 'none' leaves the open-edge corners as before
+        self.obc_tangential = obc_tangential
+        self._tan_q = (obc_tangential_corners(fl_u, fl_v, tuple(e for e in self.open
+                                                              if self.obc_mode[e] == "radiating"))
+                       if obc_tangential == "mom6" else None)
         if solver is None:                     # ALE: CG with the lagged-LU preconditioner (1–3 iterations); the
             solver = "cg" if vertical_coordinate == "ale" else "direct"   # σ mode keeps the direct solve, bit-identical
         cl_u = cl_v = None                     # 'eta' edges: prescribed (clamped) η at the boundary cells
@@ -1299,7 +1364,8 @@ class SigmaBaroclinic:
                                 flather_u=fl_u if self.open else None, flather_v=fl_v if self.open else None,
                                 clamped_u=cl_u, clamped_v=cl_v, gls_stratified=gls_stratified, rho0=rho0,
                                 gls_kt_min=float(kv) if kv > 0 else KT_MIN, external_closure=True,
-                                periodic=self.periodic)
+                                periodic=self.periodic, sal_beta=sal_beta, sal_flather=sal_flather)
+        self.sal_beta, self.sal_flather = float(sal_beta), bool(sal_flather)
         self.gls_stratified = self.core.gls_stratified                 # True only with closure='gls' (N2a 8c)
         self.gls_production = gls_production                           # 'croco' or 'energy' (N3 task 5)
         sponged = tuple(e for e in self.open if self.obc_mode[e] != "clamped")  # a Dirichlet edge needs no sponge
@@ -1326,6 +1392,8 @@ class SigmaBaroclinic:
         self.hg, self.dt, self.n, self.g = h_grid, dt, n_layers, g
         self.rho0, self.t_coef, self.t_ref, self.ah, self.adv = rho0, t_coef, t_ref, ah, adv
         self.smagorinsky = float(smagorinsky)                          # Smagorinsky C (0 = off, the default)
+        self.smagorinsky_bi = float(smagorinsky_bi)                    # biharmonic Smagorinsky (0 = off, the default)
+        self.ah_vel_scale, self.ah_bi = float(ah_vel_scale), float(ah_bi)
         self.salinity, self.s_coef, self.s_ref = bool(salinity), float(s_coef), float(s_ref)
         self.eos_name, self.p_ref, self.pgf_mass_weight = eos, float(p_ref), pgf_mass_weight
         self._eos = _eos                                                # EOS protocol (core.components.eos)
@@ -1352,7 +1420,9 @@ class SigmaBaroclinic:
                                   adv=adv, ah=ah, ke_scheme=self.ke_scheme, ale=self.ale, dt=dt, hg=h_grid, fq=self._fq,
                                   fs=self.fs, ds=self.ds, vi_geom=getattr(self, "_vi", None),
                                   mean_face_thickness=self._mean_face_thickness, layer_volumes=self.layer_volumes,
-                                  smagorinsky=self.smagorinsky, open_u=fl_u.copy(), open_v=fl_v.copy())
+                                  smagorinsky=self.smagorinsky, open_u=fl_u.copy(), open_v=fl_v.copy(),
+                                  smagorinsky_bi=self.smagorinsky_bi, ah_vel_scale=self.ah_vel_scale,
+                                  ah_bi=self.ah_bi)
         if tracer_limiter is None:
             tracer_limiter = ("fct" if self.ale and self.tracer_time == "ssprk3"
                               and self.tracer_scheme in ("weno5", "weno5js") else "none")
@@ -1384,6 +1454,19 @@ class SigmaBaroclinic:
         self.S_ext, self._S_in = None, None                              # salinity exterior (N2a), set by initial_state
         self._ob.bind(dt=dt, ds=self.ds, fs=self.fs, H=self.H, n_tracers=self.n_tracers, ale=self.ale,
                       remap_code=getattr(self, "remap_code", rm.PPM_H4), salinity=self.salinity)
+        # tides (regional chain Task 5): barotropic tide on the Flather exterior of the 'radiating' edges and the
+        # equilibrium tide as a body force; bound copies, so the caller's objects stay reusable
+        self.boundary_tides, self._boundary_tides = boundary_tides, None
+        if boundary_tides is not None:
+            Hu_e, Hv_e = self._ob.edge_face_depths()
+            self._boundary_tides = bind_copy(boundary_tides, h_grid,
+                                             tuple(e for e in self.open if self.obc_mode[e] == "radiating"), Hu_e, Hv_e)
+        if tidal_potential is True:
+            tidal_potential = TidalPotential.from_boundary_tides(boundary_tides)
+        self.tidal_potential = tidal_potential if tidal_potential is not False else None
+        self._tidal_potential = (None if self.tidal_potential is None else
+                                 bind_copy(self.tidal_potential, h_grid, g, np.isfinite(self.fs.H_u),
+                                           np.isfinite(self.fs.H_v), per=self.periodic))
         if self.ale:
             self._layer_transport = ALELayerTransport(fs=self.fs, H=self.H, area=self.area, dt=dt,
                                                       thickness_flux=self.thickness_flux, vi_geom=self._vi,
@@ -1398,6 +1481,18 @@ class SigmaBaroclinic:
                                 SurfaceFluxes(surface_fluxes, fs=self.fs, area=self.area, ds=self.ds, ale=self.ale,
                                               periodic=self.periodic, rho0=self.rho0, salinity=self.salinity,
                                               ts_kind=self._eos.ts_kind))
+        # atmospheric pressure (regional chain Task 6): needs the bulk component's atmosphere (pre-flight)
+        self.atm_pressure, self.atm_pressure_ref = bool(atm_pressure), atm_pressure_ref
+        self.p_atm = None                                               # p_a [Pa] of the last step (diagnostic)
+        self._atm_pressure = (None if not atm_pressure else
+                              AtmosphericPressure(self.fs, self.area, self.rho0,
+                                                  edges=tuple(e for e in self.open if self.obc_mode[e] == "radiating"),
+                                                  p_ref=atm_pressure_ref))
+        # river runoff (regional chain Task 8): Q/A_t added to fw at tⁿ + Δt/2 by the driver; ``runoff`` is the
+        # field of the last step [m s⁻¹] (registry diagnostic), ``river_input`` the RiverInput
+        self.river_input = runoff
+        self._runoff = None if runoff is None else Runoff(runoff, self.area)
+        self.runoff = None
         self.n_below_freezing = 0                                       # wet cell-layers with T < freezing point, last
                                                                         # step (counted, never corrected; TEOS-10 task 7)
         self._driver = Driver(self)
@@ -1417,12 +1512,18 @@ class SigmaBaroclinic:
                     raise ValueError(f"sponge_T in ts_kind={ts_kind!r} needs sponge_S to convert to "
                                      f"{_eos.ts_kind!r}")
                 Ts, sponge_S = to_model_ts(Ts, np.asarray(sponge_S, float), _eos.ts_kind, ts_kind)
-            if zw.ndim != 1 or Ts.shape != (zw.size - 1,) or not (np.diff(zw) < 0).all():
-                raise ValueError("sponge_T (nz_s,) needs sponge_zw (nz_s + 1,) decreasing from the surface")
+            nzs = Ts.shape[0] if Ts.ndim else 0                        # (nz_s,) or per column (nz_s, ny, nx)
+            if (Ts.ndim not in (1, 3) or zw.ndim not in (1, 3) or zw.shape[0] != nzs + 1
+                    or (Ts.ndim == 3 and Ts.shape[1:] != self.H.shape)
+                    or (zw.ndim == 3 and zw.shape[1:] != self.H.shape)):
+                raise ValueError("sponge_T (nz_s,) or (nz_s, ny, nx) needs sponge_zw (nz_s + 1,) or "
+                                 "(nz_s + 1, ny, nx) decreasing from the surface")
             self.sponge_rate = np.where(self.fs.active, np.nan_to_num(r), 0.0)
             self._sp_zw, self._sp_T = zw, Ts
-            self._sp_tr = (np.zeros((self.n_tracers, Ts.size)) if sponge_tr is None
-                           else np.asarray(sponge_tr, float).reshape(self.n_tracers, Ts.size))
+            self._sp_tr = (np.zeros((self.n_tracers, nzs)) if sponge_tr is None
+                           else np.asarray(sponge_tr, float))
+            if self._sp_tr.ndim != 4:                                   # profiles: (n_tracers, nz_s) as before
+                self._sp_tr = self._sp_tr.reshape(self.n_tracers, nzs)
             self._sp_cols = self.sponge_rate > 0
             self._sp_S = None
             if sponge_S is not None:
@@ -1510,7 +1611,7 @@ class SigmaBaroclinic:
         self.h_thin_bed, self.init_iterations = float(h_thin_bed), int(init_iterations)
         g = {k: np.asarray(self.hg[k].values, float) for k in ("dx_u", "dy_v", "area_t", "area_u", "area_v",
                                                                "dx_t", "dy_t")}
-        g["area_q"] = vi.corner_area(g["dx_u"], g["dy_v"])
+        g["area_q"] = vi.grid_corner_area(self.hg)                     # MOM6 areaBu (supergrid) or Δx_u Δy_v
         g["mask_q"] = vi.corner_mask(act)
         self._vi = g                                                    # geometry of the vector-invariant terms
 
@@ -1798,13 +1899,14 @@ class SigmaBaroclinic:
         """(ω/h) ∂u/∂k, centred (``core.components.momentum``)."""
         return self._momentum.vertical_advection(vel, omega_f, h_f)
 
-    def _momentum_terms(self, st: SigmaState) -> tuple[list, np.ndarray, np.ndarray]:
-        """Named explicit momentum terms of ``st`` in summation order, and the wet u- and v-faces."""
+    def _momentum_terms(self, st: SigmaState, obc_tan: tuple | None = None) -> tuple[list, np.ndarray, np.ndarray]:
+        """Named explicit momentum terms of ``st`` in summation order, and the wet u- and v-faces; ``obc_tan``:
+        the open-edge corner tangential velocity of ``obc_tangential='mom6'`` (``OpenBoundary.tangential_velocity``)."""
         Du, Dv = self.core.face_depths(st.eta)
         wet_u = np.isfinite(self.fs.H_u) & np.isfinite(Du) & (Du > self.fs.d_min)
         wet_v = np.isfinite(self.fs.H_v) & np.isfinite(Dv) & (Dv > self.fs.d_min)
         pgf_xy = self._baroclinic_pgf(st.eta, st.T, st.h, st.S)
-        return self._momentum.terms(st, pgf_xy, Du, Dv, wet_u, wet_v), wet_u, wet_v
+        return self._momentum.terms(st, pgf_xy, Du, Dv, wet_u, wet_v, obc_tan), wet_u, wet_v
 
     def _tendencies(self, st: SigmaState) -> tuple[np.ndarray, np.ndarray]:
         """Explicit momentum tendencies at u- and v-faces [m s⁻²]: Σ of the named terms (fixed order)."""
@@ -2000,13 +2102,15 @@ for _name in _OB_CONFIG:
 
 
 def _component_param(name: str, targets: tuple[tuple[str, str], ...], to_component=None,
-                     normalise=None) -> property:
+                     normalise=None, check=None) -> property:
     """
     A model parameter kept in sync with the components that use it (N1).  The model stores the value; setting it
     after construction (scripts change ``ke_scheme``, tests ``kh``, sensitivity runs ``cd`` …) also sets it on
     every built component in ``targets`` ((component attribute of the model, attribute of the component)), as
     ``SigmaBaroclinic`` read ``self.<name>`` every step before N1.  ``to_component(model, value)``: the value the
-    component keeps, when it differs; ``normalise(value)``: the stored spelling.
+    component keeps, when it differs; ``normalise(value)``: the stored spelling; ``check(model, name, value)``:
+    raises ``ConfigurationError`` for a value the pre-flight would refuse, run only after construction (the
+    constructor's pre-flight covers the first assignment).
     """
     key = f"_pre_{name}"
 
@@ -2019,6 +2123,8 @@ def _component_param(name: str, targets: tuple[tuple[str, str], ...], to_compone
     def put(self, value) -> None:
         if normalise is not None:
             value = normalise(value)
+        if check is not None and "_momentum" in self.__dict__:
+            check(self, name, value)
         self.__dict__[key] = value
         for comp_name, attr in targets:
             comp = self.__dict__.get(comp_name)
@@ -2046,10 +2152,41 @@ def _fixed_after_construction(name: str) -> property:
 
 
 _ke_spelling = lambda v: "gudonov" if v == "godunov" else v                         # noqa: E731  kernel spelling
+
+
+def _check_viscosity(model: "SigmaBaroclinic", name: str, value) -> None:
+    """
+    Assigning a horizontal-viscosity coefficient after construction (final review I1, regional chain): the same
+    checks as the pre-flight (``core.model.preflight._biharmonic_issues``: finite, ≥ 0, biharmonic not together with
+    the Laplacian), on the model's current coefficients with ``name`` replaced by ``value``.  Without it,
+    ``m.smagorinsky_bi = 0.03`` on a model built with ``smagorinsky`` > 0 silently switched the Laplacian off
+    (``Momentum.terms`` gives the biharmonic precedence).
+    """
+    from core.model.contract import ConfigurationError
+    from core.model.preflight import _biharmonic_issues
+    keys = ("ah", "smagorinsky", "smagorinsky_bi", "ah_vel_scale", "ah_bi")
+    a = {k: model.__dict__.get(f"_pre_{k}", 0.0) for k in keys}
+    a[name] = value
+    errs: list[str] = []
+    err = lambda _where, msg: errs.append(msg)                                    # noqa: E731
+    smag = a["smagorinsky"]
+    if not (np.isfinite(smag) and smag >= 0.0):
+        err("momentum", f"smagorinsky={smag!r}: the Smagorinsky coefficient must be a finite number ≥ 0")
+    if not np.all(np.isfinite(a["ah"])) or np.any(np.asarray(a["ah"]) < 0):
+        err("momentum", f"ah={a['ah']!r}: must be finite and ≥ 0")
+    a["ah"] = float(np.max(a["ah"])) if np.ndim(a["ah"]) else a["ah"]
+    _biharmonic_issues(a, smag if np.isfinite(smag) else 0.0, err)
+    if errs:
+        raise ConfigurationError("; ".join(errs))
+
+
 _PARAMS = {
     "ke_scheme": ((("_momentum", "ke_scheme"),), None, _ke_spelling),
-    "ah": ((("_momentum", "ah"),), None, None),
-    "smagorinsky": ((("_momentum", "smagorinsky"),), lambda m, v: float(v), None),
+    "ah": ((("_momentum", "ah"),), None, None, _check_viscosity),
+    "smagorinsky": ((("_momentum", "smagorinsky"),), lambda m, v: float(v), None, _check_viscosity),
+    "smagorinsky_bi": ((("_momentum", "smagorinsky_bi"),), lambda m, v: float(v), None, _check_viscosity),
+    "ah_vel_scale": ((("_momentum", "ah_vel_scale"),), lambda m, v: float(v), None, _check_viscosity),
+    "ah_bi": ((("_momentum", "ah_bi"),), lambda m, v: float(v), None, _check_viscosity),
     "adv": ((("_momentum", "adv"),), None, None),
     "momentum": ((("_momentum", "form"),),
                  lambda m, v: "vector_invariant" if m.ale and v == "vector_invariant" else "flux", None),
@@ -2069,8 +2206,8 @@ _PARAMS = {
     "remap_code": ((("_vertical", "remap_code"), ("_ob", "remap_code"), ("_interior_sponge_c", "remap_code")),
                    None, None),
 }
-for _name, (_targets, _to, _norm) in _PARAMS.items():
-    setattr(SigmaBaroclinic, _name, _component_param(_name, _targets, _to, _norm))
+for _name, (_targets, _to, _norm, *_chk) in _PARAMS.items():
+    setattr(SigmaBaroclinic, _name, _component_param(_name, _targets, _to, _norm, *_chk))
 
 
 def _jackson_params_property() -> property:

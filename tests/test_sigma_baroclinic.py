@@ -592,7 +592,8 @@ def _sigma_obc_case(tracer_time: str):
 @pytest.mark.parametrize("tracer_time", ["ssprk3", "pc"])
 def test_sigma_resting_exterior_bit_for_bit(tracer_time):
     # spec 2026-10-12-baroclinic-obc-internal-wave §4: without open_boundary_state the σ path is unchanged bit for
-    # bit (tests/data/sigma_obc_reference.json generated with commit 5196341, before the time-varying exterior)
+    # bit (tests/data/sigma_obc_reference.json generated with commit 5196341, before the time-varying exterior;
+    # regenerated deliberately 2026-11-03 for the open-face A_h Laplacian fix, max |Δ| 3.5e-8 at the pinned points)
     import json
     from pathlib import Path
     ref = json.load(open(Path(__file__).parent / "data" / "sigma_obc_reference.json"))[tracer_time]

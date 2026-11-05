@@ -3,6 +3,15 @@
 - **Spec:** `docs/superpowers/specs/2026-10-14-dome-overflow-design.md`
 - **Plan:** `docs/superpowers/plans/2026-10-14-dome-overflow.md`
 
+**Nota de vigencia (2026-11-03).** Dos correcciones de clase (a) del núcleo cambiaron las corridas de DOME después
+de la mayoría de las tablas de abajo: la del flujo de PV del momento vector-invariante (`e1ffbbb`, 2026-11-02: el
+transporte de PV se arma con uⁿ y hⁿ en cada paso; arregla la inestabilidad de θ_bc = ½, punto 5 y punto 1 de la
+lista) y la de la viscosidad horizontal en las caras abiertas (`ca36b59`, 2026-11-03: la cara de entrada `'clamped'`
+ya no es una pared en la tensión de Smagorinsky ni en la laplaciana de A_h). Sólo se repitieron las corridas de la
+sección del θ_bc (abajo, punto 5) y la principal de la BBL (sección de la BBL). **Las demás tablas (GLS,
+Smagorinsky, Jackson, controles de la BBL, z\* y σ) son de antes de `e1ffbbb`** y quedan como registro; repetirlas es
+trabajo pendiente antes de cualquier lectura nueva.
+
 ## Qué es
 
 El primer caso 3-D con rotación, talud y una entrada de agua densa. Responde dos preguntas:
@@ -145,6 +154,14 @@ Las filas de pyOCEAN a 5 km son anteriores a la corrección de la fricción; por
    - **Pendientes de capas delgadas:** las caras delgadas de la híbrida van más lentas que las gruesas (3.10 / 3.21 y 2.75 / 3.00 m/s), así que 4b no aparece en DOME. La lámina de 4d tampoco aparece.
    - **Con Δt = 1200 s (el de MOM6) a 10 km, las tres coordenadas se detienen** en el día 36 por truncaciones CFL. Un modo de la parte alta de la cuenca crece desde el día ~28: η con desviación de 0.19 m contra 0.07 y \|u\| de superficie rms de 1 m/s. Se diagnosticó con dos corridas en lugar de semillas, porque la falla es determinista: con 600 s, o con θ_bc = 1 a 1200 s, llega estable a 50 y 40 días.
    - **Causa:** el transporte baroclínico centrado (θ_bc = ½, neutro) deja crecer el modo con fΔt = 0.12. A 5 km con Δt = 600 s (mismo Courant, fΔt = 0.06) no aparece. **(a), punto de decisión 3:** cambiar θ_bc reabre el amortiguamiento de la onda interna de Ilicak, así que va como plan aparte (punto 1 de la lista).
+   - **Corregido el 2026-11-02 (`e1ffbbb`, clase a; `docs/design/theta_bc_inertial/root_cause.md`):** la causa no era
+     θ_bc sino el transporte del flujo de PV, que se tomaba del paso anterior (Q de la continuidad) y no de uⁿ, hⁿ;
+     MOM6 sólo usa el transporte retrasado en su predictor. Después de la corrección, a 10 km y 50 días (días 30–50),
+     **Δt = 1200 s llega sin truncaciones en las tres coordenadas**: z\* b_f −10.26e-3 (0 eventos del limitador),
+     σ −13.23 (0), híbrida −15.84 (14 eventos del limitador, 0 con 600 s); a 600 s z\* −10.25 y híbrida −15.44. La
+     onda interna de Ilicak queda igual (0.736 / 0.579 / 0.261). Corridas en `RUNS/10km/pyocean_*_thetafix_dt{600,1200}`.
+     Contra las líneas base del 2026-10-15 a 600 s, z\* cambia 1.8 % en b_f y la híbrida hasta 20 km en la trayectoria;
+     ese cambio junta la corrección con otros cambios del código desde entonces y no se separó.
    - **La variante `kv_low` (ν_v = 1e-4) se descartó para todos los modelos:** MOM6 se detiene en el día 3 (truncaciones) y MITgcm en el día ~4 (cg2d). Sin la viscosidad Smagorinsky biarmónica ni la mezcla de Jackson del DOME propio de MOM6, el caso no está bien planteado (c/b).
 
 6. **Entrada (criterio 6): ✅ en volumen; por clase ✅ en σ y en la híbrida a 5 km, (a) en la híbrida a 10 km.**
@@ -170,7 +187,7 @@ Las filas de pyOCEAN a 5 km son anteriores a la corrección de la fricción; por
 
 ## Qué debe mejorar pyOCEAN
 
-1. **(a) Δt máximo a 10 km: modo inestable con θ_bc = ½ y fΔt = 0.12** (punto 5). MOM6 corre DOME con 1200 s; pyOCEAN necesita 600. Candidatos:
+1. ~~**(a) Δt máximo a 10 km: modo inestable con θ_bc = ½ y fΔt = 0.12** (punto 5).~~ **Hecho el 2026-11-02 (`e1ffbbb`): 1200 s estable en las tres coordenadas (punto 5).** MOM6 corre DOME con 1200 s; pyOCEAN necesita 600. Candidatos:
    - descentrar un poco θ_bc (0.55–0.6, como el BE = 0.6 de MOM6);
    - analizar la estabilidad del acoplamiento AB3 + trapecio con Coriolis.
 
@@ -454,6 +471,22 @@ Salidas en `RUNS/10km/pyocean_<coord>_kv_low_smag0.15_jackson_ubg0.05[_bbl]/`; b
 - **[Hipótesis, no probada]** En una pluma bien mezclada cerca del fondo el N² local de la interfaz de fondo es pequeño; el bulto lo sube con el salto de la interfaz de arriba, la ley de la pared gasta su energía más abajo y queda menos Kd para la parte alta de la pluma.
 - **Clasificación:** el cambio es la corrección de un error nuestro (a), no un ajuste: pyOCEAN hace ahora lo que hace MOM6. La distancia restante a −11.07 sigue repartida como en la lectura de abajo (esquema y energía c, resolución de la interfaz c, entrada de la híbrida a, geometría c), ahora con más peso.
 - Robustez sin cambio: 0 truncamientos y 0 eventos del limitador en las tres; costo 19.6 / 16.7 / 17.6 s por día simulado (antes 19.1 / 17.0 / 18.1).
+
+**Números después de las correcciones de θ_bc (`e1ffbbb`) y de la cara abierta (`ca36b59`), 2026-11-03.** La principal
+(híbrida + Jackson + U_bg 0.05 + BBL) se repitió dos veces el 2026-11-03 (`smag-openface-report.md` del registro de la
+cadena regional; salidas `RUNS/10km/pyocean_hybrid_kv_low_smag0.15_jackson_ubg0.05_bbl_head2f80d5a/` y `…_bbl_openface/`):
+
+| corrida | b_f [1e-3 m s⁻²] | E esquina (pluma / todo) | T(x′ −200 / −300) [Sv] | α_E ec. 12 | clase x′ −300 / −100 | Y′(−200 / −300 / −500 / −800) [km] | trunc / lim | s/día |
+|---|---|---|---|---|---|---|---|---|
+| tabla de arriba (`9a53be2`, antes de `e1ffbbb`) | −12.47 | 2.34e-4 / 4.29e-4 | 17.4 / 19.2 | 7.99e-4 | −15…−14 / −17…−16 | −58 / −77 / −99 / −133 | 0 / 0 | 19.6 |
+| `2f80d5a` (con la corrección de θ_bc) | −12.94 | 3.49e-4 / 8.59e-4 | 17.1 / 18.4 | 4.29e-4 | −15…−14 / −17…−16 | −65 / −89 / −131 / −153 | 0 / 0 | 19.2 |
+| **`ca36b59` (+ cara abierta; vigente)** | **−12.79** | 3.70e-4 / 9.06e-4 | 17.3 / **19.2** | **4.15e-4** | −15…−14 / −16…−15 | −68 / −91 / −144 / −162 | 0 / 0 | 18.4 |
+
+- La corrección de θ_bc alejó la principal de Legg (−12.47 → −12.94; α_E 7.99e-4 → 4.29e-4; trayectoria 7–20 km más
+  abajo del talud); la de la cara abierta la acerca un poco (−12.79, 8 % de la distancia a −11.07; T(x′ −300) +0.8 Sv
+  hacia 20.6). Las dos son correcciones de errores nuestros (a), no ajustes.
+- **Los controles (sin BBL) y las corridas z\* y σ no se repitieron**: el efecto de la BBL contra su control (la
+  lectura de abajo) es de antes de `e1ffbbb` y no se puede releer con estos números.
 
 **Contra la isopicna de Legg a 10 km (referencia principal) y la no hidrostática (secundaria).** "dig." = leído de las figuras de Legg et al. (2006) (`legg2006_nonhydro.json`). La isopicna de 10 km de Legg tiene la misma física que la principal: ν_v = 1e-4, mezcla por Ri de Hallberg (2000), Smagorinsky y mezcla BBL por arrastre (Ap. A, γ = 0.2, U_bg = 5 cm/s; Legg Ap. A y p. 77; `bbl_refs/mom6_bbl_mixing.md` §3). E de la esquina es la ec. 14 y α_E la ec. 12 (sección de Jackson); diferencias de E menores que ×2 no son significativas.
 

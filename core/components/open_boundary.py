@@ -34,7 +34,7 @@ from core.vertical.ale import baroclinic_split, exterior_on_layers, open_face_tr
 # configuration shared with SigmaBaroclinic (exposed there as properties of the same name)
 CONFIG = ("open", "obc_state", "obc_mode", "obc_tau_in", "obc_tau_out", "orlanski_cmax", "sponge_tracer",
           "theta_bc", "T_ext", "h_ext", "tr_ext", "S_ext", "_bc_mask", "_ext_cols", "_bc_u", "_bc_v", "_sp_c", "_sp_u",
-          "_sp_v")
+          "_sp_v", "obc_tangential", "_tan_q")
 
 
 def convert_exterior(provider, eos_ts_kind: str, ts_kind: str):
@@ -84,6 +84,13 @@ class OpenBoundary:
         self.dt, self.ds, self.fs, self.H = 0.0, None, None, None
         self.n_tracers, self.ale, self.remap_code = 0, False, rm.PPM_H4
         self.salinity = False
+        self.obc_tangential, self._tan_q = "none", None        # MOM6 ORLANSKI_TAN + NUDGED_TAN (corners, 'mom6')
+
+    @property
+    def tangential(self) -> bool:
+        """True when the tangential velocity of the 'radiating' edges is radiated and nudged (``obc_tangential``
+        'mom6') and some corner qualifies."""
+        return self.obc_tangential == "mom6" and self._tan_q is not None and bool(self._tan_q.any())
 
     def bind(self, *, dt: float, ds: np.ndarray, fs, H: np.ndarray, n_tracers: int, ale: bool, remap_code,
              salinity: bool = False) -> None:
@@ -111,7 +118,7 @@ class OpenBoundary:
 
     def radiate(self, u_old: np.ndarray, u_new: np.ndarray, axis: int, edge: int,
                  w: np.ndarray | None = None, ext: np.ndarray | None = None, mode: str = "radiating",
-                 fluxes=None) -> None:
+                 fluxes=None) -> np.ndarray:
         """
         Orlanski (1976) radiation of the baroclinic normal velocity at one open edge, implicit
         upstream form as ROMS u3dbc (Marchesiello et al. 2001, normal part only):
@@ -125,6 +132,7 @@ class OpenBoundary:
         ``ext``: exterior u′ on the face layers (spec 2026-10-12-baroclinic-obc-internal-wave §2): 'radiating'
         nudges the radiated value toward it, u′_B ← (1 − α) u′_B + α u′ₑₓₜ with α = Δt/τ_in when flowing in
         (r = 0) and Δt/τ_out when out (CROCO u3dbc.F:119-127, 144-152); 'clamped' sets u′_B = u′ₑₓₜ.
+        Returns r (N, n) along the edge (the phase speed of the tangential corners, ``obc_tangential``).
         """
         _, po = self.baroclinic_part(u_old, w)
         bar, pn = self.baroclinic_part(u_new, w)
@@ -149,23 +157,44 @@ class OpenBoundary:
         sl = [slice(None)] * u_new.ndim
         sl[axis] = edge
         u_new[tuple(sl)] = np.where(open_, take(bar[None], edge) + pb, take(u_new, edge))
+        return r
 
-    def flather_args(self, ext: dict | None) -> dict:
-        """Flather radiation to a resting exterior (η = 0, ū = 0) for the free-surface step; {} if closed."""
+    def flather_args(self, ext: dict | None, tide: tuple | None = None, ib: tuple | None = None) -> dict:
+        """
+        Flather exterior for the free-surface step: the provider's (η, ū)ₑₓₜ, or a resting exterior (η = 0, ū = 0);
+        {} if closed.  ``tide`` (η_u, η_v, ū_u, v̄_v) from ``BoundaryTides.flather_arrays`` (regional chain Task 5;
+        zero away from the 'radiating' edges) is added to η and ū only — u′ₑₓₜ is not touched.  ``ib`` (η_u, η_v):
+        the inverse barometer of the 'radiating' edges (regional chain Task 6, ``AtmosphericPressure.flather_eta``),
+        added to η after the tide.  None: unchanged.
+        """
         if not self.open:
             return {}
         if ext is not None:
-            return ext["flather"]
-        zu, zv = np.zeros(self.fs.H_u.shape), np.zeros(self.fs.H_v.shape)
-        return dict(flather_eta=(zu, zv), flather_ubar=zu, flather_vbar=zv)
+            base = ext["flather"]
+        else:
+            zu, zv = np.zeros(self.fs.H_u.shape), np.zeros(self.fs.H_v.shape)
+            base = dict(flather_eta=(zu, zv), flather_ubar=zu, flather_vbar=zv)
+        if tide is None and ib is None:
+            return base
+        out = dict(base)
+        if tide is not None:
+            eu, ev, uu, vv = tide
+            out.update(flather_eta=(base["flather_eta"][0] + eu, base["flather_eta"][1] + ev),
+                       flather_ubar=base["flather_ubar"] + uu, flather_vbar=base["flather_vbar"] + vv)
+        if ib is not None:
+            out.update(flather_eta=(out["flather_eta"][0] + ib[0], out["flather_eta"][1] + ib[1]))
+        return out
 
     def relax_velocity(self, u_old: np.ndarray, v_old: np.ndarray, u_new: np.ndarray, v_new: np.ndarray,
                        ext: dict | None, fluxes, wu: np.ndarray | None = None,
-                       wv: np.ndarray | None = None) -> None:
+                       wv: np.ndarray | None = None) -> np.ndarray | None:
         """
         In place: flow-relaxation sponge on the baroclinic velocity (implicit; the depth mean, and so the
         free-surface fluxes, are untouched — barotropic waves leave through Flather), then Orlanski
         radiation at the open edges.  Weights wu, wv: Δσ (None) or the ALE face fractions (spec §3.2-3.3).
+        Returns, with ``obc_tangential='mom6'``, the Orlanski ratio at the tangential corners (N, ny+1, nx+1) of the
+        'radiating' edges (``obc.corner_phase_speed`` of the normal r, MOM_open_boundary.F90:3031-3036; 0 at the
+        other corners), the next step's ``SigmaState.obc_rtan``; else None.
         """
         ext_u, ext_v = (None, None) if ext is None else (ext["up_u"], ext["up_v"])
         if self._sp_u is not None:
@@ -176,12 +205,23 @@ class OpenBoundary:
                 else:                                                     # toward the exterior u′
                     r = self.dt * rate[None]
                     vel[...] = bar[None] + (prime + r * pe) / (1.0 + r)
+        rq = None
+        if self.tangential:
+            N, ny, nx1 = u_new.shape
+            rq = np.zeros((N, ny + 1, nx1))
         for name, vel, old, axis, edge, w, pe in (("west", u_new, u_old, 2, 0, wu, ext_u),
                                                   ("east", u_new, u_old, 2, -1, wu, ext_u),
                                                   ("south", v_new, v_old, 1, 0, wv, ext_v),
                                                   ("north", v_new, v_old, 1, -1, wv, ext_v)):
             if name in self.open:
-                self.radiate(old, vel, axis, edge, w, ext=pe, mode=self.obc_mode[name], fluxes=fluxes)
+                r = self.radiate(old, vel, axis, edge, w, ext=pe, mode=self.obc_mode[name], fluxes=fluxes)
+                if rq is not None and self.obc_mode[name] == "radiating":
+                    line = {"west": np.s_[:, :, 0], "east": np.s_[:, :, -1], "south": np.s_[:, 0, :],
+                            "north": np.s_[:, -1, :]}[name]
+                    rq[line] = obc.corner_phase_speed(r)
+        if rq is not None:
+            rq = np.where(self._tan_q[None], rq, 0.0)
+        return rq
 
     def evaluate(self, t: float, hu: np.ndarray, hv: np.ndarray, wu, wv) -> dict | None:
         """Exterior state at t (spec 2026-10-12-baroclinic-obc-internal-wave §1.4): Flather targets and u′ₑₓₜ on
@@ -194,10 +234,40 @@ class OpenBoundary:
         wu_ = self.ds[:, None, None] * np.ones(hu.shape) if wu is None else wu
         wv_ = self.ds[:, None, None] * np.ones(hv.shape) if wv is None else wv
         code = self.remap_code
-        return dict(t=t, state=state, flather=obc.flather_targets(state, Hu.shape, Hv.shape),
-                         up_u=obc.exterior_velocity(state, "u", Hu, hu, self._bc_u, wu_, code, self.open),
-                         up_v=obc.exterior_velocity(state, "v", Hv, hv, self._bc_v, wv_, code, self.open),
-                         own=obc.owned_by_state(state, self.open, self.H.shape) & self._bc_mask)
+        out = dict(t=t, state=state, flather=obc.flather_targets(state, Hu.shape, Hv.shape),
+                   up_u=obc.exterior_velocity(state, "u", Hu, hu, self._bc_u, wu_, code, self.open),
+                   up_v=obc.exterior_velocity(state, "v", Hv, hv, self._bc_v, wv_, code, self.open),
+                   own=obc.owned_by_state(state, self.open, self.H.shape) & self._bc_mask)
+        if self.tangential:                                         # exterior tangential velocity on the corners
+            hq = obc.corner_layers(hu, hv, self._tan_q)
+            rad = {e: ob for e, ob in state.items() if self.obc_mode.get(e) == "radiating"}
+            missing = sorted(e for e, ob in rad.items() if ob.u_tangential is None)
+            if missing and not getattr(self, "_warned_no_ut", False):
+                # final review M2: the corners are then nudged toward a resting exterior
+                import warnings
+                warnings.warn(f"obc_tangential='mom6': the exterior of {missing} has no u_tangential, so the corner "
+                              "tangential velocity is nudged toward 0 there (build the provider with "
+                              "prepare_ocean(..., q_points=True))", UserWarning, stacklevel=2)
+                self._warned_no_ut = True
+            out["ut_q"] = obc.exterior_tangential(rad, hq, self._tan_q, code)
+        return out
+
+    def tangential_velocity(self, u: np.ndarray, v: np.ndarray, rtan: np.ndarray | None,
+                            ext: dict | None) -> tuple[np.ndarray, np.ndarray]:
+        """
+        (corner flags (ny+1, nx+1), tangential velocity at those corners (N, ny+1, nx+1) [m s⁻¹]) of the
+        'radiating' edges for the momentum terms of this step (MOM6 ORLANSKI_TAN + NUDGED_TAN,
+        ``obc.tangential_velocity``): radiated from the current layer velocities u, v with the corner Orlanski
+        ratio ``rtan`` of the last step (``SigmaState.obc_rtan``; None = 0, a start), nudged once toward the
+        exterior ``ext['ut_q']`` (0 without a provider) with τ_in = ``obc_tau_in`` when r ≤ 0 and τ_out =
+        ``obc_tau_out`` otherwise (MOM_open_boundary.F90:3045-3062).
+        """
+        N = u.shape[0]
+        shape = (N,) + self._tan_q.shape
+        r = np.zeros(shape) if rtan is None else rtan
+        ut = ext["ut_q"] if ext is not None and "ut_q" in ext else np.zeros(shape)
+        return self._tan_q, obc.tangential_velocity(u, v, r, ut, self._tan_q, self.dt, self.obc_tau_in,
+                                                    self.obc_tau_out)
 
     def edge_face_depths(self) -> tuple[np.ndarray, np.ndarray]:
         """Rest depth at u- and v-faces [m], 0 on land; the open edge faces (NaN in H_u/H_v, outside the

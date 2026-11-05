@@ -48,9 +48,16 @@ _SPECS = [
             "wet cell-layers whose T is below the freezing point at the layer-centre pressure, last step "
             "(counted only; nonlinear EOS with salinity, 0 otherwise)"),
     VarSpec("n_visc_limited", (), "scalar", "1", None, "diagnostic",
-            "h and q points whose Smagorinsky viscosity the AB3 stability bound reduced, summed over steps"),
+            "h and q points whose Smagorinsky (Laplacian or biharmonic) viscosity the AB3 stability bound reduced, "
+            "summed over steps"),
     VarSpec("nu_smag", ("k", "y", "x"), "t", "m2 s-1", None, "diagnostic",
             "Smagorinsky horizontal viscosity at h points of the last step (output on request)"),
+    VarSpec("ah_bi", ("k", "y", "x"), "t", "m4 s-1", None, "diagnostic",
+            "biharmonic Smagorinsky viscosity A_h at h points of the last step (smagorinsky_bi/ah_vel_scale/ah_bi; "
+            "Momentum.last_ah_t)"),
+    VarSpec("obc_rtan", ("k", "yq", "xq"), "q", "1", None, "history",
+            "Orlanski ratio (grid points per step) at the open-edge corners of the last step, the phase speed of the "
+            "radiated tangential velocity (obc_tangential='mom6'; MOM_open_boundary.F90:3031-3036)"),
     VarSpec("closure", (), "scalar", "", None, "component_state", "state of the turbulence closure"),
     VarSpec("closure.tke", ("kw", "y", "x"), "w", "m2 s-2", None, "component_state",
             "turbulent kinetic energy (GLS k-ε)"),
@@ -90,6 +97,14 @@ _SPECS = [
             "bulk wind stress at the T points, y (averaged to the v faces for the model)"),
     VarSpec("sst_bulk", ("y", "x"), "t", "degC", "sea_surface_temperature", "diagnostic",
             "SST seen by the bulk formula: thickness-weighted mean over the top h_sfc m"),
+    VarSpec("p_atm", ("y", "x"), "t", "Pa", "air_pressure_at_mean_sea_level", "diagnostic",
+            "sea-level pressure p_a of the last step (msl of the bulk atmosphere at tⁿ + Δt/2), applied as "
+            "−∇p_a/ρ₀ and as the inverse barometer at 'radiating' edges (atm_pressure, regional chain Task 6; an "
+            "attribute of the model, not a SigmaState field)"),
+    VarSpec("runoff", ("y", "x"), "t", "m s-1", None, "diagnostic",
+            "river runoff Q/A_t of the last step at tⁿ + Δt/2 [volume flux, positive into the ocean], added to the "
+            "real freshwater flux fw (runoff, regional chain Task 8; an attribute of the model, not a SigmaState "
+            "field; MOM6 lrunoff/ρ₀ in kg m-2 s-1 / 1000)"),
     VarSpec("closure.akt", ("kw", "y", "x"), "w", "m2 s-1", None, "component_state",
             "eddy tracer diffusivity (stratified GLS k-ε, gls_stratified; N2a task 8c)"),
 ]

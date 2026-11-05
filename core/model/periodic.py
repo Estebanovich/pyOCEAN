@@ -122,7 +122,10 @@ def periodic_grid(hg: xr.Dataset, per: Periodic) -> xr.Dataset:
     A copy of the horizontal grid whose duplicated edge faces describe the wrap face: with ``"x"`` the u-faces 0
     and nx get Δx_u = ½(Δx_t[nx−1] + Δx_t[0]) (the distance between the two cell centres across the wrap; the
     builders give the walls Δx_t[0] and Δx_t[nx−1]), Δy_u and f_q of face/corner column nx equal to those of
-    column 0, area_u = Δx_u Δy_u; likewise in y.  Unchanged grid when nothing wraps.
+    column 0, area_u = Δx_u Δy_u; likewise in y.  A grid with corner metrics (``dx_q``, ``dy_q``, ``area_q`` of a
+    supergrid) gets the wrap corner column Δx_q = ½(Δx_v[nx−1] + Δx_v[0]), Δy_q of column 0 and A_q = Δx_q Δy_q
+    (MOM6's own fallback for areaBu, MOM_dyn_horgrid.F90:509; the true sub-cell sum across the wrap is not in a
+    regional supergrid, class c).  Unchanged grid when nothing wraps.
     """
     if not per:
         return hg
@@ -131,6 +134,7 @@ def periodic_grid(hg: xr.Dataset, per: Periodic) -> xr.Dataset:
     def put(name, value):
         g[name] = (g[name].dims, value)
 
+    corners = all(n in g for n in ("dx_q", "dy_q", "area_q"))        # supergrid corner metrics (MOM6 dxBu, …)
     if per.x:
         dxu, dyu, fq = (g[n].values.copy() for n in ("dx_u", "dy_u", "f_q"))
         dxt = g["dx_t"].values
@@ -138,6 +142,13 @@ def periodic_grid(hg: xr.Dataset, per: Periodic) -> xr.Dataset:
         dyu[:, -1] = dyu[:, 0]
         fq[:, -1] = fq[:, 0]
         put("dx_u", dxu), put("dy_u", dyu), put("area_u", dxu * dyu), put("f_q", fq)
+        if corners:                   # wrap corner column: Δx_q across the wrap, Δy_q of column 0, A_q = Δx_q Δy_q
+            dxq, dyq, aq = (g[n].values.copy() for n in ("dx_q", "dy_q", "area_q"))
+            dxv = g["dx_v"].values
+            dxq[:, 0] = dxq[:, -1] = 0.5 * (dxv[:, -1] + dxv[:, 0])
+            dyq[:, -1] = dyq[:, 0]
+            aq[:, 0] = aq[:, -1] = dxq[:, 0] * dyq[:, 0]
+            put("dx_q", dxq), put("dy_q", dyq), put("area_q", aq)
     if per.y:
         dxv, dyv, fq = (g[n].values.copy() for n in ("dx_v", "dy_v", "f_q"))
         dyt = g["dy_t"].values
@@ -145,4 +156,11 @@ def periodic_grid(hg: xr.Dataset, per: Periodic) -> xr.Dataset:
         dxv[-1] = dxv[0]
         fq[-1] = fq[0]
         put("dx_v", dxv), put("dy_v", dyv), put("area_v", dxv * dyv), put("f_q", fq)
+        if corners:
+            dxq, dyq, aq = (g[n].values.copy() for n in ("dx_q", "dy_q", "area_q"))
+            dyu = g["dy_u"].values
+            dyq[0] = dyq[-1] = 0.5 * (dyu[-1] + dyu[0])
+            dxq[-1] = dxq[0]
+            aq[0] = aq[-1] = dxq[0] * dyq[0]
+            put("dx_q", dxq), put("dy_q", dyq), put("area_q", aq)
     return g

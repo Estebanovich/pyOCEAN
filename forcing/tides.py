@@ -18,9 +18,20 @@ with their intended phase reference.
   approximations in the lunar node N, with the mean longitudes of
   Cartwright (formulae for 1990–2010, used by OTPS at all dates).
 
-Only the eight constituents HYCOM can force (``tidcon``) are tabulated, in
-HYCOM order.  Verified against pyTMD 2.1.7 (OTIS mode) to round-off in
-``tests/test_tides.py``.
+The eight constituents HYCOM can force (``tidcon``) are tabulated in HYCOM
+order (``CONSTITUENTS``), verified against pyTMD 2.1.7 (OTIS mode) to
+round-off in ``tests/test_tides.py``.  The long-period MF and MM (regional
+chain Task 5; NWA12 forces ten constituents, ``OBC_TIDE_CONSTITUENTS =
+M2,S2,N2,K2,K1,O1,P1,Q1,MM,MF``, docs/design/regional_refs/mom6_obc_tides.md
+§1) are added after them (``ALL_CONSTITUENTS``): ω and the astronomical
+argument from OTPS ``constit.h`` (equal to the Doodson arguments 2s and
+s − p of ``mean_longitudes`` at 1992-01-01 to 1e-9 rad, checked in
+``tests/test_tides.py``), f and u from the long-period branch of the OTPS
+``nodal`` routine (Schureman 1958): the first-order terms equal MOM6 nodal_fu
+(MOM_tidal_forcing.F90:221-226); the 2N, 3N terms of MF u are Schureman's
+[verificar against pyTMD ``arguments(..., corrections='OTIS')``: pyTMD is not
+installed here; reference arrays in ``tests/data/tide_mm_mf_reference.npz`` come
+from ``validation/tides/make_mm_mf_reference.py``].
 
 References
 ----------
@@ -41,16 +52,26 @@ import numpy as np
 #: Constituents in HYCOM ``tidcon`` order (digits Q1 K2 P1 N2 O1 K1 S2 M2, read right to left).
 CONSTITUENTS: tuple[str, ...] = ("m2", "s2", "k1", "o1", "n2", "p1", "k2", "q1")
 
-#: Angular frequencies [rad s⁻¹] (OTPS constit.h).
+#: Long-period constituents added for regional runs (NWA12 forces MM and MF at its open boundaries).
+LONG_PERIOD: tuple[str, ...] = ("mf", "mm")
+
+#: Every tabulated constituent: the HYCOM eight, then MF and MM.
+ALL_CONSTITUENTS: tuple[str, ...] = CONSTITUENTS + LONG_PERIOD
+
+#: Angular frequencies [rad s⁻¹] (OTPS constit.h).  MF = 2 ds/dt (13.661 d), MM = d(s − p)/dt (27.555 d);
+#: MOM6 tidal_frequency (MOM_tidal_forcing.F90:154-182) has the same values.
 OMEGA: dict[str, float] = {
     "m2": 1.405189e-04, "s2": 1.454441e-04, "k1": 7.292117e-05, "o1": 6.759774e-05,
     "n2": 1.378797e-04, "p1": 7.252295e-05, "k2": 1.458423e-04, "q1": 6.495854e-05,
+    "mf": 0.053234e-04, "mm": 0.026392e-04,
 }
 
-#: Astronomical argument at 1992-01-01 00:00 UT [rad] (OTPS constit.h).
+#: Astronomical argument at 1992-01-01 00:00 UT [rad] (OTPS constit.h); MF = 2s, MM = s − p (Doodson; MOM6
+#: eq_phase, MOM_tidal_forcing.F90:120-150, after Kowalik & Luick 2019 Table I.4).
 PHASE_1992: dict[str, float] = {
     "m2": 1.731557546, "s2": 0.000000000, "k1": 0.173003674, "o1": 1.558553872,
     "n2": 6.050721243, "p1": 6.110181633, "k2": 3.487600001, "q1": 5.877717569,
+    "mf": 1.756042456, "mm": 1.964021610,
 }
 
 MJD_1992: float = 48622.0           # Modified Julian Day of 1992-01-01 00:00
@@ -93,6 +114,13 @@ def nodal_corrections(mjd: np.ndarray, constituents: list[str]) -> tuple[np.ndar
         O1     : f = |1 + 0.189 e^{iN} − 0.0058 e^{2iN}|,     u = 10.8° sin N − 1.3° sin 2N + 0.2° sin 3N
         Q1     : f = |1 + 0.188 e^{iN}|,                       u = arctan[0.189 sin N / (1 + 0.189 cos N)]
         S2, P1 : f = 1, u = 0
+        MF     : f = 1.043 + 0.414 cos N,  u = −23.7° sin N + 2.7° sin 2N − 0.4° sin 3N
+        MM     : f = 1 − 0.130 cos N,      u = 0
+
+    MF and MM are the long-period branch of the OTPS ``nodal`` routine (Schureman 1958; regional-chain Task 5).
+    MOM6 uses only the first-order terms (MF f = 1.043 + 0.414 cos N, u = −23.7° sin N; MM the same f, u = 0;
+    MOM_tidal_forcing.F90:187-231) and fixes them at TIDE_NODAL_REF_DATE; pyOCEAN evaluates them at each time
+    (class c, docs/design/regional_refs/mom6_obc_tides.md §3).
 
     Parameters
     ----------
@@ -129,14 +157,23 @@ def nodal_corrections(mjd: np.ndarray, constituents: list[str]) -> tuple[np.ndar
             continue
         elif c in ("s2", "p1"):
             t1, t2 = np.zeros_like(N), np.ones_like(N)
+        elif c == "mf":
+            f[:, k] = 1.043 + 0.414 * cn
+            u[:, k] = np.deg2rad(-23.7 * sn + 2.7 * s2n - 0.4 * s3n)
+            continue
+        elif c == "mm":
+            f[:, k] = 1.0 - 0.130 * cn
+            u[:, k] = 0.0
+            continue
         else:
-            raise KeyError(f"constituent {c!r} not tabulated; available: {CONSTITUENTS}")
+            raise KeyError(f"constituent {c!r} not tabulated; available: {ALL_CONSTITUENTS}")
         f[:, k] = np.hypot(t1, t2)
         u[:, k] = np.arctan2(t1, t2)
     return f, u
 
 
-def predict(t: np.ndarray, hc: np.ndarray, constituents: list[str]) -> np.ndarray:
+def predict(t: np.ndarray, hc: np.ndarray, constituents: list[str],
+            nodal_mjd: float | None = None) -> np.ndarray:
     """
     Tidal time series from complex harmonic constants (OTPS convention).
 
@@ -149,22 +186,37 @@ def predict(t: np.ndarray, hc: np.ndarray, constituents: list[str]) -> np.ndarra
         leading dimensions are spatial (points, or (ny, nx)).
     constituents : list of str
         Names matching the last axis of ``hc``.
+    nodal_mjd : float, optional
+        Evaluate f and u once at this Modified Julian Day instead of at each time (MOM6
+        TIDE_NODAL_REF_DATE, MOM_open_boundary.F90:1599-1603, 1637-1642).  None (default): OTPS, at each t.
 
     Returns
     -------
     np.ndarray, shape (nt, ...)
         Predicted field, in the units of ``hc``.
     """
+    t = np.atleast_1d(np.asarray(t, dtype="datetime64[ns]"))
+    return predict_mjd(to_mjd(t), hc, constituents, nodal_mjd=nodal_mjd)
+
+
+def predict_mjd(mjd: np.ndarray, hc: np.ndarray, constituents: list[str],
+                nodal_mjd: float | None = None) -> np.ndarray:
+    """
+    ``predict`` at Modified Julian Days ``mjd`` (shape (nt,), float) instead of datetime64 — for model clocks
+    in seconds, mjd = MJD(ref_date) + t/86400, without rounding t to an integer number of ns.  Same arithmetic.
+    """
     hc = np.asarray(hc)
     if hc.shape[-1] != len(constituents):
         raise ValueError(f"hc has {hc.shape[-1]} values on its last axis but {len(constituents)} constituents")
     unknown = [c for c in constituents if c not in OMEGA]
     if unknown:
-        raise KeyError(f"constituents {unknown} not tabulated; available: {CONSTITUENTS}")
+        raise KeyError(f"constituents {unknown} not tabulated; available: {ALL_CONSTITUENTS}")
 
-    t = np.atleast_1d(np.asarray(t, dtype="datetime64[ns]"))
-    mjd = to_mjd(t)
-    f, u = nodal_corrections(mjd, constituents)
+    mjd = np.atleast_1d(np.asarray(mjd, float))
+    if nodal_mjd is None:
+        f, u = nodal_corrections(mjd, constituents)
+    else:
+        f, u = nodal_corrections(np.array([float(nodal_mjd)]), constituents)
     seconds = (mjd - MJD_1992) * 86400.0
     omega = np.array([OMEGA[c] for c in constituents])
     phase = np.array([PHASE_1992[c] for c in constituents])
@@ -173,7 +225,7 @@ def predict(t: np.ndarray, hc: np.ndarray, constituents: list[str]) -> np.ndarra
     space = hc.shape[:-1]
     h = hc.reshape(-1, len(constituents))                                     # (npts, nc)
     eta = (f * np.cos(theta)) @ h.real.T - (f * np.sin(theta)) @ h.imag.T     # (nt, npts)
-    return eta.reshape((t.size,) + space)
+    return eta.reshape((mjd.size,) + space)
 
 
 def _interp_complex(field: "xr.DataArray", lat_name: str, lon_name: str,
@@ -339,16 +391,21 @@ def boundary_tides_at(bc: dict, t: np.datetime64, ramp: float = 1.0) -> dict[str
 EQ_AMPLITUDE: dict[str, float] = {
     "m2": 0.2441, "s2": 0.112743, "k1": 0.141565, "o1": 0.100661,
     "n2": 0.046397, "p1": 0.046848, "k2": 0.030684, "q1": 0.019273,
+    "mf": 0.042041, "mm": 0.022191,                       # OTPS constit.h = MOM6 MOM_tidal_forcing.F90:452, 457
 }
 
 #: α_c = 1 + k_c − h_c, Love-number factor of the body tide (Foreman et al. 1993; HYCOM mod_tides.F90).
 LOVE_ALPHA: dict[str, float] = {
     "m2": 1 + 0.302 - 0.609, "s2": 1 + 0.302 - 0.609, "n2": 1 + 0.302 - 0.609, "k2": 1 + 0.302 - 0.609,
     "k1": 1 + 0.256 - 0.520, "o1": 1 + 0.298 - 0.603, "p1": 1 + 0.287 - 0.581, "q1": 1 + 0.298 - 0.603,
+    # long period: 1 + k − h = 1 + 0.299 − 0.606 = 0.693 (OTPS constit.h alpha; MOM6 love_no 0.693,
+    # MOM_tidal_forcing.F90:411-459)
+    "mf": 1 + 0.299 - 0.606, "mm": 1 + 0.299 - 0.606,
 }
 
-#: Tidal species m (2 = semidiurnal, 1 = diurnal).
-SPECIES: dict[str, int] = {"m2": 2, "s2": 2, "n2": 2, "k2": 2, "k1": 1, "o1": 1, "p1": 1, "q1": 1}
+#: Tidal species m (2 = semidiurnal, 1 = diurnal, 0 = long period).
+SPECIES: dict[str, int] = {"m2": 2, "s2": 2, "n2": 2, "k2": 2, "k1": 1, "o1": 1, "p1": 1, "q1": 1,
+                           "mf": 0, "mm": 0}
 
 _G_TIDE: float = 9.81
 
@@ -360,9 +417,13 @@ def equilibrium_constants(lon: np.ndarray, lat: np.ndarray, constituents: list[s
 
         semidiurnal:  h_c = α_c A_c cos²φ e^{2iλ}
         diurnal:      h_c = α_c A_c sin 2φ e^{iλ}
+        long period:  h_c = α_c A_c (½ − 3/2 sin²φ)        (MF, MM; no longitude dependence)
 
     so that predict gives η_eq = α A f G(φ) cos(θ_c + mλ), as in HYCOM
-    (mod_tides.F90: atide = A α cos²φ cos 2λ, btide = A α cos²φ sin 2λ).
+    (mod_tides.F90: atide = A α cos²φ cos 2λ, btide = A α cos²φ sin 2λ).  The long-period structure
+    ½ − 3/2 sin²φ with the argument V₀ = 2s (MF), s − p (MM) is MOM6's (tidal_forcing_init, struct = 3,
+    MOM_tidal_forcing.F90:288-296, 451-458); sign checked in the Task 5 review (P₂(sin δ) gives a positive
+    coefficient on cos 2s for MF and on cos(s − p) for MM).
 
     Parameters
     ----------
@@ -382,9 +443,14 @@ def equilibrium_constants(lon: np.ndarray, lat: np.ndarray, constituents: list[s
     out = []
     for c in constituents:
         if c not in SPECIES:
-            raise KeyError(f"no equilibrium tide for {c!r}; available: {CONSTITUENTS}")
+            raise KeyError(f"no equilibrium tide for {c!r}; available: {ALL_CONSTITUENTS}")
         m = SPECIES[c]
-        shape = np.cos(phi) ** 2 if m == 2 else np.sin(2.0 * phi)
+        if m == 2:
+            shape = np.cos(phi) ** 2
+        elif m == 1:
+            shape = np.sin(2.0 * phi)
+        else:
+            shape = 0.5 - 1.5 * np.sin(phi) ** 2                          # long period: no λ
         alpha = LOVE_ALPHA[c] if love else 1.0
         out.append(alpha * EQ_AMPLITUDE[c] * shape * np.exp(1j * m * lam))
     return np.concatenate(out, axis=-1)

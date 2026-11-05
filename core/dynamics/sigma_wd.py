@@ -177,6 +177,8 @@ class SigmaWetDry:
     gls_kt_min : floor (background) of the GLS tracer diffusivity κ_t [m² s⁻¹] (CROCO nuws = 1e-6)
     periodic : periodic axes ('x', 'y'), as ``WetDryFreeSurface`` (N3 task 3); the wrap faces get the mean
         depth of their two cells in ``face_depths``.
+    sal_beta, sal_flather : scalar self-attraction and loading of the free surface, as ``WetDryFreeSurface``
+        (regional chain Task 5; 0 / False: bit for bit).
     external_closure : True — the closure component is owned and stepped by the caller (``SigmaBaroclinic``, N3
         task 1, ``core.components.closure``): ``step`` takes ν from its ``nu_u``, ``nu_v`` arguments and the caller
         updates the closure with ``closure_forcing``.  False (default, standalone use): closure 'gls' builds its
@@ -190,14 +192,16 @@ class SigmaWetDry:
                  solver: str = "direct", cd_max: float = 0.1, dsigma: np.ndarray | None = None,
                  clamped_u: np.ndarray | None = None, clamped_v: np.ndarray | None = None,
                  gls_stratified: bool = False, rho0: float = 1000.0, gls_kt_min: float = KT_MIN,
-                 external_closure: bool = False, periodic=None) -> None:
+                 external_closure: bool = False, periodic=None, sal_beta: float = 0.0,
+                 sal_flather: bool = False) -> None:
         if closure not in CLOSURES:
             raise ValueError(f"unknown closure {closure!r}; use one of {CLOSURES}")
         if closure == "kpp" and not external_closure:
             raise ValueError("closure='kpp' needs a stratified model with tracers (SigmaBaroclinic)")
         self.fs = WetDryFreeSurface(h_grid, bathy, dt=dt, theta=theta, g=g, d_min=d_min,
                                     flather_u=flather_u, flather_v=flather_v, solver=solver,
-                                    clamped_u=clamped_u, clamped_v=clamped_v, periodic=periodic)
+                                    clamped_u=clamped_u, clamped_v=clamped_v, periodic=periodic,
+                                    sal_beta=sal_beta, sal_flather=sal_flather)
         self.per = self.fs.per                                         # periodic axes (N3 task 3)
         self.dt, self.n_layers, self.z0, self.closure = dt, n_layers, z0, closure
         self.nu_const, self.nu_min, self.d_min, self.cd_max = nu_const, nu_min, d_min, cd_max

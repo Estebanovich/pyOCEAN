@@ -56,6 +56,26 @@ class TracerAdvection:
 
     def __init__(self, *, scheme: str, time: str, dt: float, ob) -> None:
         self.tracer_scheme, self.tracer_time, self.dt, self.ob = scheme, time, dt, ob
+        # domain content budget (regional chain Task 9, ``diagnostics.domain_budget``): with ``record_open_flux``
+        # the FCT step also keeps the net inflow rate of every stack member through the open edges,
+        # ``last_open_flux`` (n_stack,) [content s⁻¹]; off by default (nothing is computed)
+        self.record_open_flux = False
+        self.last_open_flux: np.ndarray | None = None
+
+    def _open_inflow(self, Fx: np.ndarray, Fy: np.ndarray) -> np.ndarray:
+        """
+        Net inflow rate of each stack member through the open edges, Σ_west F − Σ_east F + Σ_south F − Σ_north F
+        [content s⁻¹], from the step's effective face fluxes Fx (n, N, ny, nx+1), Fy (n, N, ny+1, nx).  The flux
+        divergence of the step telescopes in the interior, so this is exactly the advection's change of
+        Σ V c (closed faces carry Q = 0).
+        """
+        opn = self.ob.open
+        out = np.zeros(Fx.shape[0])
+        for edge, F, sl, sgn in (("west", Fx, np.s_[..., 0], 1.0), ("east", Fx, np.s_[..., -1], -1.0),
+                                 ("south", Fy, np.s_[..., 0, :], 1.0), ("north", Fy, np.s_[..., -1, :], -1.0)):
+            if edge in opn:
+                out += sgn * F[sl].reshape(F.shape[0], -1).sum(axis=1)
+        return out
 
     def _periodic(self, method, C, V0, V1, Qx, Qy, Fz, ok, inflow, flux_face_i, **kw):
         """
@@ -226,6 +246,8 @@ class TracerAdvection:
         sb._fct_stage(q0, q0, FLx, FLy, 0.0, 1.0, dt, V1, C, qL, cL)
         Cx, Cy = sb._fct_coeff_kernel(C, cL, V1, Ax, Ay, okc, dt)
         out = sb._fct_final(q0, FLx, FLy, Ax, Ay, Cx, Cy, dt, V1, C)
+        if self.record_open_flux:                                        # domain budget (Task 9), off by default
+            self.last_open_flux = self._open_inflow(FLx + Cx * Ax, FLy + Cy * Ay)
         if flux_face_i is None:
             return out
         i = flux_face_i
@@ -274,6 +296,8 @@ class TracerAdvection:
                                    np.ascontiguousarray(V1, dtype=float), np.ascontiguousarray(Ax),
                                    np.ascontiguousarray(Ay), okc, float(dt))
         out = safe(q0 - dt * div(FLx + Cx * Ax, FLy + Cy * Ay), V1)
+        if self.record_open_flux:                                        # domain budget (Task 9), off by default
+            self.last_open_flux = self._open_inflow(FLx + Cx * Ax, FLy + Cy * Ay)
         return out if i is None else (out, FLx[..., i] + Cx[..., i] * Ax[..., i])
 
     def advect_numpy(self, C: np.ndarray, V0: np.ndarray, V1: np.ndarray, Qx: np.ndarray, Qy: np.ndarray,

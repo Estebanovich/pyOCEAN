@@ -1,0 +1,42 @@
+! NWA12 cut (pyOCEAN regional chain, Task 10): every change from NWA12's MOM_input (copied verbatim next to this
+! file).  run_mom6.sh appends the block of the run mode (pgf0 | tides | full) below this one.  Files are in INPUT/,
+! written by mom6_inputs.py from the case definition (case.py).
+
+! --- grid of the cut: window (i0, i1, j0, j1) = (282, 369, 425, 514) of the NWA12 supergrid (case.CASE.window)
+#override NIGLOBAL = 87
+#override NJGLOBAL = 89
+
+! --- open boundaries: the four edges of the cut are open (case.open_edges); NWA12's three segments keep their
+!     numbers and options, the west edge is segment 4 with the same options (MOM_input lines OBC_SEGMENT_00n)
+#override OBC_NUMBER_OF_SEGMENTS = 4
+OBC_SEGMENT_004 = "I=0,J=N:0,FLATHER,ORLANSKI,NUDGED,ORLANSKI_TAN,NUDGED_TAN"
+OBC_SEGMENT_004_VELOCITY_NUDGING_TIMESCALES = 3.0, 360.0
+! ruling R6: correct face indexing of the segment data (NWA12 runs with the bug, class d,
+! docs/design/regional_refs/mom6_obc_tides.md §2)
+OBC_HOR_INDEXING_BUG = False
+
+! --- no COBALT / BGC (spec §F)
+#override USE_generic_tracer = False
+
+! --- initial state: pyOCEAN's own (h, θ, S_P, u, v) of the run (mom6_inputs.py, ic_<mode>.nc), read layer by layer
+!     without MOM6's initial regrid/remap, so both models start from the same state (criterion 7)
+#override THICKNESS_CONFIG = "thickness_file"
+THICKNESS_IC_VAR = "h"
+#override TEMP_IC_VAR = "temp"
+#override SALT_IC_VAR = "salt"
+#override DEPRESS_INITIAL_SURFACE = False
+#override REMAP_AFTER_INITIALIZATION = False
+#override U_IC_VAR = "u"
+#override V_IC_VAR = "v"
+
+! --- tides: reference dates of the cut (ruling R3: nodal factors at mid-period; phases from the run start)
+#override TIDE_REF_DATE = 2017, 5, 1
+#override TIDE_NODAL_REF_DATE = 2017, 7, 1
+
+! --- shortwave: NWA12's MANIZZA_05 (3 bands, opacity from chlorophyll; MOM_input) with the chlorophyll that COBALT
+!     gave NWA12 replaced by NWA12's own SeaWiFS climatology cut to the window (ruling R23; mode 'full'), or the
+!     Jerlov-I parity control (mode 'full_jerlov'): run_mom6.sh adds the block of the mode
+!     (mom6_inputs.SHORTWAVE)
+
+! --- output and bookkeeping on this machine
+#override DATE_STAMPED_STDOUT = False
