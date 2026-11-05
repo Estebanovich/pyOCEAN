@@ -39,12 +39,16 @@ VV ↔ du_dt_visc, DUDT ↔ dudt (MOM_dynamics_split_RK2.F90:963-975; MOM_diagno
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numba
 import numpy as np
 
 from core.dynamics import vector_invariant as vi
 from core.model import threads
+
+if TYPE_CHECKING:
+    from core.model.driver import StepContext
 
 TERMS3 = ("PF", "CA", "CAf", "gKE", "HV", "EXT", "IMP", "BT", "VV", "BDY", "REM", "DUDT")
 TERMS2 = ("BED", "WIND")
@@ -64,6 +68,11 @@ class MomentumBudget:
     window : (j0, j1, i0, i1) inclusive T-cell indices of the 3-D window record (the u-faces i0 … i1+1, v-faces
              j0 … j1+1); z_part : depth [m] of the partial integrals; steps_per_record : steps per saved record;
     out : directory of the records (None: kept in ``records`` in memory, for tests).
+
+    Attach it at a cold start (empty AB history).  On a model that already has AB history (a restart or
+    ``--start-state`` continuation) the per-term AB3 combination restarts at AB1, AB2 while the model's ``G_ab`` uses
+    its full history, so for the first two steps the difference goes into ``EXT`` (equation (1) still closes);
+    ``ab_warm_start`` records it (final review M1).
     """
 
     def __init__(self, model, window: tuple[int, int, int, int], z_part: float = 1000.0,
@@ -82,6 +91,8 @@ class MomentumBudget:
             self.out.mkdir(parents=True, exist_ok=True)
         self.records: list[dict] = []
         self.hist = {x: [] for x in AB_TERMS}
+        self.ab_warm_start = False                                    # set on the first hook call (docstring)
+        self._first = True
         self.n_rec, self.k = 0, 0
         self.acc: dict[str, np.ndarray] = {}
         self.max_resid = 0.0                                          # largest |(1)| / max term over the run
@@ -90,13 +101,16 @@ class MomentumBudget:
         d.phase_hook = self.hook
 
     # ------------------------------------------------------------------ per phase
-    def hook(self, name: str, ctx) -> None:
+    def hook(self, name: str, ctx: StepContext) -> None:
         """``Driver.phase_hook``: the handler of phase ``name`` (reads ``ctx``, writes only to this object)."""
+        if self._first:
+            self._first = False
+            self.ab_warm_start = bool(getattr(ctx.st, "g_hist", None))
         f = getattr(self, "_" + name, None)
         if f is not None:
             f(ctx)
 
-    def _explicit_momentum(self, ctx) -> None:
+    def _explicit_momentum(self, ctx: StepContext) -> None:
         m, st = self.m, ctx.st
         mom = m._momentum
         t = m._driver.last_terms
@@ -120,13 +134,13 @@ class MomentumBudget:
             au, av, self.hist[x] = m._time_stepper.combine(self.hist[x], *now[x])
             self.ab[x] = (au, av)
 
-    def _time_combine(self, ctx) -> None:
+    def _time_combine(self, ctx: StepContext) -> None:
         dt = self.m.dt
         s = [self.ab[x] for x in ("PF", "CA", "gKE", "HV")]
         self.ab["EXT"] = (ctx.gu_ab - sum(a[0] for a in s), ctx.gv_ab - sum(a[1] for a in s))
         self.us = (ctx.st.u + dt * ctx.gu_ab, ctx.st.v + dt * ctx.gv_ab)
 
-    def _implicit_and_free_surface(self, ctx) -> None:
+    def _implicit_and_free_surface(self, ctx: StepContext) -> None:
         m, st, dt = self.m, ctx.st, self.m.dt
         self.u_imp = (ctx.u_new.copy(), ctx.v_new.copy())        # phase 5 may change u_new in place
         imp = ((ctx.u_new - self.us[0]) / dt, (ctx.v_new - self.us[1]) / dt)
@@ -155,12 +169,12 @@ class MomentumBudget:
         self.imp, self.bed, self.wind = imp, bed, wind
         self.bt = (np.broadcast_to(bt[0][None], hu.shape), np.broadcast_to(bt[1][None], hv.shape))
 
-    def _boundary_velocity(self, ctx) -> None:
+    def _boundary_velocity(self, ctx: StepContext) -> None:
         dt = self.m.dt
         self.u_bdy = (ctx.u_new.copy(), ctx.v_new.copy())
         self.bdy = ((ctx.u_new - self.u_imp[0]) / dt, (ctx.v_new - self.u_imp[1]) / dt)
 
-    def _finalize(self, ctx) -> None:
+    def _finalize(self, ctx: StepContext) -> None:
         st, new, dt = ctx.st, ctx.new_state, self.m.dt
         rem = ((new.u - self.u_bdy[0]) / dt, (new.v - self.u_bdy[1]) / dt)
         dudt = ((new.u - st.u) / dt, (new.v - st.v) / dt)
@@ -182,7 +196,7 @@ class MomentumBudget:
         else:
             a += val
 
-    def _accumulate(self, ctx, T: dict) -> None:
+    def _accumulate(self, ctx: StepContext, T: dict) -> None:
         st = ctx.st
         hs = (ctx.hu, ctx.hv)
         ws = (partial_weights(ctx.hu, self.z_part), partial_weights(ctx.hv, self.z_part))
@@ -216,6 +230,7 @@ class MomentumBudget:
         rec["n_steps"] = np.array(self.k)
         rec["window"] = np.array(self.window)
         rec["max_resid"] = np.array(self.max_resid)
+        rec["ab_warm_start"] = np.array(self.ab_warm_start and self.n_rec == 0)
         if self.out is None:
             self.records.append(rec)
         else:

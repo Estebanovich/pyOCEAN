@@ -240,8 +240,16 @@ class OpenBoundary:
                    own=obc.owned_by_state(state, self.open, self.H.shape) & self._bc_mask)
         if self.tangential:                                         # exterior tangential velocity on the corners
             hq = obc.corner_layers(hu, hv, self._tan_q)
-            out["ut_q"] = obc.exterior_tangential({e: ob for e, ob in state.items()
-                                                   if self.obc_mode.get(e) == "radiating"}, hq, self._tan_q, code)
+            rad = {e: ob for e, ob in state.items() if self.obc_mode.get(e) == "radiating"}
+            missing = sorted(e for e, ob in rad.items() if ob.u_tangential is None)
+            if missing and not getattr(self, "_warned_no_ut", False):
+                # final review M2: the corners are then nudged toward a resting exterior
+                import warnings
+                warnings.warn(f"obc_tangential='mom6': the exterior of {missing} has no u_tangential, so the corner "
+                              "tangential velocity is nudged toward 0 there (build the provider with "
+                              "prepare_ocean(..., q_points=True))", UserWarning, stacklevel=2)
+                self._warned_no_ut = True
+            out["ut_q"] = obc.exterior_tangential(rad, hq, self._tan_q, code)
         return out
 
     def tangential_velocity(self, u: np.ndarray, v: np.ndarray, rtan: np.ndarray | None,

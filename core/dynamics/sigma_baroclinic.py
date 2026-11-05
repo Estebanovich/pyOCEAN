@@ -2102,13 +2102,15 @@ for _name in _OB_CONFIG:
 
 
 def _component_param(name: str, targets: tuple[tuple[str, str], ...], to_component=None,
-                     normalise=None) -> property:
+                     normalise=None, check=None) -> property:
     """
     A model parameter kept in sync with the components that use it (N1).  The model stores the value; setting it
     after construction (scripts change ``ke_scheme``, tests ``kh``, sensitivity runs ``cd`` …) also sets it on
     every built component in ``targets`` ((component attribute of the model, attribute of the component)), as
     ``SigmaBaroclinic`` read ``self.<name>`` every step before N1.  ``to_component(model, value)``: the value the
-    component keeps, when it differs; ``normalise(value)``: the stored spelling.
+    component keeps, when it differs; ``normalise(value)``: the stored spelling; ``check(model, name, value)``:
+    raises ``ConfigurationError`` for a value the pre-flight would refuse, run only after construction (the
+    constructor's pre-flight covers the first assignment).
     """
     key = f"_pre_{name}"
 
@@ -2121,6 +2123,8 @@ def _component_param(name: str, targets: tuple[tuple[str, str], ...], to_compone
     def put(self, value) -> None:
         if normalise is not None:
             value = normalise(value)
+        if check is not None and "_momentum" in self.__dict__:
+            check(self, name, value)
         self.__dict__[key] = value
         for comp_name, attr in targets:
             comp = self.__dict__.get(comp_name)
@@ -2148,13 +2152,41 @@ def _fixed_after_construction(name: str) -> property:
 
 
 _ke_spelling = lambda v: "gudonov" if v == "godunov" else v                         # noqa: E731  kernel spelling
+
+
+def _check_viscosity(model: "SigmaBaroclinic", name: str, value) -> None:
+    """
+    Assigning a horizontal-viscosity coefficient after construction (final review I1, regional chain): the same
+    checks as the pre-flight (``core.model.preflight._biharmonic_issues``: finite, ≥ 0, biharmonic not together with
+    the Laplacian), on the model's current coefficients with ``name`` replaced by ``value``.  Without it,
+    ``m.smagorinsky_bi = 0.03`` on a model built with ``smagorinsky`` > 0 silently switched the Laplacian off
+    (``Momentum.terms`` gives the biharmonic precedence).
+    """
+    from core.model.contract import ConfigurationError
+    from core.model.preflight import _biharmonic_issues
+    keys = ("ah", "smagorinsky", "smagorinsky_bi", "ah_vel_scale", "ah_bi")
+    a = {k: model.__dict__.get(f"_pre_{k}", 0.0) for k in keys}
+    a[name] = value
+    errs: list[str] = []
+    err = lambda _where, msg: errs.append(msg)                                    # noqa: E731
+    smag = a["smagorinsky"]
+    if not (np.isfinite(smag) and smag >= 0.0):
+        err("momentum", f"smagorinsky={smag!r}: the Smagorinsky coefficient must be a finite number ≥ 0")
+    if not np.all(np.isfinite(a["ah"])) or np.any(np.asarray(a["ah"]) < 0):
+        err("momentum", f"ah={a['ah']!r}: must be finite and ≥ 0")
+    a["ah"] = float(np.max(a["ah"])) if np.ndim(a["ah"]) else a["ah"]
+    _biharmonic_issues(a, smag if np.isfinite(smag) else 0.0, err)
+    if errs:
+        raise ConfigurationError("; ".join(errs))
+
+
 _PARAMS = {
     "ke_scheme": ((("_momentum", "ke_scheme"),), None, _ke_spelling),
-    "ah": ((("_momentum", "ah"),), None, None),
-    "smagorinsky": ((("_momentum", "smagorinsky"),), lambda m, v: float(v), None),
-    "smagorinsky_bi": ((("_momentum", "smagorinsky_bi"),), lambda m, v: float(v), None),
-    "ah_vel_scale": ((("_momentum", "ah_vel_scale"),), lambda m, v: float(v), None),
-    "ah_bi": ((("_momentum", "ah_bi"),), lambda m, v: float(v), None),
+    "ah": ((("_momentum", "ah"),), None, None, _check_viscosity),
+    "smagorinsky": ((("_momentum", "smagorinsky"),), lambda m, v: float(v), None, _check_viscosity),
+    "smagorinsky_bi": ((("_momentum", "smagorinsky_bi"),), lambda m, v: float(v), None, _check_viscosity),
+    "ah_vel_scale": ((("_momentum", "ah_vel_scale"),), lambda m, v: float(v), None, _check_viscosity),
+    "ah_bi": ((("_momentum", "ah_bi"),), lambda m, v: float(v), None, _check_viscosity),
     "adv": ((("_momentum", "adv"),), None, None),
     "momentum": ((("_momentum", "form"),),
                  lambda m, v: "vector_invariant" if m.ale and v == "vector_invariant" else "flux", None),
@@ -2174,8 +2206,8 @@ _PARAMS = {
     "remap_code": ((("_vertical", "remap_code"), ("_ob", "remap_code"), ("_interior_sponge_c", "remap_code")),
                    None, None),
 }
-for _name, (_targets, _to, _norm) in _PARAMS.items():
-    setattr(SigmaBaroclinic, _name, _component_param(_name, _targets, _to, _norm))
+for _name, (_targets, _to, _norm, *_chk) in _PARAMS.items():
+    setattr(SigmaBaroclinic, _name, _component_param(_name, _targets, _to, _norm, *_chk))
 
 
 def _jackson_params_property() -> property:

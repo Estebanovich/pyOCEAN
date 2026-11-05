@@ -169,7 +169,8 @@ def stuck_profiles(x: np.ndarray, min_n: int = 10) -> np.ndarray:
     return (n >= min_n) & (rng == 0.0)
 
 
-def haversine_km(lat1, lon1, lat2, lon2):
+def haversine_km(lat1: np.ndarray | float, lon1: np.ndarray | float, lat2: np.ndarray | float,
+                 lon2: np.ndarray | float) -> np.ndarray | float:
     """Great-circle distance [km] on a sphere of radius 6371 km."""
     p1, p2 = np.radians(lat1), np.radians(lat2)
     a = np.sin((p2 - p1) / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(np.radians(np.asarray(lon2) - lon1) / 2) ** 2

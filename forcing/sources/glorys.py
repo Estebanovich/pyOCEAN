@@ -112,7 +112,8 @@ class GLORYSSource(ForcingSource):
                 out[name] = fill_nearest(da.assign_coords(lat=out["lat"], lon=out["lon"]))
                 meta = CANONICAL_VARS["ocean"][name]
                 out[name].attrs = {"units": meta["units"], "standard_name": meta["standard_name"]}
-        out["temp"].attrs["comment"] = "GLORYS thetao (potential temperature); NaN filled by nearest ocean node"
+        if "temp" in out:                                           # a subset may have no thetao (review M6)
+            out["temp"].attrs["comment"] = "GLORYS thetao (potential temperature); NaN filled by nearest ocean node"
         out.attrs["source_product"] = ds.attrs.get("title", "GLORYS12 (CMEMS)")
         out.attrs["source_files"] = ", ".join(p.name for p in self.paths)
         return out

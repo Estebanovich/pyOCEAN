@@ -193,8 +193,8 @@ _CONFIG_DEFAULTS = {"salinity": 0, "s_coef": 0.0, "s_ref": 35.0, "sponge_S": "no
                     "tidal_potential": "none",
                     "atm_pressure": "none",                                                 # before p_a forcing
                     "runoff": "none",                                                       # before river runoff
-                    "obc_tangential": "none",
-                    "smagorinsky_bi": 0.0, "ah_vel_scale": 0.0, "ah_bi": 0.0}                # before biharmonic                                               # before MOM6 tangential OBC
+                    "obc_tangential": "none",                                               # before MOM6 tangential OBC
+                    "smagorinsky_bi": 0.0, "ah_vel_scale": 0.0, "ah_bi": 0.0}                # before biharmonic
 
 # configuration entries not checked when a file lacks them: files written before TEOS-10 in 3-D did not store c_p,
 # which could be any value the run passed

@@ -179,6 +179,24 @@ def test_assignable_after_construction():
     assert (mo.smagorinsky_bi, mo.ah_vel_scale, mo.ah_bi) == (0.05, 0.02, 3.0)
 
 
+@pytest.mark.parametrize("built, name, value, match", [
+    (dict(smagorinsky=0.15, ah=0.0), "smagorinsky_bi", 0.03, "Laplacian"),
+    (dict(ah=5.0), "ah_vel_scale", 0.01, "Laplacian"),
+    (dict(ah=0.0, smagorinsky_bi=0.03), "smagorinsky", 0.15, "Laplacian"),
+    (dict(ah=0.0, smagorinsky_bi=0.03), "ah", 2.0, "Laplacian"),
+    (dict(ah=0.0), "ah_bi", -1.0, "ah_bi"),
+    (dict(ah=0.0), "smagorinsky_bi", float("nan"), "smagorinsky_bi"),
+    (dict(ah=0.0), "smagorinsky", -0.1, "smagorinsky"),
+])
+def test_assignment_after_construction_is_checked(built, name, value, match):
+    """Final review I1: a later assignment gets the pre-flight checks and leaves the model unchanged on refusal."""
+    m = nc._sigma(**built)
+    before = getattr(m, name)
+    with pytest.raises(ConfigurationError, match=match):
+        setattr(m, name, value)
+    assert getattr(m, name) == before
+
+
 # ------------------------------------------------------------------ open edges
 @pytest.mark.parametrize("tangential", ["none", "mom6"])
 def test_open_box_runs_and_open_faces_get_no_tendency(tangential):
