@@ -595,6 +595,44 @@ Corridas lanzadas durante el plan BBL, sin BBL y con U_bg = 0, Δt 600 s (el mis
 - **BayIW no ejercita el término**: en la corrida corta de la prueba la fricción casi no hace trabajo (Kd_BBL máx 6e-18 m²/s, > 0 solo en sentido estricto); el costo medido es el de la ruta completa pero el kernel no ve mezcla real. DOME sí lo ejercita (4.1 m²/s).
 - Humo (`scripts/n1_smoke.py` contra `main`): 9/9 hashes idénticos con la opción apagada (por defecto).
 
+## Recorridas tras las correcciones de clase (a) `e1ffbbb` y `ca36b59` (2026-11-05)
+
+Las tablas de Smagorinsky, Jackson y BBL de arriba son anteriores a dos correcciones de clase (a): el flujo de PV con el transporte del paso actual (`e1ffbbb`, θ_bc) y la velocidad normal de las caras abiertas en el operador de viscosidad (`ca36b59`). Se recorrieron 14 configuraciones a 10 km (50 días, Δt 600 s, 5 hilos; `/Volumes/ESTEBAN_MIT/pyOCEAN_runs/dome/rerun_2026-11-05/`, `chain.sh`). Las salidas anteriores se guardaron como `<dir>_prefixes`. Tabla completa: `compare_10km_rerun.md` en esa carpeta (`compare.py 10 --theory`). Métricas de los días 30–50; clase de trazador en los días 25–50.
+
+| Corrida | b_f antes → después [1e-3 m s⁻²] | T(x′ −200/−300) [Sv] después | α_E ec. 12 después | clase a x′ −300 km después | trunc / lim después | s/día |
+|---|---|---|---|---|---|---|
+| z\* kv_low + Smag 0.15 | −8.81 → −9.76 | 19.1 / 20.8 | 4.97e-4 | −11…−10 | 0 / 0 | 16.0 |
+| z\* + Jackson | −8.98 → −9.89 | 19.8 / 21.7 | 7.53e-4 | −11…−10 | 0 / 0 | 17.6 |
+| z\* + Jackson + U_bg 0.05 | −9.04 → −9.89 | 20.0 / 21.9 | 7.68e-4 | −11…−10 | 0 / 0 | 18.4 |
+| z\* + … + BBL | −8.93 → −9.88 | 19.7 / 21.5 | 9.81e-4 | −12…−11 | 0 / 0 | 18.2 |
+| σ kv_low + Smag 0.15 | −11.84 → −12.67 | 17.3 / 19.4 | 6.80e-4 | −15…−14 | 0 / 0 | 15.4 |
+| σ + Jackson | −11.31 → −12.46 | 17.7 / 19.4 | 6.43e-4 | −14…−13 | 0 / 0 | 17.8 |
+| σ + Jackson + U_bg 0.05 | −11.39 → −12.47 | 17.9 / 19.6 | 6.53e-4 | −14…−13 | 0 / 0 | 18.2 |
+| σ + … + BBL | −10.28 → −10.91 | 19.0 / 21.2 | 6.86e-4 | −13…−12 | 0 / 0 | 19.0 |
+| híbrida kv_low + Smag 0.15 | −17.91 → −17.67 | 8.8 / 9.1 | 2.37e-5 | −19…−18 | 3 / 175 (antes 61 / 239 337) | 18.6 |
+| híbrida + Jackson | −12.84 → −13.45 | 19.0 / 21.5 | 3.61e-4 | −16…−15 | 0 / 0 | 21.3 |
+| híbrida + Jackson + U_bg 0.05 | −12.70 → −13.52 | 18.6 / 22.3 | 3.19e-4 | −17…−16 | 0 / 0 | 20.7 |
+| híbrida + … + BBL (`_openface`, 2026-11-03) | −12.47 → −12.79 | 17.3 / 19.2 | 4.15e-4 | −15…−14 | 0 / 0 | 18.4 |
+| híbrida GLS + Smag 0.15 | −13.31 → −14.51 | 17.4 / 19.8 | 2.56e-4 | −18…−17 | 0 / 1 | 22.9 |
+| híbrida GLS (sin Smagorinsky) | −12.99 → **aborta** | — | — | — | > 1000 truncamientos | — |
+| híbrida GLS + Smag 1e-9 (control del operador) | −13.05 → **aborta** | — | — | — | > 1000 truncamientos | — |
+
+Referencias: Legg 10 km z −11.67, isopicnal −11.07; verdad no hidrostática b_f −8.75, T(−200/−300) 22.5/20.6 Sv, α_E 1.03e-3, clase −10…−9 (todas digitalizadas).
+
+### Lectura y clasificación
+
+- **Plumas más densas en todas las coordenadas** (b_f entre 0.6 y 1.2 más negativo, salvo la híbrida sin Jackson, que ya era la más densa). Las dos correcciones quitan mezcla espuria de la pluma (clase a ya corregida). z\* se acerca a Legg z (−9.9 contra −11.67; antes −8.9); σ y la híbrida se alejan un poco de Legg isopicnal (−11.07). La velocidad máxima en caras gruesas baja en z\* (3.4–5.7 → 1.7 m/s) y en σ (3.2–7.3 → 2.4–3.5 m/s).
+- **Efecto de la BBL** (b_f con BBL menos control con U_bg): z\* ≈ 0 (−9.89 → −9.88; antes +0.11), σ +1.56 (antes +1.11), híbrida +0.73 (30 % del camino del control a Legg isopicnal; antes 14 %). La lectura BBL contra control de la sección BBL de arriba queda sustituida por esta.
+- **Jackson sigue siendo el término dominante en la híbrida:** b_f −17.67 → −13.45, T(x′ −300) 9.1 → 21.5 Sv (verdad 20.6), clase −19…−18 → −16…−15, sin truncamientos ni eventos del limitador. En z\* y σ cambia poco b_f (±0.2).
+- **Híbrida + GLS sin Smagorinsky (y su control C = 1e-9) ya no completa los 50 días**: más de 1000 truncamientos CFL, `RuntimeError` de `core/components/vertical_coordinate.py` (`max_truncations` = 1000). `hybrid_gls`: capa 7, cara v (j = 2, i = 141), v = 8.34 m/s en una cara de 1.0 cm; control: capa 13, cara u (j = 45, i = 11), u = 9.13 m/s en una cara de 3.2 cm. Antes de las correcciones completaban con 1 truncamiento (1072 y 641 eventos del limitador). Duraron ≈ 14 min de reloj contra ≈ 20 de una corrida completa, así que abortaron hacia el día 35–40 [hipótesis: no hay marca de día en el registro]. Es el mismo modo de capas casi vacías de la sección N3 (1 truncamiento en el día 31.8), ahora creciente; con Smagorinsky 0.15 desaparece (0 truncamientos, 1 evento). **Abierto, clase (a) o (c) sin decidir**; no hay salida porque el runner escribe al final. `chain.sh` registró rc=0 por un error del script (`$?` leído después de `$(date)`), no del modelo.
+- **Costo** 15–23 s/día (z\* 16–18, σ 15–19, híbrida 19–23), sin cambio apreciable frente a las corridas anteriores (14.8–21.8).
+
+### Qué debe mejorar pyOCEAN (recorridas)
+
+1. **Diagnosticar el aborto de la híbrida + GLS sin Smagorinsky**: recorrer con un volcado al primer truncamiento (día, capa, cara, espesores de las dos celdas) y con `max_truncations` alto para ver si crece sin límite; comparar con el día 31.8 de N3. Decidir si es clase (a) (acoplamiento de capas delgadas tras `e1ffbbb`) o (c) (la híbrida sin viscosidad horizontal de Smagorinsky no es una configuración robusta).
+2. **El runner debe escribir la serie parcial al abortar**, para que una corrida fallida deje métricas hasta el día del aborto.
+3. **Separar la mezcla física de la numérica en z\*** (balance de varianza): z\* sigue siendo la más ligera (−9.9) y la hipótesis de mezcla numérica (c) no está medida.
+
 ## Referencias
 
 - Legg, S., Hallberg, R. W., Girton, J. B. (2006). Comparison of entrainment in overflows simulated by z-coordinate, isopycnal and non-hydrostatic models. *Ocean Modell.* 11, 69–97. [10.1016/j.ocemod.2004.11.006](https://doi.org/10.1016/j.ocemod.2004.11.006)

@@ -378,6 +378,7 @@ Se llena conforme aparecen mediciones. Cada entrada: fecha, caso, número, compa
 | 2026-11-04 | Recorte NWA12 con el diagnóstico de balance de momento (`--momentum-budget`, 100 d) | 113 s/día (3 h 08 min) frente a 105 → **+7 %** por el diagnóstico (gancho de fase, solo lectura) | MOM6 con 41 diagnósticos 3-D diarios del balance 30.1 s/día frente a 26.0 → +16 % | `figs/gs_drift/README.md` (fase 4) |
 | 2026-10-13 | BayIW cut 198 × 159 z\*, anidado | 9.1 s por hora simulada | MITgcm 4.4 (5 MPI) | `validation/bayiw_cut/README.md` |
 | 2026-10 | BayIW sección 2-D, igual Δt | z\* 9.1 vs 9.0 s/h; híbrida 5.0 vs 4.7 | MOM6 ±10 %; ALE de MOM6 18.6–22.8 % del paso frente a ~13.5 % del remapeo de pyOCEAN; advección de T 11 % (WENO5, 3 etapas) frente a 4.8 % | `validation/mom6_bayiw/README.md` |
+| 2026-11-05 | DOME 10 km, 14 recorridas tras `e1ffbbb`/`ca36b59` (50 días, Δt 600 s, 5 hilos) | z\* 16.0–18.4, σ 15.4–19.0, híbrida 18.6–22.9 s/día (antes 14.8–16.9 / 14.9–17.7 / 16.9–21.8); Jackson +1–3 s/día, BBL ≈ 0 | MITgcm 4.6, MOM6 12.0 (Δt 1200; 2026-10-15) | `validation/dome/README.md` (recorridas) |
 | 2026-10-15 | DOME 10 km / 5 km | 14 / 61–64 s/día | MITgcm 4.6 / 33.7; MOM6 12.0 / 92.8 (Δt 1200) | `validation/dome/README.md` |
 | 2026-10-14 | Ilicak 2-D (1 proceso, Δt máximo estable) | — | CROCO 1.7–3× más barato salvo el overflow | §7 |
 | 2026-10-30 | Columnas periódicas 5 × 5 | 38–79 ms/paso | MOM6 16; CROCO 10–25× más barato (halo) | `validation/turbulence_columns/` |
