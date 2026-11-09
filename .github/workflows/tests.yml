@@ -23,6 +23,7 @@ jobs:
       MKL_NUM_THREADS: 1
       NUMBA_NUM_THREADS: 5
       PYOCEAN_SKIP_LOCALDATA: 1
+      PYOCEAN_SKIP_GOLDEN: 1
       PYTHONPATH: ${{ github.workspace }}
     defaults:
       run:
