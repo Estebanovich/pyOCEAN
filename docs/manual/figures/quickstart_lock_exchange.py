@@ -10,9 +10,9 @@ validation/lock_exchange/run_lock_exchange.py; this version is coarser (128 × 2
 so it runs in well under a minute on one thread.
 
 Usage (from the repository root, base conda env):
-    /opt/anaconda3/bin/python docs/manual/figures/quickstart_lock_exchange.py              # σ-layers
-    /opt/anaconda3/bin/python docs/manual/figures/quickstart_lock_exchange.py --coord zstar
-    /opt/anaconda3/bin/python docs/manual/figures/quickstart_lock_exchange.py --coord hybrid
+    python docs/manual/figures/quickstart_lock_exchange.py              # σ-layers
+    python docs/manual/figures/quickstart_lock_exchange.py --coord zstar
+    python docs/manual/figures/quickstart_lock_exchange.py --coord hybrid
 Output: docs/manual/img/quickstart/lock_<coord>_sections.png and lock_<coord>_fronts.png
 """
 

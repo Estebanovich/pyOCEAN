@@ -7,7 +7,7 @@ Figures of the manual page architecture/data-structures.md:
 3. vertical_index.png — the layer index convention: σ / ALE columns (k = 0 at the bed, interfaces 0 … N,
    η on top, −H at the bed) next to the legacy phase-1 z-levels (k = 0 at the surface).
 
-Usage:  /opt/anaconda3/bin/python docs/manual/figures/make_data_structures.py
+Usage:  python docs/manual/figures/make_data_structures.py
 Output: docs/manual/img/data-structures/
 """
 

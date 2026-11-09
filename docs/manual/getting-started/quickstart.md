@@ -24,9 +24,9 @@ compared with CROCO), and runs in a few seconds on one thread.
 From the repository root, with the base environment:
 
 ```bash
-/opt/anaconda3/bin/python docs/manual/figures/quickstart_lock_exchange.py                 # σ-layers
-/opt/anaconda3/bin/python docs/manual/figures/quickstart_lock_exchange.py --coord zstar   # ALE z*
-/opt/anaconda3/bin/python docs/manual/figures/quickstart_lock_exchange.py --coord hybrid  # ALE hybrid
+python docs/manual/figures/quickstart_lock_exchange.py                 # σ-layers
+python docs/manual/figures/quickstart_lock_exchange.py --coord zstar   # ALE z*
+python docs/manual/figures/quickstart_lock_exchange.py --coord hybrid  # ALE hybrid
 ```
 
 The first call compiles the Numba kernels (a few seconds; they are cached afterwards). The σ run prints:
@@ -68,9 +68,9 @@ validation/lock_exchange/run_lock_exchange.py; this version is coarser (128 × 2
 so it runs in well under a minute on one thread.
 
 Usage (from the repository root, base conda env):
-    /opt/anaconda3/bin/python docs/manual/figures/quickstart_lock_exchange.py              # σ-layers
-    /opt/anaconda3/bin/python docs/manual/figures/quickstart_lock_exchange.py --coord zstar
-    /opt/anaconda3/bin/python docs/manual/figures/quickstart_lock_exchange.py --coord hybrid
+    python docs/manual/figures/quickstart_lock_exchange.py              # σ-layers
+    python docs/manual/figures/quickstart_lock_exchange.py --coord zstar
+    python docs/manual/figures/quickstart_lock_exchange.py --coord hybrid
 Output: docs/manual/img/quickstart/lock_<coord>_sections.png and lock_<coord>_fronts.png
 """
 

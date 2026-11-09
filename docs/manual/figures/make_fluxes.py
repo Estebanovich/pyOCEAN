@@ -11,7 +11,7 @@ Writes PNGs to docs/manual/img/air-sea-fluxes/:
   mitgcm_exf_compare.png      copy of validation/mitgcm_exf/compare.png
 
 Cheap function calls only (no time stepping).  Run from anywhere:
-    /opt/anaconda3/bin/python docs/manual/figures/make_fluxes.py
+    python docs/manual/figures/make_fluxes.py
 """
 
 from __future__ import annotations

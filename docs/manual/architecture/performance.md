@@ -163,7 +163,7 @@ pyOCEAN z\* 11.2–11.9 min, hybrid 5.4–5.6 min (`validation/bayiw_cut/README.
 - `scripts/profile_ale_step.py` — timing and cProfile of the ALE step:
 
     ```bash
-    NUMBA_NUM_THREADS=5 /opt/anaconda3/bin/python scripts/profile_ale_step.py --case box --coord zstar --steps 5 --profile
+    NUMBA_NUM_THREADS=5 python scripts/profile_ale_step.py --case box --coord zstar --steps 5 --profile
     ```
 
     `--case box` is a self-contained 200 × 120 × 30 z\* (or `--coord hybrid`) box with open boundaries and a

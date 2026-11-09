@@ -86,8 +86,8 @@ Not used anywhere, despite being mentioned in older documents: PyAMG, PyVista, c
 From the repository root:
 
 ```bash
-/opt/anaconda3/bin/python -m pytest tests/                 # or simply: pytest tests/
-/opt/anaconda3/bin/python -m pytest tests/test_sigma_ale.py -q   # one module
+python -m pytest tests/                 # or simply: pytest tests/
+python -m pytest tests/test_sigma_ale.py -q   # one module
 ```
 
 - 1350 tests are collected (2026-10-14). `CLAUDE.md` reports 1348 passing, 1 strict `xfail` (Thacker

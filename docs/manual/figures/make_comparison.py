@@ -4,7 +4,7 @@ Figures of the manual page "Comparison with other models" (docs/manual/compariso
 Writes PNGs to docs/manual/img/comparison/.  No model is run: every number is copied from a
 validation README, cited next to the data below.
 
-    /opt/anaconda3/bin/python docs/manual/figures/make_comparison.py
+    python docs/manual/figures/make_comparison.py
 """
 
 from __future__ import annotations

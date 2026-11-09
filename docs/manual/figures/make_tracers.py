@@ -9,7 +9,7 @@ low-order flux) with the model's coefficient function fct_coefficients_numpy.
 Periodicity: each call pads the row with 3 ghost cells on each side (all valid), so the code's
 wall rules (lower order next to walls) never act; the faces of the real domain are cut out.
 
-Run:  NUMBA_NUM_THREADS=1 OMP_NUM_THREADS=1 /opt/anaconda3/bin/python docs/manual/figures/make_tracers.py
+Run:  NUMBA_NUM_THREADS=1 OMP_NUM_THREADS=1 python docs/manual/figures/make_tracers.py
 """
 
 from __future__ import annotations

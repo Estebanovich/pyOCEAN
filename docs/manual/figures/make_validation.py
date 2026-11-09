@@ -5,7 +5,7 @@ Summary charts for the Validation chapter of the pyOCEAN manual.
 Every number below is copied from a README or summary file in ``validation/`` (path given next to each
 constant).  Nothing is run: the script only draws.  Output: ``docs/manual/img/validation/summary_*.png``.
 
-Usage:  /opt/anaconda3/bin/python docs/manual/figures/make_validation.py
+Usage:  python docs/manual/figures/make_validation.py
 """
 from __future__ import annotations
 

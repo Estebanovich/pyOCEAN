@@ -8,7 +8,7 @@ Figures of the manual page theory/free-surface-time-stepping.md (analytic, no mo
                          |λ| per step and amplitude left after one period, θ = 0.5, 0.6, 1, with the
                          small-ωΔt estimate 1 − (θ − ½)(ωΔt)².
 
-Run:  /opt/anaconda3/bin/python docs/manual/figures/make_time_stepping.py
+Run:  python docs/manual/figures/make_time_stepping.py
 """
 
 from __future__ import annotations

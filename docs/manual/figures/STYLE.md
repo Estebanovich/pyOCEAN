@@ -66,7 +66,7 @@ Adapt it as needed (user-guide pages are task-oriented: "how do I ...").
   matplotlib patches/arrows, not ASCII.
 - Figures from model runs: only small runs (< ~5 min on one core). Set `NUMBA_NUM_THREADS` ≤ 5 and the
   BLAS/OMP thread variables to 1. Never use more than 5 threads; never run two simulations at once.
-  Run scripts with the base env: `/opt/anaconda3/bin/python`.
+  Run scripts with the tested environment (`environment.yml`).
 - Existing tracked figures in `validation/**/out/*.png` may be copied into `docs/manual/img/<chapter>/`
   (copy, do not move).
 - Run your script and check that the PNGs exist (look at them with the Read tool).

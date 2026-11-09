@@ -13,7 +13,7 @@ Writes PNGs to docs/manual/img/vertical-ale/:
   face_clip.png            transport thickness at a u-face over a bed step (core.vertical.ale.face_transport_thickness)
 
 Only cheap function calls (no time stepping), one thread.  Run:
-    /opt/anaconda3/bin/python docs/manual/figures/make_vertical_ale.py
+    python docs/manual/figures/make_vertical_ale.py
 """
 
 from __future__ import annotations

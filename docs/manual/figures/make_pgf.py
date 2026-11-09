@@ -6,7 +6,7 @@ Figures of the manual page theory/pressure-gradient.md.
                        stratified Beckmann & Haidvogel (1993) seamount (no time stepping): the exact force is 0,
                        so everything plotted is the error of each scheme.
 
-Run:  NUMBA_NUM_THREADS=1 OMP_NUM_THREADS=1 /opt/anaconda3/bin/python docs/manual/figures/make_pgf.py
+Run:  NUMBA_NUM_THREADS=1 OMP_NUM_THREADS=1 python docs/manual/figures/make_pgf.py
 """
 
 from __future__ import annotations

@@ -10,7 +10,7 @@ Writes PNGs to docs/manual/img/tides/:
   m2_map_pacmex.png       copy of validation/pacmex_tides/out/m2_map_jsl0.5_cb.png
 
 Cheap function calls only (no time stepping).  Run from anywhere:
-    /opt/anaconda3/bin/python docs/manual/figures/make_tides.py
+    python docs/manual/figures/make_tides.py
 """
 
 from __future__ import annotations

@@ -54,7 +54,7 @@ on 297 cases, 18 (6 %) have no fixed point (warm, dry air over the sea: $C_{hN}$
 the operational definition (CORE/OMIP, CESM, MITgcm). `bulk_ncar` keeps `n_iter = 2`; the weak-wind/stable
 regime calls for COARE 3.0 (to implement).
 
-Reproduce: `cd validation/mitgcm_exf && ./build_and_run.sh all && /opt/anaconda3/bin/python compare.py all`.
+Reproduce: `cd validation/mitgcm_exf && ./build_and_run.sh all && python compare.py all`.
 
 ### `bulk_kara` against compiled HYCOM
 

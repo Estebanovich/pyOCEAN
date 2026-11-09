@@ -11,7 +11,7 @@ Figures of the manual page theory/wetting-drying.md.
       validation/tidal_flat/out/tidal_flat_vs3d_z0.png   → tidal_flat_vs3d_z0.png
       validation/tidal_flat/out/tidal_flat_3d_gls.png    → tidal_flat_3d_gls.png
 
-Run:  NUMBA_NUM_THREADS=1 OMP_NUM_THREADS=1 /opt/anaconda3/bin/python docs/manual/figures/make_wetting_drying.py
+Run:  NUMBA_NUM_THREADS=1 OMP_NUM_THREADS=1 python docs/manual/figures/make_wetting_drying.py
 """
 
 from __future__ import annotations

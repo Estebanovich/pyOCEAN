@@ -10,7 +10,7 @@ then reads the file back with xarray exactly as the manual shows and plots:
                                             hourly RPE change and Σ mix_num.
 
 One thread (NUMBA_NUM_THREADS = 1, BLAS/OMP = 1); ~1 min on one core.
-Usage: /opt/anaconda3/bin/python docs/manual/figures/make_user_guide.py
+Usage: python docs/manual/figures/make_user_guide.py
 """
 from __future__ import annotations
 

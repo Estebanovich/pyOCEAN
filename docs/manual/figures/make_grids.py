@@ -9,7 +9,7 @@ Writes PNGs to docs/manual/img/grids/:
   bathy_pipeline.png     smoothing and isolated-cell removal (core.grid.bathymetry)
 
 Cheap function calls only (no time stepping).  Run from anywhere:
-    /opt/anaconda3/bin/python docs/manual/figures/make_grids.py
+    python docs/manual/figures/make_grids.py
 """
 
 from __future__ import annotations
