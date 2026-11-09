@@ -1,0 +1,38 @@
+name: tests
+
+on:
+  push:
+    branches: [main, ci-setup]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    # Apple Silicon runner: the same arm64 floating-point path as the development
+    # machine, so the bit-for-bit golden tests can be checked.
+    runs-on: macos-14
+    timeout-minutes: 120
+    env:
+      OPENBLAS_NUM_THREADS: 1
+      OMP_NUM_THREADS: 1
+      VECLIB_MAXIMUM_THREADS: 1
+      MKL_NUM_THREADS: 1
+      NUMBA_NUM_THREADS: 3
+      PYTHONPATH: ${{ github.workspace }}
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: environment.yml
+          cache-environment: true
+      - name: Versions
+        run: python -c "import numpy, numba, scipy, xarray; print(numpy.__version__, numba.__version__, scipy.__version__, xarray.__version__)"
+      - name: Run tests
+        run: python -m pytest tests -q -p no:cacheprovider -rfE --durations=25

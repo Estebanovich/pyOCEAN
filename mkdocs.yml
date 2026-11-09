@@ -1,7 +1,9 @@
 site_name: pyOCEAN Model Manual
 site_description: Theory, numerics, usage and validation of pyOCEAN, a regional ocean model written from scratch in Python.
 site_author: Esteban Cruz Isidro
-repo_name: pyOCEAN
+site_url: https://estebanovich.github.io/pyOCEAN/
+repo_url: https://github.com/Estebanovich/pyOCEAN
+repo_name: Estebanovich/pyOCEAN
 docs_dir: docs/manual
 site_dir: site
 strict: false
