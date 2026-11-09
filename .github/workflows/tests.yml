@@ -14,7 +14,7 @@ jobs:
   pytest:
     # Apple Silicon runner: the same arm64 floating-point path as the development
     # machine, so the bit-for-bit golden tests can be checked.
-    runs-on: macos-14
+    runs-on: macos-latest
     timeout-minutes: 120
     env:
       OPENBLAS_NUM_THREADS: 1
