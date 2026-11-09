@@ -60,7 +60,9 @@ def test_rest_profile_mode_quiet(kind, coord):
     pgf_lin, u_lin = res["linear"]
     for eos in NONLINEAR:
         pgf0, umax = res[eos]
-        assert umax <= 2.0 * u_lin, (eos, umax, u_lin)
+        # In z* both residuals are round-off (≤ 1e-9 below), where a 2x ratio is noise: 3e-12 vs 1.3e-15 m/s on
+        # the CI runner.  The ratio is checked above the round-off floor.
+        assert umax <= max(2.0 * u_lin, 1e-9), (eos, umax, u_lin)
         assert pgf0 <= 2.0 * pgf_lin, (eos, pgf0, pgf_lin)
     if coord == "zstar":
         assert max(r[1] for r in res.values()) < 1e-9

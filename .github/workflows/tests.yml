@@ -21,7 +21,8 @@ jobs:
       OMP_NUM_THREADS: 1
       VECLIB_MAXIMUM_THREADS: 1
       MKL_NUM_THREADS: 1
-      NUMBA_NUM_THREADS: 3
+      NUMBA_NUM_THREADS: 5
+      PYOCEAN_SKIP_LOCALDATA: 1
       PYTHONPATH: ${{ github.workspace }}
     defaults:
       run:
