@@ -30,11 +30,10 @@ All development, tests and validation runs of the repository use the **base cond
     silently and broke every Numba kernel. **Never let pip touch numpy**: install extra packages with
     `pip install --no-deps <package>==<version>` after checking their requirements, then run `pip check`.
 
-!!! warning "`environment.yml` does not match the working environment"
-    The repository's `environment.yml` asks for `python=3.11`, leaves numpy, numba and zarr unpinned,
-    omits `pandas`, and lists packages the code never imports (`cartopy`, `pyvista`, `jupyterlab`,
-    `black`). Creating an environment from it today would install numpy 2 and a recent zarr, which do not
-    match the tested versions. Use the recipe below instead (or the base environment described above).
+!!! note "`environment.yml` holds these versions (since 2026-11-08)"
+    The repository's `environment.yml` pins the versions above (plus `h5netcdf`, used for ERA5 files), so
+    `conda env create -f environment.yml` gives the tested set; a conda dry-run on osx-arm64 solves it
+    without conflicts. It has not yet been created on a clean machine; report any problem.
 
 ## A recipe for a new environment
 
@@ -44,7 +43,7 @@ derived from the working environment, not one that has been run on a clean machi
 ```bash
 conda create -n pyocean -c conda-forge \
     python=3.12 numpy=1.26.4 numba=0.59.1 scipy=1.13 xarray=2023.6 \
-    netcdf4=1.7 "zarr>=2.18,<3" pandas=2.2 gsw=3.6 matplotlib=3.8 pytest
+    netcdf4=1.7 h5netcdf=1.6 "zarr>=2.18,<3" pandas=2.2 gsw=3.6 matplotlib=3.8 pytest
 conda activate pyocean
 python -c "import numpy, numba; print(numpy.__version__, numba.__version__)"   # 1.26.4 0.59.1
 ```

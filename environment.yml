@@ -1,22 +1,20 @@
+# Tested environment of pyOCEAN (versions of the development machine, Apple M3 Pro,
+# docs/manual/getting-started/installation.md).  numpy must stay at 1.26.4: numba 0.59.1
+# needs numpy < 1.27, and numpy 2 silently breaks every Numba kernel.  Install any extra
+# package with `pip install --no-deps` so pip never upgrades numpy.
 name: pyocean
 channels:
   - conda-forge
-  - defaults
 dependencies:
-  - python=3.11
-  - numpy
-  - scipy
-  - xarray
-  - netCDF4
-  - zarr
-  - matplotlib
-  - cartopy
-  - jupyter
-  - jupyterlab
-  - numba
+  - python=3.12
+  - numpy=1.26.4
+  - numba=0.59.1
+  - scipy=1.13
+  - xarray=2023.6
+  - netcdf4=1.7        # restarts, output, forcing readers
+  - h5netcdf=1.6       # ERA5 files (forcing/sources/era5.py)
+  - zarr>=2.18,<3      # Zarr output
+  - pandas=2.2         # tide gauges, sea-level QC, WRF, observation QC
+  - gsw=3.6            # TEOS-10 conversions (optional for linear / Wright EOS)
+  - matplotlib=3.8     # figures of validation scripts and manual
   - pytest
-  - black
-  - pip
-  - pip:
-      - pyvista
-      - gsw          # TEOS-10 equation of state

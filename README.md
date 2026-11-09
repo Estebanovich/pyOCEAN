@@ -123,21 +123,34 @@ pyOCEAN/
 ├── numerics/          # advection
 ├── diagnostics/       # output, budgets, mixing, TEF, tide gauges, QC
 ├── validation/        # 28 benchmark cases against models and observations
-├── docs/              # manual (MkDocs), design notes, roadmap
-└── tests/             # pytest suite
+├── scripts/           # cost measurements, golden-hash generators, data download, literature search
+├── prototypes/        # JAX vs Numba experiments for the differentiable backend (stage D)
+├── docs/              # manual (Markdown, MkDocs layout), design notes, roadmap
+├── tests/             # pytest suite
+├── LICENSES/          # license texts of the third-party code (see THIRD_PARTY_NOTICES.md)
+└── THIRD_PARTY_NOTICES.md
 ```
+
+The 3-D model is `core.dynamics.sigma_baroclinic.SigmaBaroclinic` (σ-layers or ALE z\*/σ/hybrid). It is a facade over the components in `core/components/`, which the driver in `core/model/driver.py` runs in a fixed order. The Phase 1 z-level line (`core/state.py`, `core/timestepping/ab2.py`, `boundaries/obcs/`, `physics/mixing/kpp.py`) is kept and tested but is no longer developed.
 
 ---
 
 ## Running
 
 ```bash
-conda env create -f environment.yml
+git clone https://github.com/Estebanovich/pyOCEAN.git
+cd pyOCEAN
+conda env create -f environment.yml      # Python 3.12, numpy 1.26.4 (pinned for Numba 0.59)
 conda activate pyocean
 pytest tests/
+python docs/manual/figures/quickstart_lock_exchange.py --coord zstar   # first run: a lock exchange
 ```
 
-Start with the lock-exchange quickstart in `docs/manual/getting-started/`. The manual builds with `mkdocs serve`.
+pyOCEAN is not a pip package yet: run from the repository root or add it to `PYTHONPATH`. For long runs set `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1` so BLAS threads do not compete with the Numba threads.
+
+A few tests need external data (MITgcm runs of the M.Sc. thesis, TPXO atlas) and fail or skip without it.
+
+The manual is in `docs/manual/`, as Markdown that reads directly on GitHub: start with [installation](docs/manual/getting-started/installation.md), then the [quickstart](docs/manual/getting-started/quickstart.md). It has a MkDocs Material layout (`mkdocs.yml`) but has not been built or published as a website yet.
 
 ---
 
@@ -161,7 +174,7 @@ Details: `docs/design/vision_roadmap.md`.
 
 ## Tech stack
 
-NumPy, Numba, SciPy, xarray, netCDF4, Zarr, gsw, Matplotlib, pytest, MkDocs. Python only by design.
+NumPy, Numba, SciPy, xarray, netCDF4/h5netcdf, Zarr, pandas, gsw, Matplotlib, pytest. Python only by design: no Fortran or C extensions, no MPI yet.
 
 ---
 
