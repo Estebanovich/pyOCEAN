@@ -1,5 +1,9 @@
 # pyOCEAN
 
+[![tests](https://github.com/Estebanovich/pyOCEAN/actions/workflows/tests.yml/badge.svg)](https://github.com/Estebanovich/pyOCEAN/actions/workflows/tests.yml)
+[![manual](https://github.com/Estebanovich/pyOCEAN/actions/workflows/docs.yml/badge.svg)](https://estebanovich.github.io/pyOCEAN/)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A regional and coastal ocean model written from scratch in Python (NumPy + Numba), with z\*, σ and HYCOM-style hybrid vertical coordinates (ALE), validated against MOM6, MITgcm, CROCO, HYCOM and observations.
 
 **Author:** Esteban Cruz Isidro, physical oceanographer, M.Sc. student at UNAM (Institute of Atmospheric Sciences and Climate Change)
@@ -148,9 +152,9 @@ python docs/manual/figures/quickstart_lock_exchange.py --coord zstar   # first r
 
 pyOCEAN is not a pip package yet: run from the repository root or add it to `PYTHONPATH`. For long runs set `OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1` so BLAS threads do not compete with the Numba threads.
 
-A few tests need external data (MITgcm runs of the M.Sc. thesis, TPXO atlas) and fail or skip without it.
+Continuous integration runs the suite on a macOS arm64 runner at every push (about 11 minutes). Two groups run only on the development machine: `golden` tests compare with state hashes stored there (SciPy/BLAS round-off differs between builds; set `PYOCEAN_SKIP_GOLDEN=1` elsewhere) and `localdata` tests need files outside the repository (`PYOCEAN_SKIP_LOCALDATA=1`). See `tests/conftest.py`.
 
-The manual is in `docs/manual/`, as Markdown that reads directly on GitHub: start with [installation](docs/manual/getting-started/installation.md), then the [quickstart](docs/manual/getting-started/quickstart.md). It has a MkDocs Material layout (`mkdocs.yml`) but has not been built or published as a website yet.
+The manual is published at **https://estebanovich.github.io/pyOCEAN/** (theory, numerics, user guide, validation), built from `docs/manual/` with MkDocs Material at every push to `main`. Start with [installation](https://estebanovich.github.io/pyOCEAN/getting-started/installation/) and the [quickstart](https://estebanovich.github.io/pyOCEAN/getting-started/quickstart/).
 
 ---
 
