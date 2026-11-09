@@ -57,6 +57,55 @@ Each case has a README under `validation/` with its numbers, figures and open it
 
 ---
 
+## Gallery
+
+### Lock exchange: pyOCEAN against MOM6, CROCO and MITgcm
+
+Temperature sections from the Ilicak et al. (2012) lock exchange, all models on the same case definition. pyOCEAN z\* and σ track MOM6 z\* and MITgcm. pyOCEAN's hybrid coordinate keeps a sharp front with almost no spurious mixing (right: rate of spurious mixing, lower is better).
+
+<p align="center">
+  <img src="docs/media/lock_exchange_7models.gif" width="56%" alt="Lock exchange temperature sections in seven model configurations">
+  <img src="docs/manual/img/validation/summary_lock_rpe.png" width="42%" alt="Spurious mixing rate against grid Reynolds number">
+</p>
+
+### Bay seiche and internal waves: pyOCEAN against MITgcm (M.Sc. thesis case)
+
+A 3-D cut of the BayIW domain with linear stratification. Free-surface elevation (top) and internal-wave temperature anomaly at 110 m (bottom): MITgcm (left), pyOCEAN z\* (middle), pyOCEAN hybrid (right). Below, the barotropic seiche at the bay station: same period (3.83 h) and amplitude as MITgcm.
+
+<p align="center">
+  <img src="docs/media/bayiw_cut_vs_mitgcm.gif" width="70%" alt="BayIW internal waves, MITgcm against pyOCEAN">
+</p>
+<p align="center">
+  <img src="docs/manual/img/validation/bayiw_seiche__compare.png" width="60%" alt="BayIW seiche time series and spectrum, pyOCEAN against MITgcm">
+</p>
+
+### DOME dense overflow (Legg et al. 2006)
+
+Bottom dye of a dense plume sliding down a continental slope, 10 km grid, 45 days. Without interior shear mixing (left) the plume is too dense and spreads too far. With the Jackson et al. (2008) shear mixing ported from MOM6 (middle) it entrains and lightens, closer to MITgcm (right) and to Legg's non-hydrostatic reference.
+
+<p align="center">
+  <img src="docs/media/dome_overflow.gif" width="95%" alt="DOME overflow bottom dye, without and with shear mixing, against MITgcm">
+</p>
+
+### Regional case: NWA12 cut (Mid-Atlantic Bight, 2017) against MOM6
+
+Sea-surface temperature from 1 May to 25 August 2017 (one frame per day) on the same 1/12° grid, forcing and initial state: pyOCEAN (left) and MOM6 + SIS2 from the NOAA CEFI NWA12 setup (right). Both models run free inside the domain, so the Gulf Stream meanders differ.
+
+<p align="center">
+  <img src="docs/media/nwa12_sst_vs_mom6.gif" width="85%" alt="NWA12 sea-surface temperature, pyOCEAN against MOM6">
+</p>
+
+### Tides and wetting and drying
+
+Left: M2 tide in the Mexican Pacific (pyOCEAN, TPXO10 and their difference). Right: the Thacker (1981) wetting-and-drying test against the exact solution and CROCO.
+
+<p align="center">
+  <img src="docs/manual/img/validation/pacmex_tides__m2_map_ref.png" width="58%" alt="M2 amplitude in the Mexican Pacific, pyOCEAN against TPXO10">
+  <img src="docs/manual/img/validation/thacker__thacker.png" width="40%" alt="Thacker wetting and drying test against the exact solution and CROCO">
+</p>
+
+---
+
 ## Project structure
 
 ```
@@ -127,4 +176,4 @@ NumPy, Numba, SciPy, xarray, netCDF4, Zarr, gsw, Matplotlib, pytest, MkDocs. Pyt
 
 ## License
 
-MIT
+MIT (`LICENSE`), except `forcing/bulk_fms.py`, a port of NOAA-GFDL FMS code distributed under the LGPL-3.0-or-later. Code ported from MOM6, CVMix, CROCO/ROMS, MITgcm and HYCOM is listed with its original license in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
